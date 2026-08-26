@@ -606,9 +606,8 @@ export class DomovoiDaemon {
     if (!session) return
     const createdAt = new Date().toISOString()
 
-    if (event.type === "text-delta" || event.type === "plan-delta") {
-      const scope = event.type === "plan-delta" ? "plan" : "message"
-      const itemId = `assistant-${scope}-${event.turnId ?? session.id}`
+    if (event.type === "text-delta") {
+      const itemId = `assistant-message-${event.turnId ?? session.id}`
       const existing = this.#snapshot.thread.find(
         (item) => item.id === itemId && item.kind === "assistant",
       )
@@ -620,6 +619,25 @@ export class DomovoiDaemon {
         body: event.delta,
         createdAt,
       })
+    }
+
+    if (event.type === "plan-delta") {
+      const artifactId = `plan-${session.id}-${event.turnId ?? "current"}`
+      const existing = this.#snapshot.artifacts.find((artifact) => artifact.id === artifactId)
+      if (existing) {
+        existing.content = `${existing.content ?? ""}${event.delta}`
+        existing.revision += 1
+      } else {
+        this.#snapshot.artifacts.push({
+          id: artifactId,
+          sessionId: session.id,
+          title: "Working plan",
+          type: "plan",
+          revision: 1,
+          mimeType: "text/markdown",
+          content: event.delta,
+        })
+      }
     }
 
     if (event.type === "command-output") {
