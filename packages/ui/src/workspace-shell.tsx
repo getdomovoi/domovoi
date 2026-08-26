@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import {
   BotIcon,
   CheckIcon,
@@ -7,13 +7,12 @@ import {
   CodeXmlIcon,
   FileDiffIcon,
   FileTextIcon,
-  GitBranchIcon,
+  FolderOpenIcon,
   LaptopIcon,
   MessageSquareTextIcon,
   MinusIcon,
   PanelLeftCloseIcon,
   PanelRightCloseIcon,
-  PlayIcon,
   SearchIcon,
   SendIcon,
   SquareIcon,
@@ -23,6 +22,7 @@ import {
 
 import type {
   ApprovalRequest,
+  ApprovalDecision,
   ClientKind,
   PermissionMode,
   Runtime,
@@ -34,6 +34,14 @@ import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./components/ui/dialog"
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -42,6 +50,8 @@ import {
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "./components/ui/field"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -51,9 +61,11 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Switch } from "./components/ui/switch"
+import { Textarea } from "./components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
+import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 
@@ -78,6 +90,14 @@ const statusClass: Record<SessionSummary["state"], string> = {
   failed: "bg-destructive",
 }
 
+const defaultRuntime: Runtime = {
+  provider: "codex",
+  model: "gpt-5.6-sol",
+  reasoning: "medium",
+  permissionMode: "build",
+  auto: false,
+}
+
 function WindowControls({ bridge }: { bridge: DesktopWindowBridge }) {
   if (bridge.platform === "darwin") return <div className="w-[64px]" aria-hidden="true" />
 
@@ -100,10 +120,12 @@ function AppBar({
   snapshot,
   connected,
   bridge,
+  onOpenProject,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
   bridge?: DesktopWindowBridge | undefined
+  onOpenProject: () => void
 }) {
   return (
     <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
@@ -112,7 +134,7 @@ function AppBar({
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
         <Separator orientation="vertical" className="mx-1 h-5" />
-        <Button variant="ghost" size="sm">
+        <Button variant="ghost" size="sm" onClick={onOpenProject}>
           {snapshot.project.name}
           <span className="font-machine text-[10px] text-faint">{snapshot.project.branch}</span>
           <ChevronDownIcon data-icon="inline-end" />
@@ -163,7 +185,15 @@ function SessionRow({ session, active }: { session: SessionSummary; active: bool
   )
 }
 
-function SessionsSidebar({ snapshot, onCollapse }: { snapshot: WorkspaceSnapshot; onCollapse: () => void }) {
+function SessionsSidebar({
+  snapshot,
+  onCollapse,
+  onNewSession,
+}: {
+  snapshot: WorkspaceSnapshot
+  onCollapse: () => void
+  onNewSession: () => void
+}) {
   const groups = useMemo(
     () => [
       { label: "Active", states: ["active"] },
@@ -182,7 +212,7 @@ function SessionsSidebar({ snapshot, onCollapse }: { snapshot: WorkspaceSnapshot
         </Button>
       </div>
       <div className="flex flex-col gap-2 px-3 pb-3">
-        <Button variant="outline" className="w-full justify-start">New session</Button>
+        <Button variant="outline" className="w-full justify-start" onClick={onNewSession}>New session</Button>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
           <Input className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
@@ -230,7 +260,7 @@ function ApprovalCard({
 }: {
   approval: ApprovalRequest
   onResolve: (
-    decision: "allow-once" | "always-project" | "deny" | "deny-explain",
+    decision: ApprovalDecision,
     explanation?: string,
   ) => void
 }) {
@@ -312,21 +342,188 @@ function ApprovalCard({
   )
 }
 
+type LauncherMode = "project" | "session" | null
+
+function LauncherDialog({
+  mode,
+  onOpenChange,
+  onOpenProject,
+  onCreateSession,
+}: {
+  mode: LauncherMode
+  onOpenChange: (open: boolean) => void
+  onOpenProject: (path: string) => Promise<void>
+  onCreateSession: (title: string, runtime: Runtime) => Promise<void>
+}) {
+  const [value, setValue] = useState("")
+  const [error, setError] = useState("")
+  const [pending, setPending] = useState(false)
+
+  useEffect(() => {
+    if (mode) {
+      setValue("")
+      setError("")
+    }
+  }, [mode])
+
+  const isProject = mode === "project"
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const input = value.trim()
+    if (!input || !mode || pending) return
+    setPending(true)
+    setError("")
+    try {
+      if (isProject) await onOpenProject(input)
+      else await onCreateSession(input, defaultRuntime)
+      onOpenChange(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Domovoi could not complete the request")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={mode !== null}
+      onOpenChange={(open) => {
+        if (!open && pending) return
+        onOpenChange(open)
+      }}
+    >
+      <DialogContent>
+        <form className="contents" onSubmit={(event) => void submit(event)}>
+          <DialogHeader>
+            <DialogTitle>{isProject ? "Open a project" : "Start a session"}</DialogTitle>
+            <DialogDescription>
+              {isProject
+                ? "Choose a local Git repository. Code stays on this machine."
+                : "Domovoi creates an isolated worktree before the first agent turn."}
+            </DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field data-invalid={Boolean(error)}>
+              <FieldLabel htmlFor="launcher-value">
+                {isProject ? "Repository path" : "Session goal"}
+              </FieldLabel>
+              <Input
+                id="launcher-value"
+                autoFocus
+                aria-invalid={Boolean(error)}
+                autoComplete="off"
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                placeholder={isProject ? "/home/you/projects/example" : "Describe what this session should accomplish"}
+              />
+              <FieldDescription>
+                {isProject ? "The daemon validates the repository before opening it." : "Runtime and permission controls remain editable in the session."}
+              </FieldDescription>
+              <FieldError>{error}</FieldError>
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={!value.trim() || pending}>
+              {isProject ? <FolderOpenIcon data-icon="inline-start" /> : <BotIcon data-icon="inline-start" />}
+              {pending ? "Working" : isProject ? "Open project" : "Create session"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function Thread({
   snapshot,
   onResolve,
   onSetRuntime,
+  onNewSession,
+  onSend,
+  onCheckpoint,
 }: {
   snapshot: WorkspaceSnapshot
   onResolve: (
     approvalId: string,
-    decision: "allow-once" | "always-project" | "deny" | "deny-explain",
+    decision: ApprovalDecision,
     explanation?: string,
-  ) => void
-  onSetRuntime: (runtime: Runtime) => void
+  ) => Promise<void>
+  onSetRuntime: (runtime: Runtime) => Promise<void>
+  onNewSession: () => void
+  onSend: (sessionId: string, prompt: string) => Promise<void>
+  onCheckpoint: (sessionId: string) => Promise<void>
 }) {
-  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
-  const approval = snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
+  const approval = active
+    ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
+    : undefined
+  const [prompt, setPrompt] = useState("")
+  const [pending, setPending] = useState(false)
+  const [sendError, setSendError] = useState("")
+
+  if (!active) {
+    return (
+      <main className="flex h-full min-w-0 bg-background">
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><BotIcon /></EmptyMedia>
+            <EmptyTitle>No session is open</EmptyTitle>
+            <EmptyDescription>Start a session to create an isolated worktree and talk to an agent.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button onClick={onNewSession}><BotIcon data-icon="inline-start" />New session</Button>
+          </EmptyContent>
+        </Empty>
+      </main>
+    )
+  }
+
+  const submitPrompt = async () => {
+    const nextPrompt = prompt.trim()
+    if (!nextPrompt || pending) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onSend(active.id, nextPrompt)
+      setPrompt("")
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const createCheckpoint = async () => {
+    if (pending) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onCheckpoint(active.id)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be created")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const updateRuntime = (runtime: Runtime) => {
+    setSendError("")
+    void onSetRuntime(runtime).catch((cause: unknown) => {
+      setSendError(cause instanceof Error ? cause.message : "The runtime could not be updated")
+    })
+  }
+
+  const resolveCurrentApproval = (
+    approvalId: string,
+    decision: ApprovalDecision,
+    explanation?: string,
+  ) => {
+    setSendError("")
+    void onResolve(approvalId, decision, explanation).catch((cause: unknown) => {
+      setSendError(cause instanceof Error ? cause.message : "The approval could not be resolved")
+    })
+  }
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
@@ -336,15 +533,18 @@ function Thread({
             {active.title}
           </h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 font-machine text-[10px] text-faint">
-            <span>wt-billing-idem</span><span>from main @ 8f5c1de</span><span>7 files</span>
-            <span className="text-success">42 pass</span><span className="text-destructive">1 fail</span>
+            {active.workspacePath ? <span>{active.workspacePath}</span> : null}
+            {active.baseCommit ? <span>from {snapshot.project.branch} @ {active.baseCommit.slice(0, 8)}</span> : null}
+            <span>{active.changedFiles} files</span>
+            <span className="text-success">{active.testsPassed} pass</span>
+            {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
           </div>
         </div>
-        <RuntimeControls runtime={active.runtime} onChange={onSetRuntime} />
+        <RuntimeControls runtime={active.runtime} onChange={updateRuntime} />
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
-          {snapshot.thread.map((item) => {
+          {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
             if (item.kind === "checkpoint") {
               return <div key={item.id} className="self-center rounded-full border bg-card px-3 py-1 font-machine text-[9px] text-faint">Checkpoint · {item.label}</div>
             }
@@ -357,17 +557,37 @@ function Thread({
             if (item.kind === "receipt") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><CheckIcon /><AlertTitle>{item.operation}: {item.decision}</AlertTitle><AlertDescription>Checkpoint {item.checkpoint} · decided from {item.client}{item.explanation ? ` · ${item.explanation}` : ""}</AlertDescription></Alert>
             }
+            if (item.kind === "tool") {
+              return <Alert key={item.id}><TerminalSquareIcon /><AlertTitle>{item.title}</AlertTitle><AlertDescription><Badge variant="outline">{item.status}</Badge>{item.output ? <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-machine text-[10px]">{item.output}</pre> : null}</AlertDescription></Alert>
+            }
             return <div key={item.id} className="flex max-w-2xl gap-3 text-[13px] leading-relaxed"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><p className="m-0">{item.body}</p></div>
           })}
-          {approval ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => onResolve(approval.id, decision, explanation)} /> : null}
+          {approval ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
+        {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         <div className="mx-auto flex max-w-[620px] flex-col gap-2 rounded-xl border bg-card p-3">
-          <textarea aria-label="Message" rows={2} className="min-h-12 resize-none bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" placeholder="Message the agent" />
+          <Textarea
+            aria-label="Message"
+            rows={2}
+            className="min-h-12 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+            placeholder="Message the agent"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault()
+                void submitPrompt()
+              }
+            }}
+          />
           <div className="flex items-center justify-between gap-2">
-            <Badge variant="machine">{snapshot.machine.name}</Badge>
-            <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message"><SendIcon /></Button></div>
+            <div className="flex items-center gap-2">
+              <Badge variant="machine">{snapshot.machine.name}</Badge>
+              <Button variant="ghost" size="sm" disabled={pending} onClick={() => void createCheckpoint()}>Checkpoint</Button>
+            </div>
+            <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
       </div>
@@ -388,9 +608,7 @@ function RuntimeControls({ runtime, onChange }: { runtime: Runtime; onChange: (r
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>Provider and model</DropdownMenuLabel>
           <DropdownMenuGroup>
-            <DropdownMenuItem onSelect={() => onChange({ ...runtime, provider: "claude-code", model: "sonnet-4.6" })}><CheckIcon />Claude Code · sonnet-4.6</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onChange({ ...runtime, provider: "codex", model: "gpt-5.3-codex" })}>Codex CLI · gpt-5.3-codex</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onChange({ ...runtime, provider: "opencode", model: "glm-4.7" })}>OpenCode · glm-4.7</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onChange({ ...runtime, provider: "codex", model: "gpt-5.6-sol" })}><CheckIcon />Codex CLI · gpt-5.6-sol</DropdownMenuItem>
           </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -408,7 +626,25 @@ function RuntimeControls({ runtime, onChange }: { runtime: Runtime; onChange: (r
   )
 }
 
-function ArtifactDock({ snapshot, onCollapse, defaultTab }: { snapshot: WorkspaceSnapshot; onCollapse: () => void; defaultTab: "changes" | "preview" }) {
+function ArtifactDock({
+  snapshot,
+  onCollapse,
+  defaultTab,
+  rpcUrl,
+}: {
+  snapshot: WorkspaceSnapshot
+  onCollapse: () => void
+  defaultTab: "changes" | "preview"
+  rpcUrl: string
+}) {
+  const sessionArtifacts = snapshot.artifacts.filter(
+    (artifact) => artifact.sessionId === snapshot.activeSessionId,
+  )
+  const preview = sessionArtifacts.findLast(
+    (artifact) => artifact.type === "preview" && artifact.path && artifact.mimeType === "text/html",
+  )
+  const diff = sessionArtifacts.findLast((artifact) => artifact.type === "diff")
+
   return (
     <aside className="flex h-full min-w-0 flex-col bg-sidebar">
       <Tabs defaultValue={defaultTab} className="h-full gap-0">
@@ -424,22 +660,30 @@ function ArtifactDock({ snapshot, onCollapse, defaultTab }: { snapshot: Workspac
           <Button variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
-          <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
-            <div className="flex h-10 items-center justify-between border-b px-3">
-              <div><p className="m-0 text-[11px] font-medium">Replay operations preview</p><p className="m-0 font-machine text-[9px] text-faint">revision 2 · sandboxed</p></div>
-              <Badge variant="success">Live</Badge>
-            </div>
-            <div className="flex flex-1 flex-col gap-5 p-5">
-              <div><h2 className="m-0 text-xl font-semibold tracking-[-0.02em]">Idempotent webhook migration</h2><p className="mt-2 max-w-[58ch] text-[11px] text-muted-foreground">Replay-safe handling with an explicit production gate.</p></div>
-              <div className="grid grid-cols-2 gap-2">
-                {["Persist event key", "Claim before work", "Return cached result", "Audit replay"].map((step, index) => <div key={step} className="rounded-lg bg-accent p-3"><span className="font-machine text-[9px] text-primary">0{index + 1}</span><p className="mb-0 mt-2 text-[11px] font-medium">{step}</p></div>)}
+          {preview ? (
+            <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
+              <div className="flex h-10 items-center justify-between border-b px-3">
+                <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
+                <Badge variant="success">Live</Badge>
               </div>
-              <div className="rounded-lg bg-code p-3 font-machine text-[9px] leading-relaxed text-muted-foreground"><span className="text-success">POST</span> /webhooks/stripe<br />idempotency_key → replay_events<br /><span className="text-warning">migration waits for approval</span></div>
+              <iframe
+                className="min-h-0 flex-1 border-0 bg-background"
+                referrerPolicy="no-referrer"
+                sandbox="allow-scripts"
+                src={artifactUrlFor(rpcUrl, preview.id)}
+                title={preview.title}
+              />
             </div>
-          </div>
+          ) : (
+            <Empty className="min-h-full border">
+              <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
+            </Empty>
+          )}
         </TabsContent>
         <TabsContent value="plan" className="p-4 text-muted-foreground">Four steps · one migration · one hard gate.</TabsContent>
-        <TabsContent value="changes" className="p-4 font-machine text-[11px] text-muted-foreground">7 changed files · +184 −36</TabsContent>
+        <TabsContent value="changes" className="min-h-0 overflow-auto p-4 font-machine text-[11px] text-muted-foreground">
+          {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
+        </TabsContent>
         <TabsContent value="comments" className="p-4 text-muted-foreground">2 open annotations</TabsContent>
         <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project.path}</TabsContent>
@@ -470,8 +714,18 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
 }
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", windowBridge }: WorkspaceShellProps) {
-  const { connected, resolveApproval, setRuntime, snapshot } = useWorkspace(rpcUrl, clientKind)
+  const {
+    connected,
+    createCheckpoint,
+    createSession,
+    openProject,
+    resolveApproval,
+    sendMessage,
+    setRuntime,
+    snapshot,
+  } = useWorkspace(rpcUrl, clientKind)
   const shellRef = useRef<HTMLDivElement>(null)
+  const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
@@ -508,7 +762,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} />
+        <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} />
         <div className="flex min-h-0 flex-1">
           {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onExpand={() => setSidebarCollapsed(false)} /> : null}
           <ResizablePanelGroup
@@ -520,13 +774,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
             }}
           >
-            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} /></ResizablePanel><ResizableHandle /></> : null}
-            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={(approvalId, decision, explanation) => void resolveApproval(approvalId, decision, explanation)} onSetRuntime={(runtime) => void setRuntime(snapshot.activeSessionId, runtime)} /></ResizablePanel>
-            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} /></ResizablePanel></> : null}
+            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onNewSession={() => setLauncherMode("session")} /></ResizablePanel><ResizableHandle /></> : null}
+            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode("session")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
+            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} /></ResizablePanel></> : null}
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
         </div>
         {!connected ? <div className="absolute bottom-3 left-3 rounded-md border border-destructive bg-popover px-3 py-1.5 font-machine text-[10px] text-destructive shadow-[var(--shadow-md)]">Daemon offline · showing local fixture</div> : null}
+        <LauncherDialog
+          mode={launcherMode}
+          onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
+          onOpenProject={openProject}
+          onCreateSession={createSession}
+        />
       </div>
     </TooltipProvider>
   )

@@ -4,6 +4,7 @@ import {
   rpcResponseSchema,
   workspaceSnapshotSchema,
   type ClientKind,
+  type ApprovalDecision,
   type RpcMethod,
   type Runtime,
   type WorkspaceSnapshot,
@@ -68,7 +69,7 @@ export class DomovoiClient extends EventTarget {
 
   resolveApproval(
     approvalId: string,
-    decision: "allow-once" | "always-project" | "deny" | "deny-explain",
+    decision: ApprovalDecision,
     explanation?: string,
   ): Promise<WorkspaceSnapshot> {
     return this.request("approval.resolve", {
@@ -81,6 +82,26 @@ export class DomovoiClient extends EventTarget {
 
   setRuntime(sessionId: string, runtime: Runtime): Promise<WorkspaceSnapshot> {
     return this.request("session.setRuntime", { sessionId, runtime, client: this.kind })
+  }
+
+  openProject(path: string): Promise<WorkspaceSnapshot> {
+    return this.request("project.open", { path, client: this.kind })
+  }
+
+  createSession(title: string, runtime: Runtime): Promise<WorkspaceSnapshot> {
+    return this.request("session.create", { title, runtime, client: this.kind })
+  }
+
+  sendMessage(sessionId: string, prompt: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.send", { sessionId, prompt, client: this.kind })
+  }
+
+  createCheckpoint(sessionId: string, label?: string): Promise<WorkspaceSnapshot> {
+    return this.request("checkpoint.create", {
+      sessionId,
+      client: this.kind,
+      ...(label ? { label } : {}),
+    })
   }
 
   #receive(raw: string): void {

@@ -8,6 +8,7 @@
     "./styles.css": "./src/styles.css"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
     "@vitejs/plugin-react": "^5.0.2",
     "tailwindcss": "^4.1.12",
     "typescript": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }
