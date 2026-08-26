@@ -1,0 +1,77 @@
+import { z } from "zod"
+
+import { clientKindSchema, runtimeSchema, workspaceSnapshotSchema } from "./schema.js"
+
+export const requestIdSchema = z.union([z.string(), z.number()])
+
+export const rpcRequestSchema = z.object({
+  jsonrpc: z.literal("2.0"),
+  id: requestIdSchema,
+  method: z.string().min(1),
+  params: z.unknown().optional(),
+})
+
+export const rpcResponseSchema = z.object({
+  jsonrpc: z.literal("2.0"),
+  id: requestIdSchema,
+  result: z.unknown().optional(),
+  error: z
+    .object({
+      code: z.number().int(),
+      message: z.string(),
+      data: z.unknown().optional(),
+    })
+    .optional(),
+})
+
+export const rpcNotificationSchema = z.object({
+  jsonrpc: z.literal("2.0"),
+  method: z.string().min(1),
+  params: z.unknown().optional(),
+})
+
+export const helloParamsSchema = z.object({
+  client: clientKindSchema,
+  clientVersion: z.string().min(1),
+})
+
+export const approvalResolveParamsSchema = z
+  .object({
+    approvalId: z.string().min(1),
+    decision: z.enum(["allow-once", "always-project", "deny", "deny-explain"]),
+    client: clientKindSchema,
+    explanation: z.string().trim().min(1).optional(),
+  })
+  .superRefine((params, context) => {
+    if (params.decision === "deny-explain" && !params.explanation) {
+      context.addIssue({
+        code: "custom",
+        message: "An explanation is required for deny-explain",
+        path: ["explanation"],
+      })
+    }
+  })
+
+export const sessionSetRuntimeParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  runtime: runtimeSchema,
+  client: clientKindSchema,
+})
+
+export const rpcMethods = {
+  "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
+  "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  "approval.resolve": {
+    params: approvalResolveParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+  "session.setRuntime": {
+    params: sessionSetRuntimeParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+} as const
+
+export type RpcMethod = keyof typeof rpcMethods
+export type RpcRequest = z.infer<typeof rpcRequestSchema>
+export type RpcResponse = z.infer<typeof rpcResponseSchema>
+export type RpcNotification = z.infer<typeof rpcNotificationSchema>
