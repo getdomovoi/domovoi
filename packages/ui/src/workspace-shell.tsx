@@ -9,6 +9,7 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   LaptopIcon,
+  MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MinusIcon,
   PanelLeftCloseIcon,
@@ -29,6 +30,8 @@ import type {
   Runtime,
   SessionSummary,
   WorkspaceSnapshot,
+  PreviewBridgePickerMessage,
+  PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -79,6 +82,7 @@ import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
+import { previewSelectionFor } from "./preview-bridge"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -669,6 +673,7 @@ function ArtifactDock({
   rpcUrl,
   onReplyToAnnotation,
   onSetAnnotationStatus,
+  onCreateAnnotation,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
@@ -676,6 +681,12 @@ function ArtifactDock({
   rpcUrl: string
   onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
   onSetAnnotationStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
+  onCreateAnnotation: (input: {
+    sessionId: string
+    artifactId: string
+    anchor: Annotation["anchor"]
+    body: string
+  }) => Promise<void>
 }) {
   const sessionArtifacts = snapshot.artifacts.filter(
     (artifact) => artifact.sessionId === snapshot.activeSessionId,
@@ -686,6 +697,76 @@ function ArtifactDock({
   const diff = sessionArtifacts.findLast((artifact) => artifact.type === "diff")
   const annotations = annotationsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
+  const previewFrameRef = useRef<HTMLIFrameElement>(null)
+  const bridgeChannel = useMemo(
+    () => `preview_${crypto.randomUUID().replaceAll("-", "")}`,
+    [preview?.id],
+  )
+  const [pickerActive, setPickerActive] = useState(false)
+  const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
+  const [comment, setComment] = useState("")
+  const [annotationPending, setAnnotationPending] = useState(false)
+  const [annotationError, setAnnotationError] = useState("")
+
+  const postPickerState = (active: boolean) => {
+    const message: PreviewBridgePickerMessage = {
+      type: "domovoi.preview.picker",
+      channel: bridgeChannel,
+      active,
+    }
+    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
+  }
+
+  useEffect(() => {
+    const receiveSelection = (event: MessageEvent<unknown>) => {
+      if (!pickerActive || !preview || event.source !== previewFrameRef.current?.contentWindow) return
+      const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
+      if (!nextSelection) return
+      postPickerState(false)
+      setPickerActive(false)
+      setSelection(nextSelection)
+      setComment("")
+      setAnnotationError("")
+    }
+    window.addEventListener("message", receiveSelection)
+    return () => window.removeEventListener("message", receiveSelection)
+  }, [bridgeChannel, pickerActive, preview?.id])
+
+  useEffect(() => {
+    setPickerActive(false)
+    setSelection(null)
+    setComment("")
+    setAnnotationError("")
+  }, [preview?.id])
+
+  const togglePicker = () => {
+    const active = !pickerActive
+    setPickerActive(active)
+    setAnnotationError("")
+    postPickerState(active)
+  }
+
+  const saveAnnotation = async () => {
+    const body = comment.trim()
+    const sessionId = snapshot.activeSessionId
+    if (!body || !selection || !sessionId || annotationPending) return
+    setAnnotationPending(true)
+    setAnnotationError("")
+    try {
+      await onCreateAnnotation({
+        sessionId,
+        artifactId: selection.artifactId,
+        anchor: selection.anchor,
+        body,
+      })
+      setSelection(null)
+      setComment("")
+    } catch (cause) {
+      setAnnotationError(cause instanceof Error ? cause.message : "The annotation could not be saved")
+    } finally {
+      setAnnotationPending(false)
+    }
+  }
 
   return (
     <aside className="flex h-full min-w-0 flex-col bg-sidebar">
@@ -709,14 +790,27 @@ function ArtifactDock({
             <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
               <div className="flex h-10 items-center justify-between border-b px-3">
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
-                <Badge variant="success">Live</Badge>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant={pickerActive ? "secondary" : "outline"}
+                    size="xs"
+                    aria-pressed={pickerActive}
+                    onClick={togglePicker}
+                  >
+                    <MessageSquarePlusIcon />
+                    {pickerActive ? "Select element" : "Annotate"}
+                  </Button>
+                  <Badge variant="success">Live</Badge>
+                </div>
               </div>
               <iframe
+                ref={previewFrameRef}
                 className="min-h-0 flex-1 border-0 bg-background"
                 referrerPolicy="no-referrer"
                 sandbox="allow-scripts"
-                src={artifactUrlFor(rpcUrl, preview.id)}
+                src={artifactUrlFor(rpcUrl, preview.id, bridgeChannel)}
                 title={preview.title}
+                onLoad={() => postPickerState(pickerActive)}
               />
             </div>
           ) : (
@@ -739,6 +833,60 @@ function ArtifactDock({
         <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
+      <Dialog
+        open={selection !== null}
+        onOpenChange={(open) => {
+          if (open || annotationPending) return
+          setSelection(null)
+          setComment("")
+          setAnnotationError("")
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Annotate preview</DialogTitle>
+            <DialogDescription className="break-words">
+              {selection?.label ?? "Selected preview element"}
+            </DialogDescription>
+          </DialogHeader>
+          {annotationError ? (
+            <Alert variant="destructive" aria-live="polite">
+              <CircleStopIcon />
+              <AlertTitle>Annotation failed</AlertTitle>
+              <AlertDescription>{annotationError}</AlertDescription>
+            </Alert>
+          ) : null}
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="preview-annotation">Comment</FieldLabel>
+              <Textarea
+                id="preview-annotation"
+                value={comment}
+                rows={4}
+                autoFocus
+                disabled={annotationPending}
+                placeholder="Describe what should change or what needs review"
+                onChange={(event) => setComment(event.target.value)}
+              />
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={annotationPending}
+              onClick={() => setSelection(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={!comment.trim() || annotationPending}
+              onClick={() => void saveAnnotation()}
+            >
+              {annotationPending ? "Saving annotation" : "Save annotation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </aside>
   )
 }
@@ -922,6 +1070,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     activateSession,
     connected,
     createCheckpoint,
+    createAnnotation,
     createSession,
     openProject,
     resolveApproval,
@@ -990,7 +1139,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           >
             {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
             <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
-            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
         </div>

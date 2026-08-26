@@ -23,6 +23,7 @@ import {
   type AgentEvent,
 } from "./codex.js"
 import { GitWorkspaceService, type WorkspaceService } from "./workspace.js"
+import { injectPreviewBridge, validPreviewBridgeChannel } from "./preview-bridge.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -196,8 +197,11 @@ export class DomovoiDaemon {
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
     let artifactId: string
+    let bridgeChannel: string | undefined
     try {
-      artifactId = decodeURIComponent(url.slice("/artifacts/".length).split("?", 1)[0] ?? "")
+      const requestUrl = new URL(url, "http://domovoi.local")
+      artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
+      bridgeChannel = validPreviewBridgeChannel(requestUrl.searchParams.get("bridge"))
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
@@ -220,7 +224,7 @@ export class DomovoiDaemon {
     }
 
     try {
-      const content = await readFile(path)
+      const content = await readFile(path, "utf8")
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors http://127.0.0.1:5178 http://localhost:5178 file:",
@@ -228,7 +232,7 @@ export class DomovoiDaemon {
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
       })
-      response.end(content)
+      response.end(bridgeChannel ? injectPreviewBridge(content, artifact.id, bridgeChannel) : content)
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
