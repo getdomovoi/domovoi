@@ -97,18 +97,21 @@ export const demoWorkspace: WorkspaceSnapshot = {
   thread: [
     {
       id: "thread-checkpoint",
+      sessionId: "session-billing",
       kind: "checkpoint",
       label: "ckpt_7f21 · before provider handoff · 12:41",
       createdAt: "2026-08-25T21:41:00.000Z",
     },
     {
       id: "thread-user",
+      sessionId: "session-billing",
       kind: "user",
       body: "The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything.",
       createdAt: "2026-08-25T21:42:00.000Z",
     },
     {
       id: "thread-handoff",
+      sessionId: "session-billing",
       kind: "system",
       body: "Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6.",
       detail: "Thread, plan, worktree, diff, test results, and 2 open annotations carried over. Hidden reasoning and provider caches did not transfer.",
@@ -116,6 +119,7 @@ export const demoWorkspace: WorkspaceSnapshot = {
     },
     {
       id: "thread-assistant",
+      sessionId: "session-billing",
       kind: "assistant",
       body: "Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask.",
       createdAt: "2026-08-25T21:50:00.000Z",

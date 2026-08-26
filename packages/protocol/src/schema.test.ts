@@ -22,6 +22,18 @@ describe("workspace protocol", () => {
     expect(workspaceSnapshotSchema.safeParse(broken).success).toBe(false)
   })
 
+  it("requires non-empty active and thread session identifiers", () => {
+    const emptyActive = structuredClone(demoWorkspace)
+    emptyActive.activeSessionId = ""
+    expect(workspaceSnapshotSchema.safeParse(emptyActive).success).toBe(false)
+
+    const unscopedThread = structuredClone(demoWorkspace) as unknown as {
+      thread: Array<Record<string, unknown>>
+    }
+    delete unscopedThread.thread[0]!.sessionId
+    expect(workspaceSnapshotSchema.safeParse(unscopedThread).success).toBe(false)
+  })
+
   it("requires an explanation for deny-explain decisions", () => {
     expect(
       approvalResolveParamsSchema.safeParse({

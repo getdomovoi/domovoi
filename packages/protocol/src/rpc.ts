@@ -1,6 +1,11 @@
 import { z } from "zod"
 
-import { clientKindSchema, runtimeSchema, workspaceSnapshotSchema } from "./schema.js"
+import {
+  approvalDecisionSchema,
+  clientKindSchema,
+  runtimeSchema,
+  workspaceSnapshotSchema,
+} from "./schema.js"
 
 export const requestIdSchema = z.union([z.string(), z.number()])
 
@@ -38,7 +43,7 @@ export const helloParamsSchema = z.object({
 export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
-    decision: z.enum(["allow-once", "always-project", "deny", "deny-explain"]),
+    decision: approvalDecisionSchema,
     client: clientKindSchema,
     explanation: z.string().trim().min(1).optional(),
   })

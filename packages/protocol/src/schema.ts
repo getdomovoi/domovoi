@@ -7,6 +7,12 @@ export const permissionModeSchema = z.enum(["ask", "plan", "build"])
 export const sessionStateSchema = z.enum(["active", "waiting", "idle", "done", "failed"])
 export const connectionKindSchema = z.enum(["local", "lan", "tailnet", "ssh", "relay", "wsl"])
 export const approvalRiskSchema = z.enum(["normal", "hard-gate"])
+export const approvalDecisionSchema = z.enum([
+  "allow-once",
+  "always-project",
+  "deny",
+  "deny-explain",
+])
 
 export const runtimeSchema = z.object({
   provider: z.string().min(1),
@@ -80,18 +86,21 @@ export const approvalRuleSchema = z.object({
 export const threadItemSchema = z.discriminatedUnion("kind", [
   z.object({
     id: z.string(),
+    sessionId: z.string().min(1),
     kind: z.literal("checkpoint"),
     label: z.string(),
     createdAt: z.string().datetime(),
   }),
   z.object({
     id: z.string(),
+    sessionId: z.string().min(1),
     kind: z.literal("user"),
     body: z.string(),
     createdAt: z.string().datetime(),
   }),
   z.object({
     id: z.string(),
+    sessionId: z.string().min(1),
     kind: z.literal("system"),
     body: z.string(),
     detail: z.string().optional(),
@@ -99,14 +108,16 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     id: z.string(),
+    sessionId: z.string().min(1),
     kind: z.literal("assistant"),
     body: z.string(),
     createdAt: z.string().datetime(),
   }),
   z.object({
     id: z.string(),
+    sessionId: z.string().min(1),
     kind: z.literal("receipt"),
-    decision: z.enum(["allow-once", "always-project", "deny", "deny-explain"]),
+    decision: approvalDecisionSchema,
     operation: z.string(),
     checkpoint: z.string(),
     client: clientKindSchema,
@@ -115,6 +126,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     id: z.string(),
+    sessionId: z.string().min(1),
     kind: z.literal("tool"),
     tool: z.enum(["command", "file-change"]),
     status: z.enum(["running", "completed", "failed", "declined"]),
@@ -140,7 +152,7 @@ export const workspaceSnapshotSchema = z.object({
   machine: machineSchema,
   project: projectSchema,
   sessions: z.array(sessionSummarySchema),
-  activeSessionId: z.string(),
+  activeSessionId: z.string().min(1).nullable(),
   approvals: z.array(approvalRequestSchema),
   approvalRules: z.array(approvalRuleSchema),
   thread: z.array(threadItemSchema),
@@ -154,6 +166,7 @@ export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>
+export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>
 export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
