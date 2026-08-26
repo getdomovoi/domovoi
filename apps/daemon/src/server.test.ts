@@ -560,9 +560,11 @@ describe("DomovoiDaemon", () => {
   })
 
   it("rejects an unexplained denial and records a supplied explanation", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.activeSessionId = "session-onboarding"
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -608,6 +610,10 @@ describe("DomovoiDaemon", () => {
     await expect(explainedResponse).resolves.toMatchObject({
       result: {
         approvals: [],
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ id: "session-billing", state: "idle" }),
+          expect.objectContaining({ id: "session-onboarding", state: "active" }),
+        ]),
         thread: expect.arrayContaining([
           expect.objectContaining({
             kind: "receipt",
