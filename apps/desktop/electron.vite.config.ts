@@ -16,6 +16,10 @@ export default defineConfig({
     resolve: {
       alias: {
         "@": path.resolve(import.meta.dirname, "../../packages/ui/src"),
+        "@getdomovoi/protocol": path.resolve(
+          import.meta.dirname,
+          "../../packages/protocol/src/index.ts",
+        ),
       },
     },
   },
