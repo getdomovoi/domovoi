@@ -21,12 +21,13 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsup src/index.ts src/server.ts --format esm --dts --clean",
+    "build": "tsup",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
-    "test": "vitest run",
+    "test": "vitest run && pnpm test:dist",
+    "test:dist": "pnpm build && node test-dist.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
