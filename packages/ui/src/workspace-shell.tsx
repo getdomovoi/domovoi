@@ -83,6 +83,7 @@ import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { previewSelectionFor } from "./preview-bridge"
+import { commandsForActiveSession, type CommandTranscript } from "./commands"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -696,6 +697,7 @@ function ArtifactDock({
   )
   const diff = sessionArtifacts.findLast((artifact) => artifact.type === "diff")
   const annotations = annotationsForActiveSession(snapshot)
+  const commands = commandsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const bridgeChannel = useMemo(
@@ -830,7 +832,9 @@ function ArtifactDock({
             onSetStatus={onSetAnnotationStatus}
           />
         </TabsContent>
-        <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
+        <TabsContent value="terminal" className="min-h-0 bg-code">
+          <TerminalTranscript commands={commands} />
+        </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
       <Dialog
@@ -888,6 +892,54 @@ function ArtifactDock({
         </DialogContent>
       </Dialog>
     </aside>
+  )
+}
+
+function TerminalTranscript({ commands }: { commands: CommandTranscript[] }) {
+  if (!commands.length) {
+    return (
+      <Empty className="min-h-full border-0 text-muted-foreground">
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
+          <EmptyTitle>No commands yet</EmptyTitle>
+          <EmptyDescription>Agent command output appears here as it runs.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
+  }
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="font-machine text-[11px] text-muted-foreground">
+        {commands.map((command) => (
+          <section key={command.id} className="border-b border-border/70 px-4 py-3 last:border-b-0">
+            <div className="flex min-w-0 items-start justify-between gap-3">
+              <p className="m-0 min-w-0 break-words text-foreground">
+                <span className="mr-2 text-primary">$</span>{command.title}
+              </p>
+              <Badge
+                variant={command.status === "completed"
+                  ? "success"
+                  : command.status === "failed" || command.status === "declined"
+                    ? "destructive"
+                    : "warning"}
+              >
+                {command.status}
+              </Badge>
+            </div>
+            {command.output ? (
+              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed">
+                {command.output}
+              </pre>
+            ) : (
+              <p className="mt-2 text-[10px] text-faint">
+                {command.status === "running" ? "Waiting for output…" : "No output recorded."}
+              </p>
+            )}
+          </section>
+        ))}
+      </div>
+    </ScrollArea>
   )
 }
 
