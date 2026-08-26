@@ -62,6 +62,7 @@ export class DomovoiDaemon {
   #agentConnection: Promise<void> | undefined
   #providerModels: ProviderModel[] | undefined
   #providerModelsRequest: Promise<ProviderModel[]> | undefined
+  #loadedAgentThreads = new Set<string>()
   #unsubscribeAgent: () => void
   #mutationQueue = Promise.resolve()
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
@@ -610,6 +611,7 @@ export class DomovoiDaemon {
           providerThreadId,
           baseCommit: workspace.baseCommit,
         })
+        this.#loadedAgentThreads.add(providerThreadId)
         this.#snapshot.activeSessionId = sessionId
         this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
@@ -630,6 +632,15 @@ export class DomovoiDaemon {
           return
         }
         const createdAt = new Date().toISOString()
+        await this.#ensureAgentConnected()
+        if (!this.#loadedAgentThreads.has(session.providerThreadId)) {
+          await withTimeout(
+            this.#agent.resumeThread(session.providerThreadId),
+            this.#agentTimeoutMs,
+            "Agent thread resume timed out",
+          )
+          this.#loadedAgentThreads.add(session.providerThreadId)
+        }
         const turnId = await withTimeout(
           this.#agent.startTurn({
             threadId: session.providerThreadId,
@@ -981,6 +992,7 @@ export class DomovoiDaemon {
           errors.push(error)
           console.error("Domovoi could not stop a provider thread", error)
         }
+        this.#loadedAgentThreads.delete(session.providerThreadId)
       }
       if (session.workspacePath) {
         try {

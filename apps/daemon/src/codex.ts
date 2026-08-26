@@ -52,6 +52,7 @@ export interface AgentAdapter {
   connect(): Promise<void>
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
+  resumeThread(threadId: string): Promise<void>
   stopThread(threadId: string): Promise<void>
   interruptTurn(threadId: string, turnId: string): Promise<void>
   startTurn(input: {
@@ -224,6 +225,15 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
+  }
+
+  async resumeThread(threadId: string): Promise<void> {
+    const result = await this.#request("thread/resume", { threadId }) as {
+      thread?: { id?: string }
+    }
+    if (result.thread?.id !== threadId) {
+      throw new Error("Codex did not resume the requested thread")
+    }
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
