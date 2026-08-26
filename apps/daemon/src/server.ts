@@ -350,6 +350,7 @@ export class DomovoiDaemon {
         this.#snapshot.approvalRules = []
         this.#snapshot.thread = []
         this.#snapshot.artifacts = []
+        this.#snapshot.annotations = []
         changed = true
       }
 

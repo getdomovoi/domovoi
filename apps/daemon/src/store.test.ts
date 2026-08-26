@@ -47,7 +47,9 @@ describe("SqliteWorkspaceStore", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
     const databasePath = join(scratch, "state.sqlite")
-    const legacy = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const legacySnapshot = structuredClone(demoWorkspace)
+    legacySnapshot.annotations = []
+    const legacy = new SqliteWorkspaceStore(databasePath, legacySnapshot)
     legacy.close()
 
     const empty = createEmptyWorkspace({
