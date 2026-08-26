@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { ApprovalDecision, ClientKind, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { ApprovalDecision, ClientKind, ProviderModel, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, getDemoWorkspace } from "./client"
 
@@ -95,11 +95,18 @@ export function useWorkspace(url: string, kind: ClientKind) {
     setSnapshot(await client.createCheckpoint(sessionId, label))
   }, [])
 
+  const listModels = useCallback(async (provider: "codex"): Promise<ProviderModel[]> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.listModels(provider)
+  }, [])
+
   return {
     activateSession,
     connected,
     createCheckpoint,
     createSession,
+    listModels,
     openProject,
     resolveApproval,
     sendMessage,

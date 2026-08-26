@@ -6,6 +6,8 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   projectOpenParamsSchema,
+  providerModelSchema,
+  runtimeModelsParamsSchema,
   sessionActivateParamsSchema,
   sessionCreateParamsSchema,
   sessionSendParamsSchema,
@@ -74,6 +76,37 @@ describe("workspace protocol", () => {
       path: "/code/domovoi",
       client: "desktop",
     })
+    expect(runtimeModelsParamsSchema.parse({
+      provider: "codex",
+      client: "desktop",
+    }).provider).toBe("codex")
+    expect(providerModelSchema.parse({
+      provider: "codex",
+      id: "gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      description: "Coding model",
+      supportedReasoningEfforts: ["none", "medium", "xhigh", "max"],
+      defaultReasoningEffort: "xhigh",
+      isDefault: true,
+    }).id).toBe("gpt-5.6-sol")
+    expect(providerModelSchema.safeParse({
+      provider: "codex",
+      id: "gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      description: "Coding model",
+      supportedReasoningEfforts: ["   "],
+      defaultReasoningEffort: "medium",
+      isDefault: true,
+    }).success).toBe(false)
+    expect(providerModelSchema.safeParse({
+      provider: "codex",
+      id: "gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      description: "Coding model",
+      supportedReasoningEfforts: ["low", "medium"],
+      defaultReasoningEffort: "high",
+      isDefault: true,
+    }).success).toBe(false)
     expect(sessionCreateParamsSchema.parse({
       title: "Add persistence",
       runtime: demoWorkspace.sessions[0]!.runtime,

@@ -129,4 +129,37 @@ describe("DomovoiClient", () => {
     await expect(Promise.all([first, second])).resolves.toEqual([demoWorkspace, demoWorkspace])
     client.disconnect()
   })
+
+  it("lists provider models without parsing them as workspace state", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const listing = client.listModels("codex")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "runtime.models",
+      params: { provider: "codex", client: "desktop" },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: [{
+        provider: "codex",
+        id: "gpt-5.6-sol",
+        displayName: "GPT-5.6 Sol",
+        description: "Coding model",
+        supportedReasoningEfforts: ["medium", "high"],
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      }],
+    })
+
+    await expect(listing).resolves.toEqual([
+      expect.objectContaining({ id: "gpt-5.6-sol", provider: "codex" }),
+    ])
+    client.disconnect()
+  })
 })

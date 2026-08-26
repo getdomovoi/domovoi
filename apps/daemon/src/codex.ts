@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
 
-import type { ApprovalDecision, Runtime } from "@getdomovoi/protocol"
+import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 export type JsonRpcMessage = {
   id?: number
@@ -50,6 +50,7 @@ export type AgentEvent =
 
 export interface AgentAdapter {
   connect(): Promise<void>
+  listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
   stopThread(threadId: string): Promise<void>
   startTurn(input: {
@@ -173,6 +174,51 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const threadId = result.thread?.id
     if (!threadId) throw new Error("Codex did not return a thread id")
     return threadId
+  }
+
+  async listModels(): Promise<ProviderModel[]> {
+    const models: ProviderModel[] = []
+    let cursor: string | null = null
+    do {
+      const result = await this.#request("model/list", {
+        includeHidden: false,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      }) as {
+        data?: Array<{
+          id?: string
+          model?: string
+          displayName?: string
+          description?: string
+          hidden?: boolean
+          supportedReasoningEfforts?: Array<{ reasoningEffort?: string }>
+          defaultReasoningEffort?: string
+          isDefault?: boolean
+        }>
+        nextCursor?: string | null
+      }
+      for (const candidate of result.data ?? []) {
+        const id = candidate.model ?? candidate.id
+        if (!id || !candidate.displayName || candidate.hidden) continue
+        const supportedReasoningEfforts = (candidate.supportedReasoningEfforts ?? [])
+          .map((option) => option.reasoningEffort)
+          .filter((effort): effort is string => typeof effort === "string" && effort.length > 0)
+        const defaultReasoningEffort = candidate.defaultReasoningEffort?.length
+          ? candidate.defaultReasoningEffort
+          : supportedReasoningEfforts[0] ?? "medium"
+        models.push({
+          provider: "codex",
+          id,
+          displayName: candidate.displayName,
+          description: candidate.description ?? "",
+          supportedReasoningEfforts,
+          defaultReasoningEffort,
+          isDefault: candidate.isDefault ?? false,
+        })
+      }
+      cursor = result.nextCursor ?? null
+    } while (cursor)
+    return models
   }
 
   async stopThread(threadId: string): Promise<void> {

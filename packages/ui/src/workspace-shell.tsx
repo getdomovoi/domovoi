@@ -25,6 +25,7 @@ import type {
   ApprovalDecision,
   ClientKind,
   PermissionMode,
+  ProviderModel,
   Runtime,
   SessionSummary,
   WorkspaceSnapshot,
@@ -68,6 +69,7 @@ import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
+import { reasoningOptionsFor, selectRuntimeModel } from "./runtime"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -92,7 +94,7 @@ const statusClass: Record<SessionSummary["state"], string> = {
 
 const defaultRuntime: Runtime = {
   provider: "codex",
-  model: "gpt-5.6-sol",
+  model: "default",
   reasoning: "medium",
   permissionMode: "build",
   auto: false,
@@ -456,6 +458,7 @@ function Thread({
   snapshot,
   onResolve,
   onSetRuntime,
+  onListModels,
   onNewSession,
   onSend,
   onCheckpoint,
@@ -467,6 +470,7 @@ function Thread({
     explanation?: string,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
+  onListModels: (provider: "codex") => Promise<ProviderModel[]>
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
@@ -565,7 +569,7 @@ function Thread({
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
           </div>
         </div>
-        <RuntimeControls runtime={active.runtime} onChange={updateRuntime} />
+        <RuntimeControls runtime={active.runtime} onChange={updateRuntime} onListModels={onListModels} />
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
@@ -620,7 +624,34 @@ function Thread({
   )
 }
 
-function RuntimeControls({ runtime, onChange }: { runtime: Runtime; onChange: (runtime: Runtime) => void }) {
+function RuntimeControls({
+  runtime,
+  onChange,
+  onListModels,
+}: {
+  runtime: Runtime
+  onChange: (runtime: Runtime) => void
+  onListModels: (provider: "codex") => Promise<ProviderModel[]>
+}) {
+  const [models, setModels] = useState<ProviderModel[]>([])
+  const [modelsPending, setModelsPending] = useState(false)
+  const [modelsError, setModelsError] = useState("")
+  const selectedModel = models.find((model) => model.provider === runtime.provider && model.id === runtime.model)
+  const reasoningOptions = reasoningOptionsFor(selectedModel)
+  const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
+  useEffect(() => {
+    if (runtime.provider !== "codex") return
+    let active = true
+    setModelsPending(true)
+    setModelsError("")
+    void onListModels("codex").then(
+      (nextModels) => { if (active) setModels(nextModels) },
+      (cause: unknown) => {
+        if (active) setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
+      },
+    ).finally(() => { if (active) setModelsPending(false) })
+    return () => { active = false }
+  }, [onListModels, runtime.provider])
   const setMode = (permissionMode: string) => {
     if (permissionMode) onChange({ ...runtime, permissionMode: permissionMode as PermissionMode })
   }
@@ -633,14 +664,24 @@ function RuntimeControls({ runtime, onChange }: { runtime: Runtime; onChange: (r
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>Provider and model</DropdownMenuLabel>
           <DropdownMenuGroup>
-            <DropdownMenuItem onSelect={() => onChange({ ...runtime, provider: "codex", model: "gpt-5.6-sol" })}><CheckIcon />Codex CLI · gpt-5.6-sol</DropdownMenuItem>
+            {modelsPending ? <DropdownMenuItem disabled>Loading installed models</DropdownMenuItem> : null}
+            {modelsError ? <DropdownMenuItem disabled>{modelsError}</DropdownMenuItem> : null}
+            {models.map((model) => (
+              <DropdownMenuItem key={`${model.provider}:${model.id}`} onSelect={() => onChange(selectRuntimeModel(runtime, model))}>
+                {model.id === runtime.model && model.provider === runtime.provider ? <CheckIcon /> : null}
+                <span className="flex min-w-0 flex-col">
+                  <span>{model.displayName}</span>
+                  <span className="truncate font-machine text-[9px] text-faint">{model.provider} · {model.id}</span>
+                </span>
+              </DropdownMenuItem>
+            ))}
           </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" size="sm">Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={reasoningUnavailable}>Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuGroup>{(["low", "medium", "high"] as const).map((reasoning) => <DropdownMenuItem key={reasoning} onSelect={() => onChange({ ...runtime, reasoning })}>{reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}</DropdownMenuItem>)}</DropdownMenuGroup>
+          <DropdownMenuGroup>{reasoningOptions.map((reasoning) => <DropdownMenuItem key={reasoning} onSelect={() => onChange({ ...runtime, reasoning })}>{reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}</DropdownMenuItem>)}</DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
       <ToggleGroup type="single" value={runtime.permissionMode} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
@@ -752,6 +793,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     connected,
     createCheckpoint,
     createSession,
+    listModels,
     openProject,
     resolveApproval,
     sendMessage,
@@ -816,7 +858,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }}
           >
             {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
-            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
+            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
             {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} /></ResizablePanel></> : null}
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}

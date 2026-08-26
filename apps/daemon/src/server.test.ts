@@ -201,6 +201,80 @@ describe("DomovoiDaemon", () => {
     expect(status).toBe(401)
   })
 
+  it("shares slow agent initialization across timed-out model requests", async () => {
+    let finishConnect: (() => void) | undefined
+    let finishModels: (() => void) | undefined
+    const models = [{
+      provider: "codex" as const,
+      id: "gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      description: "Coding model",
+      supportedReasoningEfforts: [],
+      defaultReasoningEffort: "medium",
+      isDefault: true,
+    }]
+    const agent = {
+      connect: vi.fn(() => new Promise<void>((resolve) => { finishConnect = resolve })),
+      listModels: vi.fn(() => new Promise<typeof models>((resolve) => {
+        finishModels = () => resolve(models)
+      })),
+      startThread: vi.fn(async () => "unused-thread"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agent,
+      agentTimeoutMs: 100,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const rpc = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "runtime.models",
+        params: { provider: "codex", client: "desktop" },
+      }))
+    })
+
+    await expect(rpc(1)).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
+    const second = rpc(2)
+    expect(agent.connect).toHaveBeenCalledOnce()
+    finishConnect!()
+    await vi.waitFor(
+      () => expect(agent.listModels).toHaveBeenCalledOnce(),
+      { interval: 1, timeout: 20 },
+    )
+    const third = rpc(3)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(agent.listModels).toHaveBeenCalledOnce()
+    finishModels!()
+    await expect(second).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    await expect(third).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    socket.close()
+  })
+
   it("rejects an unexplained denial and records a supplied explanation", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -267,9 +341,28 @@ describe("DomovoiDaemon", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-daemon-"))
     scratchDirectories.push(scratch)
     const statePath = join(scratch, "state.sqlite")
+    const persistedAgent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        provider: "codex" as const,
+        id: "gpt-5.6-sol",
+        displayName: "GPT-5.6 Sol",
+        description: "Coding model",
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      }]),
+      startThread: vi.fn(async () => "unused-thread"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
     const first = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, demoWorkspace),
+      agent: persistedAgent,
     })
     running.push(first)
     const firstAddress = await first.start()
@@ -346,6 +439,26 @@ describe("DomovoiDaemon", () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
     const agent = {
       connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [
+        {
+          provider: "codex" as const,
+          id: "gpt-5.6-sol",
+          displayName: "GPT-5.6 Sol",
+          description: "Coding model",
+          supportedReasoningEfforts: ["none", "medium", "high", "xhigh", "max"],
+          defaultReasoningEffort: "xhigh",
+          isDefault: true,
+        },
+        {
+          provider: "other",
+          id: "foreign-model",
+          displayName: "Foreign model",
+          description: "Should not be exposed by the Codex adapter boundary",
+          supportedReasoningEfforts: ["medium"],
+          defaultReasoningEffort: "medium",
+          isDefault: false,
+        },
+      ]),
       startThread: vi.fn()
         .mockImplementationOnce(() => new Promise<string>(() => {}))
         .mockResolvedValue("provider-thread-1"),
@@ -403,21 +516,35 @@ describe("DomovoiDaemon", () => {
       return response
     }
 
+    const listedModels = await rpc("runtime.models", {
+      provider: "codex",
+      client: "desktop",
+    })
+    expect(listedModels).toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol", provider: "codex" })],
+    })
+    expect(listedModels.result).toHaveLength(1)
+
     const opened = await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
     expect(opened).toMatchObject({
       result: { project: { name: "domovoi", path: "/code/domovoi", branch: "main" } },
     })
 
-    const runtime = {
+    const requestedRuntime = {
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "default",
       reasoning: "medium",
       permissionMode: "build",
       auto: false,
     }
+    const runtime = {
+      ...requestedRuntime,
+      model: "gpt-5.6-sol",
+      reasoning: "xhigh",
+    }
     const timedOut = await rpc("session.create", {
       title: "Timeout setup",
-      runtime,
+      runtime: requestedRuntime,
       client: "desktop",
     })
     expect(timedOut).toMatchObject({ error: { code: -32603, message: "Agent setup timed out" } })
@@ -425,7 +552,7 @@ describe("DomovoiDaemon", () => {
 
     const created = await rpc("session.create", {
       title: "Build persistence",
-      runtime,
+      runtime: requestedRuntime,
       client: "desktop",
     })
     const createdResult = created.result as { activeSessionId: string; sessions: Array<{ id: string }> }
@@ -435,6 +562,7 @@ describe("DomovoiDaemon", () => {
         id: sessionId,
         workspacePath: `/worktrees/${sessionId}`,
         providerThreadId: "provider-thread-1",
+        runtime,
       }),
     ])
     expect(agent.startThread).toHaveBeenCalledWith({
@@ -512,6 +640,18 @@ describe("DomovoiDaemon", () => {
       error: { code: -32602, message: "Only the Codex provider is available" },
     })
 
+    const unsupportedReasoning = await rpc("session.setRuntime", {
+      sessionId,
+      runtime: { ...runtime, reasoning: "impossible" },
+      client: "desktop",
+    })
+    expect(unsupportedReasoning).toMatchObject({
+      error: {
+        code: -32602,
+        message: "Reasoning effort is not supported by the selected model",
+      },
+    })
+
     let resolveLateTurn: ((turnId: string) => void) | undefined
     agent.startTurn.mockImplementationOnce(
       () => new Promise<string>((resolve) => { resolveLateTurn = resolve }),
@@ -552,6 +692,15 @@ describe("DomovoiDaemon", () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
     const agent = {
       connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        provider: "codex" as const,
+        id: "gpt-5.6-sol",
+        displayName: "GPT-5.6 Sol",
+        description: "Coding model",
+        supportedReasoningEfforts: ["medium"],
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      }]),
       startThread: vi.fn(async () => "provider-thread-preview"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-preview"),
