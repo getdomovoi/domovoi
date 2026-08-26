@@ -1,0 +1,31 @@
+{
+  "name": "@getdomovoi/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "build": "electron-vite build",
+    "predev": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
+    "dev": "electron-vite dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@getdomovoi/daemon": "workspace:*",
+    "@getdomovoi/protocol": "workspace:*",
+    "@getdomovoi/ui": "workspace:*",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.12",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.2",
+    "electron": "^37.4.0",
+    "electron-vite": "^4.0.0",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  }
+}

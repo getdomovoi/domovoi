@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@/*": ["../../packages/ui/src/*"],
+      "@getdomovoi/daemon": ["../daemon/src/server.ts"],
+      "@getdomovoi/protocol": ["../../packages/protocol/src/index.ts"],
+      "@getdomovoi/ui": ["../../packages/ui/src/index.ts"]
+    }
+  },
+  "include": ["src", "electron.vite.config.ts"]
+}

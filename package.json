@@ -1,0 +1,18 @@
+{
+  "name": "@getdomovoi/root",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@11.5.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "predev": "pnpm --filter @getdomovoi/protocol build",
+    "dev": "pnpm --parallel --filter @getdomovoi/daemon --filter @getdomovoi/web dev",
+    "dev:desktop": "pnpm --filter @getdomovoi/desktop dev",
+    "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  }
+}

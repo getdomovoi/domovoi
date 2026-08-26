@@ -1,0 +1,47 @@
+{
+  "name": "@getdomovoi/daemon",
+  "version": "0.0.1",
+  "description": "Execution daemon for Domovoi agent sessions.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getdomovoi/domovoi.git",
+    "directory": "apps/daemon"
+  },
+  "homepage": "https://domovoi.sh",
+  "bin": {
+    "domovoid": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts src/server.ts --format esm --dts --clean",
+    "predev": "pnpm --filter @getdomovoi/protocol build",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "pretest": "pnpm --filter @getdomovoi/protocol build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@getdomovoi/protocol": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

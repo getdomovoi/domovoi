@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+.vite/
+.turbo/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+release/
+/domovoi*Handoff.zip

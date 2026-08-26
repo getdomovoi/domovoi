@@ -1,0 +1,36 @@
+{
+  "name": "@getdomovoi/protocol",
+  "version": "0.0.1",
+  "description": "Typed wire protocol shared by Domovoi daemons and clients.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getdomovoi/domovoi.git",
+    "directory": "packages/protocol"
+  },
+  "homepage": "https://domovoi.sh",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

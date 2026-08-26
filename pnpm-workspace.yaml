@@ -1,0 +1,17 @@
+packages:
+  - apps/*
+  - packages/*
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+
+allowBuilds:
+  electron: set this to true or false
+  esbuild: set this to true or false
+
+catalog:
+  typescript: ^5.9.2
+  vite: ^7.1.3
+  vitest: ^3.2.4
+  zod: ^4.1.5
