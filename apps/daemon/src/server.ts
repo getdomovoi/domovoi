@@ -1,4 +1,6 @@
 import { createServer, type Server as HttpServer } from "node:http"
+import { homedir } from "node:os"
+import { join } from "node:path"
 
 import {
   demoWorkspace,
@@ -11,6 +13,8 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+
 const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
@@ -20,6 +24,8 @@ export type DaemonServerOptions = {
   host?: string
   port?: number
   allowedOrigins?: string[]
+  statePath?: string
+  store?: WorkspaceStore
 }
 
 export class DomovoiDaemon {
@@ -29,6 +35,7 @@ export class DomovoiDaemon {
   #http: HttpServer | undefined
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
+  #store: WorkspaceStore
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -36,7 +43,11 @@ export class DomovoiDaemon {
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
-    this.#snapshot = workspaceSnapshotSchema.parse(structuredClone(demoWorkspace))
+    this.#store = options.store ?? new SqliteWorkspaceStore(
+      options.statePath ?? join(homedir(), ".domovoi", "state.sqlite"),
+      workspaceSnapshotSchema.parse(structuredClone(demoWorkspace)),
+    )
+    this.#snapshot = this.#store.load()
   }
 
   get address(): { host: string; port: number } | undefined {
@@ -89,6 +100,7 @@ export class DomovoiDaemon {
 
     this.#websocket = undefined
     this.#http = undefined
+    this.#store.close()
   }
 
   #send(socket: WebSocket, payload: unknown): void {
@@ -193,6 +205,9 @@ export class DomovoiDaemon {
       }
 
       this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      if (method === "approval.resolve" || method === "session.setRuntime") {
+        this.#store.save(this.#snapshot)
+      }
       this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.#snapshot })
 
       if (method === "approval.resolve" || method === "session.setRuntime") {

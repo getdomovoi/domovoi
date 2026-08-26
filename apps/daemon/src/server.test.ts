@@ -1,17 +1,23 @@
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import WebSocket from "ws"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { DomovoiDaemon } from "./server.js"
 
 const running: DomovoiDaemon[] = []
+const scratchDirectories: string[] = []
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
+  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
 })
 
 describe("DomovoiDaemon", () => {
   it("serves the initial workspace over JSON-RPC", async () => {
-    const daemon = new DomovoiDaemon({ port: 0 })
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
     const address = await daemon.start()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
@@ -77,7 +83,7 @@ describe("DomovoiDaemon", () => {
   })
 
   it("rejects browser connections from an untrusted origin", async () => {
-    const daemon = new DomovoiDaemon({ port: 0 })
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
     const address = await daemon.start()
 
@@ -93,7 +99,7 @@ describe("DomovoiDaemon", () => {
   })
 
   it("rejects an unexplained denial and records a supplied explanation", async () => {
-    const daemon = new DomovoiDaemon({ port: 0 })
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
     const address = await daemon.start()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
@@ -149,5 +155,81 @@ describe("DomovoiDaemon", () => {
       },
     })
     socket.close()
+  })
+
+  it("restores JSON-RPC mutations after a daemon restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-daemon-"))
+    scratchDirectories.push(scratch)
+    const statePath = join(scratch, "state.sqlite")
+    const first = new DomovoiDaemon({ port: 0, statePath })
+    running.push(first)
+    const firstAddress = await first.start()
+    const firstSocket = new WebSocket(`ws://${firstAddress.host}:${firstAddress.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      firstSocket.once("open", resolve)
+      firstSocket.once("error", reject)
+    })
+    const mutation = new Promise<void>((resolve) => {
+      firstSocket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve()
+      })
+    })
+    firstSocket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.setRuntime",
+      params: {
+        sessionId: "session-billing",
+        runtime: {
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          reasoning: "medium",
+          permissionMode: "plan",
+          auto: false,
+        },
+        client: "desktop",
+      },
+    }))
+    await mutation
+    firstSocket.close()
+    await first.stop()
+    running.splice(running.indexOf(first), 1)
+
+    const second = new DomovoiDaemon({ port: 0, statePath })
+    running.push(second)
+    const secondAddress = await second.start()
+    const secondSocket = new WebSocket(`ws://${secondAddress.host}:${secondAddress.port}/rpc`)
+    const restored = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      secondSocket.once("error", reject)
+      secondSocket.once("open", () => {
+        secondSocket.send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "system.hello",
+          params: { client: "desktop", clientVersion: "0.0.1" },
+        }))
+      })
+      secondSocket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 2) resolve(message as Record<string, unknown>)
+      })
+    })
+
+    expect(restored).toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([
+          expect.objectContaining({
+            id: "session-billing",
+            runtime: expect.objectContaining({
+              provider: "codex",
+              model: "gpt-5.6-sol",
+              permissionMode: "plan",
+            }),
+          }),
+        ]),
+      },
+    })
+    secondSocket.close()
   })
 })
