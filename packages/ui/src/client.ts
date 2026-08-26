@@ -2,17 +2,20 @@ import {
   demoWorkspace,
   rpcNotificationSchema,
   rpcResponseSchema,
+  providerModelsSchema,
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
   type Annotation,
+  type ProviderModel,
   type RpcMethod,
   type Runtime,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 type PendingRequest = {
-  resolve: (value: WorkspaceSnapshot) => void
+  parse: (value: unknown) => unknown
+  resolve: (value: unknown) => void
   reject: (error: Error) => void
 }
 
@@ -114,14 +117,24 @@ export class DomovoiClient extends EventTarget {
     socket?.close(1000, "client closed")
   }
 
-  request(method: RpcMethod, params: unknown): Promise<WorkspaceSnapshot> {
+  request(method: RpcMethod, params: unknown): Promise<WorkspaceSnapshot>
+  request<T>(method: RpcMethod, params: unknown, parse: (value: unknown) => T): Promise<T>
+  request<T = WorkspaceSnapshot>(
+    method: RpcMethod,
+    params: unknown,
+    parse: (value: unknown) => T = (value) => workspaceSnapshotSchema.parse(value) as T,
+  ): Promise<T> {
     const id = ++this.#requestId
     return new Promise((resolve, reject) => {
       if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Daemon connection is not open"))
         return
       }
-      this.#pending.set(id, { resolve, reject })
+      this.#pending.set(id, {
+        parse,
+        resolve: (value) => resolve(value as T),
+        reject,
+      })
       this.#socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
     })
   }
@@ -188,6 +201,14 @@ export class DomovoiClient extends EventTarget {
     return this.request("annotation.setStatus", { annotationId, status, client: this.kind })
   }
 
+  listModels(provider: "codex"): Promise<ProviderModel[]> {
+    return this.request(
+      "runtime.models",
+      { provider, client: this.kind },
+      (value) => providerModelsSchema.parse(value),
+    )
+  }
+
   #scheduleReconnect(): void {
     if (!this.#shouldReconnect || this.#reconnectTimer) return
     this.#reconnectTimer = setTimeout(() => {
@@ -235,9 +256,11 @@ export class DomovoiClient extends EventTarget {
       return
     }
 
-    const snapshot = workspaceSnapshotSchema.safeParse(response.data.result)
-    if (snapshot.success) pending.resolve(snapshot.data)
-    else pending.reject(new Error("Daemon returned an invalid workspace snapshot"))
+    try {
+      pending.resolve(pending.parse(response.data.result))
+    } catch {
+      pending.reject(new Error("Daemon returned an invalid RPC result"))
+    }
   }
 }
 

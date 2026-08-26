@@ -4,6 +4,7 @@ import {
   annotationAnchorSchema,
   approvalDecisionSchema,
   clientKindSchema,
+  providerModelsSchema,
   runtimeSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
@@ -64,6 +65,11 @@ export const sessionSetRuntimeParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const runtimeModelsParamsSchema = z.object({
+  provider: z.literal("codex"),
+  client: clientKindSchema,
+})
+
 export const projectOpenParamsSchema = z.object({
   path: z.string().min(1),
   client: clientKindSchema,
@@ -116,6 +122,10 @@ export const annotationSetStatusParamsSchema = z.object({
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  "runtime.models": {
+    params: runtimeModelsParamsSchema,
+    result: providerModelsSchema,
+  },
   "annotation.create": {
     params: annotationCreateParamsSchema,
     result: workspaceSnapshotSchema,

@@ -13,14 +13,37 @@ export const approvalDecisionSchema = z.enum([
   "deny",
   "deny-explain",
 ])
+export const reasoningEffortSchema = z.string().trim().min(1)
 
 export const runtimeSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
-  reasoning: z.enum(["low", "medium", "high"]),
+  reasoning: reasoningEffortSchema,
   permissionMode: permissionModeSchema,
   auto: z.boolean(),
 })
+
+export const providerModelSchema = z.object({
+  provider: z.string().min(1),
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string(),
+  supportedReasoningEfforts: z.array(reasoningEffortSchema),
+  defaultReasoningEffort: reasoningEffortSchema,
+  isDefault: z.boolean(),
+}).superRefine((model, context) => {
+  if (
+    model.supportedReasoningEfforts.length > 0
+    && !model.supportedReasoningEfforts.includes(model.defaultReasoningEffort)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["defaultReasoningEffort"],
+      message: "Default reasoning effort must be supported",
+    })
+  }
+})
+export const providerModelsSchema = z.array(providerModelSchema)
 
 export const machineSchema = z.object({
   id: z.string().min(1),
@@ -238,4 +261,5 @@ export type ApprovalRule = z.infer<typeof approvalRuleSchema>
 export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
 export type Annotation = z.infer<typeof annotationSchema>
+export type ProviderModel = z.infer<typeof providerModelSchema>
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>

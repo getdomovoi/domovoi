@@ -11,7 +11,9 @@ import {
   rpcMethods,
   rpcRequestSchema,
   workspaceSnapshotSchema,
+  type ProviderModel,
   type RpcMethod,
+  type Runtime,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
@@ -30,6 +32,8 @@ const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
 const internalError = -32603
+
+class RuntimeValidationError extends Error {}
 
 export type DaemonServerOptions = {
   host?: string
@@ -54,6 +58,9 @@ export class DomovoiDaemon {
   #agent: AgentAdapter
   #workspaceService: WorkspaceService
   #agentConnected = false
+  #agentConnection: Promise<void> | undefined
+  #providerModels: ProviderModel[] | undefined
+  #providerModelsRequest: Promise<ProviderModel[]> | undefined
   #unsubscribeAgent: () => void
   #mutationQueue = Promise.resolve()
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
@@ -133,7 +140,9 @@ export class DomovoiDaemon {
     })
     this.#websocket.on("connection", (socket) => {
       socket.on("message", (data) => {
-        this.#enqueueMutation(() => this.#handle(socket, data.toString()))
+        const raw = data.toString()
+        if (this.#isModelDiscovery(raw)) void this.#handle(socket, raw)
+        else this.#enqueueMutation(() => this.#handle(socket, raw))
       })
     })
 
@@ -194,6 +203,72 @@ export class DomovoiDaemon {
     this.#mutationQueue = this.#mutationQueue.then(task).catch((error: unknown) => {
       console.error("Domovoi mutation failed", error)
     })
+  }
+
+  #isModelDiscovery(raw: string): boolean {
+    try {
+      const request = JSON.parse(raw) as { method?: unknown }
+      return request.method === "runtime.models"
+    } catch {
+      return false
+    }
+  }
+
+  async #ensureAgentConnected(): Promise<void> {
+    if (this.#agentConnected) return
+    if (!this.#agentConnection) {
+      const connection = this.#agent.connect().then(() => {
+        this.#agentConnected = true
+      })
+      this.#agentConnection = connection
+      void connection.then(
+        () => { if (this.#agentConnection === connection) this.#agentConnection = undefined },
+        () => { if (this.#agentConnection === connection) this.#agentConnection = undefined },
+      )
+    }
+    await withTimeout(this.#agentConnection, this.#agentTimeoutMs, "Agent setup timed out")
+  }
+
+  async #listProviderModels(): Promise<ProviderModel[]> {
+    if (this.#providerModels) return this.#providerModels
+    await this.#ensureAgentConnected()
+    if (!this.#providerModelsRequest) {
+      const discovery = this.#agent.listModels().then((models) => {
+        const parsed = rpcMethods["runtime.models"].result.parse(models)
+          .filter((model) => model.provider === "codex")
+        this.#providerModels = parsed
+        return parsed
+      })
+      this.#providerModelsRequest = discovery
+      void discovery.then(
+        () => { if (this.#providerModelsRequest === discovery) this.#providerModelsRequest = undefined },
+        () => { if (this.#providerModelsRequest === discovery) this.#providerModelsRequest = undefined },
+      )
+    }
+    return withTimeout(
+      this.#providerModelsRequest,
+      this.#agentTimeoutMs,
+      "Model discovery timed out",
+    )
+  }
+
+  async #resolveRuntime(runtime: Runtime): Promise<Runtime> {
+    if (runtime.provider !== "codex") {
+      throw new RuntimeValidationError("Only the Codex provider is available")
+    }
+    const models = await this.#listProviderModels()
+    const model = runtime.model === "default"
+      ? models.find((candidate) => candidate.isDefault) ?? models[0]
+      : models.find((candidate) => candidate.id === runtime.model)
+    if (!model) throw new RuntimeValidationError("Model is not available from Codex")
+    const reasoning = runtime.model === "default" ? model.defaultReasoningEffort : runtime.reasoning
+    const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
+      ? model.supportedReasoningEfforts
+      : [model.defaultReasoningEffort]
+    if (!supportedReasoningEfforts.includes(reasoning)) {
+      throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
+    }
+    return { ...runtime, model: model.id, reasoning }
   }
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
@@ -270,6 +345,16 @@ export class DomovoiDaemon {
 
     try {
       let changed = false
+      if (method === "runtime.models") {
+        const models = await this.#listProviderModels()
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(models),
+        })
+        return
+      }
+
       if (method === "annotation.create") {
         const params = rpcMethods[method].params.parse(request.params)
         const artifact = this.#snapshot.artifacts.find(
@@ -388,16 +473,20 @@ export class DomovoiDaemon {
 
       if (method === "session.setRuntime") {
         const params = rpcMethods[method].params.parse(request.params)
-        if (params.runtime.provider !== "codex") {
-          this.#error(socket, request.id, invalidParams, "Only the Codex provider is available")
-          return
-        }
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        session.runtime = params.runtime
+        let runtime: Runtime
+        try {
+          runtime = await this.#resolveRuntime(params.runtime)
+        } catch (error) {
+          if (!(error instanceof RuntimeValidationError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        session.runtime = runtime
         changed = true
       }
 
@@ -436,10 +525,6 @@ export class DomovoiDaemon {
 
       if (method === "session.create") {
         const params = rpcMethods[method].params.parse(request.params)
-        if (params.runtime.provider !== "codex") {
-          this.#error(socket, request.id, invalidParams, "Only the Codex provider is available")
-          return
-        }
         const project = this.#snapshot.project
         if (!project) {
           this.#error(
@@ -461,6 +546,14 @@ export class DomovoiDaemon {
           )
           return
         }
+        let runtime: Runtime
+        try {
+          runtime = await this.#resolveRuntime(params.runtime)
+        } catch (error) {
+          if (!(error instanceof RuntimeValidationError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
         const sessionId = `session-${randomUUID()}`
         const workspace = await this.#workspaceService.createSessionWorkspace(
           project.path,
@@ -468,12 +561,8 @@ export class DomovoiDaemon {
         )
         let providerThreadId: string
         try {
-          if (!this.#agentConnected) {
-            await withTimeout(this.#agent.connect(), this.#agentTimeoutMs, "Agent setup timed out")
-            this.#agentConnected = true
-          }
           providerThreadId = await withTimeout(
-            this.#agent.startThread({ cwd: workspace.path, runtime: params.runtime }),
+            this.#agent.startThread({ cwd: workspace.path, runtime }),
             this.#agentTimeoutMs,
             "Agent setup timed out",
           )
@@ -491,7 +580,7 @@ export class DomovoiDaemon {
           projectId: project.id,
           title: params.title,
           state: "idle",
-          runtime: params.runtime,
+          runtime,
           changedFiles: 0,
           testsPassed: 0,
           testsFailed: 0,
