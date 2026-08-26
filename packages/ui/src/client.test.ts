@@ -129,4 +129,27 @@ describe("DomovoiClient", () => {
     await expect(Promise.all([first, second])).resolves.toEqual([demoWorkspace, demoWorkspace])
     client.disconnect()
   })
+
+  it("retries immediately without leaving the scheduled retry active", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      reconnectDelayMs: 25,
+    })
+    const initial = client.connect()
+    const first = FakeWebSocket.instances[0]!
+    first.open()
+    first.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+    first.drop()
+
+    const retry = client.connect()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    const second = FakeWebSocket.instances[1]!
+    second.open()
+    second.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await retry
+    await vi.advanceTimersByTimeAsync(25)
+
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    client.disconnect()
+  })
 })

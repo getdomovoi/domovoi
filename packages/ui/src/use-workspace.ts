@@ -24,6 +24,10 @@ export function applyWorkspaceSnapshot(
   return state.target === target ? { target, snapshot } : state
 }
 
+export function isCurrentConnection<T>(current: T | null, candidate: T): boolean {
+  return current === candidate
+}
+
 export function useWorkspace(url: string, kind: ClientKind) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
@@ -125,12 +129,23 @@ export function useWorkspace(url: string, kind: ClientKind) {
     updateSnapshot(await client.createCheckpoint(sessionId, label))
   }, [updateSnapshot])
 
+  const reconnect = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon client is not ready")
+    setConnected(false)
+    const next = await client.connect()
+    if (!isCurrentConnection(clientRef.current, client)) return
+    updateSnapshot(next)
+    setConnected(true)
+  }, [updateSnapshot])
+
   return {
     activateSession,
     connected,
     createCheckpoint,
     createSession,
     openProject,
+    reconnect,
     resolveApproval,
     sendMessage,
     setRuntime,

@@ -753,6 +753,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createCheckpoint,
     createSession,
     openProject,
+    reconnect,
     resolveApproval,
     sendMessage,
     setRuntime,
@@ -763,10 +764,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const [workspaceError, setWorkspaceError] = useState("")
+  const [connectionError, setConnectionError] = useState("")
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+    })
+  }
+  const reconnectDaemon = () => {
+    setConnectionError("")
+    void reconnect().catch((cause: unknown) => {
+      setConnectionError(cause instanceof Error ? cause.message : "The daemon could not be reached")
     })
   }
   const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
@@ -789,6 +797,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [dockCollapsed])
 
   useEffect(() => {
+    if (connected) setConnectionError("")
+  }, [connected])
+
+  useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
     const observer = new ResizeObserver(([entry]) => {
@@ -807,8 +819,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         {!connected ? (
           <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
             <span className="size-2 shrink-0 rounded-full bg-destructive" />
-            <span>{snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
+            <span>{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
             <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
+            <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
           </div>
         ) : null}
         {snapshot ? (
