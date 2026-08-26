@@ -720,16 +720,24 @@ export class DomovoiDaemon {
           )
           this.#loadedAgentThreads.add(session.providerThreadId)
         }
-        const turnId = await withTimeout(
+        const prompt = agentPromptWithAnnotations(this.#snapshot, session.id, params.prompt)
+        const turnId = session.activeTurnId ?? await withTimeout(
           this.#agent.startTurn({
             threadId: session.providerThreadId,
             cwd: session.workspacePath,
-            prompt: agentPromptWithAnnotations(this.#snapshot, session.id, params.prompt),
+            prompt,
             runtime: session.runtime,
           }),
           this.#agentTimeoutMs,
           "Agent turn timed out",
         )
+        if (session.activeTurnId) {
+          await withTimeout(
+            this.#agent.steerTurn(session.providerThreadId, session.activeTurnId, prompt),
+            this.#agentTimeoutMs,
+            "Agent steering timed out",
+          )
+        }
         const currentSession = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )

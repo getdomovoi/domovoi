@@ -102,6 +102,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async (threadId: string) => {
         if (threadId === "thread-audit") await new Promise<void>(() => {})
       }),
@@ -481,6 +482,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
@@ -537,6 +539,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
@@ -730,6 +733,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
@@ -781,6 +785,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "turn-after-restart"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
@@ -862,6 +867,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-1"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
@@ -977,6 +983,18 @@ describe("DomovoiDaemon", () => {
       runtime,
     })
 
+    await rpc("session.send", {
+      sessionId,
+      prompt: "Focus on the failing test first",
+      client: "desktop",
+    })
+    expect(agent.startTurn).toHaveBeenCalledOnce()
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      "provider-thread-1",
+      "provider-turn-1",
+      "Focus on the failing test first",
+    )
+
     for (const listener of agentListeners) {
       listener({
         type: "text-delta",
@@ -1072,6 +1090,18 @@ describe("DomovoiDaemon", () => {
       },
     })
 
+    for (const listener of agentListeners) {
+      listener({
+        type: "turn-completed",
+        params: {
+          threadId: "provider-thread-1",
+          turnId: "provider-turn-1",
+          turn: { id: "provider-turn-1", status: "completed" },
+        },
+      })
+    }
+    await rpc("workspace.get", {})
+
     let resolveLateTurn: ((turnId: string) => void) | undefined
     agent.startTurn.mockImplementationOnce(
       () => new Promise<string>((resolve) => { resolveLateTurn = resolve }),
@@ -1117,6 +1147,7 @@ describe("DomovoiDaemon", () => {
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-preview"),
+      steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn((listener: (event: AgentEvent) => void) => {

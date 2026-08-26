@@ -61,6 +61,7 @@ export interface AgentAdapter {
     prompt: string
     runtime: Runtime
   }): Promise<string>
+  steerTurn(threadId: string, turnId: string, prompt: string): Promise<void>
   resolveApproval(
     requestId: number,
     decision: ApprovalDecision,
@@ -256,6 +257,15 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     await this.#request("turn/interrupt", { threadId, turnId })
+  }
+
+  async steerTurn(threadId: string, turnId: string, prompt: string): Promise<void> {
+    const result = await this.#request("turn/steer", {
+      threadId,
+      expectedTurnId: turnId,
+      input: [{ type: "text", text: prompt }],
+    }) as { turnId?: string }
+    if (result.turnId !== turnId) throw new Error("Codex steered a different turn")
   }
 
   async startTurn({
