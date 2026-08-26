@@ -482,14 +482,17 @@ function LauncherDialog({
 
 function Thread({
   snapshot,
+  connected,
   onResolve,
   onSetRuntime,
   onListModels,
   onNewSession,
   onSend,
   onCheckpoint,
+  onPauseSession,
 }: {
   snapshot: WorkspaceSnapshot
+  connected: boolean
   onResolve: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -500,6 +503,7 @@ function Thread({
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
+  onPauseSession: (sessionId: string) => Promise<void>
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -559,6 +563,19 @@ function Thread({
       await onCheckpoint(active.id)
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be created")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const pauseSession = async () => {
+    if (pending || !active.activeTurnId) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onPauseSession(active.id)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The session could not be paused")
     } finally {
       setPending(false)
     }
@@ -655,6 +672,7 @@ function Thread({
             <div className="flex items-center gap-2">
               <Badge variant="machine">{snapshot.machine.name}</Badge>
               <Button variant="ghost" size="sm" disabled={pending} onClick={() => void createCheckpoint()}>Checkpoint</Button>
+              {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
             </div>
             <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
@@ -1238,6 +1256,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     listModels,
     openProject,
     pauseAll,
+    pauseSession,
     reconnect,
     resolveApproval,
     replyToAnnotation,
@@ -1330,7 +1349,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}

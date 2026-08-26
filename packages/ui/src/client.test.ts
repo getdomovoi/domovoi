@@ -276,6 +276,14 @@ describe("DomovoiClient", () => {
     })
     socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
     await expect(pausing).resolves.toEqual(demoWorkspace)
+
+    const stopping = client.pauseSession("session-billing")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.pause",
+      params: { sessionId: "session-billing", client: "phone" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })
+    await expect(stopping).resolves.toEqual(demoWorkspace)
     client.disconnect()
   })
 })

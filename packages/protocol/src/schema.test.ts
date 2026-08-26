@@ -17,6 +17,7 @@ import {
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
   sessionCreateParamsSchema,
+  sessionPauseParamsSchema,
   sessionSendParamsSchema,
   workspaceSnapshotSchema,
 } from "./index.js"
@@ -238,6 +239,10 @@ describe("workspace protocol", () => {
       sessionId: "session-1",
       client: "desktop",
     }).sessionId).toBe("session-1")
+    expect(sessionPauseParamsSchema.parse({
+      sessionId: "session-1",
+      client: "phone",
+    }).client).toBe("phone")
     expect(sessionSendParamsSchema.parse({
       sessionId: "session-1",
       prompt: "Run the tests",

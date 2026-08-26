@@ -15,6 +15,7 @@ import {
   type Artifact,
   type ProviderModel,
   type RpcMethod,
+  type ClientKind,
   type Runtime,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -429,45 +430,22 @@ export class DomovoiDaemon {
 
       if (method === "system.pauseAll") {
         const params = rpcMethods[method].params.parse(request.params)
-        const active = this.#snapshot.sessions.filter(
+        changed = await this.#pauseSessions(this.#snapshot.sessions.filter(
           (session) => session.providerThreadId && session.activeTurnId,
+        ), params.client)
+      }
+
+      if (method === "session.pause") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        changed = await this.#pauseSessions(
+          session.providerThreadId && session.activeTurnId ? [session] : [],
+          params.client,
         )
-        const results = await Promise.allSettled(active.map((session) =>
-          withTimeout(
-            this.#agent.interruptTurn(session.providerThreadId!, session.activeTurnId!),
-            this.#agentTimeoutMs,
-            "Agent interrupt timed out",
-          ),
-        ))
-        const createdAt = new Date().toISOString()
-        results.forEach((result, index) => {
-          const session = active[index]!
-          session.updatedAt = createdAt
-          if (result.status === "fulfilled") {
-            session.state = "idle"
-            delete session.activeTurnId
-            this.#snapshot.approvals = this.#snapshot.approvals.filter(
-              (approval) => approval.sessionId !== session.id,
-            )
-            this.#snapshot.thread.push({
-              id: `system-${randomUUID()}`,
-              sessionId: session.id,
-              kind: "system",
-              body: `Paused by ${params.client}.`,
-              createdAt,
-            })
-          } else {
-            this.#snapshot.thread.push({
-              id: `system-${randomUUID()}`,
-              sessionId: session.id,
-              kind: "system",
-              body: `Pause failed for ${params.client}.`,
-              detail: result.reason instanceof Error ? result.reason.message : "Unknown provider error",
-              createdAt,
-            })
-          }
-        })
-        changed = active.length > 0
       }
 
       if (method === "annotation.create") {
@@ -992,6 +970,48 @@ export class DomovoiDaemon {
     } else {
       this.#flushAgentState()
     }
+  }
+
+  async #pauseSessions(
+    active: WorkspaceSnapshot["sessions"],
+    client: ClientKind,
+  ): Promise<boolean> {
+    const results = await Promise.allSettled(active.map((session) =>
+      withTimeout(
+        this.#agent.interruptTurn(session.providerThreadId!, session.activeTurnId!),
+        this.#agentTimeoutMs,
+        "Agent interrupt timed out",
+      ),
+    ))
+    const createdAt = new Date().toISOString()
+    results.forEach((result, index) => {
+      const session = active[index]!
+      session.updatedAt = createdAt
+      if (result.status === "fulfilled") {
+        session.state = "idle"
+        delete session.activeTurnId
+        this.#snapshot.approvals = this.#snapshot.approvals.filter(
+          (approval) => approval.sessionId !== session.id,
+        )
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "system",
+          body: `Paused by ${client}.`,
+          createdAt,
+        })
+      } else {
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "system",
+          body: `Pause failed for ${client}.`,
+          detail: result.reason instanceof Error ? result.reason.message : "Unknown provider error",
+          createdAt,
+        })
+      }
+    })
+    return active.length > 0
   }
 
   #scheduleDeltaFlush(): void {
