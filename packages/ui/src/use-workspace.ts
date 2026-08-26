@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { ApprovalDecision, ClientKind, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ClientKind, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, getDemoWorkspace } from "./client"
 
@@ -95,14 +95,44 @@ export function useWorkspace(url: string, kind: ClientKind) {
     setSnapshot(await client.createCheckpoint(sessionId, label))
   }, [])
 
+  const createAnnotation = useCallback(async (input: {
+    sessionId: string
+    artifactId: string
+    variantId?: string
+    anchor: Annotation["anchor"]
+    body: string
+  }) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    setSnapshot(await client.createAnnotation(input))
+  }, [])
+
+  const replyToAnnotation = useCallback(async (annotationId: string, body: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    setSnapshot(await client.replyToAnnotation(annotationId, body))
+  }, [])
+
+  const setAnnotationStatus = useCallback(async (
+    annotationId: string,
+    status: Annotation["status"],
+  ) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    setSnapshot(await client.setAnnotationStatus(annotationId, status))
+  }, [])
+
   return {
     activateSession,
     connected,
     createCheckpoint,
+    createAnnotation,
     createSession,
     openProject,
+    replyToAnnotation,
     resolveApproval,
     sendMessage,
+    setAnnotationStatus,
     setRuntime,
     snapshot,
   }

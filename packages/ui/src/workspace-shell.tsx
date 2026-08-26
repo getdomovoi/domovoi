@@ -23,6 +23,7 @@ import {
 import type {
   ApprovalRequest,
   ApprovalDecision,
+  Annotation,
   ClientKind,
   PermissionMode,
   Runtime,
@@ -38,6 +39,7 @@ import {
   CardAction,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "./components/ui/card"
@@ -665,11 +667,15 @@ function ArtifactDock({
   onCollapse,
   defaultTab,
   rpcUrl,
+  onReplyToAnnotation,
+  onSetAnnotationStatus,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   defaultTab: "changes" | "preview"
   rpcUrl: string
+  onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
+  onSetAnnotationStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
 }) {
   const sessionArtifacts = snapshot.artifacts.filter(
     (artifact) => artifact.sessionId === snapshot.activeSessionId,
@@ -724,51 +730,161 @@ function ArtifactDock({
           {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
         </TabsContent>
         <TabsContent value="comments" className="min-h-0">
-          <ScrollArea className="h-full">
-            {annotations.length ? (
-              <div className="flex flex-col gap-3 p-3">
-                {annotations.map((annotation) => (
-                  <Card key={annotation.id} size="sm">
-                    <CardHeader>
-                      <CardTitle className="text-[12px] leading-relaxed">{annotation.body}</CardTitle>
-                      <CardDescription className="font-machine text-[9px]">
-                        {annotation.origin} · {annotation.variantId ?? annotation.artifactId}
-                      </CardDescription>
-                      <CardAction>
-                        <Badge variant={annotation.status === "open" ? "warning" : "success"}>{annotation.status}</Badge>
-                      </CardAction>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      <div className="rounded-md border bg-code px-2.5 py-2 font-machine text-[9px] leading-relaxed text-muted-foreground">
-                        {annotation.anchor.textQuote
-                          ? `“${annotation.anchor.textQuote}”`
-                          : annotation.anchor.cssSelector ?? "Visual selection"}
-                      </div>
-                      {annotation.thread.map((reply) => (
-                        <div key={reply.id} className="border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
-                          <span className="font-machine text-[9px] text-faint">{reply.origin}</span><br />
-                          {reply.body}
-                        </div>
-                      ))}
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            ) : (
-              <Empty className="min-h-full border-0">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon"><MessageSquareTextIcon /></EmptyMedia>
-                  <EmptyTitle>No annotations yet</EmptyTitle>
-                  <EmptyDescription>Comments anchored to plans and previews appear here.</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </ScrollArea>
+          <AnnotationComments
+            annotations={annotations}
+            onReply={onReplyToAnnotation}
+            onSetStatus={onSetAnnotationStatus}
+          />
         </TabsContent>
         <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
     </aside>
+  )
+}
+
+function AnnotationComments({
+  annotations,
+  onReply,
+  onSetStatus,
+}: {
+  annotations: Annotation[]
+  onReply: (annotationId: string, body: string) => Promise<void>
+  onSetStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
+}) {
+  const [replyingTo, setReplyingTo] = useState<string | null>(null)
+  const [reply, setReply] = useState("")
+  const [pendingId, setPendingId] = useState<string | null>(null)
+  const [error, setError] = useState("")
+
+  const submitReply = async (annotationId: string) => {
+    const body = reply.trim()
+    if (!body || pendingId) return
+    setPendingId(annotationId)
+    setError("")
+    try {
+      await onReply(annotationId, body)
+      setReply("")
+      setReplyingTo(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The annotation reply could not be saved")
+    } finally {
+      setPendingId(null)
+    }
+  }
+
+  const setStatus = async (annotation: Annotation) => {
+    if (pendingId) return
+    setPendingId(annotation.id)
+    setError("")
+    try {
+      await onSetStatus(annotation.id, annotation.status === "open" ? "resolved" : "open")
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The annotation status could not be changed")
+    } finally {
+      setPendingId(null)
+    }
+  }
+
+  return (
+    <ScrollArea className="h-full">
+      {annotations.length ? (
+        <div className="flex flex-col gap-3 p-3">
+          {error ? (
+            <Alert variant="destructive" aria-live="polite">
+              <CircleStopIcon />
+              <AlertTitle>Annotation update failed</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+          {annotations.map((annotation) => {
+            const pending = pendingId === annotation.id
+            const isReplying = replyingTo === annotation.id
+            return (
+              <Card key={annotation.id} size="sm">
+                <CardHeader>
+                  <CardTitle className="min-w-0 break-words text-[12px] leading-relaxed">{annotation.body}</CardTitle>
+                  <CardDescription className="font-machine text-[9px]">
+                    {annotation.origin} · {annotation.variantId ?? annotation.artifactId}
+                    {annotation.statusChangedBy ? ` · ${annotation.status} by ${annotation.statusChangedBy}` : ""}
+                  </CardDescription>
+                  <CardAction>
+                    <Badge variant={annotation.status === "open" ? "warning" : "success"}>{annotation.status}</Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  <div className="break-words rounded-md border bg-code px-2.5 py-2 font-machine text-[9px] leading-relaxed text-muted-foreground">
+                    {annotation.anchor.textQuote
+                      ? `“${annotation.anchor.textQuote}”`
+                      : annotation.anchor.cssSelector ?? "Visual selection"}
+                  </div>
+                  {annotation.thread.map((threadReply) => (
+                    <div key={threadReply.id} className="break-words border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
+                      <span className="font-machine text-[9px] text-faint">{threadReply.origin}</span><br />
+                      {threadReply.body}
+                    </div>
+                  ))}
+                </CardContent>
+                <CardFooter className="flex-col items-stretch gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      disabled={pendingId !== null || (replyingTo !== null && !isReplying)}
+                      onClick={() => {
+                        setError("")
+                        setReply("")
+                        setReplyingTo(isReplying ? null : annotation.id)
+                      }}
+                    >
+                      {isReplying ? "Cancel reply" : "Reply"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={pendingId !== null}
+                      onClick={() => void setStatus(annotation)}
+                    >
+                      {pending ? "Saving" : annotation.status === "open" ? "Resolve" : "Reopen"}
+                    </Button>
+                  </div>
+                  {isReplying ? (
+                    <FieldGroup>
+                      <Field>
+                        <FieldLabel htmlFor={`annotation-reply-${annotation.id}`}>Reply</FieldLabel>
+                        <Textarea
+                          id={`annotation-reply-${annotation.id}`}
+                          value={reply}
+                          rows={3}
+                          disabled={pending}
+                          placeholder="Add context for the next agent round"
+                          onChange={(event) => setReply(event.target.value)}
+                        />
+                      </Field>
+                      <Button
+                        size="sm"
+                        disabled={!reply.trim() || pending}
+                        onClick={() => void submitReply(annotation.id)}
+                      >
+                        {pending ? "Saving reply" : "Save reply"}
+                      </Button>
+                    </FieldGroup>
+                  ) : null}
+                </CardFooter>
+              </Card>
+            )
+          })}
+        </div>
+      ) : (
+        <Empty className="min-h-full border-0">
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><MessageSquareTextIcon /></EmptyMedia>
+            <EmptyTitle>No annotations yet</EmptyTitle>
+            <EmptyDescription>Comments anchored to plans and previews appear here.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+    </ScrollArea>
   )
 }
 
@@ -809,8 +925,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createSession,
     openProject,
     resolveApproval,
+    replyToAnnotation,
     sendMessage,
     setRuntime,
+    setAnnotationStatus,
     snapshot,
   } = useWorkspace(rpcUrl, clientKind)
   const shellRef = useRef<HTMLDivElement>(null)
@@ -872,7 +990,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           >
             {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
             <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
-            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} /></ResizablePanel></> : null}
+            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
         </div>

@@ -5,6 +5,7 @@ import {
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
+  type Annotation,
   type RpcMethod,
   type Runtime,
   type WorkspaceSnapshot,
@@ -164,6 +165,27 @@ export class DomovoiClient extends EventTarget {
       client: this.kind,
       ...(label ? { label } : {}),
     })
+  }
+
+  createAnnotation(input: {
+    sessionId: string
+    artifactId: string
+    variantId?: string
+    anchor: Annotation["anchor"]
+    body: string
+  }): Promise<WorkspaceSnapshot> {
+    return this.request("annotation.create", { ...input, client: this.kind })
+  }
+
+  replyToAnnotation(annotationId: string, body: string): Promise<WorkspaceSnapshot> {
+    return this.request("annotation.reply", { annotationId, body, client: this.kind })
+  }
+
+  setAnnotationStatus(
+    annotationId: string,
+    status: Annotation["status"],
+  ): Promise<WorkspaceSnapshot> {
+    return this.request("annotation.setStatus", { annotationId, status, client: this.kind })
   }
 
   #scheduleReconnect(): void {

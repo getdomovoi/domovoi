@@ -265,6 +265,70 @@ export class DomovoiDaemon {
 
     try {
       let changed = false
+      if (method === "annotation.create") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const artifact = this.#snapshot.artifacts.find(
+          (candidate) =>
+            candidate.id === params.artifactId && candidate.sessionId === params.sessionId,
+        )
+        if (!artifact) {
+          this.#error(socket, request.id, invalidParams, "Artifact does not belong to the session")
+          return
+        }
+        const createdAt = new Date().toISOString()
+        this.#snapshot.annotations.push({
+          id: `annotation-${randomUUID()}`,
+          sessionId: params.sessionId,
+          artifactId: params.artifactId,
+          ...(params.variantId ? { variantId: params.variantId } : {}),
+          anchor: params.anchor,
+          body: params.body,
+          status: "open",
+          origin: params.client,
+          thread: [],
+          createdAt,
+          updatedAt: createdAt,
+        })
+        changed = true
+      }
+
+      if (method === "annotation.reply") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const annotation = this.#snapshot.annotations.find(
+          (candidate) => candidate.id === params.annotationId,
+        )
+        if (!annotation) {
+          this.#error(socket, request.id, invalidParams, "Annotation does not exist")
+          return
+        }
+        const createdAt = new Date().toISOString()
+        annotation.thread.push({
+          id: `annotation-reply-${randomUUID()}`,
+          body: params.body,
+          origin: params.client,
+          createdAt,
+        })
+        annotation.updatedAt = createdAt
+        changed = true
+      }
+
+      if (method === "annotation.setStatus") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const annotation = this.#snapshot.annotations.find(
+          (candidate) => candidate.id === params.annotationId,
+        )
+        if (!annotation) {
+          this.#error(socket, request.id, invalidParams, "Annotation does not exist")
+          return
+        }
+        const changedAt = new Date().toISOString()
+        annotation.status = params.status
+        annotation.statusChangedBy = params.client
+        annotation.statusChangedAt = changedAt
+        annotation.updatedAt = changedAt
+        changed = true
+      }
+
       if (method === "approval.resolve") {
         const params = rpcMethods[method].params.parse(request.params)
         const approval = this.#snapshot.approvals.find(

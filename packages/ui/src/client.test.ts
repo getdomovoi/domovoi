@@ -129,4 +129,43 @@ describe("DomovoiClient", () => {
     await expect(Promise.all([first, second])).resolves.toEqual([demoWorkspace, demoWorkspace])
     client.disconnect()
   })
+
+  it("attributes annotation mutations to the current client", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const creating = client.createAnnotation({
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      anchor: { textQuote: "Replay operations" },
+      body: "Keep the progress visible.",
+    })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "annotation.create",
+      params: { client: "tablet", artifactId: "artifact-preview" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await creating
+
+    const replying = client.replyToAnnotation("annotation-replay-copy", "Agreed.")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "annotation.reply",
+      params: { client: "tablet", body: "Agreed." },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })
+    await replying
+
+    const resolving = client.setAnnotationStatus("annotation-replay-copy", "resolved")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "annotation.setStatus",
+      params: { client: "tablet", status: "resolved" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 4, result: demoWorkspace })
+    await resolving
+    client.disconnect()
+  })
 })
