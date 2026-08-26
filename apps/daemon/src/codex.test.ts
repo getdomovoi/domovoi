@@ -79,14 +79,23 @@ describe("CodexAppServerAdapter", () => {
     transport.receive({ id: 2, result: { thread: { id: "thread-1" } } })
     await expect(starting).resolves.toBe("thread-1")
 
+    const stopping = adapter.stopThread("thread-old")
+    expect(transport.sent[3]).toMatchObject({
+      id: 3,
+      method: "thread/archive",
+      params: { threadId: "thread-old" },
+    })
+    transport.receive({ id: 3, result: {} })
+    await expect(stopping).resolves.toBeUndefined()
+
     const turning = adapter.startTurn({
       threadId: "thread-1",
       cwd: "/worktree",
       prompt: "Run the tests",
       runtime: runtime("build", false),
     })
-    expect(transport.sent[3]).toMatchObject({
-      id: 3,
+    expect(transport.sent[4]).toMatchObject({
+      id: 4,
       method: "turn/start",
       params: {
         threadId: "thread-1",
@@ -95,7 +104,7 @@ describe("CodexAppServerAdapter", () => {
         sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/worktree"] },
       },
     })
-    transport.receive({ id: 3, result: { turn: { id: "turn-1" } } })
+    transport.receive({ id: 4, result: { turn: { id: "turn-1" } } })
     await expect(turning).resolves.toBe("turn-1")
 
     transport.receive({

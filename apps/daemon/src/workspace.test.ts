@@ -57,6 +57,14 @@ describe("GitWorkspaceService", () => {
       "domovoi/session-1:README.md",
     ])
     expect(branchContents.stdout).toBe("after\n")
+
+    await service.removeSessionWorkspace(workspace.path)
+    await expect(readFile(join(workspace.path, "README.md"), "utf8")).rejects.toThrow()
+    const worktrees = await execute("git", ["-C", repositoryPath, "worktree", "list", "--porcelain"])
+    expect(worktrees.stdout).not.toContain(workspace.path)
+    const branches = await execute("git", ["-C", repositoryPath, "branch", "--list", workspace.branch])
+    expect(branches.stdout).toBe("")
+    await expect(service.removeSessionWorkspace(workspace.path)).resolves.toBeUndefined()
   })
 
   it("rejects session identifiers that could escape the worktree root", async () => {

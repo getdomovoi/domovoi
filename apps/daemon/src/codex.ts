@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
 
-import type { Runtime } from "@getdomovoi/protocol"
+import type { ApprovalDecision, Runtime } from "@getdomovoi/protocol"
 
 export type JsonRpcMessage = {
   id?: number
@@ -47,6 +47,24 @@ export type AgentEvent =
     }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
   | { type: "turn-completed"; params: Record<string, unknown> }
+
+export interface AgentAdapter {
+  connect(): Promise<void>
+  startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
+  stopThread(threadId: string): Promise<void>
+  startTurn(input: {
+    threadId: string
+    cwd: string
+    prompt: string
+    runtime: Runtime
+  }): Promise<string>
+  resolveApproval(
+    requestId: number,
+    decision: ApprovalDecision,
+  ): void
+  onEvent(listener: (event: AgentEvent) => void): () => void
+  close(): Promise<void>
+}
 
 type PendingRequest = {
   resolve(value: unknown): void
@@ -118,7 +136,7 @@ export class StdioCodexTransport implements CodexTransport {
   }
 }
 
-export class CodexAppServerAdapter {
+export class CodexAppServerAdapter implements AgentAdapter {
   #transportFactory: () => CodexTransport
   #transport: CodexTransport | undefined
   #nextId = 0
@@ -156,6 +174,10 @@ export class CodexAppServerAdapter {
     return threadId
   }
 
+  async stopThread(threadId: string): Promise<void> {
+    await this.#request("thread/archive", { threadId })
+  }
+
   async startTurn({
     threadId,
     cwd,
@@ -183,7 +205,7 @@ export class CodexAppServerAdapter {
 
   resolveApproval(
     requestId: number,
-    decision: "allow-once" | "always-project" | "deny" | "deny-explain",
+    decision: ApprovalDecision,
   ): void {
     const mapped = decision === "allow-once"
       ? "accept"

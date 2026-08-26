@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
-import { mkdir } from "node:fs/promises"
-import { basename, join, resolve } from "node:path"
+import { mkdir, realpath } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
 const execute = promisify(execFile)
@@ -24,6 +24,13 @@ export type Checkpoint = {
   changedFiles: string[]
 }
 
+export interface WorkspaceService {
+  inspect(repositoryPath: string): Promise<RepositoryInfo>
+  createSessionWorkspace(repositoryPath: string, sessionId: string): Promise<SessionWorkspace>
+  removeSessionWorkspace(worktreePath: string): Promise<void>
+  checkpoint(worktreePath: string, label: string): Promise<Checkpoint>
+}
+
 async function git(repositoryPath: string, arguments_: string[]): Promise<string> {
   const result = await execute("git", ["-C", repositoryPath, ...arguments_], {
     encoding: "utf8",
@@ -31,7 +38,7 @@ async function git(repositoryPath: string, arguments_: string[]): Promise<string
   return result.stdout.trim()
 }
 
-export class GitWorkspaceService {
+export class GitWorkspaceService implements WorkspaceService {
   readonly worktreeRoot: string
 
   constructor(worktreeRoot: string) {
@@ -82,6 +89,35 @@ export class GitWorkspaceService {
     return {
       commit: await git(worktreePath, ["rev-parse", "HEAD"]),
       changedFiles,
+    }
+  }
+
+  async removeSessionWorkspace(worktreePath: string): Promise<void> {
+    let path: string
+    try {
+      path = await realpath(resolve(worktreePath))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+      throw error
+    }
+    const root = await realpath(this.worktreeRoot)
+    const pathFromRoot = relative(root, path)
+    if (!pathFromRoot || pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
+      throw new Error("Worktree path is outside the Domovoi worktree root")
+    }
+    const repositoryRoot = await git(path, ["rev-parse", "--show-toplevel"])
+    if (await realpath(repositoryRoot) !== path) {
+      throw new Error("Worktree path does not identify a Git worktree root")
+    }
+    const branch = await git(path, ["branch", "--show-current"])
+    const commonDirectory = await git(path, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ])
+    await git(path, ["worktree", "remove", "--force", path])
+    if (branch.startsWith("domovoi/")) {
+      await git(dirname(commonDirectory), ["branch", "-D", branch])
     }
   }
 }
