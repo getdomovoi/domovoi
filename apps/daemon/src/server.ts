@@ -555,7 +555,7 @@ export class DomovoiDaemon {
           (approval) => approval.id !== params.approvalId,
         )
         const session = this.#snapshot.sessions.find(
-          (candidate) => candidate.id === this.#snapshot.activeSessionId,
+          (candidate) => candidate.id === approval.sessionId,
         )
         if (session) {
           session.state = params.decision === "deny" || params.decision === "deny-explain"
