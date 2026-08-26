@@ -176,6 +176,8 @@ export const annotationSchema = z.object({
   anchor: annotationAnchorSchema,
   body: z.string().min(1),
   status: z.enum(["open", "resolved"]),
+  statusChangedBy: clientKindSchema.optional(),
+  statusChangedAt: z.string().datetime().optional(),
   origin: clientKindSchema,
   thread: z.array(annotationReplySchema),
   createdAt: z.string().datetime(),

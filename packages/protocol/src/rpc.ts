@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import {
+  annotationAnchorSchema,
   approvalDecisionSchema,
   clientKindSchema,
   runtimeSchema,
@@ -91,9 +92,42 @@ export const checkpointCreateParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const annotationCreateParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  artifactId: z.string().min(1),
+  variantId: z.string().min(1).optional(),
+  anchor: annotationAnchorSchema,
+  body: z.string().trim().min(1),
+  client: clientKindSchema,
+})
+
+export const annotationReplyParamsSchema = z.object({
+  annotationId: z.string().min(1),
+  body: z.string().trim().min(1),
+  client: clientKindSchema,
+})
+
+export const annotationSetStatusParamsSchema = z.object({
+  annotationId: z.string().min(1),
+  status: z.enum(["open", "resolved"]),
+  client: clientKindSchema,
+})
+
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  "annotation.create": {
+    params: annotationCreateParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+  "annotation.reply": {
+    params: annotationReplyParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+  "annotation.setStatus": {
+    params: annotationSetStatusParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
   "approval.resolve": {
     params: approvalResolveParamsSchema,
     result: workspaceSnapshotSchema,

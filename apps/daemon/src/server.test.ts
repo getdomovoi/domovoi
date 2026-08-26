@@ -185,6 +185,86 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("creates, replies to, and resolves anchored annotations", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    const created = await rpc("annotation.create", {
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      variantId: "variant-c",
+      anchor: { textQuote: "Replay operations" },
+      body: "Keep the progress visible.",
+      client: "tablet",
+    })
+    const annotations = (created.result as { annotations: Array<{ id: string }> }).annotations
+    const annotationId = annotations.at(-1)!.id
+    expect(annotations.at(-1)).toMatchObject({
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      origin: "tablet",
+      status: "open",
+      thread: [],
+    })
+
+    const replied = await rpc("annotation.reply", {
+      annotationId,
+      body: "Updated in revision four.",
+      client: "desktop",
+    })
+    expect(replied).toMatchObject({
+      result: {
+        annotations: expect.arrayContaining([expect.objectContaining({
+          id: annotationId,
+          thread: [expect.objectContaining({
+            body: "Updated in revision four.",
+            origin: "desktop",
+          })],
+        })]),
+      },
+    })
+
+    const resolved = await rpc("annotation.setStatus", {
+      annotationId,
+      status: "resolved",
+      client: "phone",
+    })
+    expect(resolved).toMatchObject({
+      result: {
+        annotations: expect.arrayContaining([expect.objectContaining({
+          id: annotationId,
+          status: "resolved",
+          statusChangedBy: "phone",
+        })]),
+      },
+    })
+    socket.close()
+  })
+
   it("rejects browser connections from an untrusted origin", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)

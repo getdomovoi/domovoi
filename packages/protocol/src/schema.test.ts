@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import {
   annotationSchema,
+  annotationCreateParamsSchema,
+  annotationReplyParamsSchema,
+  annotationSetStatusParamsSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
   createEmptyWorkspace,
@@ -42,6 +45,27 @@ describe("workspace protocol", () => {
       ...annotation,
       anchor: {},
     }).success).toBe(false)
+  })
+
+  it("validates annotation mutation requests", () => {
+    expect(annotationCreateParamsSchema.parse({
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      variantId: "variant-b",
+      anchor: { textQuote: "Replay operations" },
+      body: "Keep the progress visible.",
+      client: "tablet",
+    }).client).toBe("tablet")
+    expect(annotationReplyParamsSchema.parse({
+      annotationId: "annotation-1",
+      body: "Updated in revision four.",
+      client: "desktop",
+    }).body).toBe("Updated in revision four.")
+    expect(annotationSetStatusParamsSchema.parse({
+      annotationId: "annotation-1",
+      status: "resolved",
+      client: "phone",
+    }).status).toBe("resolved")
   })
 
   it("upgrades snapshots that predate annotation state", () => {
