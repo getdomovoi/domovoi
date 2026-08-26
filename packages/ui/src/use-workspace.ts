@@ -2,19 +2,49 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { ApprovalDecision, ClientKind, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient, getDemoWorkspace } from "./client"
+import { DomovoiClient } from "./client"
+
+type WorkspaceSnapshotState = {
+  target: string
+  snapshot: WorkspaceSnapshot | null
+}
+
+export function visibleWorkspaceSnapshot(
+  state: WorkspaceSnapshotState,
+  target: string,
+): WorkspaceSnapshot | null {
+  return state.target === target ? state.snapshot : null
+}
+
+export function applyWorkspaceSnapshot(
+  state: WorkspaceSnapshotState,
+  target: string,
+  snapshot: WorkspaceSnapshot,
+): WorkspaceSnapshotState {
+  return state.target === target ? { target, snapshot } : state
+}
 
 export function useWorkspace(url: string, kind: ClientKind) {
+  const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
-  const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(getDemoWorkspace)
+  const [workspace, setWorkspace] = useState<WorkspaceSnapshotState>(() => ({
+    target,
+    snapshot: null,
+  }))
   const [connected, setConnected] = useState(false)
+  const snapshot = visibleWorkspaceSnapshot(workspace, target)
+  const updateSnapshot = useCallback((next: WorkspaceSnapshot) => {
+    setWorkspace((current) => applyWorkspaceSnapshot(current, target, next))
+  }, [target])
 
   useEffect(() => {
     let active = true
+    setConnected(false)
+    setWorkspace({ target, snapshot: null })
     const client = new DomovoiClient(url, kind)
     clientRef.current = client
     const onSnapshot = (event: Event) => {
-      if (active) setSnapshot((event as CustomEvent<WorkspaceSnapshot>).detail)
+      if (active) updateSnapshot((event as CustomEvent<WorkspaceSnapshot>).detail)
     }
     const onDisconnected = () => {
       if (active) setConnected(false)
@@ -28,7 +58,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
     client.connect().then(
       (next) => {
         if (!active) return
-        setSnapshot(next)
+        updateSnapshot(next)
         setConnected(true)
       },
       () => {
@@ -44,7 +74,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
       client.disconnect()
       clientRef.current = null
     }
-  }, [kind, url])
+  }, [kind, target, updateSnapshot, url])
 
   const resolveApproval = useCallback(
     async (
@@ -54,46 +84,46 @@ export function useWorkspace(url: string, kind: ClientKind) {
     ) => {
       const client = clientRef.current
       if (!client) throw new Error("Daemon connection is not open")
-      setSnapshot(await client.resolveApproval(approvalId, decision, explanation))
+      updateSnapshot(await client.resolveApproval(approvalId, decision, explanation))
     },
-    [],
+    [updateSnapshot],
   )
 
   const setRuntime = useCallback(async (sessionId: string, runtime: Runtime) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    setSnapshot(await client.setRuntime(sessionId, runtime))
-  }, [])
+    updateSnapshot(await client.setRuntime(sessionId, runtime))
+  }, [updateSnapshot])
 
   const activateSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    setSnapshot(await client.activateSession(sessionId))
-  }, [])
+    updateSnapshot(await client.activateSession(sessionId))
+  }, [updateSnapshot])
 
   const openProject = useCallback(async (path: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    setSnapshot(await client.openProject(path))
-  }, [])
+    updateSnapshot(await client.openProject(path))
+  }, [updateSnapshot])
 
   const createSession = useCallback(async (title: string, runtime: Runtime) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    setSnapshot(await client.createSession(title, runtime))
-  }, [])
+    updateSnapshot(await client.createSession(title, runtime))
+  }, [updateSnapshot])
 
   const sendMessage = useCallback(async (sessionId: string, prompt: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    setSnapshot(await client.sendMessage(sessionId, prompt))
-  }, [])
+    updateSnapshot(await client.sendMessage(sessionId, prompt))
+  }, [updateSnapshot])
 
   const createCheckpoint = useCallback(async (sessionId: string, label?: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    setSnapshot(await client.createCheckpoint(sessionId, label))
-  }, [])
+    updateSnapshot(await client.createCheckpoint(sessionId, label))
+  }, [updateSnapshot])
 
   return {
     activateSession,

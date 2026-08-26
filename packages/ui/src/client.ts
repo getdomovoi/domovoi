@@ -1,5 +1,4 @@
 import {
-  demoWorkspace,
   rpcNotificationSchema,
   rpcResponseSchema,
   workspaceSnapshotSchema,
@@ -217,8 +216,4 @@ export class DomovoiClient extends EventTarget {
     if (snapshot.success) pending.resolve(snapshot.data)
     else pending.reject(new Error("Daemon returned an invalid workspace snapshot"))
   }
-}
-
-export function getDemoWorkspace(): WorkspaceSnapshot {
-  return workspaceSnapshotSchema.parse(structuredClone(demoWorkspace))
 }
