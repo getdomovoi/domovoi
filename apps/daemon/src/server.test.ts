@@ -602,6 +602,18 @@ describe("DomovoiDaemon", () => {
         delta: "Tests are green.",
       })
       listener({
+        type: "plan-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        delta: "1. Inspect the failing test.\n",
+      })
+      listener({
+        type: "plan-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        delta: "2. Fix the implementation.",
+      })
+      listener({
         type: "approval-requested",
         requestId: 71,
         threadId: "provider-thread-1",
@@ -618,6 +630,13 @@ describe("DomovoiDaemon", () => {
         thread: expect.arrayContaining([
           expect.objectContaining({ kind: "assistant", body: "Tests are green." }),
         ]),
+        artifacts: [expect.objectContaining({
+          sessionId,
+          type: "plan",
+          revision: 2,
+          mimeType: "text/markdown",
+          content: "1. Inspect the failing test.\n2. Fix the implementation.",
+        })],
         approvals: [expect.objectContaining({ providerRequestId: 71, command: "pnpm build" })],
       },
     })
