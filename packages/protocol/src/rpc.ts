@@ -58,6 +58,29 @@ export const sessionSetRuntimeParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const projectOpenParamsSchema = z.object({
+  path: z.string().min(1),
+  client: clientKindSchema,
+})
+
+export const sessionCreateParamsSchema = z.object({
+  title: z.string().trim().min(1),
+  runtime: runtimeSchema,
+  client: clientKindSchema,
+})
+
+export const sessionSendParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  prompt: z.string().trim().min(1),
+  client: clientKindSchema,
+})
+
+export const checkpointCreateParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  label: z.string().trim().min(1).optional(),
+  client: clientKindSchema,
+})
+
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
@@ -67,6 +90,13 @@ export const rpcMethods = {
   },
   "session.setRuntime": {
     params: sessionSetRuntimeParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+  "project.open": { params: projectOpenParamsSchema, result: workspaceSnapshotSchema },
+  "session.create": { params: sessionCreateParamsSchema, result: workspaceSnapshotSchema },
+  "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
+  "checkpoint.create": {
+    params: checkpointCreateParamsSchema,
     result: workspaceSnapshotSchema,
   },
 } as const

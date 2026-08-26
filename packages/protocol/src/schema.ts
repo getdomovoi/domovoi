@@ -44,6 +44,10 @@ export const sessionSummarySchema = z.object({
   testsPassed: z.number().int().nonnegative(),
   testsFailed: z.number().int().nonnegative(),
   updatedAt: z.string().datetime(),
+  workspacePath: z.string().min(1).optional(),
+  providerThreadId: z.string().min(1).optional(),
+  activeTurnId: z.string().min(1).optional(),
+  baseCommit: z.string().min(1).optional(),
 })
 
 export const approvalRequestSchema = z.object({
@@ -60,6 +64,7 @@ export const approvalRequestSchema = z.object({
   network: z.string().min(1),
   estimatedDuration: z.string().min(1),
   checkpoint: z.string().min(1),
+  providerRequestId: z.number().int().nonnegative().optional(),
   requestedAt: z.string().datetime(),
 })
 
@@ -108,6 +113,15 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     explanation: z.string().min(1).optional(),
     createdAt: z.string().datetime(),
   }),
+  z.object({
+    id: z.string(),
+    kind: z.literal("tool"),
+    tool: z.enum(["command", "file-change"]),
+    status: z.enum(["running", "completed", "failed", "declined"]),
+    title: z.string(),
+    output: z.string().optional(),
+    createdAt: z.string().datetime(),
+  }),
 ])
 
 export const artifactSchema = z.object({
@@ -116,6 +130,9 @@ export const artifactSchema = z.object({
   title: z.string(),
   type: z.enum(["plan", "preview", "diff", "terminal"]),
   revision: z.number().int().positive(),
+  path: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+  content: z.string().optional(),
 })
 
 export const workspaceSnapshotSchema = z.object({
