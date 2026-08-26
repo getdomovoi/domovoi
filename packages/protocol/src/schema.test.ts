@@ -6,6 +6,7 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   projectOpenParamsSchema,
+  sessionActivateParamsSchema,
   sessionCreateParamsSchema,
   sessionSendParamsSchema,
   workspaceSnapshotSchema,
@@ -78,6 +79,10 @@ describe("workspace protocol", () => {
       runtime: demoWorkspace.sessions[0]!.runtime,
       client: "desktop",
     }).title).toBe("Add persistence")
+    expect(sessionActivateParamsSchema.parse({
+      sessionId: "session-1",
+      client: "desktop",
+    }).sessionId).toBe("session-1")
     expect(sessionSendParamsSchema.parse({
       sessionId: "session-1",
       prompt: "Run the tests",

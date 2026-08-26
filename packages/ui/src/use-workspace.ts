@@ -60,6 +60,12 @@ export function useWorkspace(url: string, kind: ClientKind) {
     setSnapshot(await client.setRuntime(sessionId, runtime))
   }, [])
 
+  const activateSession = useCallback(async (sessionId: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    setSnapshot(await client.activateSession(sessionId))
+  }, [])
+
   const openProject = useCallback(async (path: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -85,6 +91,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
   }, [])
 
   return {
+    activateSession,
     connected,
     createCheckpoint,
     createSession,

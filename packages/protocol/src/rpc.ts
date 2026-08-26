@@ -74,6 +74,11 @@ export const sessionCreateParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const sessionActivateParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  client: clientKindSchema,
+})
+
 export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
   prompt: z.string().trim().min(1),
@@ -98,6 +103,7 @@ export const rpcMethods = {
     result: workspaceSnapshotSchema,
   },
   "project.open": { params: projectOpenParamsSchema, result: workspaceSnapshotSchema },
+  "session.activate": { params: sessionActivateParamsSchema, result: workspaceSnapshotSchema },
   "session.create": { params: sessionCreateParamsSchema, result: workspaceSnapshotSchema },
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {

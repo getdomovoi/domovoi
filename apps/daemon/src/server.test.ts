@@ -138,6 +138,53 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("activates an existing session and rejects unknown sessions", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const responseFor = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+
+    const activated = responseFor(1)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.activate",
+      params: { sessionId: "session-audit", client: "desktop" },
+    }))
+    await expect(activated).resolves.toMatchObject({
+      result: { activeSessionId: "session-audit" },
+    })
+
+    const rejected = responseFor(2)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session.activate",
+      params: { sessionId: "session-missing", client: "desktop" },
+    }))
+    await expect(rejected).resolves.toMatchObject({
+      error: { code: -32602, message: "Session does not exist" },
+    })
+    socket.close()
+  })
+
   it("rejects browser connections from an untrusted origin", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)

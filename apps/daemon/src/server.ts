@@ -353,6 +353,17 @@ export class DomovoiDaemon {
         changed = true
       }
 
+      if (method === "session.activate") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        this.#snapshot.activeSessionId = session.id
+        changed = true
+      }
+
       if (method === "session.create") {
         const params = rpcMethods[method].params.parse(request.params)
         if (params.runtime.provider !== "codex") {

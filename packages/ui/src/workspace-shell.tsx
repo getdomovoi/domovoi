@@ -160,10 +160,20 @@ function AppBar({
   )
 }
 
-function SessionRow({ session, active }: { session: SessionSummary; active: boolean }) {
+function SessionRow({
+  session,
+  active,
+  onActivate,
+}: {
+  session: SessionSummary
+  active: boolean
+  onActivate: (sessionId: string) => void
+}) {
   return (
     <button
       type="button"
+      aria-pressed={active}
+      onClick={() => onActivate(session.id)}
       className={cn(
         "flex w-full flex-col gap-1 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-accent",
         active && "bg-accent",
@@ -190,10 +200,12 @@ function SessionRow({ session, active }: { session: SessionSummary; active: bool
 function SessionsSidebar({
   snapshot,
   onCollapse,
+  onActivate,
   onNewSession,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
+  onActivate: (sessionId: string) => void
   onNewSession: () => void
 }) {
   const groups = useMemo(
@@ -241,6 +253,7 @@ function SessionsSidebar({
                     key={session.id}
                     session={session}
                     active={session.id === snapshot.activeSessionId}
+                    onActivate={onActivate}
                   />
                 ))}
               </section>
@@ -704,12 +717,20 @@ function ArtifactDock({
   )
 }
 
-function SidebarRail({ snapshot, onExpand }: { snapshot: WorkspaceSnapshot; onExpand: () => void }) {
+function SidebarRail({
+  snapshot,
+  onActivate,
+  onExpand,
+}: {
+  snapshot: WorkspaceSnapshot
+  onActivate: (sessionId: string) => void
+  onExpand: () => void
+}) {
   return (
     <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
       <Separator />
-      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={session.title} className="flex size-7 items-center justify-center rounded-md hover:bg-accent"><span className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title}</TooltipContent></Tooltip>)}
+      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={session.title} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title}</TooltipContent></Tooltip>)}
     </aside>
   )
 }
@@ -727,6 +748,7 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", windowBridge }: WorkspaceShellProps) {
   const {
+    activateSession,
     connected,
     createCheckpoint,
     createSession,
@@ -740,6 +762,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
+  const [workspaceError, setWorkspaceError] = useState("")
+  const activateVisibleSession = (sessionId: string) => {
+    setWorkspaceError("")
+    void activateSession(sessionId).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+    })
+  }
   const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = useMemo(() => {
     const saved = localStorage.getItem(layoutKey)
@@ -776,7 +805,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} />
         <div className="flex min-h-0 flex-1">
-          {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onExpand={() => setSidebarCollapsed(false)} /> : null}
+          {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} /> : null}
           <ResizablePanelGroup
             key={layoutKey}
             orientation="horizontal"
@@ -786,13 +815,23 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
             }}
           >
-            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
+            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
             <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
             {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} /></ResizablePanel></> : null}
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
         </div>
         {!connected ? <div className="absolute bottom-3 left-3 rounded-md border border-destructive bg-popover px-3 py-1.5 font-machine text-[10px] text-destructive shadow-[var(--shadow-md)]">Daemon offline · showing local fixture</div> : null}
+        {workspaceError ? (
+          <Alert
+            variant="destructive"
+            className={cn("absolute left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]", connected ? "bottom-3" : "bottom-12")}
+          >
+            <CircleStopIcon />
+            <AlertTitle>Session switch failed</AlertTitle>
+            <AlertDescription>{workspaceError}</AlertDescription>
+          </Alert>
+        ) : null}
         <LauncherDialog
           mode={launcherMode}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}

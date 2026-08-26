@@ -84,6 +84,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.setRuntime", { sessionId, runtime, client: this.kind })
   }
 
+  activateSession(sessionId: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.activate", { sessionId, client: this.kind })
+  }
+
   openProject(path: string): Promise<WorkspaceSnapshot> {
     return this.request("project.open", { path, client: this.kind })
   }
