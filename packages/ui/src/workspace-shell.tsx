@@ -68,6 +68,7 @@ import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
+import { commandTranscriptFor, type CommandTranscriptItem } from "./command-transcript"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -710,10 +711,71 @@ function ArtifactDock({
           {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
         </TabsContent>
         <TabsContent value="comments" className="p-4 text-muted-foreground">2 open annotations</TabsContent>
-        <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
+        <TabsContent value="terminal" className="min-h-0 bg-code">
+          <CommandTranscript snapshot={snapshot} />
+        </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
     </aside>
+  )
+}
+
+const commandStatusVariant: Record<
+  CommandTranscriptItem["status"],
+  "warning" | "success" | "destructive" | "outline"
+> = {
+  running: "warning",
+  completed: "success",
+  failed: "destructive",
+  declined: "outline",
+}
+
+function CommandTranscript({ snapshot }: { snapshot: WorkspaceSnapshot }) {
+  const commands = commandTranscriptFor(snapshot)
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
+  const running = commands.some((command) => command.status === "running")
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-code">
+      <div className="flex min-h-10 items-center gap-2 border-b px-3 font-machine text-[10px] text-muted-foreground">
+        <span
+          aria-label={running ? "Command running" : "Command transcript idle"}
+          className={cn("size-1.5 rounded-full", running ? "bg-warning motion-safe:animate-pulse" : "bg-success")}
+        />
+        <span className="truncate">agent commands · {snapshot.machine.name} · {active?.workspacePath ?? snapshot.project?.path ?? "No workspace"}</span>
+        <span className="ml-auto shrink-0 text-faint">read-only</span>
+      </div>
+      <ScrollArea className="min-h-0 flex-1">
+        {commands.length ? (
+          <div className="divide-y divide-border">
+            {commands.map((command) => (
+              <section key={command.id} className="px-3 py-3 font-machine text-[11px] leading-relaxed">
+                <div className="flex items-start gap-2">
+                  <span aria-hidden="true" className="mt-0.5 text-primary">❯</span>
+                  <code className="min-w-0 flex-1 break-words text-foreground">{command.title}</code>
+                  <Badge variant={commandStatusVariant[command.status]} className="h-4 px-1.5 font-machine text-[8px] uppercase tracking-wide">
+                    {command.status}
+                  </Badge>
+                </div>
+                {command.output ? (
+                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words border-l border-border pl-3 text-[10px] text-muted-foreground">
+                    {command.output}
+                  </pre>
+                ) : null}
+              </section>
+            ))}
+          </div>
+        ) : (
+          <Empty className="min-h-full border-0">
+            <EmptyHeader>
+              <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
+              <EmptyTitle>No agent commands yet</EmptyTitle>
+              <EmptyDescription>Commands and their output appear here when the agent runs them.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </ScrollArea>
+    </div>
   )
 }
 
