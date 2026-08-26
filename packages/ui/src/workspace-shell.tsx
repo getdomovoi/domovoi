@@ -34,6 +34,14 @@ import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./components/ui/card"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -68,6 +76,7 @@ import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
+import { annotationsForActiveSession } from "./annotations"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -669,6 +678,8 @@ function ArtifactDock({
     (artifact) => artifact.type === "preview" && artifact.path && artifact.mimeType === "text/html",
   )
   const diff = sessionArtifacts.findLast((artifact) => artifact.type === "diff")
+  const annotations = annotationsForActiveSession(snapshot)
+  const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
 
   return (
     <aside className="flex h-full min-w-0 flex-col bg-sidebar">
@@ -678,7 +689,10 @@ function ArtifactDock({
             <TabsTrigger value="plan"><FileTextIcon />Plan</TabsTrigger>
             <TabsTrigger value="changes"><FileDiffIcon />Changes</TabsTrigger>
             <TabsTrigger value="preview"><CodeXmlIcon />Preview</TabsTrigger>
-            <TabsTrigger value="comments"><MessageSquareTextIcon />Comments</TabsTrigger>
+            <TabsTrigger value="comments">
+              <MessageSquareTextIcon />Comments
+              {openAnnotations.length ? <Badge variant="outline" className="h-4 px-1 text-[8px]">{openAnnotations.length}</Badge> : null}
+            </TabsTrigger>
             <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
             <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
@@ -709,7 +723,48 @@ function ArtifactDock({
         <TabsContent value="changes" className="min-h-0 overflow-auto p-4 font-machine text-[11px] text-muted-foreground">
           {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
         </TabsContent>
-        <TabsContent value="comments" className="p-4 text-muted-foreground">2 open annotations</TabsContent>
+        <TabsContent value="comments" className="min-h-0">
+          <ScrollArea className="h-full">
+            {annotations.length ? (
+              <div className="flex flex-col gap-3 p-3">
+                {annotations.map((annotation) => (
+                  <Card key={annotation.id} size="sm">
+                    <CardHeader>
+                      <CardTitle className="text-[12px] leading-relaxed">{annotation.body}</CardTitle>
+                      <CardDescription className="font-machine text-[9px]">
+                        {annotation.origin} · {annotation.variantId ?? annotation.artifactId}
+                      </CardDescription>
+                      <CardAction>
+                        <Badge variant={annotation.status === "open" ? "warning" : "success"}>{annotation.status}</Badge>
+                      </CardAction>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <div className="rounded-md border bg-code px-2.5 py-2 font-machine text-[9px] leading-relaxed text-muted-foreground">
+                        {annotation.anchor.textQuote
+                          ? `“${annotation.anchor.textQuote}”`
+                          : annotation.anchor.cssSelector ?? "Visual selection"}
+                      </div>
+                      {annotation.thread.map((reply) => (
+                        <div key={reply.id} className="border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
+                          <span className="font-machine text-[9px] text-faint">{reply.origin}</span><br />
+                          {reply.body}
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Empty className="min-h-full border-0">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon"><MessageSquareTextIcon /></EmptyMedia>
+                  <EmptyTitle>No annotations yet</EmptyTitle>
+                  <EmptyDescription>Comments anchored to plans and previews appear here.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )}
+          </ScrollArea>
+        </TabsContent>
         <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>

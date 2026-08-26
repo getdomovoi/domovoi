@@ -18,6 +18,10 @@ export type WorkspaceStoreOptions = {
   legacySnapshots?: WorkspaceSnapshot[]
 }
 
+function legacyFingerprint(snapshot: WorkspaceSnapshot): string {
+  return JSON.stringify({ ...snapshot, annotations: [] })
+}
+
 export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly path: string
   #database: DatabaseSync
@@ -38,9 +42,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
-    const isLegacySeed = existing && options.legacySnapshots?.some(
-      (snapshot) => existing.snapshot === JSON.stringify(workspaceSnapshotSchema.parse(snapshot)),
-    )
+    const existingSnapshot = existing
+      ? workspaceSnapshotSchema.parse(JSON.parse(existing.snapshot))
+      : undefined
+    const isLegacySeed = existingSnapshot?.annotations.length === 0 &&
+      options.legacySnapshots?.some(
+        (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
+          workspaceSnapshotSchema.parse(snapshot),
+        ),
+      )
     if (!existing || isLegacySeed) this.save(initial)
   }
 

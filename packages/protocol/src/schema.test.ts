@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  annotationSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
   createEmptyWorkspace,
@@ -13,6 +14,60 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("validates anchored annotation threads", () => {
+    const annotation = {
+      id: "annotation-1",
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      anchor: {
+        cssSelector: "main > section:nth-child(2)",
+        textQuote: "Apply the migration",
+        bbox: { x: 40, y: 120, width: 280, height: 48 },
+      },
+      body: "Run this step on staging first.",
+      status: "open",
+      origin: "tablet",
+      thread: [{
+        id: "annotation-reply-1",
+        body: "Agreed. I will revise the plan.",
+        origin: "desktop",
+        createdAt: "2026-08-25T22:00:00.000Z",
+      }],
+      createdAt: "2026-08-25T21:55:00.000Z",
+      updatedAt: "2026-08-25T22:00:00.000Z",
+    }
+
+    expect(annotationSchema.parse(annotation)).toEqual(annotation)
+    expect(annotationSchema.safeParse({
+      ...annotation,
+      anchor: {},
+    }).success).toBe(false)
+  })
+
+  it("upgrades snapshots that predate annotation state", () => {
+    const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    delete legacy.annotations
+
+    expect(workspaceSnapshotSchema.parse(legacy).annotations).toEqual([])
+  })
+
+  it("rejects annotations detached from their session artifact", () => {
+    const detached = structuredClone(demoWorkspace)
+    detached.annotations[0]!.artifactId = "artifact-missing"
+    expect(workspaceSnapshotSchema.safeParse(detached).success).toBe(false)
+
+    const crossed = structuredClone(demoWorkspace)
+    crossed.artifacts.push({
+      id: "artifact-onboarding",
+      sessionId: "session-onboarding",
+      title: "Onboarding preview",
+      type: "preview",
+      revision: 1,
+    })
+    crossed.annotations[0]!.artifactId = "artifact-onboarding"
+    expect(workspaceSnapshotSchema.safeParse(crossed).success).toBe(false)
+  })
+
   it("represents a machine before a project is opened", () => {
     const empty = createEmptyWorkspace(demoWorkspace.machine)
 

@@ -147,6 +147,41 @@ export const artifactSchema = z.object({
   content: z.string().optional(),
 })
 
+export const annotationAnchorSchema = z.object({
+  cssSelector: z.string().min(1).optional(),
+  textQuote: z.string().min(1).optional(),
+  bbox: z.object({
+    x: z.number().nonnegative(),
+    y: z.number().nonnegative(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }).optional(),
+}).refine(
+  (anchor) => Boolean(anchor.cssSelector || anchor.textQuote || anchor.bbox),
+  { message: "An annotation anchor requires a selector, quote, or bounding box" },
+)
+
+export const annotationReplySchema = z.object({
+  id: z.string().min(1),
+  body: z.string().min(1),
+  origin: clientKindSchema,
+  createdAt: z.string().datetime(),
+})
+
+export const annotationSchema = z.object({
+  id: z.string().min(1),
+  sessionId: z.string().min(1),
+  artifactId: z.string().min(1),
+  variantId: z.string().min(1).optional(),
+  anchor: annotationAnchorSchema,
+  body: z.string().min(1),
+  status: z.enum(["open", "resolved"]),
+  origin: clientKindSchema,
+  thread: z.array(annotationReplySchema),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+})
+
 export const workspaceSnapshotSchema = z.object({
   protocolVersion: z.literal(protocolVersion),
   machine: machineSchema,
@@ -157,7 +192,20 @@ export const workspaceSnapshotSchema = z.object({
   approvalRules: z.array(approvalRuleSchema),
   thread: z.array(threadItemSchema),
   artifacts: z.array(artifactSchema),
+  annotations: z.array(annotationSchema).default([]),
 }).superRefine((snapshot, context) => {
+  snapshot.annotations.forEach((annotation, index) => {
+    const artifact = snapshot.artifacts.find(
+      (candidate) => candidate.id === annotation.artifactId,
+    )
+    if (!artifact || artifact.sessionId !== annotation.sessionId) {
+      context.addIssue({
+        code: "custom",
+        message: "Annotation artifact must belong to the same session",
+        path: ["annotations", index, "artifactId"],
+      })
+    }
+  })
   if (snapshot.project !== null) return
   const populatedFields = [
     snapshot.sessions,
@@ -165,6 +213,7 @@ export const workspaceSnapshotSchema = z.object({
     snapshot.approvalRules,
     snapshot.thread,
     snapshot.artifacts,
+    snapshot.annotations,
   ]
   if (snapshot.activeSessionId !== null || populatedFields.some((field) => field.length > 0)) {
     context.addIssue({
@@ -186,4 +235,5 @@ export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>
 export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
+export type Annotation = z.infer<typeof annotationSchema>
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>

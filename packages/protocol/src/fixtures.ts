@@ -14,6 +14,7 @@ export function createEmptyWorkspace(machine: Machine): WorkspaceSnapshot {
     approvalRules: [],
     thread: [],
     artifacts: [],
+    annotations: [],
   }
 }
 
@@ -153,6 +154,44 @@ export const demoWorkspace: WorkspaceSnapshot = {
       title: "Replay operations preview",
       type: "preview",
       revision: 2,
+    },
+  ],
+  annotations: [
+    {
+      id: "annotation-migration-machine",
+      sessionId: "session-billing",
+      artifactId: "artifact-plan",
+      anchor: {
+        textQuote: "Apply the migration",
+        cssSelector: "section.plan > li:nth-child(3)",
+      },
+      body: "Run this migration on the WSL staging machine first.",
+      status: "open",
+      origin: "tablet",
+      thread: [{
+        id: "annotation-reply-agent",
+        body: "I will revise step three before continuing.",
+        origin: "desktop",
+        createdAt: "2026-08-25T21:51:00.000Z",
+      }],
+      createdAt: "2026-08-25T21:49:00.000Z",
+      updatedAt: "2026-08-25T21:51:00.000Z",
+    },
+    {
+      id: "annotation-replay-copy",
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      variantId: "variant-b",
+      anchor: {
+        textQuote: "Replay operations",
+        bbox: { x: 80, y: 164, width: 320, height: 56 },
+      },
+      body: "Keep this status visible while replay is running.",
+      status: "open",
+      origin: "phone",
+      thread: [],
+      createdAt: "2026-08-25T21:50:00.000Z",
+      updatedAt: "2026-08-25T21:50:00.000Z",
     },
   ],
 }
