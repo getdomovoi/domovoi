@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.145 0.004 285); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: oklch(0.78 0.14 275); text-decoration: none; }
+  a:hover { color: oklch(0.87 0.1 275); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); border-radius: 0; }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%);
+    border-radius: 11px; border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:active { background: var(--primary); background-clip: content-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / .45); } 70% { box-shadow: 0 0 0 8px oklch(0.72 0.17 275 / 0); } 100% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / 0); } }
+</style>
+</helmet>
+<div style="--background: oklch(0.145 0.004 285); --sidebar: oklch(0.175 0.005 285); --card: oklch(0.195 0.006 285); --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --foreground: oklch(0.97 0.003 285); --muted-foreground: oklch(0.68 0.01 285); --faint: oklch(0.55 0.01 285); --border: oklch(0.29 0.008 285); --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275); --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --radius: 0.65rem; min-height: 100vh; background: var(--background); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="position: sticky; top: 0; z-index: 40; backdrop-filter: blur(14px); background: oklch(0.145 0.004 285 / .82); border-bottom: 1px solid var(--border);">
+    <div style="max-width: 1180px; margin: 0 auto; padding: 0 32px; height: 62px; display: flex; align-items: center; gap: 26px;">
+      <div style="display: flex; align-items: center; gap: 9px;">
+        <span style="width: 17px; height: 17px; border-radius: 5px; background: var(--primary); display: block;"></span>
+        <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 22px; font-size: 13px; color: var(--muted-foreground);">
+        <sc-for list="{{ nav }}" as="n" hint-placeholder-count="5">
+          <span style="cursor: pointer;" style-hover="color: var(--foreground);">{{ n }}</span>
+        </sc-for>
+      </div>
+      <div style="flex: 1;"></div>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--faint);">v0.14.2</span>
+      <span style="font-size: 13px; color: var(--muted-foreground); cursor: pointer;" style-hover="color: var(--foreground);">GitHub</span>
+      <span style="padding: 8px 15px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 12.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Install</span>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 92px 32px 0;">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 6px 13px; border: 1px solid var(--border); border-radius: 999px; width: fit-content;">
+      <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--success);"></span>
+      <span style="font-size: 12px; color: var(--muted-foreground);">Apache 2.0 core · bring your own agents and keys</span>
+    </div>
+    <div style="font-size: 62px; font-weight: 600; letter-spacing: -.035em; line-height: 1.03; margin-top: 26px; max-width: 830px; text-wrap: pretty;">Your agents run on your machines. Domovoi is the window into all of them.</div>
+    <div style="font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-size: 21px; color: var(--primary); margin-top: 20px;">A good spirit lives in your machines.</div>
+    <div style="font-size: 16.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 18px; max-width: 640px; text-wrap: pretty;">Install a daemon on a laptop, a WSL distribution, or a dev server. Each one runs agent sessions locally and reports what it is doing. You start work, read the transcript, review the diff, approve or refuse the risky parts, all from whichever device you happen to be holding.</div>
+
+    <div style="display: flex; align-items: center; gap: 12px; margin-top: 34px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 12px; padding: 13px 16px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--faint);">$</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">curl -fsSL domovoi.sh/install.sh | sh</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); cursor: pointer; margin-left: 6px;">copy</span>
+      </div>
+      <span style="padding: 13px 20px; background: var(--primary); border-radius: var(--radius); font-size: 13.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Download for macOS</span>
+      <span style="padding: 13px 18px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Windows · Linux · Web</span>
+    </div>
+
+    <div style="margin-top: 58px; border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card);">
+      <div style="height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 13px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
+        <span style="width: 9px; height: 9px; border-radius: 50%; background: var(--muted);"></span>
+        <span style="width: 9px; height: 9px; border-radius: 50%; background: var(--muted);"></span>
+        <span style="width: 9px; height: 9px; border-radius: 50%; background: var(--muted);"></span>
+        <span style="flex: 1;"></span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">domovoi · acme-api · macbook-pro-m3</span>
+      </div>
+      <div style="height: 430px; background-image: repeating-linear-gradient(135deg, oklch(0.235 0.006 285) 0px, oklch(0.235 0.006 285) 8px, oklch(0.205 0.006 285) 8px, oklch(0.205 0.006 285) 16px); display: flex; align-items: center; justify-content: center;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: .08em; line-height: 2; color: var(--muted-foreground); text-align: center; white-space: pre-line;">[ product shot · desktop workspace ]
+thread · plan-preview · approval card · diff
+1560 × 980</span>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin-top: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+      <sc-for list="{{ stats }}" as="s" hint-placeholder-count="4">
+        <div style="padding: 20px 22px; background: var(--background);">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 22px; color: var(--foreground);">{{ s.v }}</div>
+          <div style="font-size: 12px; line-height: 1.5; color: var(--muted-foreground); margin-top: 7px;">{{ s.k }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">LOCAL-FIRST ARCHITECTURE</div>
+    <div style="font-size: 38px; font-weight: 600; letter-spacing: -.025em; margin-top: 14px; max-width: 700px; text-wrap: pretty;">The machine that has the code does the work.</div>
+    <div style="font-size: 15px; line-height: 1.7; color: var(--muted-foreground); margin-top: 14px; max-width: 620px; text-wrap: pretty;">A headless daemon holds the session: the provider runtime it spawned, the PTY it opened, the worktree it is editing, the permissions it must respect, and the audit log it appends to. What reaches your screen is a stream of structured events describing all of that. The screen never holds the repository.</div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 36px;">
+      <sc-for list="{{ arch }}" as="a" hint-placeholder-count="3">
+        <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 16px;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="{{ a.dotStyle }}"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .08em; color: var(--faint);">{{ a.tag }}</span>
+          </div>
+          <div style="font-size: 16px; font-weight: 500; margin-top: 14px;">{{ a.title }}</div>
+          <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); margin-top: 8px;">{{ a.body }}</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.9; color: var(--faint); margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); white-space: pre-line;">{{ a.list }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 14px; padding: 16px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; flex-wrap: wrap;">
+      <span style="font-size: 12.5px; color: var(--muted-foreground);">Connection preference, in order:</span>
+      <sc-for list="{{ transports }}" as="t" hint-placeholder-count="5">
+        <span style="{{ t.style }}">{{ t.label }}</span>
+      </sc-for>
+      <span style="flex: 1;"></span>
+      <span style="font-size: 12px; color: var(--faint);">Domovoi Cloud only when nothing direct is available.</span>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">YOUR ACCOUNTS, YOUR KEYS</div>
+    <div style="font-size: 38px; font-weight: 600; letter-spacing: -.025em; margin-top: 14px; max-width: 760px; text-wrap: pretty;">Domovoi drives the agent CLIs already installed on your machines.</div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 32px;">
+      <div style="padding: 22px 24px; background: var(--card); border: 1px solid var(--border); border-radius: 16px;">
+        <div style="font-size: 15.5px; font-weight: 500;">Subscription runtimes</div>
+        <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); margin-top: 8px;">The provider's own CLI holds its own credential and talks to its own service. Domovoi drives the installed binary over its machine-readable protocol.</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
+          <sc-for list="{{ subs }}" as="p" hint-placeholder-count="6">
+            <span style="display: flex; align-items: center; gap: 7px; padding: 6px 11px; border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted-foreground);">
+              <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--success);"></span>{{ p }}
+            </span>
+          </sc-for>
+        </div>
+      </div>
+      <div style="padding: 22px 24px; background: var(--card); border: 1px solid var(--border); border-radius: 16px;">
+        <div style="font-size: 15.5px; font-weight: 500;">Direct API · BYOK</div>
+        <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); margin-top: 8px;">Keys go into the OS keychain on the machine that uses them. Never sent to another client, never held by Domovoi Cloud.</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
+          <sc-for list="{{ apis }}" as="p2" hint-placeholder-count="5">
+            <span style="padding: 6px 11px; border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted-foreground);">{{ p2 }}</span>
+          </sc-for>
+        </div>
+        <div style="font-size: 12px; line-height: 1.6; color: var(--faint); margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);">Switch models mid-project. Where the provider supports native in-session switching, Domovoi uses it. Where it does not, a checkpointed handoff carries the thread, plan, worktree, diff, test results and annotations across. We never claim to move hidden reasoning or provider caches.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">PREVIEW AND ANNOTATE</div>
+    <div style="font-size: 38px; font-weight: 600; letter-spacing: -.025em; margin-top: 14px; max-width: 720px; text-wrap: pretty;">Generated HTML opens in a sandbox, and you can write on it.</div>
+    <div style="font-size: 15px; line-height: 1.7; color: var(--muted-foreground); margin-top: 14px; max-width: 620px; text-wrap: pretty;">plan-preview, design-studio and repo-audit emit ordinary HTML documents. Domovoi renders them byte-for-byte inside an isolated view with no Node access, its own storage partition, permission requests refused, and a separate trust boundary for every document. Click an element to leave a comment on it.</div>
+
+    <div style="display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; margin-top: 32px;">
+      <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card);">
+        <div style="height: 300px; background-image: repeating-linear-gradient(135deg, oklch(0.235 0.006 285) 0px, oklch(0.235 0.006 285) 8px, oklch(0.205 0.006 285) 8px, oklch(0.205 0.006 285) 16px); display: flex; align-items: center; justify-content: center; position: relative;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .08em; color: var(--muted-foreground); text-align: center; white-space: pre-line;">[ product shot · annotated preview ]
+element picker · variant filmstrip</span>
+          <span style="position: absolute; left: 42px; top: 62px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;">1</span>
+          <span style="position: absolute; right: 58px; bottom: 74px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;">2</span>
+        </div>
+        <div style="padding: 16px 20px; display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border);">
+          <span style="font-size: 12.5px; color: var(--muted-foreground);">Every annotation is a structured object holding a selector, a text quote, a bounding box and a screenshot crop. Layered anchors like that survive re-renders and travel between clients.</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <sc-for list="{{ previewFeatures }}" as="pf" hint-placeholder-count="5">
+          <div style="padding: 15px 18px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+            <div style="font-size: 13.5px; font-weight: 500;">{{ pf.t }}</div>
+            <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 5px;">{{ pf.d }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">EVERY SURFACE</div>
+    <div style="font-size: 38px; font-weight: 600; letter-spacing: -.025em; margin-top: 14px; max-width: 700px; text-wrap: pretty;">The session you left on your laptop opens on the device in your hand.</div>
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 32px;">
+      <sc-for list="{{ surfaces }}" as="sf" hint-placeholder-count="4">
+        <div style="background: var(--card); border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+          <div style="{{ sf.shotStyle }}">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .06em; color: var(--faint); text-align: center; white-space: pre-line;">{{ sf.shot }}</span>
+          </div>
+          <div style="padding: 16px 18px;">
+            <div style="font-size: 14px; font-weight: 500;">{{ sf.t }}</div>
+            <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">{{ sf.d }}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">SECURITY BOUNDARIES</div>
+    <div style="font-size: 38px; font-weight: 600; letter-spacing: -.025em; margin-top: 14px; max-width: 700px; text-wrap: pretty;">Before anything irreversible happens, you get the details and a choice.</div>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 32px;">
+      <sc-for list="{{ security }}" as="sec" hint-placeholder-count="6">
+        <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="{{ sec.dotStyle }}"></span>
+            <span style="font-size: 13.5px; font-weight: 500;">{{ sec.t }}</span>
+          </div>
+          <div style="font-size: 12.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 8px;">{{ sec.d }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="margin-top: 14px; padding: 18px 22px; border: 1px solid var(--border); border-radius: 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+      <span style="font-size: 12.5px; color: var(--muted-foreground);">Permission modes:</span>
+      <sc-for list="{{ modes }}" as="pm" hint-placeholder-count="3">
+        <span style="{{ pm.style }}">{{ pm.label }}</span>
+      </sc-for>
+      <span style="font-size: 12.5px; color: var(--faint);">plus Auto as its own switch, and destructive, privileged, secret, deploy, publish and out-of-project actions always ask.</span>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+      <div style="padding: 26px 28px; background: var(--card); border: 1px solid var(--border); border-radius: 16px;">
+        <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">OPEN CORE</div>
+        <div style="font-size: 25px; font-weight: 600; letter-spacing: -.02em; margin-top: 12px;">Everything that runs on your hardware is Apache 2.0.</div>
+        <div style="font-size: 13px; line-height: 1.7; color: var(--muted-foreground); margin-top: 12px;">Daemon, protocol, CLI, desktop and web clients, local and tailnet connectivity, skills, previews, annotations, provider adapters. Clone it, audit it, run it on your own boxes. The parts that touch your code are the parts you can read.</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.95; color: var(--faint); margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); white-space: pre-line;">github.com/getdomovoi/domovoi
+@getdomovoi/cli · daemon · protocol · sdk</div>
+      </div>
+      <div style="padding: 26px 28px; border: 1px dashed var(--border); border-radius: 16px;">
+        <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">OPTIONAL PAID SERVICES</div>
+        <div style="font-size: 25px; font-weight: 600; letter-spacing: -.02em; margin-top: 12px;">Services you are free to decline.</div>
+        <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 16px;">
+          <sc-for list="{{ paid }}" as="pd" hint-placeholder-count="6">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="width: 5px; height: 5px; border-radius: 50%; background: var(--primary);"></span>
+              <span style="font-size: 13px; color: var(--muted-foreground);">{{ pd }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 112px 32px 0;">
+    <div style="font-size: 11px; letter-spacing: .14em; color: var(--faint);">INSTALL</div>
+    <div style="font-size: 38px; font-weight: 600; letter-spacing: -.025em; margin-top: 14px;">However you prefer to install things.</div>
+    <div style="display: flex; gap: 6px; margin-top: 26px; flex-wrap: wrap;">
+      <sc-for list="{{ installTabs }}" as="it" hint-placeholder-count="6">
+        <div onClick="{{ it.pick }}" style="{{ it.style }}">{{ it.label }}</div>
+      </sc-for>
+    </div>
+    <div style="margin-top: 14px; padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 16px;">
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 2.1; color: var(--foreground); white-space: pre-line;">{{ installCmd }}</div>
+      <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);">{{ installNote }}</div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 14px;">
+      <sc-for list="{{ platforms }}" as="pl" hint-placeholder-count="3">
+        <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="font-size: 13.5px; font-weight: 500;">{{ pl.t }}</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.9; color: var(--muted-foreground); margin-top: 9px; white-space: pre-line;">{{ pl.d }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="max-width: 1180px; margin: 0 auto; padding: 100px 32px 40px;">
+    <div style="padding: 44px 40px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; display: flex; align-items: center; gap: 30px; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 300px;">
+        <div style="font-size: 30px; font-weight: 600; letter-spacing: -.025em;">Start with one machine.</div>
+        <div style="font-size: 14px; line-height: 1.65; color: var(--muted-foreground); margin-top: 10px; max-width: 480px;">The daemon takes about a minute to install and pairs with a six-word phrase. Add the other machines whenever you get to them.</div>
+      </div>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <span style="padding: 13px 22px; background: var(--primary); border-radius: var(--radius); font-size: 13.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Get started</span>
+        <span style="padding: 13px 20px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Read the docs</span>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: flex-start; gap: 60px; margin-top: 56px; padding-top: 34px; border-top: 1px solid var(--border); flex-wrap: wrap;">
+      <div style="min-width: 220px;">
+        <div style="display: flex; align-items: center; gap: 9px;">
+          <span style="width: 15px; height: 15px; border-radius: 4px; background: var(--primary); display: block;"></span>
+          <span style="font-size: 14px; font-weight: 600;">Domovoi</span>
+        </div>
+        <div style="font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-size: 14px; color: var(--faint); margin-top: 10px;">A good spirit lives in your machines.</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint); margin-top: 16px;">domovoi.sh · getdomovoi</div>
+      </div>
+      <sc-for list="{{ footer }}" as="fc" hint-placeholder-count="4">
+        <div>
+          <div style="font-size: 11px; letter-spacing: .12em; color: var(--faint);">{{ fc.h }}</div>
+          <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 14px;">
+            <sc-for list="{{ fc.items }}" as="fi" hint-placeholder-count="4">
+              <span style="font-size: 13px; color: var(--muted-foreground); cursor: pointer;" style-hover="color: var(--foreground);">{{ fi }}</span>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+class Component extends DCLogic {
+  state = { install: 0 };
+
+  dot(c, s) {
+    return "width: " + (s || 7) + "px; height: " + (s || 7) + "px; flex: 0 0 " + (s || 7) + "px; border-radius: 50%; background: " + c + ";";
+  }
+
+  renderVals() {
+    const st = this.state;
+    const installs = [
+      { label: "shell", cmd: "curl -fsSL https://domovoi.sh/install.sh | sh\ndomovoi daemon install\ndomovoi pair", note: "Version-pinned and checksummed. It installs the daemon as a systemd, launchd or Windows service, then prints a pairing phrase." },
+      { label: "npm", cmd: "npm i -g @getdomovoi/cli\ndomovoi daemon install", note: "Also works with pnpm add -g and bun add -g. The CLI pulls the matching daemon build for your platform." },
+      { label: "Homebrew", cmd: "brew install getdomovoi/tap/domovoi\nbrew services start domovoi", note: "macOS and Linuxbrew. The cask domovoi-desktop installs the app. The formula installs daemon and CLI only, which is what you want on a headless server." },
+      { label: "AUR", cmd: "yay -S domovoi-bin\nsystemctl --user enable --now domovoi", note: "domovoi-bin tracks releases and domovoi-git builds from main. Both ship the systemd user unit." },
+      { label: "Winget", cmd: "winget install getdomovoi.Domovoi\ndomovoi open .", note: "Installs the Windows app plus the WSL shim. Run domovoi open . inside a distro to attach this window to that distro's daemon." },
+      { label: "Docker", cmd: "docker run -d --name domovoi \\\n  -v $PWD:/work ghcr.io/getdomovoi/daemon:0.14.2", note: "Daemon only, for CI boxes and remote hosts. Pair it from any client. The container never needs an inbound port." }
+    ];
+
+    return {
+      nav: ["How it works", "Providers", "Previews", "Security", "Open core", "Docs"],
+      stats: [
+        { v: "1 daemon", k: "on every machine: laptops, WSL distributions, servers, cloud VMs" },
+        { v: "6 runtimes", k: "Claude Code, Codex, Cursor Agent, OpenCode, Grok, Kilo" },
+        { v: "BYOK", k: "your own subscriptions and API keys, stored locally" },
+        { v: "Apache 2.0", k: "daemon, protocol, CLI and both clients" }
+      ],
+      arch: [
+        { tag: "ON EACH MACHINE", title: "The daemon", body: "Headless Node service over WebSocket and JSON-RPC. It owns everything consequential.", list: "agent sessions · provider runtimes\nPTYs · tool execution · permissions\nworktrees · diffs · skills\npreviews · annotations · audit log", dotColor: "var(--primary)" },
+        { tag: "BETWEEN THEM", title: "The protocol", body: "Structured events, not screen scraping. Payloads stay end-to-end encrypted and daemon tokens are revocable.", list: "state + event streams\nfile contents and diffs\nterminal streams\npreview documents", dotColor: "var(--success)" },
+        { tag: "IN YOUR HANDS", title: "The clients", body: "Desktop, browser, phone and tablet render the same session. None of them hold your code.", list: "Electron · React · Tailwind v4\nshadcn/ui + Radix primitives\nxterm.js terminals\nPWA support in the browser", dotColor: "var(--warning)" }
+      ].map(a => ({ ...a, dotStyle: this.dot(a.dotColor) })),
+      transports: ["this machine", "LAN", "tailnet", "SSH", "Domovoi Cloud"].map((label, i) => ({
+        label,
+        style: "font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 5px 11px; border-radius: 999px; border: 1px solid " +
+          (i === 0 ? "var(--primary)" : "var(--border)") + "; color: " + (i === 0 ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+      subs: ["claude-code", "codex", "cursor-agent", "opencode", "grok", "kilo"],
+      apis: ["OpenAI", "Anthropic", "OpenRouter", "Google", "any OpenAI-compatible"],
+      previewFeatures: [
+        { t: "Live reload", d: "The artifact updates as the agent works. Pin it to hold a version while it keeps going." },
+        { t: "Variants side by side", d: "Filmstrip or split view, responsive width presets, zoom and fit, full-screen review." },
+        { t: "Element picker", d: "Click any element to open an annotation thread anchored to it." },
+        { t: "Focus on this design", d: "Pick a preferred variant and send the agent back in with your unresolved comments." },
+        { t: "Same threads everywhere", d: "Open, resolve or reopen a comment from desktop, browser, phone or tablet." }
+      ],
+      surfaces: [
+        { t: "Desktop", d: "Electron app for macOS, Windows and Linux. Custom or system window decorations, native keychain and notifications.", shot: "[ desktop ]\nworkspace", h: 150 },
+        { t: "Browser", d: "Hosted client with passkeys. Sign in from a guest machine or an iPad and reach your fleet.", shot: "[ browser ]\nfleet + workspace", h: 150 },
+        { t: "Phone", d: "iOS and Android. Approvals, previews, annotations, session control and push notifications.", shot: "[ phone ]\napprovals", h: 150 },
+        { t: "Tablet", d: "iPad and Android tablets get the full review surface: variants, annotations, diffs and terminal.", shot: "[ tablet ]\nreview", h: 150 }
+      ].map(s => ({
+        t: s.t, d: s.d, shot: s.shot,
+        shotStyle: "height: 150px; display: flex; align-items: center; justify-content: center; background-image: repeating-linear-gradient(135deg, oklch(0.235 0.006 285) 0px, oklch(0.235 0.006 285) 7px, oklch(0.205 0.006 285) 7px, oklch(0.205 0.006 285) 14px);"
+      })),
+      security: [
+        { t: "Approvals with facts", d: "Exact command, working directory, files touched, network reach, machine, estimated duration, requesting agent and permission mode. All of it before you decide.", c: "var(--warning)" },
+        { t: "Isolated worktrees", d: "Build sessions run in their own Git worktree. Your checkout is never mutated behind your back.", c: "var(--success)" },
+        { t: "Checkpoints", d: "Taken before consequential work and every provider handoff. Restore the tree, not just the chat.", c: "var(--primary)" },
+        { t: "Sandboxed previews", d: "No Node access, isolated storage partition, blocked permission requests, controlled navigation, per-document trust boundary.", c: "var(--success)" },
+        { t: "Credentials stay put", d: "Provider CLIs own their own auth. BYOK keys live in the OS keychain and never cross the wire.", c: "var(--primary)" },
+        { t: "Domovoi Cloud sees nothing", d: "When it relays, it is encrypted transport with no visibility into terminal content, files, prompts, output or credentials. Guest sessions are short-lived and revocable.", c: "var(--success)" }
+      ].map(s => ({ t: s.t, d: s.d, dotStyle: this.dot(s.c, 8) })),
+      modes: [
+        { label: "Ask", note: "every action" },
+        { label: "Plan", note: "reads only" },
+        { label: "Build", note: "mutations ask" }
+      ].map((m, i) => ({
+        label: m.label + " · " + m.note,
+        style: "font-size: 12px; padding: 6px 12px; border-radius: 999px; border: 1px solid " + (i === 2 ? "var(--primary)" : "var(--border)") +
+          "; color: " + (i === 2 ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+      paid: ["Hosted account service", "Domovoi Cloud, managed encrypted transport", "Encrypted key vault the server can't decrypt", "Team policy and shared fleets", "Hosted notifications", "Enterprise controls and billing"],
+      installTabs: installs.map((it, i) => ({
+        label: it.label,
+        pick: () => this.setState({ install: i }),
+        style: "padding: 8px 14px; border-radius: calc(var(--radius) - 2px); font-size: 12.5px; font-weight: 500; cursor: pointer; background: " +
+          (st.install === i ? "var(--accent)" : "transparent") + "; border: 1px solid " + (st.install === i ? "var(--border)" : "transparent") +
+          "; color: " + (st.install === i ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      installCmd: installs[st.install].cmd,
+      installNote: installs[st.install].note,
+      platforms: [
+        { t: "macOS", d: "13+ · arm64, x64\nlaunchd service\nKeychain integration" },
+        { t: "Windows", d: "10, 11 · x64, arm64\nWindows Service · ConPTY\nWSL2 shim: domovoi open ." },
+        { t: "Linux", d: "glibc 2.31+ · x64, arm64\nsystemd user or system unit\nDeb, RPM, AUR, tarball" }
+      ],
+      footer: [
+        { h: "PRODUCT", items: ["Desktop app", "Web client", "Mobile", "Skills", "Changelog"] },
+        { h: "DEVELOP", items: ["Documentation", "Protocol spec", "SDK", "Self-hosting", "Contributing"] },
+        { h: "PROJECT", items: ["GitHub", "Roadmap", "Security policy", "License", "Status"] }
+      ]
+    };
+  }
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: oklch(0.78 0.14 275); text-decoration: none; }
+  a:hover { color: oklch(0.87 0.1 275); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); }
+  ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%); border-radius: 11px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240);
+    --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .6);
+    --popover: var(--card); --ring: var(--primary); --radius: 0.65rem;
+  }
+</style>
+</helmet>
+<div class="dv-dark" style="min-height: 100vh; padding: 40px 44px 64px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="max-width: 1240px; margin: 0 auto;">
+    <div style="display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap;">
+      <div>
+        <div style="font-size: 11px; letter-spacing: .16em; color: var(--primary);">DOMOVOI · FOUNDATIONS</div>
+        <div style="font-size: 30px; font-weight: 600; letter-spacing: -.02em; margin-top: 10px;">One component system, five surfaces</div>
+        <div style="font-size: 13.5px; line-height: 1.7; color: var(--muted-foreground); margin-top: 10px; max-width: 720px; text-wrap: pretty;">Everything in this project is built from the shadcn/ui token contract with Radix primitives underneath, plus a small set of Domovoi additions for state the base set does not name. Desktop, browser, phone and tablet render the same objects from the same daemon events, so a decision made anywhere is the same decision everywhere.</div>
+      </div>
+      <span style="flex: 1;"></span>
+      <div style="display: flex; flex-direction: column; gap: 7px;">
+        <sc-for list="{{ surfaceLinks }}" as="sl" hint-placeholder-count="5">
+          <a href="{{ sl.href }}" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ sl.n }}</span>{{ sl.label }}
+          </a>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 34px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">01 · COLOR TOKENS</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground);">shadcn contract, both themes</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 18px;">
+      <sc-for list="{{ tokenGroups }}" as="tg" hint-placeholder-count="4">
+        <div style="padding: 16px 17px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="font-size: 12.5px; font-weight: 500;">{{ tg.title }}</div>
+          <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 5px;">{{ tg.note }}</div>
+          <div style="display: flex; flex-direction: column; gap: 7px; margin-top: 13px;">
+            <sc-for list="{{ tg.rows }}" as="tr" hint-placeholder-count="4">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                <span style="{{ tr.chipStyle }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">{{ tr.name }}</span>
+                <sc-if value="{{ tr.ours }}" hint-placeholder-val="{{ false }}">
+                  <span style="font-size: 8.5px; letter-spacing: .08em; padding: 2px 5px; border-radius: 4px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);">OURS</span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; margin-top: 12px;">
+      <div style="padding: 17px 19px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Why the additions exist</div>
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 13px;">
+          <sc-for list="{{ additions }}" as="ad" hint-placeholder-count="4">
+            <div style="display: flex; align-items: baseline; gap: 11px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--primary); flex: 0 0 168px;">{{ ad.k }}</span>
+              <span style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground); flex: 1;">{{ ad.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font-size: 11.5px; line-height: 1.65; color: var(--faint); margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border);">Every addition ships with a paired foreground, so a status surface can always be read. Tints are written as <span style="font-family: 'JetBrains Mono', monospace; color: var(--strong);">color-mix(in oklab, var(--warning) 18%, transparent)</span> rather than baked alpha, which is what lets light mode invert without washing out.</div>
+      </div>
+      <div style="padding: 17px 19px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">State to color, fixed mapping</div>
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 13px;">
+          <sc-for list="{{ semantics }}" as="se" hint-placeholder-count="6">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="{{ se.dotStyle }}"></span>
+              <span style="font-size: 12px; color: var(--strong); flex: 1;">{{ se.label }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ se.token }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">02 · TYPE, RADIUS, DENSITY</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 12px; margin-top: 18px;">
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Two families, one rule</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Instrument Sans for prose and UI. JetBrains Mono for anything a machine produced: paths, commands, models, SHAs, selectors, counts. Roboto replaces the sans on Android only.</div>
+        <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 15px;">
+          <sc-for list="{{ typeScale }}" as="ty" hint-placeholder-count="5">
+            <div style="display: flex; align-items: baseline; gap: 11px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint); flex: 0 0 54px;">{{ ty.size }}</span>
+              <span style="{{ ty.style }}">{{ ty.sample }}</span>
+              <span style="flex: 1;"></span>
+              <span style="font-size: 10px; color: var(--faint); white-space: nowrap;">{{ ty.use }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Radius from one root</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Everything derives from <span style="font-family: 'JetBrains Mono', monospace;">--radius: 0.65rem</span> through calc, so one value retunes the product.</div>
+        <div style="display: flex; align-items: flex-end; gap: 10px; margin-top: 16px;">
+          <sc-for list="{{ radii }}" as="rd" hint-placeholder-count="4">
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 7px;">
+              <span style="{{ rd.boxStyle }}"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); text-align: center; white-space: pre-line;">{{ rd.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Density per surface</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Same components, different minimum target. Nothing shrinks below the platform floor.</div>
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 15px;">
+          <sc-for list="{{ density }}" as="de" hint-placeholder-count="4">
+            <div style="display: flex; align-items: center; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 12px; color: var(--strong); flex: 1;">{{ de.k }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--primary);">{{ de.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">03 · PRIMITIVES</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground);">Radix behavior, Domovoi content</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px;">
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Popover and dropdown</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">One shell everywhere: <span style="font-family: 'JetBrains Mono', monospace;">--popover</span> fill, 1px border, <span style="font-family: 'JetBrains Mono', monospace;">--shadow-lg</span>, 4px item radius, hover on <span style="font-family: 'JetBrains Mono', monospace;">--accent</span>. Floating, never pushing layout.</div>
+        <div style="margin-top: 15px; padding: 5px; background: var(--popover); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 14px 40px var(--shadow-lg);">
+          <div style="padding: 6px 9px; font-size: 9.5px; letter-spacing: .1em; color: var(--faint);">REASONING</div>
+          <sc-for list="{{ menuDemo }}" as="md" hint-placeholder-count="3">
+            <div style="{{ md.style }}">
+              <span style="{{ md.markStyle }}">{{ md.mark }}</span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 12px;">{{ md.label }}</div>
+                <div style="font-size: 10.5px; color: var(--muted-foreground); margin-top: 2px;">{{ md.note }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Segmented and switch</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Permission mode is a three-way segmented control. Auto is a separate switch, because it is a different decision from the mode.</div>
+        <div style="display: flex; flex-direction: column; gap: 11px; margin-top: 16px;">
+          <div style="display: flex; gap: 3px; padding: 3px; background: var(--muted); border-radius: calc(var(--radius) - 2px); width: max-content;">
+            <sc-for list="{{ modeDemo }}" as="mo" hint-placeholder-count="3">
+              <div onClick="{{ mo.pick }}" style="{{ mo.style }}">{{ mo.label }}</div>
+            </sc-for>
+          </div>
+          <div onClick="{{ toggleAuto }}" style="{{ autoStyle }}">
+            <span style="{{ autoDotStyle }}"></span>
+            <span style="font-size: 12px;">Auto</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ autoState }}</span>
+          </div>
+          <div style="font-size: 11px; line-height: 1.6; color: var(--faint);">{{ autoNote }}</div>
+        </div>
+      </div>
+
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Status atoms</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Three shapes carry all machine state: a dot for liveness, a mono chip for identity, a pill for a live count.</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;">
+          <sc-for list="{{ atoms }}" as="at2" hint-placeholder-count="7">
+            <span style="{{ at2.style }}">
+              <sc-if value="{{ at2.dot }}" hint-placeholder-val="{{ true }}">
+                <span style="{{ at2.dotStyle }}"></span>
+              </sc-if>{{ at2.label }}
+            </span>
+          </sc-for>
+        </div>
+        <div style="font-size: 11px; line-height: 1.6; color: var(--faint); margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border);">A pulsing dot means work in flight. A solid dot means reachable and idle. Reduced motion drops the pulse and keeps the color.</div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Approval card</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">The one component that must read identically on a 390px phone and a 1920px desktop. Same seven facts, same three decisions, same amber frame.</div>
+        <div style="margin-top: 15px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius); overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 9px; padding: 11px 13px;">
+            <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning);"></span>
+            <span style="font-size: 12px; font-weight: 500; color: var(--warn-fg); flex: 1;">Approval needed</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--warn-border); color: var(--warning);">HARD GATE</span>
+          </div>
+          <div style="padding: 0 13px 11px;">
+            <div style="padding: 10px 12px; background: var(--code); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--warn-fg);">pnpm -w prisma migrate deploy</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 11px;">
+              <sc-for list="{{ approvalFacts }}" as="af" hint-placeholder-count="4">
+                <div>
+                  <div style="font-size: 8.5px; letter-spacing: .1em; color: var(--warn-dim);">{{ af.k }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-fg); margin-top: 2px;">{{ af.v }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display: flex; gap: 7px; margin-top: 13px;">
+              <span style="padding: 9px 14px; background: var(--warning); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; color: oklch(0.2 0.04 62);">Allow once</span>
+              <span style="padding: 9px 13px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-fg);">Always in this project</span>
+              <span style="padding: 9px 13px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-dim);">Deny</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Annotation</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">A structured object, not a chat line. Selector, text quote and bounding box are layered anchors, so it survives a re-render and opens on any client.</div>
+        <div style="margin-top: 15px; padding: 13px 14px; background: var(--background); border: 1px solid color-mix(in oklab, var(--primary) 30%, transparent); border-radius: var(--radius);">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="width: 18px; height: 18px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;">1</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); flex: 1;">section.plan &gt; li:nth-child(3)</span>
+            <span style="font-size: 8.5px; letter-spacing: .08em; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);">OPEN</span>
+          </div>
+          <div style="font-size: 12px; line-height: 1.55; color: var(--strong); margin-top: 9px;">Run the migration on the WSL box where the staging database lives.</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 11px;">
+            <sc-for list="{{ anchorChips }}" as="ac" hint-placeholder-count="4">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 3px 7px; border-radius: 4px; background: var(--muted); color: var(--muted-foreground);">{{ ac }}</span>
+            </sc-for>
+          </div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint); margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border);">iPad · 12:44 · thread 2 replies</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">04 · INFORMATION ARCHITECTURE</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1.25fr; gap: 12px; margin-top: 18px;">
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">The object graph</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Navigation on every surface is a path through these. Nothing else is a top-level noun.</div>
+        <div style="display: flex; flex-direction: column; gap: 0; margin-top: 14px;">
+          <sc-for list="{{ objects }}" as="ob" hint-placeholder-count="6">
+            <div style="{{ ob.rowStyle }}">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); flex: 0 0 96px;">{{ ob.k }}</span>
+              <span style="font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground); flex: 1;">{{ ob.v }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Same objects, different frame</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Surfaces differ in how much they hold at once, never in what exists.</div>
+        <div style="overflow-x: auto; margin-top: 14px;">
+          <div style="min-width: 560px;">
+            <div style="display: flex; gap: 10px; padding-bottom: 9px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint); flex: 1;">SURFACE</span>
+              <span style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint); flex: 0 0 108px;">SHELL</span>
+              <span style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint); flex: 0 0 96px;">PANES</span>
+              <span style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint); flex: 0 0 130px;">PROMOTES</span>
+            </div>
+            <sc-for list="{{ shells }}" as="sh" hint-placeholder-count="5">
+              <div style="display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border);">
+                <span style="font-size: 11.5px; color: var(--strong); flex: 1;">{{ sh.surface }}</span>
+                <span style="font-size: 11px; color: var(--muted-foreground); flex: 0 0 108px;">{{ sh.shell }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); flex: 0 0 96px;">{{ sh.panes }}</span>
+                <span style="font-size: 11px; color: var(--primary); flex: 0 0 130px;">{{ sh.promotes }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="font-size: 11px; line-height: 1.65; color: var(--faint); margin-top: 13px;">Collapse order is the same everywhere: side panels become icon rails, then the dock becomes a rail, then the thread narrows. The thread and the artifact are the last two things standing.</div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px;">
+      <sc-for list="{{ rules }}" as="ru" hint-placeholder-count="3">
+        <div style="padding: 17px 19px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="font-size: 12.5px; font-weight: 500;">{{ ru.t }}</div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 7px;">{{ ru.d }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">05 · OPEN QUESTIONS</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground);">carried in HANDOFF-NOTES.md</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 18px;">
+      <sc-for list="{{ questions }}" as="qu" hint-placeholder-count="4">
+        <div style="padding: 17px 19px; background: var(--card); border: 1px dashed var(--border); border-radius: 14px;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--warning);">{{ qu.n }}</span>
+            <span style="font-size: 12.5px; font-weight: 500;">{{ qu.t }}</span>
+          </div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 8px;">{{ qu.d }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1400,&quot;height&quot;:1100}}">
+class Component extends DCLogic {
+  state = { mode: "Build", auto: false, reasoning: 1 };
+
+  dot(c, s, pulse) {
+    const n = s || 7;
+    return "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: 50%; background: " + c + ";" + (pulse ? " animation: dvPulse 2.4s infinite;" : "");
+  }
+
+  renderVals() {
+    const st = this.state;
+    return {
+      surfaceLinks: [
+        { n: "01", label: "Desktop app", href: "Domovoi Desktop.dc.html" },
+        { n: "02", label: "Public site", href: "Domovoi Site.dc.html" },
+        { n: "03", label: "Web client", href: "Domovoi Web.dc.html" },
+        { n: "04", label: "Phone", href: "Domovoi Mobile.dc.html" },
+        { n: "05", label: "Tablet", href: "Domovoi Tablet.dc.html" }
+      ],
+
+      tokenGroups: [
+        { title: "Surfaces", note: "Five steps from desk to popover, plus a recessed step for machine output.", rows: [
+          { name: "--desk", c: "var(--desk)" }, { name: "--background", c: "var(--background)" },
+          { name: "--sidebar", c: "var(--sidebar)" }, { name: "--card / --popover", c: "var(--card)" },
+          { name: "--accent", c: "var(--accent)" }, { name: "--code", c: "var(--code)", ours: true }
+        ] },
+        { title: "Text and lines", note: "Three text steps and two line steps. Faint is the metadata voice.", rows: [
+          { name: "--foreground", c: "var(--foreground)" }, { name: "--strong", c: "var(--strong)", ours: true },
+          { name: "--muted-foreground", c: "var(--muted-foreground)" }, { name: "--faint", c: "var(--faint)", ours: true },
+          { name: "--border / --input", c: "var(--border)" }, { name: "--muted", c: "var(--muted)" }
+        ] },
+        { title: "Brand and focus", note: "One accent. It marks the active object and the focus ring, nothing decorative.", rows: [
+          { name: "--primary", c: "var(--primary)" }, { name: "--primary-foreground", c: "var(--primary-foreground)" },
+          { name: "--ring", c: "var(--ring)" }, { name: "--secondary", c: "var(--accent)" }
+        ] },
+        { title: "State", note: "Four semantic hues the base set does not name, each with a foreground and a bg/border/fg ramp.", rows: [
+          { name: "--success", c: "var(--success)", ours: true }, { name: "--warning", c: "var(--warning)", ours: true },
+          { name: "--destructive", c: "var(--destructive)" }, { name: "--info", c: "var(--info)", ours: true },
+          { name: "--warn-bg / -border / -fg", c: "var(--warn-bg)", ours: true }, { name: "--danger-bg / -border / -fg", c: "var(--danger-bg)", ours: true }
+        ] }
+      ].map(g => ({
+        title: g.title, note: g.note,
+        rows: g.rows.map(r => ({
+          name: r.name, ours: !!r.ours,
+          chipStyle: "width: 22px; height: 15px; flex: 0 0 22px; border-radius: 4px; border: 1px solid var(--border); background: " + r.c + ";"
+        }))
+      })),
+
+      additions: [
+        { k: "--success / --warning / --info", v: "Permission modes, machine liveness and handoff receipts need three semantic hues the base contract has no names for. Destructive already existed." },
+        { k: "--strong / --faint", v: "Two extra neutral text steps. Machine metadata sits below muted-foreground, and card titles sit above it." },
+        { k: "--code / --desk", v: "A recessed surface for terminal and diff output, and the workspace behind the app frame in these mocks." },
+        { k: "--warn-* / --danger-* / --info-*", v: "Full bg, border, fg and dim ramps for the approval card and offline banner, which need to hold a filled region rather than a tint." }
+      ],
+
+      semantics: [
+        { label: "Running, work in flight", token: "--success", c: "var(--success)" },
+        { label: "Waiting on you", token: "--warning", c: "var(--warning)" },
+        { label: "Hard gate, refused", token: "--destructive", c: "var(--destructive)" },
+        { label: "Handoff or system note", token: "--info", c: "var(--info)" },
+        { label: "Active object", token: "--primary", c: "var(--primary)" },
+        { label: "Queued or offline", token: "--faint", c: "var(--faint)" }
+      ].map(s => ({ label: s.label, token: s.token, dotStyle: this.dot(s.c, 8) })),
+
+      typeScale: [
+        { size: "26 / 600", sample: "Sessions", use: "screen title", style: "font-size: 17px; font-weight: 600; letter-spacing: -.02em;" },
+        { size: "14 / 500", sample: "Migrate billing webhooks", use: "session title", style: "font-size: 13px; font-weight: 500;" },
+        { size: "13 / 400", sample: "Agent and user messages", use: "body", style: "font-size: 12.5px;" },
+        { size: "11 / 400", sample: "3 files changed, 2 tests", use: "metadata", style: "font-size: 11px; color: var(--muted-foreground);" },
+        { size: "10.5 mono", sample: "wt-onboarding-v3", use: "machine text", style: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);" }
+      ],
+
+      radii: [
+        { r: "var(--radius)", label: "--radius\ncards, panels" },
+        { r: "calc(var(--radius) - 3px)", label: "-3px\ninputs, chips" },
+        { r: "calc(var(--radius) - 4px)", label: "-4px\nbuttons" },
+        { r: "999px", label: "999px\npills, dots" }
+      ].map(x => ({
+        label: x.label,
+        boxStyle: "width: 46px; height: 34px; border: 1px solid var(--border); background: var(--accent); border-radius: " + x.r + "; display: block;"
+      })),
+
+      density: [
+        { k: "Desktop", v: "28px rows" },
+        { k: "Browser", v: "30px rows" },
+        { k: "Tablet", v: "44px targets" },
+        { k: "Phone", v: "48px targets" }
+      ],
+
+      menuDemo: [
+        { label: "Low", note: "Fast turns, shallow tool use" },
+        { label: "Medium", note: "Balanced, the default" },
+        { label: "High", note: "Long chains, slower first token" }
+      ].map((m, i) => ({
+        label: m.label, note: m.note,
+        mark: st.reasoning === i ? "✓" : "",
+        markStyle: "width: 13px; flex: 0 0 13px; font-size: 10px; color: var(--primary); margin-top: 2px;",
+        style: "display: flex; gap: 7px; padding: 7px 9px; border-radius: 4px; cursor: pointer; background: " +
+          (st.reasoning === i ? "var(--accent)" : "transparent") + ";"
+      })),
+
+      modeDemo: ["Ask", "Plan", "Build"].map(m => ({
+        label: m,
+        pick: () => this.setState({ mode: m }),
+        style: "padding: 5px 13px; border-radius: calc(var(--radius) - 4px); font-size: 12px; cursor: pointer; background: " +
+          (st.mode === m ? "var(--card)" : "transparent") + "; color: " + (st.mode === m ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      toggleAuto: () => this.setState({ auto: !st.auto }),
+      autoState: st.auto ? "on" : "off",
+      autoStyle: "display: flex; align-items: center; gap: 9px; padding: 8px 12px; border-radius: 999px; width: max-content; cursor: pointer; border: 1px solid " +
+        (st.auto ? "var(--warn-border)" : "var(--border)") + "; background: " + (st.auto ? "color-mix(in oklab, var(--warning) 14%, transparent)" : "transparent") +
+        "; color: " + (st.auto ? "var(--warn-fg)" : "var(--muted-foreground)") + ";",
+      autoDotStyle: this.dot(st.auto ? "var(--warning)" : "var(--border)", 7),
+      autoNote: st.mode === "Build"
+        ? (st.auto
+          ? "Project-scoped writes run without asking. Hard gates still stop: destructive commands, privileged shells, secrets, deploys, publishes, anything outside the project."
+          : "Reads run freely, writes ask. This is the default for build work.")
+        : st.mode === "Plan"
+          ? "Read-only. The daemon refuses mutations rather than queuing them, so Auto has nothing to act on."
+          : "Every action asks, reads included. Auto is unavailable in Ask.",
+
+      atoms: [
+        { label: "running", dot: true, c: "var(--success)", pulse: true },
+        { label: "reachable", dot: true, c: "var(--success)" },
+        { label: "offline", dot: true, c: "var(--destructive)" },
+        { label: "macbook-pro-m3", mono: true },
+        { label: "claude-code/sonnet-4.6", mono: true },
+        { label: "AUTO", mono: true, warn: true },
+        { label: "1 approval", pill: true }
+      ].map(a => ({
+        label: a.label, dot: !!a.dot,
+        dotStyle: this.dot(a.c || "var(--success)", 6, a.pulse),
+        style: "display: inline-flex; align-items: center; gap: 6px; padding: " + (a.pill ? "5px 11px" : "4px 9px") +
+          "; border-radius: " + (a.pill || a.dot ? "999px" : "5px") +
+          "; font-family: " + (a.mono ? "'JetBrains Mono', monospace" : "inherit") + "; font-size: " + (a.mono ? "10px" : "11px") +
+          "; background: " + (a.pill ? "color-mix(in oklab, var(--warning) 14%, transparent)" : a.warn ? "transparent" : "var(--muted)") +
+          "; border: 1px solid " + (a.pill ? "var(--warn-border)" : a.warn ? "var(--warn-border)" : "transparent") +
+          "; color: " + (a.pill ? "var(--warn-fg)" : a.warn ? "var(--warning)" : "var(--strong)") + ";"
+      })),
+
+      approvalFacts: [
+        { k: "MACHINE", v: "macbook-pro-m3" },
+        { k: "DIRECTORY", v: "~/src/acme-api" },
+        { k: "AFFECTS", v: "acme_dev · 1 migration" },
+        { k: "NETWORK", v: "localhost:5432" },
+        { k: "ESTIMATED", v: "~40s" }
+      ],
+      anchorChips: ["selector", "text quote", "bbox 412×88", "crop 2x"],
+
+      objects: [
+        { k: "machine", v: "A daemon on hardware you control. Local, WSL, tailnet, SSH or relay. Carries providers, auth readiness and resource state." },
+        { k: "project", v: "A repository on one machine, with a permission mode and its own skill configuration." },
+        { k: "session", v: "A thread in an isolated worktree. Owns its provider, model, reasoning level and Auto state." },
+        { k: "turn", v: "One exchange. Holds messages, tool calls, approvals and checkpoints." },
+        { k: "artifact", v: "Generated HTML from a skill, rendered unchanged in a sandbox. Has variants." },
+        { k: "annotation", v: "An anchored comment on an artifact, with a thread and an open or resolved status." }
+      ].map((o, i, arr) => ({
+        k: o.k, v: o.v,
+        rowStyle: "display: flex; gap: 12px; padding: 10px 0; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+
+      shells: [
+        { surface: "Desktop", shell: "Custom decoration", panes: "3 + dock", promotes: "Diff review" },
+        { surface: "Browser", shell: "Top app bar", panes: "3 + dock", promotes: "Preview" },
+        { surface: "Tablet", shell: "Top app bar", panes: "2 + wide dock", promotes: "Side-by-side review" },
+        { surface: "Phone", shell: "Tab bar", panes: "1, stacked", promotes: "Approvals" },
+        { surface: "Notification", shell: "OS surface", panes: "none", promotes: "Allow / Deny" }
+      ],
+
+      rules: [
+        { t: "The daemon is the source of truth", d: "No client holds state the daemon does not have. Closing a laptop lid does not end a session, and two clients watching one session see the same events in the same order." },
+        { t: "Decisions are attributed", d: "Every approval, annotation and handoff records the client it came from. The audit log says the migration was allowed from a phone, not just that it was allowed." },
+        { t: "Collapse, never omit", d: "A phone shows the same seven approval facts as a 27-inch display, stacked instead of tabled. If a fact is worth showing anywhere, it appears everywhere." }
+      ],
+
+      questions: [
+        { n: "Q1", t: "Uncommitted work at handoff", d: "Switching machines mid-session needs the worktree to arrive too. Options on the table: an auto-commit to a Domovoi branch, a bundle pushed through the daemon, or a relay-brokered patch. Nothing is decided." },
+        { n: "Q2", t: "Model handoff honesty", d: "The interface promises thread, plan, worktree, diff, tests and annotations carry across. It must keep saying that hidden reasoning, provider caches and compaction state do not." },
+        { n: "Q3", t: "Skill install trust", d: "Terminal install is convenient and arbitrary. Signed content-addressed bundles with a capability review are the plan, but the near-term flow still runs a script on a real machine." },
+        { n: "Q4", t: "Guest session scope", d: "A borrowed browser can approve a hard gate today. Whether guest sessions should be able to, or only to view and deny, is unresolved." }
+      ]
+    };
+  }
+}
+
+</script>
+</body>
+</html>

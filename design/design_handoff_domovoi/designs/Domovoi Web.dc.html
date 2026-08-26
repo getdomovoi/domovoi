@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: oklch(0.78 0.14 275); text-decoration: none; }
+  a:hover { color: oklch(0.87 0.1 275); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); border-radius: 0; }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%);
+    border-radius: 11px; border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:active { background: var(--primary); background-clip: content-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / .45); } 70% { box-shadow: 0 0 0 7px oklch(0.72 0.17 275 / 0); } 100% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / 0); } }
+  @keyframes dvPopIn { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .78);
+    --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240);
+    --radius: 0.65rem; --popover: var(--card); --input: var(--border); --ring: var(--primary);
+  }
+</style>
+</helmet>
+<div class="dv-dark" style="min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 26px; overflow: auto; background: var(--desk); font-family: 'Instrument Sans', system-ui, sans-serif; color: var(--foreground);">
+
+  <div style="display: flex; align-items: center; gap: 10px; padding: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 999px;">
+    <sc-for list="{{ deviceTabs }}" as="dt" hint-placeholder-count="2">
+      <div onClick="{{ dt.pick }}" style="{{ dt.style }}">{{ dt.label }}</div>
+    </sc-for>
+    <span style="width: 1px; height: 18px; background: var(--border);"></span>
+    <sc-for list="{{ screenTabs }}" as="stb" hint-placeholder-count="4">
+      <div onClick="{{ stb.pick }}" style="{{ stb.style }}">{{ stb.label }}</div>
+    </sc-for>
+  </div>
+
+  <div style="{{ frameStyle }}">
+    <div style="flex: 0 0 auto; background: oklch(0.15 0.004 285); border-bottom: 1px solid var(--border);">
+      <div style="display: flex; align-items: flex-end; gap: 6px; padding: 8px 10px 0;">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--card); border: 1px solid var(--border); border-bottom-color: var(--card); border-radius: 8px 8px 0 0; max-width: 260px;">
+          <span style="width: 12px; height: 12px; border-radius: 3px; background: var(--primary); flex: 0 0 12px;"></span>
+          <span style="font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Domovoi, acme-api</span>
+          <span style="font-size: 11px; color: var(--faint);">×</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 8px 8px 0 0; opacity: .6;">
+          <span style="width: 12px; height: 12px; border-radius: 3px; background: var(--muted); flex: 0 0 12px;"></span>
+          <span style="font-size: 11.5px; color: var(--muted-foreground);">GitHub · PR #2841</span>
+        </div>
+        <span style="font-size: 13px; color: var(--faint); padding: 0 6px 8px;">+</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 8px 12px;">
+        <span style="font-size: 12px; color: var(--faint);">‹</span>
+        <span style="font-size: 12px; color: var(--faint);">›</span>
+        <span style="font-size: 11px; color: var(--faint);">⟳</span>
+        <div style="flex: 1; display: flex; align-items: center; gap: 9px; padding: 6px 12px; background: var(--background); border: 1px solid var(--border); border-radius: 999px;">
+          <span style="font-size: 10px; color: var(--success);">🔒</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">{{ url }}</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 2px 7px; border-radius: 999px; background: color-mix(in oklab, var(--success) 16%, transparent); color: var(--success);">PWA installable</span>
+        </div>
+        <span style="font-size: 11px; color: var(--faint);">⋯</span>
+      </div>
+    </div>
+
+    <sc-if value="{{ isSignin }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--background); padding: 30px;">
+        <div style="width: 400px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="width: 20px; height: 20px; border-radius: 6px; background: var(--primary); display: block;"></span>
+            <span style="font-size: 16px; font-weight: 600;">Domovoi</span>
+          </div>
+          <div style="font-size: 24px; font-weight: 600; letter-spacing: -.02em; margin-top: 24px;">Reach your machines from this browser.</div>
+          <div style="font-size: 12.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 9px;">Signing in authenticates you to Domovoi Cloud only. Session payloads stay end-to-end encrypted between this browser and your daemons.</div>
+
+          <div style="margin-top: 24px; padding: 15px 16px; background: var(--card); border: 1px solid var(--ring); border-radius: var(--radius);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--primary); animation: dvPulse 2.2s infinite;"></span>
+              <span style="font-size: 13px; font-weight: 500;">Continue with a passkey</span>
+            </div>
+            <div style="font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 7px;">Touch ID on this Mac · 2 passkeys registered</div>
+            <div onClick="{{ signIn }}" style="margin-top: 12px; padding: 9px 14px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 12.5px; font-weight: 500; color: var(--primary-foreground); text-align: center; cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">Authenticate</div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 12px; margin: 18px 0;">
+            <span style="flex: 1; height: 1px; background: var(--border);"></span>
+            <span style="font-size: 10.5px; color: var(--faint);">OR</span>
+            <span style="flex: 1; height: 1px; background: var(--border);"></span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div onClick="{{ signIn }}" style="padding: 10px 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 12.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">Email + authenticator code</div>
+            <div onClick="{{ signIn }}" style="padding: 10px 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 12.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">Guest session, 60 minutes, revocable</div>
+          </div>
+
+          <div style="font-size: 11px; line-height: 1.6; color: var(--faint); margin-top: 20px;">Self-hosting? Point this client at your own transport in <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">Settings → Relay URL</span>, no Domovoi account required.</div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isApp }}" hint-placeholder-val="{{ true }}">
+      <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--background);">
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="width: 15px; height: 15px; border-radius: 4px; background: var(--primary); display: block;"></span>
+            <span style="font-size: 13px; font-weight: 600;">Domovoi</span>
+          </div>
+          <div style="display: flex; gap: 3px; padding: 3px; background: var(--muted); border-radius: calc(var(--radius) - 2px);">
+            <sc-for list="{{ appTabs }}" as="at" hint-placeholder-count="3">
+              <div onClick="{{ at.pick }}" style="{{ at.style }}">{{ at.label }}</div>
+            </sc-for>
+          </div>
+          <span style="flex: 1;"></span>
+          <div style="display: flex; align-items: center; gap: 9px; padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px;">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--warning);"></span>
+            <span style="font-size: 11px; color: var(--warn-dim);">Domovoi Cloud · no direct route</span>
+          </div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">guest 42m left</div>
+          <div style="width: 24px; height: 24px; border-radius: 7px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--primary);">DL</div>
+        </div>
+
+        <sc-if value="{{ tabWorkspace }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; min-height: 0; display: flex;">
+            <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+              <div style="width: 262px; flex: 0 0 262px; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border);">
+                <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px 0;">
+                  <span style="font-size: 10px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SESSIONS</span>
+                  <span style="flex: 1;"></span>
+                  <span onClick="{{ toggleSidebar }}" title="Collapse sidebar" style="width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent);">‹‹</span>
+                </div>
+                <div style="flex: 0 0 auto; padding: 11px 12px 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border);">
+                  <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); cursor: pointer; font-size: 12.5px;" style-hover="background: var(--accent);">
+                    <span>New session</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⌘N</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 7px 11px; background: var(--background); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px);">
+                    <span style="font-size: 11px; color: var(--faint);">⌕</span>
+                    <span style="font-size: 11.5px; color: var(--faint);">Search sessions</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⌘K</span>
+                  </div>
+                </div>
+                <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 4px 8px 12px;">
+                  <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+                  <div onClick="{{ g.toggle }}" style="{{ g.headerStyle }}">
+                    <span style="{{ g.chevronStyle }}">▸</span>
+                    <span style="font-size: 10px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ g.label }}</span>
+                    <span style="{{ g.badgeStyle }}">{{ g.count }}</span>
+                    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+                  </div>
+                  <sc-if value="{{ g.open }}" hint-placeholder-val="{{ true }}">
+                  <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="3">
+                    <div onClick="{{ s.pick }}" style="{{ s.rowStyle }}">
+                      <div style="display: flex; align-items: flex-start; gap: 9px;">
+                        <span style="{{ s.dotStyle }}"></span>
+                        <div style="flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: {{ s.titleColor }};">{{ s.title }}</div>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 5px; margin-top: 6px; padding-left: 16px; flex-wrap: wrap;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 2px 5px; border-radius: 4px; background: var(--muted); color: var(--strong);">{{ s.model }}</span>
+                        <span style="{{ s.modeStyle }}">{{ s.mode }}</span>
+                      <sc-if value="{{ s.auto }}" hint-placeholder-val="{{ false }}">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--warn-border); color: var(--warning);">AUTO</span>
+                      </sc-if>
+                        <span style="flex: 1;"></span>
+                        <span style="font-size: 9px; font-weight: 500; letter-spacing: .06em; color: {{ s.stateColor }};">{{ s.state }}</span>
+                      </div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); margin-top: 4px; padding-left: 16px;">{{ s.machine }}</div>
+                    </div>
+                  </sc-for>
+                  </sc-if>
+                  </sc-for>
+                </div>
+                <div style="flex: 0 0 auto; border-top: 1px solid var(--border); padding: 9px 10px; display: flex; align-items: center; gap: 9px;">
+                  <div style="width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: var(--primary); cursor: pointer;">DL</div>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 11.5px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Dan L</div>
+                    <div style="font-size: 10px; color: var(--faint); margin-top: 1px;">Guest browser session</div>
+                  </div>
+                  <div onClick="{{ goAccount }}" title="Account" style="width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent);">⚙</div>
+                </div>
+              </div>
+            </sc-if>
+
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+              <div style="flex: 0 0 auto; padding: 11px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;">
+                <div style="flex: 1 1 220px; min-width: 0;">
+                  <div style="font-size: 13.5px; font-weight: 500; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Migrate billing webhooks to idempotent handlers with replay protection</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); margin-top: 5px;">macbook-pro-m3 · wt-billing-idem · 7 files · 42 pass / 1 fail</div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 7px; padding: 6px 10px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; white-space: nowrap; cursor: pointer;" style-hover="background: var(--accent);"><span style="width: 6px; height: 6px; border-radius: 2px; background: var(--primary);"></span>claude-code / sonnet-4.6</div>
+                <div style="padding: 6px 10px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); white-space: nowrap; cursor: pointer;" style-hover="background: var(--accent);">think: high</div>
+                <div style="display: flex; align-items: center; gap: 3px; padding: 3px; background: var(--muted); border-radius: calc(var(--radius) - 3px);"><span style="padding: 4px 9px; border-radius: 4px; font-size: 10.5px; color: var(--muted-foreground);">Ask</span><span style="padding: 4px 9px; border-radius: 4px; font-size: 10.5px; color: var(--muted-foreground);">Plan</span><span style="padding: 4px 9px; border-radius: 4px; font-size: 10.5px; background: var(--card); color: var(--foreground);">Build</span></div>
+                <div style="display: flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 10.5px; color: var(--muted-foreground); white-space: nowrap;"><span style="width: 6px; height: 6px; border-radius: 50%; background: var(--border);"></span>Auto</div>
+              </div>
+
+              <div style="flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 52px 44px; mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 calc(100% - 40px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 20px, #000 calc(100% - 40px), transparent 100%);">
+                <div style="max-width: 660px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 16px;">
+                <div style="position: relative; display: flex; justify-content: flex-end;">
+                  <div style="max-width: 76%; padding: 10px 13px; background: var(--accent); border: 1px solid var(--border); border-radius: 13px 13px 4px 13px; font-size: 12.5px; line-height: 1.6;">i'm on a guest laptop, show me what's blocked and let me clear it</div>
+                  <div style="position: absolute; right: -34px; top: 0; width: 24px; height: 24px; border-radius: 7px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 9.5px; color: var(--primary);">DL</div>
+                </div>
+
+                <div style="position: relative;">
+                  <div style="position: absolute; left: -34px; top: 0; width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--primary);">◆</div>
+                  <div style="min-width: 0; display: flex; flex-direction: column; gap: 12px;">
+                    <div style="font-size: 12.5px; line-height: 1.6;">One approval is waiting on <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">macbook-pro-m3</span>. Step 4 is queued behind it.</div>
+
+                    <div style="background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius); overflow: hidden;">
+                      <div style="display: flex; align-items: center; gap: 9px; padding: 11px 13px; border-bottom: 1px solid var(--warn-border);">
+                        <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning);"></span>
+                        <span style="font-size: 12px; font-weight: 500; color: var(--warn-fg);">Approval required, hard gate</span>
+                        <span style="flex: 1;"></span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--warn-dim);">build · auto off</span>
+                      </div>
+                      <div style="padding: 11px 13px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--warn-fg);">pnpm -w prisma migrate deploy</div>
+                      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--warn-border);">
+                        <sc-for list="{{ facts }}" as="fa" hint-placeholder-count="4">
+                          <div style="padding: 9px 13px; background: var(--warn-bg);">
+                            <div style="font-size: 9px; letter-spacing: .1em; color: var(--warn-dim);">{{ fa.k }}</div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-fg); margin-top: 3px;">{{ fa.v }}</div>
+                          </div>
+                        </sc-for>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 8px; padding: 11px 13px; flex-wrap: wrap;">
+                        <div onClick="{{ approve }}" style="padding: 7px 13px; background: var(--warning); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; color: var(--warning-foreground); cursor: pointer;">Allow once</div>
+                        <div onClick="{{ deny }}" style="padding: 7px 13px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-fg); cursor: pointer;">Deny</div>
+                        <span style="flex: 1;"></span>
+                        <span style="font-size: 10.5px; color: var(--warn-dim);">Guest sessions cannot create standing rules</span>
+                      </div>
+                    </div>
+
+                    <sc-if value="{{ resolved }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; align-items: center; gap: 10px; padding: 11px 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                        <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--success);"></span>
+                        <span style="font-size: 12px;">{{ resolvedText }}</span>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+                </div>
+              </div>
+
+              <div style="flex: 0 0 auto; padding: 10px 52px 14px;">
+                <div style="background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px;">
+                  <div style="font-size: 12px; color: var(--faint); padding-bottom: 9px;">Reply, /skills, or @file …</div>
+                  <div style="display: flex; align-items: center; gap: 7px;">
+                    <span style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: var(--background); border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10px;">macbook-pro-m3</span>
+                    <span style="padding: 4px 10px; border-radius: 999px; font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent);">+ skill</span>
+                    <span style="flex: 1;"></span>
+                    <span title="Prompt editor" style="width: 22px; height: 22px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent);">⤢</span>
+                    <span style="padding: 6px 14px; background: var(--primary); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Send</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="{{ dockStyle }}">
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--border);">
+                <div style="display: flex; gap: 2px; padding: 2px; background: var(--muted); border-radius: calc(var(--radius) - 3px);"><span style="padding: 4px 9px; border-radius: 4px; font-size: 10.5px; color: var(--muted-foreground);">Plan</span><span style="padding: 4px 9px; border-radius: 4px; font-size: 10.5px; background: var(--card); color: var(--foreground);">Preview</span><span style="padding: 4px 9px; border-radius: 4px; font-size: 10.5px; color: var(--muted-foreground);">Changes</span></div>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground); cursor: pointer;">plan-preview.html ▾</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--success) 16%, transparent); color: var(--success);">SANDBOXED</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">postMessage bridge</span>
+              </div>
+              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 11px;">
+                <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+                  <div style="height: 220px; background-image: repeating-linear-gradient(135deg, var(--accent) 0px, var(--accent) 7px, var(--card) 7px, var(--card) 14px); display: flex; align-items: center; justify-content: center; position: relative;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; color: var(--muted-foreground); text-align: center; white-space: pre-line;">[ plan-preview.html ]
+rendered on macbook-pro-m3
+streamed over Domovoi Cloud</span>
+                    <span style="position: absolute; left: 26px; top: 40px; width: 19px; height: 19px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;">1</span>
+                  </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 11px;">
+                  <span style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint);">ANNOTATIONS</span>
+                  <span style="flex: 1; height: 1px; background: var(--border);"></span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 9px;">
+                  <sc-for list="{{ annotations }}" as="an" hint-placeholder-count="2">
+                    <div style="padding: 10px 12px; background: var(--card); border: 1px solid {{ an.borderColor }}; border-radius: var(--radius);">
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="{{ an.pinStyle }}">{{ an.n }}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ an.selector }}</span>
+                        <span style="{{ an.statusStyle }}">{{ an.status }}</span>
+                      </div>
+                      <div style="font-size: 11.5px; line-height: 1.5; color: var(--strong); margin-top: 7px;">{{ an.body }}</div>
+                      <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ an.meta }}</span>
+                        <span style="flex: 1;"></span>
+                        <span onClick="{{ an.toggle }}" style="font-size: 10.5px; color: var(--primary); cursor: pointer;">{{ an.action }}</span>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ tabFleet }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 22px 26px;">
+            <div style="max-width: 900px; margin: 0 auto;">
+              <div style="display: flex; align-items: flex-end; gap: 12px;">
+                <div style="flex: 1;">
+                  <div style="font-size: 18px; font-weight: 600; letter-spacing: -.015em;">Fleet</div>
+                  <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">This browser holds no code. It subscribes to daemon events over an encrypted Domovoi Cloud channel and can be revoked from any other client.</div>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 18px;">
+                <sc-for list="{{ machines }}" as="mc" hint-placeholder-count="5">
+                  <div style="{{ mc.cardStyle }}">
+                    <div style="display: flex; align-items: flex-start; gap: 11px;">
+                      <span style="{{ mc.dotStyle }}"></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 500;">{{ mc.name }}</span>
+                          <span style="{{ mc.badgeStyle }}">{{ mc.badge }}</span>
+                        </div>
+                        <div style="font-size: 11px; color: var(--muted-foreground); margin-top: 5px;">{{ mc.os }}</div>
+                      </div>
+                    </div>
+                    <div style="display: flex; gap: 18px; margin-top: 13px; flex-wrap: wrap;">
+                      <sc-for list="{{ mc.stats }}" as="ms" hint-placeholder-count="3">
+                        <div>
+                          <div style="font-size: 9px; letter-spacing: .1em; color: var(--faint);">{{ ms.k }}</div>
+                          <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ ms.color }}; margin-top: 3px;">{{ ms.v }}</div>
+                        </div>
+                      </sc-for>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-top: 13px;">
+                      <div style="{{ mc.btnStyle }}">{{ mc.btn }}</div>
+                      <span style="flex: 1;"></span>
+                      <span style="font-size: 10.5px; color: var(--faint); cursor: pointer;" style-hover="color: var(--destructive);">Revoke device</span>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ tabAccount }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 22px 26px;">
+            <div style="max-width: 900px; margin: 0 auto;">
+              <div style="font-size: 18px; font-weight: 600; letter-spacing: -.015em;">Account</div>
+              <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px; max-width: 560px;">This area manages Domovoi services only: transport, notifications and billing. Provider subscriptions and BYOK keys never appear here; they live on your machines.</div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px;">
+                <div style="padding: 16px 18px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                  <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint);">PLAN</div>
+                  <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 9px;">
+                    <span style="font-size: 18px; font-weight: 600;">Domovoi Cloud</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">$8 / month</span>
+                  </div>
+                  <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 8px;">Managed encrypted transport, hosted notifications, 5 paired devices. Local and tailnet use stays free forever.</div>
+                  <div style="display: flex; gap: 8px; margin-top: 13px;">
+                    <span style="padding: 7px 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; cursor: pointer;" style-hover="background: var(--accent);">Manage billing</span>
+                    <span style="padding: 7px 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent);">Invoices</span>
+                  </div>
+                </div>
+                <div style="padding: 16px 18px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                  <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint);">DOMOVOI CLOUD USAGE · AUGUST</div>
+                  <div style="display: flex; flex-direction: column; gap: 11px; margin-top: 12px;">
+                    <sc-for list="{{ usage }}" as="u" hint-placeholder-count="3">
+                      <div>
+                        <div style="display: flex; align-items: baseline; gap: 8px;">
+                          <span style="flex: 1; font-size: 11.5px; color: var(--muted-foreground);">{{ u.label }}</span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ u.value }}</span>
+                        </div>
+                        <div style="height: 4px; border-radius: 4px; background: var(--muted); margin-top: 6px; overflow: hidden;">
+                          <div style="height: 100%; border-radius: 4px; width: {{ u.pct }}; background: {{ u.color }};"></div>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <div style="font-size: 10.5px; line-height: 1.55; color: var(--faint); margin-top: 12px;">Transport only, we can't see what's inside those bytes.</div>
+                </div>
+              </div>
+
+              <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint); margin-top: 26px;">AUTHENTICATION</div>
+              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 11px;">
+                <sc-for list="{{ auth }}" as="au" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; gap: 12px; padding: 12px 15px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                    <span style="{{ au.dotStyle }}"></span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 12.5px;">{{ au.label }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); margin-top: 3px;">{{ au.meta }}</div>
+                    </div>
+                    <span style="font-size: 10.5px; color: var(--primary); cursor: pointer;">{{ au.action }}</span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 26px;">
+                <div>
+                  <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint);">ACTIVE BROWSER SESSIONS</div>
+                  <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 11px;">
+                    <sc-for list="{{ browserSessions }}" as="bs" hint-placeholder-count="3">
+                      <div style="{{ bs.cardStyle }}">
+                        <div style="display: flex; align-items: center; gap: 9px;">
+                          <span style="{{ bs.dotStyle }}"></span>
+                          <span style="font-size: 12px; flex: 1;">{{ bs.label }}</span>
+                          <span style="font-size: 10.5px; color: {{ bs.revokeColor }}; cursor: pointer;">{{ bs.revoke }}</span>
+                        </div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint); margin-top: 5px;">{{ bs.meta }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint);">SECURITY EVENTS</div>
+                  <div style="display: flex; flex-direction: column; gap: 0; margin-top: 11px;">
+                    <sc-for list="{{ events }}" as="ev" hint-placeholder-count="4">
+                      <div style="display: flex; gap: 11px;">
+                        <div style="width: 9px; flex: 0 0 9px; display: flex; flex-direction: column; align-items: center;">
+                          <span style="{{ ev.dotStyle }}"></span>
+                          <span style="flex: 1; width: 1px; background: var(--border);"></span>
+                        </div>
+                        <div style="flex: 1; min-width: 0; padding-bottom: 14px;">
+                          <div style="display: flex; align-items: baseline; gap: 8px;">
+                            <span style="font-size: 11.5px; color: var(--strong); flex: 1;">{{ ev.label }}</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ ev.when }}</span>
+                          </div>
+                          <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground); margin-top: 3px;">{{ ev.meta }}</div>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+  </div>
+
+  <div style="max-width: 900px; font-size: 11.5px; line-height: 1.7; color: var(--muted-foreground); text-align: center;">{{ caption }}</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1500,&quot;height&quot;:1040}}">
+class Component extends DCLogic {
+  state = { device: "desktop", screen: "app", tab: "workspace", session: "s1", approval: "open", resolvedIds: [], closedGroups: [] };
+
+  dot(c, s, pulse) {
+    const n = s || 7;
+    return "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: 50%; background: " + c + ";" + (pulse ? " animation: dvPulse 2.5s infinite;" : "");
+  }
+
+  renderVals() {
+    const st = this.state;
+    const wide = st.device === "desktop";
+
+    const sessions = [
+      { id: "s1", title: "Migrate billing webhooks to idempotent handlers", model: "claude-code/sonnet-4.6", mode: "BUILD", machine: "macbook-pro-m3", state: "APPROVAL", c: "var(--warning)" },
+      { id: "s2", title: "design-studio: onboarding v3 variants", model: "codex/gpt-5.3-codex", mode: "PLAN", machine: "macbook-pro-m3", state: "PREVIEW", c: "var(--primary)" },
+      { id: "s3", title: "repo-audit: dependency + license sweep", model: "openrouter/deepseek-v4", mode: "BUILD", auto: true, machine: "hetzner-cx42", state: "RUNNING", c: "var(--success)" },
+      { id: "s4", title: "Rotate S3 credentials and update the runbook", model: "codex/gpt-5.3", mode: "ASK", machine: "hetzner-cx42", state: "HARD GATE", c: "var(--destructive)" },
+      { id: "s5", title: "Grok CLI: crash log parser", model: "grok/grok-4-code", mode: "BUILD", machine: "studio-arch", state: "QUEUED", c: "var(--faint)" }
+    ];
+
+    const machines = [
+      { name: "macbook-pro-m3", os: "macOS 15.4 · arm64 · daemon 0.14.2", badge: "CLOUD", state: "online", sessions: "3 active", tools: "1 approval", route: "cloud · direct blocked" },
+      { name: "thinkpad · Ubuntu-24.04", os: "WSL2 · x64 · daemon 0.14.2", badge: "TAILNET", state: "online", sessions: "1 active", tools: "idle", route: "tailnet · 24ms" },
+      { name: "hetzner-cx42", os: "Debian 12 · x64 · daemon 0.14.0", badge: "TAILNET", state: "online", sessions: "2 active", tools: "running", route: "tailnet · 38ms" },
+      { name: "studio-arch", os: "Arch Linux · x64 · daemon 0.14.2", badge: "OFFLINE", state: "offline", sessions: "0", tools: ", ", route: "last seen 09:14" },
+      { name: "win-desk", os: "Windows 11 · x64 · daemon 0.14.2", badge: "CLOUD", state: "online", sessions: "0", tools: "idle", route: "cloud · 96ms" }
+    ];
+
+    const annRaw = [
+      { id: "a1", n: "1", selector: "section.plan > li:nth-child(3)", body: "Run the migration on the WSL box where the staging DB lives, not here.", meta: "iPad Safari · 12:44" },
+      { id: "a2", n: "2", selector: "figure.diff-summary", body: "Show the replay table row count so I can size the backfill.", meta: "this browser · 12:47" }
+    ];
+
+    return {
+      wide,
+      deviceTabs: [
+        { k: "desktop", label: "Desktop browser · 1440" },
+        { k: "tablet", label: "Tablet browser · 1024" }
+      ].map(d => ({
+        label: d.label,
+        pick: () => this.setState({ device: d.k }),
+        style: "padding: 6px 13px; border-radius: 999px; font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+          (st.device === d.k ? "var(--accent)" : "transparent") + "; color: " + (st.device === d.k ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      screenTabs: [
+        { k: "signin", label: "Sign in" },
+        { k: "app", label: "Workspace" }
+      ].map(s => ({
+        label: s.label,
+        pick: () => this.setState({ screen: s.k }),
+        style: "padding: 6px 13px; border-radius: 999px; font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+          (st.screen === s.k ? "var(--accent)" : "transparent") + "; color: " + (st.screen === s.k ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      frameStyle: "width: " + (wide ? "1440px" : "1024px") + "; height: " + (wide ? "900px" : "768px") +
+        "; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 40px 120px var(--shadow-xl);",
+      url: wide ? "app.domovoi.sh/acme-api/s/7f21" : "app.domovoi.sh/acme-api",
+      caption: wide
+        ? "Hosted client in a desktop browser running the same session as the app, with no code on this machine. Sidebar, thread and preview dock all present; the relay badge names the transport in use."
+        : "Same client on a tablet browser at 1024px. The session list collapses into the header search, the thread keeps full width, and the preview dock narrows to 300px. Annotations and approvals are identical objects, so a comment made here resolves on desktop.",
+
+      isSignin: st.screen === "signin",
+      isApp: st.screen === "app",
+      signIn: () => this.setState({ screen: "app" }),
+
+      appTabs: [
+        { k: "workspace", label: "Workspace" },
+        { k: "fleet", label: "Fleet" },
+        { k: "account", label: "Account" }
+      ].map(t => ({
+        label: t.label,
+        pick: () => this.setState({ tab: t.k }),
+        style: "padding: 5px 12px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+          (st.tab === t.k ? "var(--card)" : "transparent") + "; color: " + (st.tab === t.k ? "var(--foreground)" : "var(--muted-foreground)") +
+          "; box-shadow: " + (st.tab === t.k ? "0 1px 2px var(--shadow-md)" : "none") + ";"
+      })),
+      tabWorkspace: st.tab === "workspace",
+      tabFleet: st.tab === "fleet",
+      tabAccount: st.tab === "account",
+
+      dockStyle: "width: " + (wide ? "380px" : "300px") + "; flex: 0 0 " + (wide ? "380px" : "300px") +
+        "; display: flex; flex-direction: column; background: var(--sidebar); border-left: 1px solid var(--border);",
+
+      toggleSidebar: () => {},
+      goAccount: () => this.setState({ tab: "account" }),
+      groups: [
+        { label: "ACTIVE", ids: ["s1", "s2", "s3"] },
+        { label: "BLOCKED", ids: ["s4", "s5"] }
+      ].map(g => ({
+        label: g.label,
+        count: g.ids.length,
+        open: !st.closedGroups.includes(g.label),
+        toggle: () => this.setState(s2 => ({
+          closedGroups: s2.closedGroups.includes(g.label) ? s2.closedGroups.filter(x => x !== g.label) : s2.closedGroups.concat([g.label])
+        })),
+        headerStyle: "display: flex; align-items: center; gap: 7px; padding: 11px 8px 6px; cursor: pointer;",
+        chevronStyle: "font-size: 8px; color: var(--muted-foreground); display: inline-block; transition: transform .15s; transform: rotate(" +
+          (st.closedGroups.includes(g.label) ? "0deg" : "90deg") + ");",
+        badgeStyle: "padding: 1px 6px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: var(--muted); color: " +
+          (g.label === "ACTIVE" ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+        items: sessions.filter(s => g.ids.includes(s.id)).map(s => ({
+          title: s.title, model: s.model, machine: s.machine, state: s.state, stateColor: s.c, reasoning: s.reasoning, auto: !!s.auto,
+          dotStyle: this.dot(s.c, 7, s.state === "RUNNING") + " margin-top: 4px;",
+          titleColor: s.id === st.session ? "var(--foreground)" : "var(--strong)",
+          modeStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border); color: " +
+            (s.mode === "BUILD" ? "var(--success)" : "var(--muted-foreground)") + ";",
+          mode: s.mode,
+          rowStyle: "padding: 8px 9px; border-radius: calc(var(--radius) - 4px); cursor: pointer; background: " +
+            (s.id === st.session ? "var(--accent)" : "transparent") + ";",
+          pick: () => this.setState({ session: s.id })
+        }))
+      })),
+
+      sessions: sessions.map(s => ({
+        title: s.title, model: s.model, machine: s.machine, state: s.state, stateColor: s.c,
+        dotStyle: this.dot(s.c, 7, s.state === "RUNNING") + " margin-top: 4px;",
+        titleColor: s.id === st.session ? "var(--foreground)" : "var(--strong)",
+        modeStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border); color: " +
+          (s.mode === "BUILD" ? "var(--success)" : "var(--muted-foreground)") + ";",
+        rowStyle: "padding: 8px 9px; border-radius: calc(var(--radius) - 4px); cursor: pointer; background: " +
+          (s.id === st.session ? "var(--accent)" : "transparent") + ";",
+        pick: () => this.setState({ session: s.id })
+      })),
+
+      facts: [
+        { k: "MACHINE", v: "macbook-pro-m3" },
+        { k: "WORKING DIR", v: "~/src/acme-api" },
+        { k: "AFFECTS", v: "acme_dev · 1 migration" },
+        { k: "NETWORK", v: "localhost:5432" }
+      ],
+      approve: () => this.setState({ approval: "allowed" }),
+      deny: () => this.setState({ approval: "denied" }),
+      resolved: st.approval !== "open",
+      resolvedText: st.approval === "allowed"
+        ? "Allowed from this browser and applied on macbook-pro-m3 in 38s. Checkpoint taken first; the decision is in the audit log with the client that made it."
+        : "Denied from this browser. The agent was told to move the migration to the WSL box.",
+
+      annotations: annRaw.map(a => {
+        const res = st.resolvedIds.includes(a.id);
+        return {
+          n: a.n, selector: a.selector, body: a.body, meta: a.meta,
+          status: res ? "RESOLVED" : "OPEN",
+          borderColor: res ? "var(--border)" : "color-mix(in oklab, var(--primary) 35%, transparent)",
+          statusStyle: "font-size: 9px; letter-spacing: .07em; padding: 2px 6px; border-radius: 4px; background: " +
+            (res ? "var(--muted)" : "color-mix(in oklab, var(--primary) 16%, transparent)") + "; color: " + (res ? "var(--muted-foreground)" : "var(--primary)") + ";",
+          pinStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; background: " +
+            (res ? "var(--muted)" : "var(--primary)") + "; color: " + (res ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+          action: res ? "Reopen" : "Resolve",
+          toggle: () => this.setState(s => ({ resolvedIds: res ? s.resolvedIds.filter(x => x !== a.id) : s.resolvedIds.concat([a.id]) }))
+        };
+      }),
+
+      machines: machines.map(m => ({
+        name: m.name, os: m.os, badge: m.badge,
+        dotStyle: this.dot(m.state === "offline" ? "var(--destructive)" : "var(--success)", 9, m.tools === "running"),
+        badgeStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 6px; border-radius: 4px; background: var(--muted); color: " +
+          (m.state === "offline" ? "var(--destructive)" : "var(--muted-foreground)") + ";",
+        cardStyle: "padding: 14px 16px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); opacity: " + (m.state === "offline" ? "0.65" : "1") + ";",
+        stats: [
+          { k: "SESSIONS", v: m.sessions, color: "var(--foreground)" },
+          { k: "TOOLS", v: m.tools, color: m.tools === "1 approval" ? "var(--warning)" : "var(--foreground)" },
+          { k: "ROUTE", v: m.route, color: "var(--foreground)" }
+        ],
+        btn: m.state === "offline" ? "Unreachable" : "Open workspace",
+        btnStyle: "padding: 7px 12px; border-radius: calc(var(--radius) - 4px); font-size: 11px; font-weight: 500; cursor: " + (m.state === "offline" ? "not-allowed" : "pointer") +
+          "; background: " + (m.state === "offline" ? "var(--muted)" : "var(--primary)") + "; color: " + (m.state === "offline" ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";"
+      })),
+
+      usage: [
+        { label: "Relayed bytes", value: "4.2 / 25 GB", pct: "17%", color: "var(--primary)" },
+        { label: "Paired devices", value: "5 / 5", pct: "100%", color: "var(--warning)" },
+        { label: "Push notifications", value: "1,284", pct: "42%", color: "var(--primary)" }
+      ],
+      auth: [
+        { label: "Passkey, MacBook Pro (Touch ID)", meta: "created 12 Mar · last used 2m ago", action: "Rename", ok: true },
+        { label: "Passkey, iPhone 16 Pro (Face ID)", meta: "created 4 Apr · last used yesterday", action: "Rename", ok: true },
+        { label: "Authenticator app", meta: "backup factor · 8 recovery codes left", action: "Regenerate", ok: true }
+      ].map(a => ({ ...a, dotStyle: this.dot(a.ok ? "var(--success)" : "var(--warning)", 8) })),
+      browserSessions: [
+        { label: "This browser, Chrome 141, macOS", meta: "guest session · expires 13:42 · 84.32.x.x", revoke: "current", cur: true },
+        { label: "Safari, iPad Pro", meta: "signed in 2h ago · passkey · 84.32.x.x", revoke: "Revoke" },
+        { label: "Firefox, win-desk", meta: "signed in 3d ago · passkey · 91.107.x.x", revoke: "Revoke" }
+      ].map(b => ({
+        label: b.label, meta: b.meta, revoke: b.revoke,
+        revokeColor: b.cur ? "var(--faint)" : "var(--destructive)",
+        dotStyle: this.dot(b.cur ? "var(--primary)" : "var(--muted-foreground)", 7),
+        cardStyle: "padding: 11px 13px; background: var(--card); border: 1px solid " + (b.cur ? "color-mix(in oklab, var(--primary) 35%, transparent)" : "var(--border)") + "; border-radius: var(--radius);"
+      })),
+      events: [
+        { label: "Guest session started", meta: "Chrome · macOS · passkey · 84.32.x.x", when: "12:41", c: "var(--primary)" },
+        { label: "Approval allowed from browser", meta: "prisma migrate deploy · macbook-pro-m3", when: "12:52", c: "var(--warning)" },
+        { label: "Device revoked", meta: "old-thinkpad · token invalidated", when: "Tue", c: "var(--destructive)" },
+        { label: "Passkey added", meta: "iPhone 16 Pro · Face ID", when: "4 Apr", c: "var(--success)" }
+      ].map(e => ({ label: e.label, meta: e.meta, when: e.when, dotStyle: this.dot(e.c, 9) + " margin-top: 4px;" }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>

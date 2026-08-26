@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Roboto:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
+  body { -webkit-font-smoothing: antialiased; }
+  a { color: oklch(0.78 0.14 275); text-decoration: none; }
+  a:hover { color: oklch(0.87 0.1 275); }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  * { scrollbar-width: none; -ms-overflow-style: none; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / .45); } 70% { box-shadow: 0 0 0 7px oklch(0.72 0.17 275 / 0); } 100% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / 0); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240);
+    --shadow-lg: oklch(0 0 0 / .6); --popover: var(--card); --ring: var(--primary); --radius: 0.65rem;
+  }
+</style>
+</helmet>
+<div class="dv-dark" style="min-height: 100vh; min-width: max-content; padding: 32px 30px 46px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="display: flex; align-items: flex-end; gap: 18px; margin-bottom: 24px; flex-wrap: wrap;">
+    <div>
+      <div style="font-size: 17px; font-weight: 600; letter-spacing: -.01em;">Domovoi on a phone</div>
+      <div style="font-size: 12.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 6px; max-width: 700px; text-wrap: pretty;">{{ blurb }}</div>
+    </div>
+    <span style="flex: 1;"></span>
+    <div style="display: flex; gap: 3px; padding: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 999px;">
+      <sc-for list="{{ platTabs }}" as="pt" hint-placeholder-count="2">
+        <div onClick="{{ pt.pick }}" style="{{ pt.style }}">{{ pt.label }}</div>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: flex-start; gap: 24px;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="flex: 1;">
+              <div style="{{ titleStyle }}">Sessions</div>
+              <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">5 machines · 3 running</div>
+            </div>
+            <div onClick="{{ togglePause }}" style="{{ pauseStyle }}">{{ pauseLabel }}</div>
+          </div>
+        </div>
+
+        <sc-if value="{{ paused }}" hint-placeholder-val="{{ false }}">
+          <div style="margin: 0 12px 10px; padding: 11px 13px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius);">
+            <div style="font-size: 12px; font-weight: 500; color: var(--warn-fg);">Fleet paused</div>
+            <div style="font-size: 11px; line-height: 1.55; color: var(--warn-dim); margin-top: 4px;">Running tools finish, nothing new starts. Daemons keep their state.</div>
+          </div>
+        </sc-if>
+
+        <div onClick="{{ goApproval }}" style="margin: 0 12px 12px; padding: 12px 13px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius); cursor: pointer;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+            <span style="font-size: 12.5px; font-weight: 500; color: var(--warn-fg); flex: 1;">1 approval waiting</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--warn-dim);">4m</span>
+          </div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--warn-fg); margin-top: 7px;">pnpm -w prisma migrate deploy</div>
+          <div style="font-size: 10.5px; color: var(--warn-dim); margin-top: 5px;">macbook-pro-m3 · billing webhooks</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px;">
+          <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="5">
+            <div style="{{ s.cardStyle }}">
+              <div style="display: flex; align-items: flex-start; gap: 9px;">
+                <span style="{{ s.dotStyle }}"></span>
+                <div style="flex: 1; min-width: 0; font-size: 13px; line-height: 1.4;">{{ s.title }}</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 5px; margin-top: 8px; padding-left: 17px; flex-wrap: wrap;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 2px 5px; border-radius: 4px; background: var(--muted); color: var(--strong);">{{ s.model }}</span>
+                <span style="{{ s.modeStyle }}">{{ s.mode }}</span>
+                <sc-if value="{{ s.auto }}" hint-placeholder-val="{{ false }}">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--warn-border); color: var(--warning);">AUTO</span>
+                </sc-if>
+                <span style="flex: 1;"></span>
+                <span style="font-size: 9.5px; font-weight: 500; letter-spacing: .06em; color: {{ s.stateColor }};">{{ s.state }}</span>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint); margin-top: 5px; padding-left: 17px;">{{ s.machine }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbar }}" as="tb" hint-placeholder-count="4">
+            <div style="{{ tb.style }}">
+              <span style="font-size: 15px;">{{ tb.glyph }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ tb.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Sessions, grouped by what needs you. The approval banner is the point of the screen.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="font-size: 15px; color: var(--primary); cursor: pointer;">{{ backGlyph }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Approval</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">macbook-pro-m3</div>
+          </div>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--warn-border); color: var(--warning);">HARD GATE</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 14px;">
+          <div style="padding: 13px 14px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; color: var(--warn-fg);">pnpm -w prisma migrate deploy</div>
+          </div>
+
+          <div style="margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <sc-for list="{{ facts }}" as="fa" hint-placeholder-count="7">
+              <div style="{{ fa.rowStyle }}">
+                <span style="font-size: 10.5px; letter-spacing: .08em; color: var(--faint); flex: 0 0 96px;">{{ fa.k }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ fa.color }}; text-align: right; flex: 1;">{{ fa.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="margin-top: 12px; padding: 12px 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">A checkpoint is taken before this runs. If it goes wrong, restore the worktree from the session history on any device.</div>
+          </div>
+
+          <sc-if value="{{ decided }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top: 12px; padding: 12px 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); display: flex; align-items: flex-start; gap: 10px;">
+              <span style="{{ decidedDot }}"></span>
+              <div style="flex: 1; font-size: 11.5px; line-height: 1.6;">{{ decidedText }}</div>
+            </div>
+          </sc-if>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 12px 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px;">
+          <div onClick="{{ allowOnce }}" style="{{ allowStyle }}">Allow once</div>
+          <div style="display: flex; gap: 8px;">
+            <div onClick="{{ denyIt }}" style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; font-weight: 500; text-align: center; color: var(--strong); cursor: pointer;">Deny</div>
+            <div onClick="{{ denyIt }}" style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Deny and explain</div>
+          </div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Every fact the desktop shows, stacked. Buttons sit in thumb reach with 48px targets.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 10px;">
+          <span style="font-size: 15px; color: var(--primary); cursor: pointer;">{{ backGlyph }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500;">Onboarding v3</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">design-studio · 3 variants</div>
+          </div>
+          <span style="font-size: 15px; color: var(--muted-foreground);">⋯</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; gap: 6px; padding: 0 14px 10px;">
+          <sc-for list="{{ variants }}" as="v" hint-placeholder-count="3">
+            <div onClick="{{ v.pick }}" style="{{ v.style }}">{{ v.label }}</div>
+          </sc-for>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 14px;">
+          <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+            <div style="height: 300px; background-image: repeating-linear-gradient(135deg, var(--accent) 0px, var(--accent) 7px, var(--card) 7px, var(--card) 14px); display: flex; align-items: center; justify-content: center; position: relative;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; color: var(--muted-foreground); text-align: center; white-space: pre-line;">{{ variantCaption }}</span>
+              <span style="position: absolute; left: 22px; top: 52px; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;">1</span>
+              <span style="position: absolute; right: 26px; bottom: 74px; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;">2</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border);">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint); flex: 1;">rendered on macbook-pro-m3 · live</span>
+              <span style="font-size: 10.5px; color: var(--primary);">Full screen</span>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 8px; margin-top: 10px;">
+            <div style="flex: 1; padding: 11px; background: var(--primary); border-radius: var(--radius); font-size: 12px; font-weight: 500; color: var(--primary-foreground); text-align: center; cursor: pointer;">Focus on this design</div>
+            <div onClick="{{ toggleTap }}" style="{{ tapStyle }}">{{ tapLabel }}</div>
+          </div>
+
+          <sc-if value="{{ tapping }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top: 10px; padding: 12px 13px; background: var(--card); border: 1px solid var(--ring); border-radius: var(--radius);">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--primary);">section.plan &gt; li:nth-child(3)</div>
+              <div style="font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 7px;">Tap an element to anchor a comment. Selector, text quote and a screenshot crop are captured together so it survives the next render.</div>
+              <div style="margin-top: 10px; padding: 10px 11px; background: var(--code); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--faint);">Add a comment…</div>
+            </div>
+          </sc-if>
+
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 14px;">
+            <span style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint);">COMMENTS</span>
+            <span style="flex: 1; height: 1px; background: var(--border);"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ openCount }} open</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 9px;">
+            <sc-for list="{{ annotations }}" as="an" hint-placeholder-count="3">
+              <div style="{{ an.cardStyle }}">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="{{ an.pinStyle }}">{{ an.n }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ an.selector }}</span>
+                  <span style="{{ an.statusStyle }}">{{ an.status }}</span>
+                </div>
+                <div style="font-size: 12px; line-height: 1.5; color: var(--strong); margin-top: 7px;">{{ an.body }}</div>
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ an.meta }}</span>
+                  <span style="flex: 1;"></span>
+                  <span onClick="{{ an.toggle }}" style="font-size: 10.5px; color: var(--primary); cursor: pointer;">{{ an.action }}</span>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Full-fidelity preview, variant switching and tap-to-annotate. Not a status readout.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="font-size: 15px; color: var(--primary); cursor: pointer;">{{ backGlyph }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Billing webhooks</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">claude-code · think: high</div>
+          </div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="align-self: flex-end; max-width: 84%; padding: 10px 13px; background: var(--accent); border: 1px solid var(--border); border-radius: 13px 13px 4px 13px; font-size: 12.5px; line-height: 1.55;">what is it waiting on?</div>
+
+          <div style="display: flex; gap: 9px;">
+            <div style="width: 22px; flex: 0 0 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 9.5px; color: var(--primary);">◆</div>
+            <div style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6;">The migration in step 3. Everything before it is done and the suite is green apart from the test that asserts the old behaviour.</div>
+          </div>
+
+          <div style="background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 11.5px; font-weight: 500;">Working plan</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">3 of 4</span>
+              <span style="flex: 1;"></span>
+              <span style="font-size: 10.5px; color: var(--primary);">Open</span>
+            </div>
+            <sc-for list="{{ plan }}" as="p" hint-placeholder-count="4">
+              <div style="{{ p.rowStyle }}">
+                <span style="{{ p.markStyle }}">{{ p.mark }}</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; line-height: 1.45; color: {{ p.color }};">{{ p.title }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); margin-top: 3px;">{{ p.meta }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 9px; padding: 10px 12px; background: var(--info-bg); border: 1px solid var(--info-border); border-radius: var(--radius);">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--info); flex: 0 0 6px;"></span>
+            <div style="flex: 1; font-size: 11px; line-height: 1.55; color: var(--info-fg);">Handed off from codex earlier. Plan, worktree and 2 comments carried across.</div>
+          </div>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 10px 14px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 9px;">
+          <div style="flex: 1; padding: 11px 13px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--faint);">Reply…</div>
+          <div style="width: 40px; height: 40px; flex: 0 0 40px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: flex; align-items: center; justify-content: center; font-size: 15px; cursor: pointer;">↑</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">The thread reads and replies. Plan and handoff history come along.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Fleet</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">4 reachable · 1 offline</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 9px;">
+          <sc-for list="{{ machines }}" as="mc" hint-placeholder-count="5">
+            <div style="{{ mc.cardStyle }}">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="{{ mc.dotStyle }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ mc.name }}</span>
+                <span style="{{ mc.badgeStyle }}">{{ mc.badge }}</span>
+              </div>
+              <div style="font-size: 10.5px; color: var(--muted-foreground); margin-top: 6px;">{{ mc.os }}</div>
+              <div style="display: flex; align-items: center; gap: 14px; margin-top: 9px;">
+                <sc-for list="{{ mc.stats }}" as="ms" hint-placeholder-count="2">
+                  <div>
+                    <div style="font-size: 8.5px; letter-spacing: .1em; color: var(--faint);">{{ ms.k }}</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ ms.color }}; margin-top: 2px;">{{ ms.v }}</div>
+                  </div>
+                </sc-for>
+                <span style="flex: 1;"></span>
+                <span style="{{ mc.actionStyle }}">{{ mc.action }}</span>
+              </div>
+            </div>
+          </sc-for>
+
+          <div style="padding: 12px 13px; border: 1px dashed var(--border); border-radius: var(--radius);">
+            <div style="font-size: 12px;">Pair a machine</div>
+            <div style="font-size: 10.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 4px;">Scan the pairing code shown by the daemon, or confirm the six-word phrase.</div>
+          </div>
+        </div>
+
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbarFleet }}" as="tb2" hint-placeholder-count="4">
+            <div style="{{ tb2.style }}">
+              <span style="font-size: 15px;">{{ tb2.glyph }}</span>
+              <span style="font-size: 9.5px;">{{ tb2.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Fleet state and pairing. Offline machines say when they were last seen.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ lockStyle }}">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">Tuesday 26 August</div>
+          <div style="font-size: 54px; font-weight: 500; letter-spacing: -.02em; margin-top: 2px;">9:41</div>
+
+          <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 28px;">
+            <sc-for list="{{ notifications }}" as="nt" hint-placeholder-count="3">
+              <div style="{{ nt.cardStyle }}">
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="width: 16px; height: 16px; border-radius: 4px; background: var(--primary); flex: 0 0 16px;"></span>
+                  <span style="font-size: 11px; font-weight: 500; letter-spacing: .02em; flex: 1;">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ nt.when }}</span>
+                </div>
+                <div style="font-size: 12.5px; font-weight: 500; margin-top: 7px;">{{ nt.title }}</div>
+                <div style="font-size: 11.5px; line-height: 1.5; color: var(--muted-foreground); margin-top: 3px;">{{ nt.body }}</div>
+                <sc-if value="{{ nt.actions }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; gap: 7px; margin-top: 10px;">
+                    <span style="flex: 1; padding: 9px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); text-align: center;">Allow</span>
+                    <span style="flex: 1; padding: 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--strong); text-align: center;">Deny</span>
+                    <span style="flex: 1; padding: 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); text-align: center;">View</span>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">{{ lockCaption }}</div>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2600,&quot;height&quot;:1080}}">
+class Component extends DCLogic {
+  state = { plat: "ios", paused: false, decision: null, variant: 1, tapping: false, resolvedIds: [] };
+
+  dot(c, s, pulse) {
+    const n = s || 7;
+    return "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: 50%; background: " + c + ";" + (pulse ? " animation: dvPulse 2.5s infinite;" : "");
+  }
+
+  renderVals() {
+    const st = this.state;
+    const ios = st.plat === "ios";
+    const font = ios ? "'Instrument Sans', system-ui, sans-serif" : "'Roboto', system-ui, sans-serif";
+
+    const annRaw = [
+      { id: "a1", n: "1", selector: "section.plan > li:nth-child(3)", body: "Run the migration on the WSL box where the staging database lives.", meta: "this phone · 12:44" },
+      { id: "a2", n: "2", selector: "figure.diff-summary", body: "Show the replay table row count so I can size the backfill.", meta: "macbook-pro-m3 · 12:47" },
+      { id: "a3", n: "3", selector: "header h1", body: "Drop the version chip.", meta: "iPad · 11:20", pre: true }
+    ];
+    const isRes = a => st.resolvedIds.includes(a.id) || (a.pre && !st.resolvedIds.includes("un-" + a.id));
+
+    return {
+      isIOS: ios,
+      isAndroid: !ios,
+      blurb: ios
+        ? "iPhone. Approvals, previews, annotations and session control, not a status board. Sheets and back chevrons follow iOS conventions, targets stay at 44pt or larger."
+        : "Android. Same objects and same daemon events, with Material navigation: bottom bar with active indicator, up arrow, FAB-weight primary action, 48dp targets.",
+      platTabs: [
+        { k: "ios", label: "iOS" },
+        { k: "android", label: "Android" }
+      ].map(p => ({
+        label: p.label,
+        pick: () => this.setState({ plat: p.k }),
+        style: "padding: 6px 15px; border-radius: 999px; font-size: 12px; font-weight: 500; cursor: pointer; background: " +
+          (st.plat === p.k ? "var(--accent)" : "transparent") + "; color: " + (st.plat === p.k ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+
+      frameStyle: "width: " + (ios ? "390px" : "412px") + "; height: " + (ios ? "844px" : "892px") +
+        "; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: " +
+        (ios ? "9px solid oklch(0.28 0.008 285)" : "8px solid oklch(0.26 0.008 285)") +
+        "; border-radius: " + (ios ? "44px" : "30px") + "; overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg); font-family: " + font + ";",
+      statusStyle: "height: " + (ios ? "42px" : "30px") + "; flex: 0 0 " + (ios ? "42px" : "30px") +
+        "; display: flex; align-items: center; padding: 0 " + (ios ? "24px" : "16px") + "; position: relative;" +
+        (ios ? " padding-top: 6px;" : ""),
+      statusIcons: ios ? "▮▮▮ ⌁ 82%" : "◔ ▲ ▮ 82%",
+      titleStyle: "font-size: " + (ios ? "26px" : "22px") + "; font-weight: 600; letter-spacing: " + (ios ? "-.02em" : "0") + ";",
+      backGlyph: ios ? "‹" : "←",
+      captionStyle: "width: " + (ios ? "390px" : "412px") + "; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-align: center;",
+
+      tabbarStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: space-around; padding: " +
+        (ios ? "9px 8px 4px" : "10px 8px") + "; border-top: 1px solid var(--border); background: " + (ios ? "var(--sidebar)" : "var(--card)") + ";",
+      tabbar: [
+        { glyph: "◈", label: "Sessions", on: true },
+        { glyph: "◫", label: "Review" },
+        { glyph: "⬡", label: "Fleet" },
+        { glyph: "⚙", label: "Settings" }
+      ].map(t => ({
+        glyph: t.glyph, label: t.label,
+        style: "display: flex; flex-direction: column; align-items: center; gap: 3px; padding: " + (ios ? "2px 10px" : "4px 14px") +
+          "; border-radius: " + (ios ? "0" : "999px") + "; background: " + (t.on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") +
+          "; color: " + (t.on ? "var(--primary)" : "var(--faint)") + ";"
+      })),
+      tabbarFleet: [
+        { glyph: "◈", label: "Sessions" },
+        { glyph: "◫", label: "Review" },
+        { glyph: "⬡", label: "Fleet", on: true },
+        { glyph: "⚙", label: "Settings" }
+      ].map(t => ({
+        glyph: t.glyph, label: t.label,
+        style: "display: flex; flex-direction: column; align-items: center; gap: 3px; padding: " + (ios ? "2px 10px" : "4px 14px") +
+          "; border-radius: " + (ios ? "0" : "999px") + "; background: " + (t.on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") +
+          "; color: " + (t.on ? "var(--primary)" : "var(--faint)") + ";"
+      })),
+
+      paused: st.paused,
+      pauseLabel: st.paused ? "Resume" : "Pause all",
+      pauseStyle: "padding: 9px 14px; border-radius: 999px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid " +
+        (st.paused ? "var(--warn-border)" : "var(--border)") + "; color: " + (st.paused ? "var(--warning)" : "var(--strong)") + ";",
+      togglePause: () => this.setState({ paused: !st.paused }),
+      goApproval: () => {},
+
+      sessions: [
+        { title: "Migrate billing webhooks to idempotent handlers", model: "claude-code/sonnet-4.6", mode: "BUILD", machine: "macbook-pro-m3", state: "APPROVAL", c: "var(--warning)", sel: true },
+        { title: "design-studio: onboarding v3 variants", model: "codex/gpt-5.3-codex", mode: "PLAN", machine: "macbook-pro-m3", state: "PREVIEW", c: "var(--primary)" },
+        { title: "repo-audit: dependency and license sweep", model: "openrouter/deepseek-v4", mode: "BUILD", auto: true, machine: "hetzner-cx42", state: "RUNNING", c: "var(--success)" },
+        { title: "Rotate S3 credentials and update the runbook", model: "codex/gpt-5.3", mode: "ASK", machine: "hetzner-cx42", state: "HARD GATE", c: "var(--destructive)" },
+        { title: "Grok CLI: crash log parser", model: "grok/grok-4-code", mode: "BUILD", machine: "studio-arch", state: "QUEUED", c: "var(--faint)" }
+      ].map(s => ({
+        title: s.title, model: s.model, mode: s.mode, machine: s.machine, state: s.state, stateColor: s.c, auto: !!s.auto,
+        dotStyle: this.dot(s.c, 7, s.state === "RUNNING") + " margin-top: 4px;",
+        modeStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--border); color: " +
+          (s.mode === "BUILD" ? "var(--success)" : "var(--muted-foreground)") + ";",
+        cardStyle: "padding: 12px 13px; margin-bottom: 9px; background: var(--card); border-radius: var(--radius); border: 1px solid " +
+          (s.sel ? "color-mix(in oklab, var(--primary) 35%, transparent)" : "var(--border)") + ";"
+      })),
+
+      facts: [
+        { k: "MACHINE", v: "macbook-pro-m3" },
+        { k: "AGENT", v: "claude-code" },
+        { k: "MODE", v: "build · auto off" },
+        { k: "DIRECTORY", v: "~/src/acme-api" },
+        { k: "AFFECTS", v: "acme_dev · 1 migration", warn: true },
+        { k: "NETWORK", v: "localhost:5432" },
+        { k: "ESTIMATED", v: "~40s" }
+      ].map((f, i, arr) => ({
+        k: f.k, v: f.v,
+        color: f.warn ? "var(--warning)" : "var(--strong)",
+        rowStyle: "display: flex; align-items: baseline; gap: 10px; padding: 10px 13px; background: var(--card); border-bottom: " +
+          (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      allowStyle: "padding: 15px; background: var(--warning); border-radius: var(--radius); font-size: 13.5px; font-weight: 500; color: oklch(0.2 0.04 62); text-align: center; cursor: pointer;",
+      allowOnce: () => this.setState({ decision: "allowed" }),
+      denyIt: () => this.setState({ decision: "denied" }),
+      decided: st.decision !== null,
+      decidedDot: this.dot(st.decision === "allowed" ? "var(--success)" : "var(--destructive)", 7) + " margin-top: 4px;",
+      decidedText: st.decision === "allowed"
+        ? "Allowed from this phone. Applied in 38s on macbook-pro-m3, checkpoint ckpt_7f24 taken first. The audit log records that the decision came from here."
+        : "Denied. The agent was told to move the migration to the WSL box and is rewriting step 3.",
+
+      variants: ["A", "B", "C"].map((label, i) => ({
+        label: "Variant " + label,
+        pick: () => this.setState({ variant: i }),
+        style: "flex: 1; padding: 8px; border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; text-align: center; cursor: pointer; background: " +
+          (st.variant === i ? "var(--accent)" : "transparent") + "; border: 1px solid " + (st.variant === i ? "var(--border)" : "transparent") +
+          "; color: " + (st.variant === i ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      variantCaption: [
+        "[ variant A · single column ]\nplan-preview.html\n390 × 844",
+        "[ variant B · split plan and diff ]\nplan-preview.html\n390 × 844",
+        "[ variant C · checklist ]\nplan-preview.html\n390 × 844"
+      ][st.variant],
+      tapping: st.tapping,
+      tapLabel: st.tapping ? "Picking" : "Comment",
+      tapStyle: "padding: 11px 15px; border-radius: var(--radius); font-size: 12px; font-weight: 500; text-align: center; cursor: pointer; border: 1px solid " +
+        (st.tapping ? "var(--ring)" : "var(--border)") + "; color: " + (st.tapping ? "var(--primary)" : "var(--strong)") + ";",
+      toggleTap: () => this.setState({ tapping: !st.tapping }),
+      openCount: annRaw.filter(a => !isRes(a)).length,
+      annotations: annRaw.map(a => {
+        const res = isRes(a);
+        return {
+          n: a.n, selector: a.selector, body: a.body, meta: a.meta,
+          status: res ? "RESOLVED" : "OPEN",
+          statusStyle: "font-size: 8.5px; letter-spacing: .07em; padding: 2px 6px; border-radius: 4px; background: " +
+            (res ? "var(--muted)" : "color-mix(in oklab, var(--primary) 16%, transparent)") + "; color: " + (res ? "var(--muted-foreground)" : "var(--primary)") + ";",
+          pinStyle: "width: 16px; height: 16px; flex: 0 0 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; background: " +
+            (res ? "var(--muted)" : "var(--primary)") + "; color: " + (res ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+          cardStyle: "padding: 11px 12px; background: var(--card); border-radius: var(--radius); border: 1px solid " +
+            (res ? "var(--border)" : "color-mix(in oklab, var(--primary) 30%, transparent)") + ";",
+          action: res ? "Reopen" : "Resolve",
+          toggle: () => this.setState(s => ({
+            resolvedIds: res
+              ? s.resolvedIds.filter(x => x !== a.id).concat(a.pre ? ["un-" + a.id] : [])
+              : s.resolvedIds.concat([a.id])
+          }))
+        };
+      }),
+
+      plan: [
+        { mark: "✓", title: "Replay table with a unique event-id claim", meta: "done · 3 tools", k: "done" },
+        { mark: "✓", title: "Handlers claim then commit before side effects", meta: "done · 5 tools", k: "done" },
+        { mark: "3", title: "Apply the migration on this machine", meta: "blocked · waiting on you", k: "blocked" },
+        { mark: "4", title: "Rewrite replay.spec.ts for exactly-once", meta: "queued", k: "queued" }
+      ].map((p, i, arr) => {
+        const c = p.k === "done" ? "var(--success)" : p.k === "blocked" ? "var(--warning)" : "var(--faint)";
+        return {
+          mark: p.mark, title: p.title, meta: p.meta,
+          color: p.k === "queued" ? "var(--muted-foreground)" : "var(--foreground)",
+          markStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; margin-top: 1px; background: " +
+            (p.k === "done" ? "color-mix(in oklab, var(--success) 18%, transparent)" : p.k === "blocked" ? "color-mix(in oklab, var(--warning) 18%, transparent)" : "var(--muted)") + "; color: " + c + ";",
+          rowStyle: "display: flex; gap: 10px; padding: 9px 12px; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+        };
+      }),
+
+      machines: [
+        { name: "macbook-pro-m3", os: "macOS 15.4 · arm64 · 0.14.2", badge: "THIS FLEET", sessions: "3", tools: "1 approval", state: "on" },
+        { name: "Ubuntu-24.04 · WSL", os: "thinkpad · x64 · 0.14.2", badge: "LAN", sessions: "1", tools: "idle", state: "on" },
+        { name: "hetzner-cx42", os: "Debian 12 · x64 · 0.14.0", badge: "TAILNET", sessions: "2", tools: "running", state: "on" },
+        { name: "win-desk", os: "Windows 11 · x64 · 0.14.2", badge: "CLOUD", sessions: "0", tools: "idle", state: "on" },
+        { name: "studio-arch", os: "Arch · last seen 09:14", badge: "OFFLINE", sessions: "0", tools: "—", state: "off" }
+      ].map(m => ({
+        name: m.name, os: m.os, badge: m.badge,
+        dotStyle: this.dot(m.state === "off" ? "var(--destructive)" : "var(--success)", 8, m.tools === "running"),
+        badgeStyle: "font-family: 'JetBrains Mono', monospace; font-size: 8.5px; letter-spacing: .06em; padding: 2px 6px; border-radius: 4px; background: var(--muted); color: " +
+          (m.state === "off" ? "var(--destructive)" : "var(--muted-foreground)") + ";",
+        cardStyle: "padding: 12px 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); opacity: " + (m.state === "off" ? "0.65" : "1") + ";",
+        stats: [
+          { k: "SESSIONS", v: m.sessions, color: "var(--strong)" },
+          { k: "TOOLS", v: m.tools, color: m.tools === "1 approval" ? "var(--warning)" : "var(--strong)" }
+        ],
+        action: m.state === "off" ? "Wake" : "Open",
+        actionStyle: "font-size: 11.5px; font-weight: 500; color: " + (m.state === "off" ? "var(--muted-foreground)" : "var(--primary)") + ";"
+      })),
+
+      lockStyle: "flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: " + (ios ? "center" : "flex-start") +
+        "; padding: " + (ios ? "58px 16px 16px" : "44px 14px 16px") + "; background: linear-gradient(170deg, oklch(0.2 0.02 285) 0%, var(--background) 55%);",
+      lockCaption: ios
+        ? "Lock screen. Approval notifications carry Allow, Deny and View as actions, so a migration can be cleared without opening the app."
+        : "Lock screen. Notification actions match: Allow, Deny, View. Grouped under one Domovoi channel with a separate high-priority channel for approvals.",
+      notifications: [
+        { when: "now", title: "Approval needed on macbook-pro-m3", body: "prisma migrate deploy in acme-api. Affects acme_dev, one migration.", actions: true, hi: true },
+        { when: "12m", title: "repo-audit finished on hetzner-cx42", body: "41 packages checked, 3 license flags to review.", },
+        { when: "1h", title: "design-studio rendered 3 variants", body: "Onboarding v3 is ready for review with 2 open comments." }
+      ].map(n => ({
+        when: n.when, title: n.title, body: n.body, actions: !!n.actions,
+        cardStyle: "padding: 13px 14px; border-radius: " + (ios ? "18px" : "22px") + "; backdrop-filter: blur(12px); background: " +
+          (n.hi ? "color-mix(in oklab, var(--warn-bg) 82%, transparent)" : "color-mix(in oklab, var(--card) 78%, transparent)") +
+          "; border: 1px solid " + (n.hi ? "var(--warn-border)" : "var(--border)") + ";"
+      }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>

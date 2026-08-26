@@ -1,0 +1,2248 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: var(--primary); }
+  input::placeholder { color: var(--faint); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); border-radius: 0; }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%);
+    border-radius: 11px; border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:active { background: var(--primary); background-clip: content-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  @keyframes dvBlink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 45%, transparent); } 70% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--primary) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent); } }
+  @keyframes dvSweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(360%); } }
+  @keyframes dvPopIn { from { opacity: 0; transform: translateY(-4px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .78);
+    --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --success-foreground: oklch(0.17 0.03 158);
+    --warning: oklch(0.79 0.13 62); --warning-foreground: oklch(0.2 0.04 62);
+    --destructive: oklch(0.63 0.19 25); --destructive-foreground: oklch(0.98 0.01 25);
+    --info: oklch(0.72 0.1 240); --info-foreground: oklch(0.17 0.03 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25);
+    --danger-dim: oklch(0.78 0.06 25); --danger-on: oklch(0.24 0.07 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-md: oklch(0.2 0.01 285 / .1); --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --success-foreground: oklch(0.99 0.01 158);
+    --warning: oklch(0.6 0.13 62); --warning-foreground: oklch(0.99 0.01 62);
+    --destructive: oklch(0.55 0.2 25); --destructive-foreground: oklch(0.99 0.01 25);
+    --info: oklch(0.52 0.14 240); --info-foreground: oklch(0.99 0.01 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25);
+    --danger-dim: oklch(0.54 0.14 25); --danger-on: oklch(0.99 0.01 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+  }
+</style>
+</helmet>
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --sidebar-foreground: var(--strong); --sidebar-border: var(--border); --card-foreground: var(--foreground); --accent-foreground: var(--foreground); --secondary: var(--accent); --secondary-foreground: var(--strong); --popover: var(--card); --popover-foreground: var(--foreground); --input: var(--border); --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; align-items: center; justify-content: center; padding: 28px; overflow: auto; background: var(--desk); font-family: 'Instrument Sans', system-ui, sans-serif; color: var(--foreground);">
+  <div style="width: 1560px; height: 980px; flex: 0 0 auto; position: relative; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <sc-if value="{{ systemDeco }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ sysBarStyle }}">
+        <sc-if value="{{ sysControlsLeft }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; gap: 8px;">
+            <div style="width: 12px; height: 12px; border-radius: 50%; background: oklch(0.65 0.19 25);"></div>
+            <div style="width: 12px; height: 12px; border-radius: 50%; background: oklch(0.78 0.14 85);"></div>
+            <div style="width: 12px; height: 12px; border-radius: 50%; background: oklch(0.72 0.16 145);"></div>
+          </div>
+        </sc-if>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ sysTitle }}</span>
+        <span style="flex: 1;"></span>
+        <sc-if value="{{ sysControlsRight }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: 11px;">
+            <span>−</span>
+            <span style="font-size: 9px;">◻</span>
+            <span>✕</span>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <div style="height: 44px; flex: 0 0 44px; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
+      <sc-if value="{{ isMac }}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; gap: 8px; padding-right: 4px;">
+          <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+          <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+          <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        </div>
+      </sc-if>
+      <div style="display: flex; align-items: center; gap: 7px;">
+        <span style="width: 15px; height: 15px; border-radius: 4px; background: var(--primary); display: block;"></span>
+        <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+      </div>
+
+      <div style="width: 1px; height: 18px; background: var(--border);"></div>
+
+      <div onClick="{{ openLauncher }}" style="display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer; background: var(--card);" style-hover="background: var(--accent);">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--foreground);">acme-api</span>
+        <span style="font-size: 10.5px; color: var(--faint);">main</span>
+        <span style="color: var(--faint); font-size: 10px;">▾</span>
+      </div>
+
+      <div onClick="{{ goFleet }}" style="display: flex; align-items: center; gap: 8px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">
+        <span style="{{ machineDot }}"></span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ machine.name }}</span>
+        <span style="font-size: 10px; color: var(--faint);">{{ machine.transport }}</span>
+      </div>
+
+      <div style="flex: 1;"></div>
+
+      <div style="display: flex; align-items: center; gap: 3px; padding: 3px; background: var(--card); border-radius: calc(var(--radius) - 2px);">
+        <sc-for list="{{ modes }}" as="m" hint-placeholder-count="3">
+          <div onClick="{{ m.pick }}" style="{{ m.style }}">{{ m.label }}</div>
+        </sc-for>
+      </div>
+      <div onClick="{{ toggleAuto }}" title="{{ autoTitle }}" style="{{ autoChipStyle }}">
+        <span style="{{ autoDotStyle }}"></span>
+        <span>Auto</span>
+      </div>
+
+      <sc-if value="{{ hasPending }}" hint-placeholder-val="{{ true }}">
+        <div onClick="{{ openApproval }}" style="display: flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; background: color-mix(in oklab, var(--warning) 14%, transparent); border: 1px solid color-mix(in oklab, var(--warning) 40%, transparent); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--warning) 22%, transparent);">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--warning);"></span>
+          <span style="font-size: 11px; color: var(--warn-fg);">{{ pendingLabel }}</span>
+        </div>
+      </sc-if>
+
+      <div onClick="{{ togglePause }}" style="{{ pauseStyle }}">{{ pauseLabel }}</div>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">$4.18 today</div>
+
+
+      <sc-if value="{{ isWin }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; gap: 2px; margin-left: 4px;">
+          <div style="width: 34px; height: 30px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); font-size: 11px;">−</div>
+          <div style="width: 34px; height: 30px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); font-size: 10px;">◻</div>
+          <div style="width: 34px; height: 30px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); font-size: 11px;">✕</div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isLinux }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; align-items: center; gap: 6px; margin-left: 4px;">
+          <div style="width: 22px; height: 22px; border-radius: 50%; background: var(--muted); display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); font-size: 10px;">−</div>
+          <div style="width: 22px; height: 22px; border-radius: 50%; background: var(--muted); display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); font-size: 8px;">◻</div>
+          <div style="width: 22px; height: 22px; border-radius: 50%; background: var(--muted); display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); font-size: 10px;">✕</div>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ offlineBanner }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--danger-bg); border-bottom: 1px solid var(--danger-border);">
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--destructive);"></span>
+        <span style="font-size: 12.5px; color: var(--danger-fg);">Lost the daemon on <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">hetzner-cx42</span>, tailnet route dropped 40s ago. Session state is preserved on the machine; the agent is paused.</span>
+        <span style="flex: 1;"></span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim);">retry 3/∞ · next in 4s</span>
+        <div style="padding: 6px 12px; border-radius: calc(var(--radius) - 4px); background: var(--danger-fg); color: var(--danger-on); font-size: 11.5px; font-weight: 500; cursor: pointer;">Reconnect now</div>
+        <div onClick="{{ dismissOffline }}" style="padding: 6px 10px; font-size: 11.5px; color: var(--danger-fg); cursor: pointer;">Work offline</div>
+      </div>
+    </sc-if>
+
+    <div style="flex: 1; min-height: 0; display: flex;">
+
+
+      <sc-if value="{{ isSessions }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ sidebarOpen }}" hint-placeholder-val="{{ true }}">
+        <div style="width: 288px; flex: 0 0 288px; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px 0;">
+            <span style="font-size: 10px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SESSIONS</span>
+            <span style="flex: 1;"></span>
+            <span onClick="{{ toggleSidebar }}" title="Collapse sidebar ⌘B" style="width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">‹‹</span>
+          </div>
+          <div style="flex: 0 0 auto; padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border);">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); cursor: pointer; font-size: 12.5px;" style-hover="background: var(--accent); color: var(--accent-foreground);">
+              <span>New session</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⌘N</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; padding: 7px 11px; background: var(--background); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px);">
+              <span style="font-size: 11px; color: var(--faint);">⌕</span>
+              <span style="font-size: 11.5px; color: var(--faint);">Search sessions, files, skills</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⌘K</span>
+            </div>
+          </div>
+
+          <div style="flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 4px 8px 12px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+              <div onClick="{{ g.toggle }}" style="{{ g.headerStyle }}">
+                <span style="{{ g.chevronStyle }}">▸</span>
+                <span style="font-size: 10px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ g.label }}</span>
+                <span style="{{ g.badgeStyle }}">{{ g.count }}</span>
+                <span style="flex: 1; height: 1px; background: var(--border);"></span>
+              </div>
+              <sc-if value="{{ g.open }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; flex-direction: column; gap: 3px;">
+                <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="2">
+                  <div onClick="{{ s.pick }}" style="{{ s.rowStyle }}">
+                    <div style="display: flex; align-items: flex-start; gap: 9px;">
+                      <span style="{{ s.dotStyle }}"></span>
+                      <div style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.42; color: {{ s.titleColor }};">{{ s.title }}</div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 5px; margin-top: 7px; padding-left: 17px; flex-wrap: wrap;">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 2px 6px; border-radius: 4px; background: var(--muted); color: var(--strong);">{{ s.model }}</span>
+                      <span style="{{ s.reasonStyle }}">{{ s.reasoning }}</span>
+                      <span style="{{ s.modeStyle }}">{{ s.modeLabel }}</span>
+                      <sc-if value="{{ s.auto }}" hint-placeholder-val="{{ false }}">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .07em; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--warning) 16%, transparent); border: 1px solid color-mix(in oklab, var(--warning) 45%, transparent); color: var(--warning);">AUTO</span>
+                      </sc-if>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 5px; padding-left: 17px;">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ s.machine }}</span>
+                      <span style="flex: 1;"></span>
+                      <span style="font-size: 9.5px; font-weight: 500; letter-spacing: .06em; color: {{ s.stateColor }};">{{ s.stateLabel }}</span>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              </sc-if>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border-top: 1px solid var(--border); padding: 9px 10px; display: flex; align-items: center; gap: 9px;">
+            <div style="width: 26px; height: 26px; flex: 0 0 26px; border-radius: 8px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: var(--primary); cursor: pointer;">DL</div>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 11.5px; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Dan L</div>
+              <div style="font-size: 10px; color: var(--faint); margin-top: 1px;">Personal fleet · 5 machines</div>
+            </div>
+            <div onClick="{{ goSettings }}" title="Settings ⌘," style="{{ settingsStyle }}">⚙</div>
+          </div>
+        </div>
+
+        </sc-if>
+
+        <sc-if value="{{ sidebarClosed }}" hint-placeholder-val="{{ false }}">
+          <div style="width: 46px; flex: 0 0 46px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0; background: var(--sidebar); border-right: 1px solid var(--border);">
+            <span onClick="{{ toggleSidebar }}" title="Expand sidebar ⌘B" style="width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">››</span>
+            <span style="width: 18px; height: 1px; background: var(--border);"></span>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+              <sc-for list="{{ collapsedSessions }}" as="cs" hint-placeholder-count="7">
+                <div onClick="{{ cs.pick }}" title="{{ cs.title }}" style="{{ cs.style }}">
+                  <span style="{{ cs.dotStyle }}"></span>
+                </div>
+              </sc-for>
+            </div>
+            <div onClick="{{ goSettings }}" title="Settings ⌘," style="{{ settingsStyle }}">⚙</div>
+            <div style="width: 26px; height: 26px; border-radius: 8px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--primary); cursor: pointer;">DL</div>
+          </div>
+        </sc-if>
+
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--background);">
+          <div style="flex: 0 0 auto; padding: 13px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px 12px;">
+            <div style="flex: 1 1 260px; min-width: 0;">
+              <div style="font-size: 14px; font-weight: 500; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Migrate billing webhooks to idempotent handlers with replay protection</div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">
+                <span>wt-billing-idem</span>
+                <span style="color: var(--border);">·</span>
+                <span>from main @ 8f3c1de</span>
+                <span style="color: var(--border);">·</span>
+                <span>7 files</span>
+                <span style="color: var(--border);">·</span>
+                <span style="color: var(--success);">42 pass</span>
+                <span style="color: var(--destructive);">1 fail</span>
+                <span style="color: var(--border);">·</span>
+                <span>18.4k ctx</span>
+              </div>
+            </div>
+            <div style="position: relative;">
+              <div onClick="{{ toggleModelMenu }}" style="{{ modelChipStyle }}">
+                <span style="width: 6px; height: 6px; border-radius: 2px; background: var(--primary);"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ activeModel }}</span>
+              </div>
+              <sc-if value="{{ modelMenuOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="width: 430px; position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); box-shadow: 0 4px 6px -1px var(--shadow-md), 0 12px 28px -8px var(--shadow-lg); padding: 4px; overflow: hidden; animation: dvPopIn .14s ease-out;">
+                  <div style="padding: 6px 8px; font-size: 11px; font-weight: 500; color: var(--muted-foreground);">Change model</div>
+                  <div style="padding: 0 8px 6px; font-size: 10.5px; line-height: 1.5; color: var(--faint);">Applies at the next turn boundary, and never mid-stream or mid-tool-call.</div>
+                  <span style="display: block; height: 1px; margin: 4px -4px; background: var(--border);"></span>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px;">
+                    <div style="padding: 8px; border-radius: 4px; background: var(--card);">
+                      <div style="font-size: 11.5px; font-weight: 500; color: var(--primary);">Switch here</div>
+                      <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 5px;">Continue this thread on another model. Worktree, diff, plan, tool results, annotations and skills carry over via a checkpointed handoff.</div>
+                    </div>
+                    <div style="padding: 8px; border-radius: 4px; background: var(--card);">
+                      <div style="font-size: 11.5px; font-weight: 500;">Fork with model</div>
+                      <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 5px;">Branch a parallel thread in a fresh Git worktree. Both keep running; compare results later.</div>
+                    </div>
+                  </div>
+                  <div>
+                    <span style="display: block; height: 1px; margin: 4px -4px; background: var(--border);"></span>
+                    <sc-for list="{{ modelOptions }}" as="mo" hint-placeholder-count="5">
+                      <div style="display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 4px;" style-hover="background: var(--accent);">
+                        <span style="{{ mo.dotStyle }}"></span>
+                        <div style="flex: 1; min-width: 0;">
+                          <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {{ mo.nameColor }};">{{ mo.name }}</div>
+                          <div style="font-size: 10.5px; color: var(--muted-foreground); margin-top: 3px;">{{ mo.note }}</div>
+                        </div>
+                        <div onClick="{{ mo.switchHere }}" style="{{ mo.switchStyle }}">{{ mo.switchLabel }}</div>
+                        <div onClick="{{ mo.fork }}" style="padding: 6px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Fork</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+            <div style="position: relative;">
+              <div onClick="{{ toggleReasoningMenu }}" style="{{ reasoningChipStyle }}">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ activeReasoning }}</span>
+              </div>
+              <sc-if value="{{ reasoningMenuOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="width: 264px; position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); box-shadow: 0 4px 6px -1px var(--shadow-md), 0 12px 28px -8px var(--shadow-lg); padding: 4px; overflow: hidden; animation: dvPopIn .14s ease-out;">
+                  <div style="padding: 6px 8px; font-size: 11px; font-weight: 500; color: var(--muted-foreground); line-height: 1.5;">Reasoning effort</div>
+                  <div style="padding: 0 8px 6px; font-size: 10.5px; line-height: 1.5; color: var(--faint);">Provider-side effort. It costs more and changes nothing about what the agent may do.</div>
+                  <span style="display: block; height: 1px; margin: 4px -4px; background: var(--border);"></span>
+                  <sc-for list="{{ reasoningOptions }}" as="ro" hint-placeholder-count="5">
+                    <div onClick="{{ ro.pick }}" style="{{ ro.rowStyle }}" style-hover="background: var(--accent);">
+                      <span style="{{ ro.dotStyle }}"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ ro.nameColor }}; flex: 1;">{{ ro.label }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ ro.cost }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+            <div style="padding: 7px 11px; flex: 0 0 auto; white-space: nowrap; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Open in editor</div>
+          </div>
+
+
+          <div style="flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 20px 58px 52px 58px; mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 44px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 44px), transparent 100%);">
+            <div style="max-width: 720px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 18px;">
+
+              <div style="display: flex; align-items: center; gap: 10px; padding: 9px 13px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; align-self: center;">
+                <span style="font-size: 10.5px; letter-spacing: .1em; color: var(--faint);">CHECKPOINT</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">ckpt_7f21 · before provider handoff · 12:41</span>
+                <span style="font-size: 11px; color: var(--primary); cursor: pointer;">Restore</span>
+              </div>
+
+              <div style="position: relative; display: flex; justify-content: flex-end;">
+                <div style="max-width: 76%; padding: 11px 14px; background: var(--accent); border: 1px solid var(--border); border-radius: 14px 14px 5px 14px; font-size: 13.5px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">the stripe retries are double-charging. make every webhook handler idempotent, add a replay table, and don't touch prod config. run the suite before you propose anything.</div>
+                <div style="position: absolute; right: -38px; top: 0; width: 26px; height: 26px; border-radius: 7px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--primary);">DL</div>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 10px; padding: 10px 13px; background: var(--info-bg); border: 1px solid var(--info-border); border-radius: var(--radius);">
+                <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--info); flex: 0 0 6px;"></span>
+                <div style="flex: 1; font-size: 11.5px; line-height: 1.55; color: var(--info-fg);">Handed off <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">codex / gpt-5.3-codex</span> → <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">claude-code / sonnet-4.6</span>. Thread, plan, worktree, diff, tool + test results and 2 open annotations carried over. Hidden reasoning and provider caches did not transfer.</div>
+                <span style="font-size: 11px; color: var(--info-dim); cursor: pointer; white-space: nowrap;">What moved</span>
+              </div>
+
+              <sc-if value="{{ moveDone }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: flex-start; gap: 11px; padding: 11px 14px; background: var(--card); border: 1px solid color-mix(in oklab, var(--success) 35%, transparent); border-radius: var(--radius);">
+                  <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--success); margin-top: 5px;"></span>
+                  <div style="flex: 1; font-size: 11.5px; line-height: 1.6; color: var(--strong);">{{ moveReceipt }}</div>
+                  <span style="font-size: 11px; color: var(--primary); cursor: pointer; white-space: nowrap;">Transfer log</span>
+                </div>
+              </sc-if>
+
+              <div style="position: relative;">
+                <div style="position: absolute; left: -38px; top: 0; width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--primary);">◆</div>
+                <div style="min-width: 0; display: flex; flex-direction: column; gap: 13px;">
+                  <div style="padding-top: 3px; font-size: 13.5px; line-height: 1.62; color: var(--foreground); text-wrap: pretty;">Suite is green except <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px;">webhooks/replay.spec.ts</span>, it asserts the old at-least-once behaviour. Plan below. Step 3 needs a migration, so I'll stop and ask.</div>
+
+                  <div style="background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+                    <div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border);">
+                      <span style="font-size: 11.5px; font-weight: 500;">Plan</span>
+                      <span style="font-size: 10.5px; color: var(--muted-foreground);">4 steps · 7 files · 1 migration</span>
+                      <span style="flex: 1;"></span>
+                      <span onClick="{{ goPreview }}" style="font-size: 11px; color: var(--primary); cursor: pointer;">Open plan-preview →</span>
+                    </div>
+                    <sc-for list="{{ planSteps }}" as="p" hint-placeholder-count="4">
+                      <div style="display: flex; gap: 11px; padding: 9px 14px; border-top: 1px solid var(--border);">
+                        <span style="{{ p.markStyle }}">{{ p.mark }}</span>
+                        <div style="flex: 1; min-width: 0;">
+                          <div style="font-size: 12.5px; line-height: 1.45; color: var(--foreground);">{{ p.title }}</div>
+                          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); margin-top: 3px;">{{ p.files }}</div>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+                    <sc-for list="{{ toolCalls }}" as="tc" hint-placeholder-count="3">
+                      <div style="border-top: 1px solid var(--border);">
+                        <div style="display: flex; align-items: center; gap: 10px; padding: 9px 14px;">
+                          <span style="{{ tc.dotStyle }}"></span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">{{ tc.name }}</span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ tc.arg }}</span>
+                          <span style="flex: 1;"></span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: {{ tc.metaColor }};">{{ tc.meta }}</span>
+                        </div>
+                        <sc-if value="{{ tc.log }}" hint-placeholder-val="{{ false }}">
+                          <div style="padding: 9px 14px 11px 35px; background: var(--sidebar); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.8; color: var(--muted-foreground); border-top: 1px solid var(--border);">
+                            <div>FAIL webhooks/replay.spec.ts › retries the same event twice</div>
+                            <div>  expected 2 handler invocations, received 1</div>
+                            <div style="color: var(--primary);">  → assertion encodes the bug; rewrite in step 4</div>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <sc-if value="{{ approvalPending }}" hint-placeholder-val="{{ true }}">
+                    <div style="background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius); overflow: hidden;">
+                      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--warn-border);">
+                        <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                        <span style="font-size: 12.5px; font-weight: 500; color: var(--warn-fg);">Approval required, hard gate</span>
+                        <span style="flex: 1;"></span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--warn-dim);">agent claude-code · build · auto off</span>
+                      </div>
+                      <div style="padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--warn-fg); background: var(--warn-bg-deep);">pnpm -w prisma migrate deploy</div>
+                      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--warn-border);">
+                        <sc-for list="{{ approvalFacts }}" as="af" hint-placeholder-count="6">
+                          <div style="padding: 10px 14px; background: var(--warn-bg);">
+                            <div style="font-size: 9.5px; letter-spacing: .1em; color: var(--warn-dim);">{{ af.k }}</div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--warn-fg); margin-top: 4px; line-height: 1.4;">{{ af.v }}</div>
+                          </div>
+                        </sc-for>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 8px; padding: 12px 14px; flex-wrap: wrap;">
+                        <div onClick="{{ approveOnce }}" style="padding: 8px 14px; background: var(--warning); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; color: var(--warning-foreground); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">Allow once</div>
+                        <div onClick="{{ approveRule }}" style="padding: 8px 14px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-fg); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--warning) 16%, transparent); color: var(--warn-fg);">Always allow <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">prisma migrate</span> in this project</div>
+                        <div onClick="{{ denyApproval }}" style="padding: 8px 14px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-fg); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--destructive) 18%, transparent); color: var(--destructive);">Deny</div>
+                        <div style="flex: 1;"></div>
+                        <div style="font-size: 11px; color: var(--warn-dim); cursor: pointer;">Deny + tell the agent why</div>
+                      </div>
+                    </div>
+                  </sc-if>
+
+                  <sc-if value="{{ approvalResolved }}" hint-placeholder-val="{{ false }}">
+                    <div style="display: flex; align-items: center; gap: 11px; padding: 11px 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                      <span style="{{ resultDot }}"></span>
+                      <span style="font-size: 12px; line-height: 1.5; color: var(--strong);">{{ approvalResult }}</span>
+                      <span style="flex: 1;"></span>
+                      <span style="font-size: 11px; color: var(--primary); cursor: pointer; white-space: nowrap;">Audit log</span>
+                    </div>
+                  </sc-if>
+
+                  <div style="width: 100%; display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--muted-foreground);">
+                    <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--primary);"></span>
+                    <span>waiting on you<span style="color: var(--primary); animation: dvBlink 1.1s step-end infinite;">▍</span></span>
+                  </div>
+                </div>
+              </div>
+
+              <sc-for list="{{ sent }}" as="sm" hint-placeholder-count="0">
+                <div style="position: relative; display: flex; justify-content: flex-end;">
+                  <div style="max-width: 76%; padding: 11px 14px; background: var(--accent); border: 1px solid var(--border); border-radius: 14px 14px 5px 14px; font-size: 13.5px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">{{ sm.text }}</div>
+                  <div style="position: absolute; right: -38px; top: 0; width: 26px; height: 26px; border-radius: 7px; background: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--primary);">DL</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="flex: 0 0 auto; padding: 10px 68px 16px 58px;">
+            <div ref="{{ composerRef }}" style="max-width: 720px; margin: 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px;">
+              <input value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onKey }}" placeholder="Reply, /skills, or @file …" style="width: 100%; background: transparent; border: none; outline: none; font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 13px; color: var(--foreground); padding: 3px 2px 10px;" />
+              <div style="display: flex; align-items: center; gap: 7px;">
+                <div style="position: relative;">
+                  <div onClick="{{ toggleMachineMenu }}" style="{{ machineChipStyle }}">
+                    <span style="{{ machineDotSm }}"></span>
+                    <span style="{{ machineLabelStyle }}">{{ machine.name }}</span>
+                  </div>
+                  <sc-if value="{{ machineMenuOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="width: 320px; position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 50; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); box-shadow: 0 4px 6px -1px var(--shadow-md), 0 12px 28px -8px var(--shadow-lg); padding: 4px; overflow: hidden; animation: dvPopIn .14s ease-out;">
+                      <div style="padding: 6px 8px; font-size: 11px; font-weight: 500; color: var(--muted-foreground); line-height: 1.5;">Run this session on</div>
+                      <div style="padding: 0 8px 6px; font-size: 10.5px; line-height: 1.5; color: var(--faint);">Picking another machine runs a transfer preflight first. Your uncommitted work is bundled to a Domovoi ref and rebuilt there.</div>
+                      <span style="display: block; height: 1px; margin: 4px -4px; background: var(--border);"></span>
+                      <sc-for list="{{ machineMenu }}" as="mm" hint-placeholder-count="5">
+                        <div onClick="{{ mm.pick }}" style="{{ mm.rowStyle }}" style-hover="background: var(--accent);">
+                          <span style="{{ mm.dotStyle }}"></span>
+                          <div style="flex: 1; min-width: 0;">
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ mm.nameColor }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ mm.name }}</div>
+                            <div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">{{ mm.meta }}</div>
+                          </div>
+                          <span style="{{ mm.tagStyle }}">{{ mm.tag }}</span>
+                        </div>
+                      </sc-for>
+                      <span style="display: block; height: 1px; margin: 4px -4px; background: var(--border);"></span>
+                      <div onClick="{{ pairFromMenu }}" style="display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--primary);" style-hover="background: var(--accent);">+ Pair a machine</div>
+                    </div>
+                  </sc-if>
+                </div>
+                <div onClick="{{ goSkills }}" title="plan-preview" style="{{ skillChipStyle }}">{{ skillChipLabel }}</div>
+                <div onClick="{{ goSkills }}" title="Add a skill to this turn" style="padding: 4px 9px; border-radius: 999px; font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">{{ addSkillLabel }}</div>
+                <div style="flex: 1;"></div>
+                <div onClick="{{ openEditor }}" title="Open prompt editor ⌘⇧E" style="{{ expandStyle }}">⤢</div>
+                <div style="{{ hintStyle }}">⇧⏎ newline</div>
+                <div onClick="{{ send }}" title="Send ⏎" style="{{ sendStyle }}">{{ sendLabel }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <sc-if value="{{ dockClosed }}" hint-placeholder-val="{{ false }}">
+          <div style="width: 44px; flex: 0 0 44px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0; background: var(--sidebar); border-left: 1px solid var(--border);">
+            <span onClick="{{ toggleDock }}" title="Expand panel ⌥⌘L" style="width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">‹‹</span>
+            <span style="width: 18px; height: 1px; background: var(--border);"></span>
+            <sc-for list="{{ dockRail }}" as="dr" hint-placeholder-count="4">
+              <div onClick="{{ dr.pick }}" title="{{ dr.label }}" style="{{ dr.style }}">{{ dr.glyph }}</div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ dockOpen }}" hint-placeholder-val="{{ true }}">
+        <div onMouseDown="{{ startResize }}" title="Drag to resize · double-click to reset" onDoubleClick="{{ resetDock }}" style="{{ handleStyle }}"></div>
+        <div style="{{ dockStyle }}">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--border);">
+            <sc-for list="{{ dockTabs }}" as="dt" hint-placeholder-count="5">
+              <div onClick="{{ dt.pick }}" style="{{ dt.style }}">
+                <span>{{ dt.label }}</span>
+                <sc-if value="{{ dt.count }}" hint-placeholder-val="{{ false }}">
+                  <span style="{{ dt.badgeStyle }}">{{ dt.count }}</span>
+                </sc-if>
+              </div>
+            </sc-for>
+            <span style="flex: 1;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ dockWidthLabel }}</span>
+            <span onClick="{{ toggleDock }}" title="Collapse panel ⌥⌘L" style="width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">››</span>
+          </div>
+
+          <sc-if value="{{ dockPlan }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+              <div style="flex: 0 0 auto; padding: 11px 13px; border-bottom: 1px solid var(--border);">
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="font-size: 12px; font-weight: 500;">Working plan</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">step 3 of 4</span>
+                  <span style="flex: 1;"></span>
+                  <span onClick="{{ openPlanDoc }}" style="font-size: 10.5px; color: var(--primary); cursor: pointer;">Rendered ↗</span>
+                </div>
+                <div style="height: 4px; border-radius: 4px; background: var(--muted); margin-top: 10px; overflow: hidden;">
+                  <div style="width: 50%; height: 100%; background: var(--primary);"></div>
+                </div>
+              </div>
+              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px 13px; display: flex; flex-direction: column; gap: 8px;">
+                <sc-for list="{{ planLive }}" as="pl" hint-placeholder-count="4">
+                  <div style="{{ pl.cardStyle }}">
+                    <div style="display: flex; align-items: flex-start; gap: 10px;">
+                      <span style="{{ pl.markStyle }}">{{ pl.mark }}</span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 12.5px; line-height: 1.5; color: {{ pl.titleColor }};">{{ pl.title }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; color: var(--muted-foreground); margin-top: 5px; white-space: pre-line;">{{ pl.files }}</div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+                          <span style="{{ pl.stateStyle }}">{{ pl.state }}</span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ pl.meta }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </sc-for>
+                <div style="padding: 11px 13px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 11px; line-height: 1.6; color: var(--muted-foreground);">The plan is session state rather than a document. It updates as the agent works and survives model handoffs. Editing a step here sends the revision to the agent at the next turn boundary.</div>
+              </div>
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-top: 1px solid var(--border);">
+                <span style="padding: 6px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Edit plan</span>
+                <span style="padding: 6px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Reorder</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">pinned while running</span>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ dockPreview }}" hint-placeholder-val="{{ true }}">
+            <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+              <div style="flex: 0 0 auto; padding: 9px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+                <div style="position: relative;">
+                  <div onClick="{{ toggleDocMenu }}" style="{{ docChipStyle }}">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ activeDoc }}</span>
+                    <span style="font-size: 8px; color: var(--faint);">▾</span>
+                  </div>
+                  <sc-if value="{{ docMenuOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="position: absolute; top: calc(100% + 4px); left: 0; width: 280px; z-index: 50; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); box-shadow: 0 4px 6px -1px var(--shadow-md), 0 12px 28px -8px var(--shadow-lg); padding: 4px; animation: dvPopIn .14s ease-out;">
+                      <div style="padding: 6px 8px; font-size: 11px; font-weight: 500; color: var(--muted-foreground);">Artifacts in this session</div>
+                      <span style="display: block; height: 1px; margin: 4px -4px; background: var(--border);"></span>
+                      <sc-for list="{{ docs }}" as="dc" hint-placeholder-count="3">
+                        <div onClick="{{ dc.pick }}" style="{{ dc.rowStyle }}" style-hover="background: var(--accent); color: var(--accent-foreground);">
+                          <span style="{{ dc.dotStyle }}"></span>
+                          <div style="flex: 1; min-width: 0;">
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ dc.nameColor }};">{{ dc.name }}</div>
+                            <div style="font-size: 10px; color: var(--muted-foreground); margin-top: 2px;">{{ dc.by }}</div>
+                          </div>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+                <span style="padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--success) 16%, transparent); color: var(--success); font-size: 9px; letter-spacing: .06em;">SANDBOXED</span>
+                <span style="flex: 1;"></span>
+                <sc-for list="{{ widthPresets }}" as="wp" hint-placeholder-count="3">
+                  <div onClick="{{ wp.pick }}" style="{{ wp.style }}">{{ wp.label }}</div>
+                </sc-for>
+                <span onClick="{{ togglePin }}" style="{{ pinStyle }}">{{ pinLabel }}</span>
+              </div>
+
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border);">
+                <sc-for list="{{ variants }}" as="v" hint-placeholder-count="3">
+                  <div onClick="{{ v.pick }}" style="{{ v.style }}">{{ v.label }}</div>
+                </sc-for>
+                <span style="flex: 1;"></span>
+                <span onClick="{{ toggleAnnotate }}" style="{{ annotateStyle }}">{{ annotateLabel }}</span>
+              </div>
+
+              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px;">
+                <div style="{{ canvasStyle }}">
+                  <div style="height: 380px; background-image: repeating-linear-gradient(135deg, var(--muted) 0px, var(--muted) 7px, var(--card) 7px, var(--card) 14px); display: flex; align-items: center; justify-content: center; padding: 20px; position: relative;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.9; letter-spacing: .06em; color: var(--muted-foreground); text-align: center; white-space: pre-line;">{{ previewCaption }}</span>
+                    <div style="position: absolute; left: 24px; top: 44px; width: 132px; height: 30px; border: 1.5px solid var(--primary); border-radius: 4px; background: color-mix(in oklab, var(--primary) 10%, transparent);"></div>
+                    <div style="position: absolute; left: 160px; top: 38px; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700;">1</div>
+                    <div style="position: absolute; right: 30px; bottom: 74px; width: 20px; height: 20px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700;">2</div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-top: 1px solid var(--border);">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">live · reloaded 4s ago · rendered on macbook-pro-m3</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-size: 10.5px; color: var(--primary); cursor: pointer;">Focus on this design</span>
+                  </div>
+                </div>
+
+                <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 10px; letter-spacing: .12em; color: var(--faint);">ANNOTATIONS</span>
+                  <span style="flex: 1; height: 1px; background: var(--border);"></span>
+                  <span onClick="{{ toggleResolved }}" style="font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;">{{ resolvedLabel }}</span>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                  <sc-for list="{{ annotations }}" as="a" hint-placeholder-count="3">
+                    <div style="{{ a.cardStyle }}">
+                      <div style="display: flex; align-items: center; gap: 9px;">
+                        <span style="{{ a.pinStyle }}">{{ a.n }}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">{{ a.selector }}</span>
+                        <span style="{{ a.statusStyle }}">{{ a.status }}</span>
+                      </div>
+                      <div style="font-size: 12px; line-height: 1.5; color: var(--strong); margin-top: 8px;">{{ a.body }}</div>
+                      <div style="display: flex; align-items: center; gap: 8px; margin-top: 9px;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ a.meta }}</span>
+                        <span style="flex: 1;"></span>
+                        <span onClick="{{ a.toggle }}" style="font-size: 10.5px; color: var(--primary); cursor: pointer;">{{ a.action }}</span>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <div style="margin-top: 10px; padding: 11px 13px; border: 1px dashed var(--border); border-radius: var(--radius); display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 11.5px; color: var(--muted-foreground); flex: 1;">2 open annotations will be sent with your next message.</span>
+                  <span style="padding: 6px 11px; background: var(--accent); border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Send to agent</span>
+                </div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ dockChanges }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+              <div style="flex: 0 0 auto; padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">wt-billing-idem</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--success);">+184</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--destructive);">−37</span>
+                <span style="flex: 1;"></span>
+                <span style="padding: 5px 10px; background: var(--accent); border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Checkpoint</span>
+              </div>
+              <div style="flex: 0 0 auto; border-bottom: 1px solid var(--border);">
+                <sc-for list="{{ changedFiles }}" as="f" hint-placeholder-count="5">
+                  <div onClick="{{ f.pick }}" style="{{ f.rowStyle }}">
+                    <span style="{{ f.badgeStyle }}">{{ f.badge }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ f.nameColor }}; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;">{{ f.path }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--success);">{{ f.add }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--destructive);">{{ f.del }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="flex: 1; min-height: 0; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.75; background: var(--background);">
+                <sc-for list="{{ diffLines }}" as="dl" hint-placeholder-count="12">
+                  <div style="{{ dl.style }}"><span style="display: inline-block; width: 38px; color: var(--faint); user-select: none;">{{ dl.n }}</span>{{ dl.text }}</div>
+                </sc-for>
+              </div>
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border);">
+                <span style="font-size: 11px; color: var(--muted-foreground); flex: 1;">Read-only review. Editing happens in your editor.</span>
+                <span style="padding: 6px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Open in VS Code</span>
+                <span style="padding: 6px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Revert file</span>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ dockTerminal }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--code);">
+              <div style="flex: 0 0 auto; padding: 9px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+                <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--success);"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">pty · macbook-pro-m3 · zsh · ~/src/acme-api</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">agent-owned</span>
+              </div>
+              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8;">
+                <sc-for list="{{ termLines }}" as="tl" hint-placeholder-count="14">
+                  <div style="color: {{ tl.color }}; white-space: pre-wrap;">{{ tl.text }}</div>
+                </sc-for>
+                <div style="color: var(--primary);">❯ <span style="animation: dvBlink 1.1s step-end infinite;">▍</span></div>
+              </div>
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-top: 1px solid var(--border);">
+                <span style="padding: 5px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Take over</span>
+                <span style="padding: 5px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: color-mix(in oklab, var(--destructive) 18%, transparent); color: var(--destructive);">Interrupt ⌃C</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">ConPTY on Windows · node-pty elsewhere</span>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ dockHistory }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 14px;">
+              <div style="font-size: 10px; letter-spacing: .12em; color: var(--faint);">CHECKPOINTS & HANDOFFS</div>
+              <div style="display: flex; flex-direction: column; gap: 0; margin-top: 12px;">
+                <sc-for list="{{ timeline }}" as="tm" hint-placeholder-count="6">
+                  <div style="display: flex; gap: 12px;">
+                    <div style="width: 10px; flex: 0 0 10px; display: flex; flex-direction: column; align-items: center;">
+                      <span style="{{ tm.dotStyle }}"></span>
+                      <span style="flex: 1; width: 1px; background: var(--border);"></span>
+                    </div>
+                    <div style="flex: 1; min-width: 0; padding-bottom: 18px;">
+                      <div style="display: flex; align-items: baseline; gap: 8px;">
+                        <span style="font-size: 12px; color: var(--foreground);">{{ tm.title }}</span>
+                        <span style="flex: 1;"></span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ tm.time }}</span>
+                      </div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); margin-top: 4px; line-height: 1.55;">{{ tm.meta }}</div>
+                      <sc-if value="{{ tm.restore }}" hint-placeholder-val="{{ false }}">
+                        <div style="margin-top: 7px; display: inline-block; padding: 5px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Restore worktree</div>
+                      </sc-if>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ isConfig }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 236px; flex: 0 0 236px; border-right: 1px solid var(--border); background: var(--sidebar); padding: 16px 10px; overflow-y: auto;">
+          <div style="font-size: 16px; font-weight: 600; padding: 0 8px 14px;">Settings</div>
+          <sc-for list="{{ settingsNav }}" as="sn" hint-placeholder-count="9">
+            <div onClick="{{ sn.pick }}" style="{{ sn.style }}" style-hover="background: var(--accent); color: var(--accent-foreground);">{{ sn.label }}</div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isFleet }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 26px 30px;">
+          <div style="max-width: 1120px; margin: 0 auto;">
+            <div style="display: flex; align-items: flex-end; gap: 14px;">
+              <div style="flex: 1;">
+                <div style="font-size: 19px; font-weight: 600; letter-spacing: -.015em;">Fleet</div>
+                <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px; max-width: 620px; text-wrap: pretty;">Every machine runs its own daemon. Code, credentials, PTYs and Git state never leave the machine doing the work. Clients receive structured events over the Domovoi protocol.</div>
+              </div>
+              <div onClick="{{ openPairing }}" style="padding: 8px 14px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 12px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">Pair a machine</div>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap;">
+              <sc-for list="{{ transportOrder }}" as="t" hint-placeholder-count="5">
+                <div style="{{ t.style }}">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ t.n }}</span>
+                  <span style="font-size: 11px;">{{ t.label }}</span>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 16px;">
+              <sc-for list="{{ machines }}" as="mc" hint-placeholder-count="5">
+                <div style="{{ mc.cardStyle }}">
+                  <div style="display: flex; align-items: flex-start; gap: 11px;">
+                    <span style="{{ mc.dotStyle }}"></span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">{{ mc.name }}</span>
+                        <span style="{{ mc.badgeStyle }}">{{ mc.badge }}</span>
+                        <sc-if value="{{ mc.stale }}" hint-placeholder-val="{{ false }}">
+                          <span style="padding: 2px 7px; border-radius: 4px; background: color-mix(in oklab, var(--warning) 16%, transparent); color: var(--warning); font-size: 9px; letter-spacing: .06em;">UPDATE 0.14.2</span>
+                        </sc-if>
+                      </div>
+                      <div style="font-size: 11px; color: var(--muted-foreground); margin-top: 5px;">{{ mc.os }}</div>
+                    </div>
+                  </div>
+
+                  <div style="display: flex; gap: 20px; margin-top: 14px; flex-wrap: wrap;">
+                    <sc-for list="{{ mc.stats }}" as="st" hint-placeholder-count="4">
+                      <div>
+                        <div style="font-size: 9px; letter-spacing: .1em; color: var(--faint);">{{ st.k }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {{ st.color }}; margin-top: 4px;">{{ st.v }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <div style="display: flex; align-items: center; gap: 6px; margin-top: 14px; flex-wrap: wrap;">
+                    <sc-for list="{{ mc.providers }}" as="pv" hint-placeholder-count="4">
+                      <div style="{{ pv.style }}">
+                        <span style="{{ pv.dotStyle }}"></span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px;">{{ pv.name }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+
+                  <div style="display: flex; align-items: center; gap: 8px; margin-top: 14px;">
+                    <div onClick="{{ mc.use }}" style="{{ mc.useStyle }}">{{ mc.useLabel }}</div>
+                    <div style="padding: 7px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Terminal</div>
+                    <div style="flex: 1;"></div>
+                    <div style="font-size: 11px; color: var(--faint); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--destructive) 18%, transparent); color: var(--destructive);">Revoke</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isSkills }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-width: 0; display: flex;">
+          <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 26px 30px;">
+            <div style="max-width: 680px; margin: 0 auto;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="flex: 1;">
+                  <div style="font-size: 17px; font-weight: 600;">Skills</div>
+                  <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">24 discovered across Domovoi, user, provider and project directories. Skills run on the machine that holds the files they need.</div>
+                </div>
+                <div onClick="{{ openAddSkill }}" style="padding: 8px 13px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer; white-space: nowrap;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">+ Add skill</div>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 16px; padding: 8px 12px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px);">
+                <span style="font-size: 11px; color: var(--faint);">⌕</span>
+                <span style="font-size: 11.5px; color: var(--faint);">Search skills, capabilities or source paths</span>
+              </div>
+
+              <sc-for list="{{ skillGroups }}" as="sg" hint-placeholder-count="4">
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 22px;">
+                  <span style="font-size: 9.5px; font-weight: 500; letter-spacing: .12em; color: var(--faint);">{{ sg.label }}</span>
+                  <span style="flex: 1; height: 1px; background: var(--border);"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ sg.count }}</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
+                  <sc-for list="{{ sg.items }}" as="sk" hint-placeholder-count="3">
+                    <div onClick="{{ sk.pick }}" style="{{ sk.rowStyle }}" style-hover="background: var(--accent); color: var(--accent-foreground);">
+                      <span style="{{ sk.dotStyle }}"></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {{ sk.nameColor }};">{{ sk.name }}</div>
+                        <div style="font-size: 10.5px; color: var(--muted-foreground); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ sk.desc }}</div>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-for>
+
+              <div style="display: flex; align-items: center; gap: 10px; margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--border);">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 500;">design-studio</span>
+                <span style="padding: 3px 8px; border-radius: 4px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary); font-size: 9.5px; letter-spacing: .06em;">BUILT-IN · LICENSED COPY</span>
+              </div>
+              <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 8px;">Turns a design brief into full-fidelity HTML variants, rendered in the sandboxed preview and annotatable from any client.</div>
+
+              <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 20px;">
+                <sc-for list="{{ skillMeta }}" as="sm2" hint-placeholder-count="4">
+                  <div style="padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                    <div style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint);">{{ sm2.k }}</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--foreground); margin-top: 5px; line-height: 1.5;">{{ sm2.v }}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="margin-top: 18px; padding: 14px 16px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                <div style="font-size: 11.5px; font-weight: 500;">Required capabilities</div>
+                <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 11px;">
+                  <sc-for list="{{ capabilities }}" as="cp" hint-placeholder-count="4">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span style="{{ cp.dotStyle }}"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); flex: 1;">{{ cp.name }}</span>
+                      <span style="font-size: 10.5px; color: var(--muted-foreground);">{{ cp.scope }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">Skills are never pushed to remote machines silently. Sharing uses signed, content-addressed bundles and this capability review runs before install.</div>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 16px;">
+                <div style="padding: 8px 14px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Enabled for acme-api</div>
+                <div style="padding: 8px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">View SKILL.md</div>
+                <div style="padding: 8px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Provenance</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-width: 0; display: flex;">
+          <div style="flex: 1; min-width: 0; overflow-y: auto; padding: 26px 30px;">
+            <sc-if value="{{ paneProviders }}" hint-placeholder-val="{{ true }}">
+            <div style="max-width: 680px; margin: 0 auto;">
+              <div style="font-size: 17px; font-weight: 600;">Providers on macbook-pro-m3</div>
+              <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 7px; text-wrap: pretty;">Domovoi is not a model provider. Subscription CLIs own their own credentials; direct API keys go into the OS keychain on this machine and are never sent to another client or the relay.</div>
+
+              <div style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint); margin-top: 24px;">SUBSCRIPTION RUNTIMES</div>
+              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 11px;">
+                <sc-for list="{{ providerRuntimes }}" as="pr" hint-placeholder-count="5">
+                  <div style="display: flex; align-items: center; gap: 12px; padding: 13px 15px; background: var(--card); border: 1px solid {{ pr.borderColor }}; border-radius: var(--radius);">
+                    <span style="{{ pr.dotStyle }}"></span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">{{ pr.name }}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ pr.version }}</span>
+                      </div>
+                      <div style="font-size: 11px; color: {{ pr.stateColor }}; margin-top: 4px;">{{ pr.state }}</div>
+                    </div>
+                    <div style="{{ pr.btnStyle }}">{{ pr.btn }}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint); margin-top: 26px;">DIRECT API KEYS · BYOK</div>
+              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 11px;">
+                <sc-for list="{{ apiKeys }}" as="ak" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; gap: 12px; padding: 12px 15px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                    <span style="{{ ak.dotStyle }}"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; flex: 1;">{{ ak.name }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ ak.hint }}</span>
+                    <span style="font-size: 10.5px; color: var(--faint);">{{ ak.store }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="margin-top: 12px; padding: 12px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Keys stay on this machine by default. An optional encrypted vault can sync blobs the server cannot decrypt, and it stays off until you turn it on.</div>
+            </div>
+            </sc-if>
+
+            <sc-if value="{{ paneWindow }}" hint-placeholder-val="{{ false }}">
+            <div style="max-width: 680px; margin: 0 auto;">
+              <div style="font-size: 17px; font-weight: 600;">Appearance &amp; window</div>
+              <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 7px; text-wrap: pretty;">How Domovoi draws its own frame. Changing this restarts the window; sessions and daemons keep running.</div>
+
+              <div style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint); margin-top: 24px;">THEME</div>
+              <div style="display: flex; gap: 8px; margin-top: 11px;">
+                <sc-for list="{{ themeOptions }}" as="th" hint-placeholder-count="3">
+                  <div onClick="{{ th.pick }}" style="{{ th.cardStyle }}">
+                    <div style="display: flex; align-items: center; gap: 9px;">
+                      <span style="{{ th.radioStyle }}"></span>
+                      <span style="font-size: 12.5px; font-weight: 500;">{{ th.label }}</span>
+                    </div>
+                    <div style="{{ th.swatchStyle }}">
+                      <span style="{{ th.swatchBarStyle }}"></span>
+                      <span style="{{ th.swatchAccentStyle }}"></span>
+                    </div>
+                    <div style="font-size: 10.5px; line-height: 1.5; color: var(--muted-foreground); margin-top: 8px;">{{ th.note }}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint); margin-top: 26px;">WINDOW DECORATION</div>
+              <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 11px;">
+                <sc-for list="{{ decorationOptions }}" as="dco" hint-placeholder-count="2">
+                  <div onClick="{{ dco.pick }}" style="{{ dco.cardStyle }}">
+                    <div style="display: flex; align-items: flex-start; gap: 11px;">
+                      <span style="{{ dco.radioStyle }}"></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+                          <span style="font-size: 13px; font-weight: 500;">{{ dco.title }}</span>
+                          <span style="{{ dco.tagStyle }}">{{ dco.tag }}</span>
+                        </div>
+                        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 5px;">{{ dco.desc }}</div>
+                        <div style="{{ dco.previewStyle }}">
+                          <div style="{{ dco.barStyle }}">
+                            <span style="{{ dco.barLeftStyle }}">{{ dco.barLeft }}</span>
+                            <span style="flex: 1;"></span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ dco.barRight }}</span>
+                          </div>
+                          <div style="height: 34px; background: var(--background);"></div>
+                        </div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; color: var(--faint); margin-top: 9px; white-space: pre-line;">{{ dco.platforms }}</div>
+                      </div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="font-size: 9.5px; letter-spacing: .12em; color: var(--faint); margin-top: 26px;">RELATED</div>
+              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 11px;">
+                <sc-for list="{{ windowToggles }}" as="wt2" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: center; gap: 12px; padding: 12px 15px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 12.5px;">{{ wt2.label }}</div>
+                      <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 3px;">{{ wt2.hint }}</div>
+                    </div>
+                    <div onClick="{{ wt2.toggle }}" style="{{ wt2.switchStyle }}">
+                      <span style="{{ wt2.knobStyle }}"></span>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="margin-top: 12px; padding: 12px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">On Linux, Domovoi asks the compositor for server-side decorations first and falls back to its own frame when the desktop only offers client-side. Tiling WMs get the system option by default.</div>
+            </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ editorOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 820px; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 100px var(--shadow-lg); display: flex; flex-direction: column;">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--border);">
+            <span style="font-size: 12.5px; font-weight: 500;">Prompt editor</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">acme-api · wt-billing-idem</span>
+            <span style="flex: 1;"></span>
+            <div style="display: flex; gap: 2px; padding: 3px; background: var(--muted); border-radius: calc(var(--radius) - 3px);">
+              <div onClick="{{ setRich }}" title="Rich text" style="{{ richBtnStyle }}">Aa</div>
+              <div onClick="{{ setMarkdown }}" title="Markdown" style="{{ mdBtnStyle }}">&lt;/&gt;</div>
+            </div>
+            <span onClick="{{ closeEditor }}" style="font-size: 16px; line-height: 1; color: var(--faint); cursor: pointer;">×</span>
+          </div>
+
+          <div style="padding: 14px 16px;">
+            <textarea value="{{ draft }}" onChange="{{ onDraft }}" placeholder="{{ editorPlaceholder }}" style="{{ textareaStyle }}"></textarea>
+            <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+              <sc-for list="{{ editorInserts }}" as="ei" hint-placeholder-count="4">
+                <div style="padding: 5px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">{{ ei }}</div>
+              </sc-for>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ draftStats }}</span>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 8px; padding: 13px 16px; border-top: 1px solid var(--border);">
+            <div style="display: flex; align-items: center; gap: 6px; padding: 5px 11px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-size: 10.5px;">
+              <span style="{{ machineDotSm }}"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px;">{{ machine.name }}</span>
+            </div>
+            <div style="padding: 5px 11px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">{{ activeModel }}</div>
+            <div style="padding: 5px 11px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">{{ activeReasoning }}</div>
+            <span style="flex: 1;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⌘⏎ send · esc close</span>
+            <div onClick="{{ closeEditor }}" style="padding: 8px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Keep as draft</div>
+            <div onClick="{{ sendFromEditor }}" style="padding: 8px 16px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">Send</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ addSkillOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 700px; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 100px var(--shadow-lg);">
+          <div style="display: flex; align-items: flex-start; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--border);">
+            <div style="flex: 1;">
+              <div style="font-size: 13.5px; font-weight: 500;">Add a skill</div>
+              <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 4px;">Skills are folders with a SKILL.md. Domovoi reviews declared capabilities before anything runs, and never pushes a skill to a remote machine without you saying so.</div>
+            </div>
+            <span onClick="{{ closeAddSkill }}" style="font-size: 16px; line-height: 1; color: var(--faint); cursor: pointer;">×</span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 210px 1fr;">
+            <div style="border-right: 1px solid var(--border); padding: 10px;">
+              <sc-for list="{{ addSources }}" as="as" hint-placeholder-count="4">
+                <div onClick="{{ as.pick }}" style="{{ as.style }}">
+                  <div style="font-size: 12px; color: {{ as.titleColor }};">{{ as.title }}</div>
+                  <div style="font-size: 10px; line-height: 1.45; color: var(--muted-foreground); margin-top: 3px;">{{ as.hint }}</div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="padding: 16px 18px;">
+              <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint);">{{ addPane.label }}</div>
+              <div style="margin-top: 10px; padding: 12px 14px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius); font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.85; color: var(--foreground); white-space: pre-line;">{{ addPane.input }}</div>
+              <div style="font-size: 11px; line-height: 1.6; color: var(--muted-foreground); margin-top: 10px;">{{ addPane.note }}</div>
+
+              <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint); margin-top: 18px;">DECLARED CAPABILITIES · REVIEW BEFORE INSTALL</div>
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-top: 10px;">
+                <sc-for list="{{ addCaps }}" as="ac" hint-placeholder-count="4">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 9px 13px; background: var(--card); border-top: 1px solid var(--border);">
+                    <span style="{{ ac.dotStyle }}"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--foreground); flex: 1;">{{ ac.name }}</span>
+                    <span style="font-size: 10.5px; color: {{ ac.color }};">{{ ac.verdict }}</span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint); margin-top: 18px;">INSTALL SCOPE</div>
+              <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;">
+                <sc-for list="{{ addScopes }}" as="sc" hint-placeholder-count="3">
+                  <div onClick="{{ sc.pick }}" style="{{ sc.style }}">{{ sc.label }}</div>
+                </sc-for>
+              </div>
+              <div style="display: flex; align-items: center; gap: 9px; margin-top: 12px; padding: 11px 13px; border: 1px dashed var(--border); border-radius: var(--radius);">
+                <span style="{{ pushDotStyle }}"></span>
+                <div style="flex: 1; font-size: 10.5px; line-height: 1.55; color: var(--muted-foreground);">Also install on remote machines in this fleet, sent as a signed, content-addressed bundle after they show you the same capability review.</div>
+                <div onClick="{{ togglePush }}" style="{{ pushToggleStyle }}">{{ pushLabel }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border);">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint); flex: 1;">{{ addChecksum }}</span>
+            <div onClick="{{ closeAddSkill }}" style="padding: 8px 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Cancel</div>
+            <div onClick="{{ closeAddSkill }}" style="padding: 8px 15px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">{{ addCta }}</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ transferOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 660px; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 100px var(--shadow-lg);">
+          <div style="display: flex; align-items: flex-start; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--border);">
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 13.5px; font-weight: 500;">Move session to {{ transfer.target }}</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); margin-top: 4px;">macbook-pro-m3 → {{ transfer.target }} · wt-billing-idem · 7 files · +184 −37</div>
+            </div>
+            <span onClick="{{ cancelTransfer }}" style="font-size: 16px; line-height: 1; color: var(--faint); cursor: pointer;">×</span>
+          </div>
+
+          <div style="padding: 16px 18px;">
+            <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint);">PREFLIGHT</div>
+            <div style="display: flex; flex-direction: column; gap: 1px; margin-top: 10px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <sc-for list="{{ transfer.checks }}" as="ck" hint-placeholder-count="6">
+                <div style="{{ ck.rowStyle }}">
+                  <span style="{{ ck.dotStyle }}"></span>
+                  <span style="font-size: 11.5px; color: var(--foreground); flex: 1;">{{ ck.label }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ ck.valueColor }};">{{ ck.value }}</span>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="font-size: 9.5px; letter-spacing: .11em; color: var(--faint); margin-top: 18px;">TRANSFER METHOD</div>
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+              <sc-for list="{{ transfer.methods }}" as="tmm" hint-placeholder-count="2">
+                <div onClick="{{ tmm.pick }}" style="{{ tmm.cardStyle }}">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="{{ tmm.radioStyle }}"></span>
+                    <span style="font-size: 12px; font-weight: 500;">{{ tmm.title }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);">{{ tmm.cost }}</span>
+                  </div>
+                  <div style="font-size: 10.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 7px;">{{ tmm.desc }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.6; color: var(--faint); margin-top: 8px; white-space: pre-line;">{{ tmm.cmd }}</div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px;">
+              <div style="padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius);">
+                <div style="font-size: 10.5px; font-weight: 500; color: var(--success);">Travels with the session</div>
+                <div style="font-size: 10.5px; line-height: 1.75; color: var(--muted-foreground); margin-top: 7px;">Thread · plan · tool + test results · open annotations · active skills · permission mode · tracked changes · non-ignored untracked files</div>
+              </div>
+              <div style="padding: 12px 14px; border: 1px solid color-mix(in oklab, var(--warning) 40%, transparent); border-radius: var(--radius);">
+                <div style="font-size: 10.5px; font-weight: 500; color: var(--warning);">Does not travel</div>
+                <div style="font-size: 10.5px; line-height: 1.75; color: var(--muted-foreground); margin-top: 7px;">Running dev servers and PTYs (restarted there) · provider credentials · .env and secrets · database state · ignored build artifacts</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border);">
+            <span style="font-size: 11px; color: var(--faint); flex: 1;">A checkpoint is taken on both machines. Nothing is deleted here, and this checkout stays exactly as it is.</span>
+            <div onClick="{{ cancelTransfer }}" style="padding: 8px 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Cancel</div>
+            <div onClick="{{ confirmTransfer }}" style="padding: 8px 15px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--primary) 90%, transparent);">Transfer & switch</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ launcherOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: flex-start; justify-content: center; padding-top: 120px;">
+        <div style="width: 660px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 100px var(--shadow-lg);">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border);">
+            <span style="font-size: 12px; color: var(--faint);">⌕</span>
+            <span style="font-size: 13.5px; color: var(--muted-foreground); flex: 1;">Open project, session, machine or skill…</span>
+            <span onClick="{{ closeLauncher }}" style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint); cursor: pointer;">ESC</span>
+          </div>
+          <div style="padding: 8px 0;">
+            <sc-for list="{{ launcherItems }}" as="li" hint-placeholder-count="6">
+              <div style="{{ li.rowStyle }}" style-hover="background: var(--accent);">
+                <span style="{{ li.dotStyle }}"></span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12.5px; color: var(--foreground);">{{ li.title }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); margin-top: 3px;">{{ li.meta }}</div>
+                </div>
+                <span style="font-size: 10px; letter-spacing: .08em; color: var(--faint);">{{ li.kind }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="padding: 10px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 14px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">↑↓ navigate</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⏎ open</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">⌘⏎ open on another machine</span>
+            <span style="flex: 1;"></span>
+            <span onClick="{{ openFirstRun }}" style="font-size: 11px; color: var(--primary); cursor: pointer;">First-run setup</span>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ pairingOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 620px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 40px 100px var(--shadow-lg);">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid var(--border);">
+            <span style="font-size: 13.5px; font-weight: 500; flex: 1;">Pair a machine</span>
+            <span onClick="{{ closePairing }}" style="font-size: 16px; line-height: 1; color: var(--faint); cursor: pointer;">×</span>
+          </div>
+          <div style="padding: 18px;">
+            <div style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground);">Run this on the machine. The installer is version-pinned and checksummed; the daemon registers itself under your account after you confirm.</div>
+            <div style="margin-top: 12px; padding: 13px 15px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius); font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.9; color: var(--foreground);">
+              <div><span style="color: var(--faint);">$</span> curl -fsSL https://domovoi.sh/install.sh | sh -s -- --version 0.14.2</div>
+              <div><span style="color: var(--faint);">$</span> domovoi daemon install <span style="color: var(--muted-foreground);"># systemd · launchd · Windows Service</span></div>
+              <div><span style="color: var(--faint);">$</span> domovoi pair</div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px;">
+              <div style="padding: 14px 15px; background: var(--accent); border: 1px solid var(--border); border-radius: var(--radius);">
+                <div style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint);">PAIRING CODE FROM DAEMON</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 15px; letter-spacing: .1em; color: var(--primary); margin-top: 8px;">hearth-quiet-ember-42</div>
+              </div>
+              <div style="padding: 14px 15px; background: var(--accent); border: 1px solid var(--border); border-radius: var(--radius);">
+                <div style="font-size: 9.5px; letter-spacing: .1em; color: var(--faint);">WAITING FOR</div>
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 9px;">
+                  <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--primary); animation: dvPulse 2s infinite;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">debian-12 · 91.107.x.x</span>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top: 14px; padding: 12px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Also available: <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">domovoi open .</span> from inside WSL, the shim tells this app which distribution and working directory to attach to.</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--border);">
+            <span style="font-size: 11px; color: var(--faint); flex: 1;">Devices can be renamed, revoked and re-paired at any time.</span>
+            <div onClick="{{ closePairing }}" style="padding: 8px 15px; background: var(--primary); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Confirm code</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ firstRunOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: var(--code); display: flex; align-items: center; justify-content: center;">
+        <div style="width: 720px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="width: 22px; height: 22px; border-radius: 6px; background: var(--primary); display: block;"></span>
+            <span style="font-size: 17px; font-weight: 600;">Domovoi</span>
+            <span style="flex: 1;"></span>
+            <span onClick="{{ closeFirstRun }}" style="font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;">Skip for now</span>
+          </div>
+          <div style="font-size: 26px; font-weight: 600; letter-spacing: -.02em; margin-top: 26px;">A good spirit lives in your machines.</div>
+          <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); margin-top: 10px; max-width: 520px; text-wrap: pretty;">Three steps and nothing leaves this computer. You can add remote machines later.</div>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 24px;">
+            <sc-for list="{{ firstRun }}" as="fr" hint-placeholder-count="3">
+              <div style="{{ fr.cardStyle }}">
+                <span style="{{ fr.markStyle }}">{{ fr.mark }}</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 13px; color: var(--foreground);">{{ fr.title }}</div>
+                  <div style="font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 4px;">{{ fr.desc }}</div>
+                </div>
+                <div style="{{ fr.btnStyle }}">{{ fr.btn }}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size: 11px; line-height: 1.6; color: var(--faint); margin-top: 20px;">Domovoi runs fully self-hosted. A hosted account only adds relay, notifications and billing, the local product works without one.</div>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1040},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;macos&quot;,&quot;options&quot;:[&quot;macos&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Platform&quot;}}">
+class Component extends DCLogic {
+  state = {
+    view: "sessions",
+    dock: "plan",
+    doc: 0,
+    docMenuOpen: false,
+    sidebarOpen: true,
+    closedGroups: ["RECENT"],
+    machineIdx: 0,
+    machineMenuOpen: false,
+    addSkillOpen: false,
+    addSource: "folder",
+    addScope: 0,
+    pushRemote: false,
+    transferTarget: null,
+    transferMethod: "bundle",
+    moveDone: false,
+    movedTo: "",
+    movedVia: "bundle",
+    dockOpen: true,
+    dockWidth: 470,
+    resizing: false,
+    mode: "build",
+    auto: false,
+    reasoning: "high",
+    reasoningMenuOpen: false,
+    compact: false,
+    settingsPane: 0,
+    decoration: "domovoi",
+    theme: "dark",
+    systemDark: true,
+    nativeMenu: false,
+    rememberLayout: true,
+    alwaysTop: false,
+    editorOpen: false,
+    mono: false,
+    sessionId: "s1",
+    modelMenuOpen: false,
+    approval: "pending",
+    paused: false,
+    variant: 1,
+    widthPreset: 1,
+    pinned: false,
+    annotating: true,
+    showResolved: false,
+    resolvedIds: [],
+    launcherOpen: false,
+    pairingOpen: false,
+    firstRunOpen: false,
+    offline: false,
+    fileIdx: 1,
+    draft: "",
+    sent: []
+  };
+
+  chip(on, extra) {
+    return "padding: 5px 10px; border-radius: calc(var(--radius) - 5px); font-size: 11px; font-weight: 500; cursor: pointer; white-space: nowrap; background: " +
+      (on ? "var(--accent)" : "transparent") + "; color: " + (on ? "var(--foreground)" : "var(--muted-foreground)") + ";" + (extra || "");
+  }
+
+  dot(color, size, pulse) {
+    const s = size || 8;
+    return "width: " + s + "px; height: " + s + "px; flex: 0 0 " + s + "px; border-radius: 50%; background: " + color + ";" +
+      (pulse ? " animation: dvPulse 2.5s infinite;" : "");
+  }
+
+  composerRef = React.createRef();
+
+  componentDidMount() {
+    this.attachObserver();
+    if (window.matchMedia) {
+      this.mq = window.matchMedia("(prefers-color-scheme: dark)");
+      this.setState({ systemDark: this.mq.matches });
+      this.onScheme = e => this.setState({ systemDark: e.matches });
+      this.mq.addEventListener("change", this.onScheme);
+    }
+    this.onWinResize = () => this.measure();
+    window.addEventListener("resize", this.onWinResize);
+    requestAnimationFrame(() => this.measure());
+  }
+
+  componentDidUpdate() {
+    if (this.composerRef.current && this.roEl !== this.composerRef.current) this.attachObserver();
+  }
+
+  attachObserver() {
+    const el = this.composerRef.current;
+    if (!el) return;
+    if (this.ro) this.ro.disconnect();
+    this.roEl = el;
+    if (typeof ResizeObserver !== "undefined") {
+      this.ro = new ResizeObserver(() => this.measure());
+      this.ro.observe(el);
+    }
+    this.measure();
+  }
+
+  measure() {
+    const el = this.composerRef.current;
+    if (!el) return;
+    const w = el.getBoundingClientRect().width;
+    if (!w) return;
+    const next = w < 420;
+    if (next !== this.state.compact) this.setState({ compact: next });
+  }
+
+  componentWillUnmount() {
+    if (this.ro) this.ro.disconnect();
+    if (this.onWinResize) window.removeEventListener("resize", this.onWinResize);
+  }
+
+  renderVals() {
+    const st = this.state;
+    const compact = st.compact;
+    const plat = this.props.platform ?? "macos";
+    const V = v => () => this.setState({ view: v, launcherOpen: false });
+    const D = d => () => this.setState({ dock: d });
+
+    const machines = [
+      { name: "macbook-pro-m3", os: "macOS 15.4 · arm64 · daemon 0.14.2", transport: "this machine", state: "host", sessions: "3 active", tools: "2 running", providers: [["claude-code", "ok"], ["codex", "ok"], ["cursor-agent", "ok"], ["opencode", "ok"], ["kilo", "ok"]] },
+      { name: "thinkpad · Ubuntu-24.04", os: "WSL2 · x64 · daemon 0.14.2", transport: "LAN", state: "online", sessions: "1 active", tools: "idle", providers: [["codex", "ok"], ["claude-code", "expired"], ["kilo", "ok"], ["grok", "missing"]] },
+      { name: "hetzner-cx42", os: "Debian 12 · x64 · daemon 0.14.0", transport: "tailnet", state: "online", stale: true, sessions: "2 active", tools: "1 approval", providers: [["codex", "ok"], ["opencode", "ok"]] },
+      { name: "studio-arch", os: "Arch Linux · x64 · daemon 0.14.2", transport: "SSH", state: "offline", sessions: "0", tools: ", ", providers: [["claude-code", "unknown"], ["codex", "unknown"]] },
+      { name: "win-desk", os: "Windows 11 · x64 · daemon 0.14.2", transport: "cloud", state: "online", sessions: "0", tools: "idle", providers: [["grok", "ok"], ["codex", "ok"], ["kilo", "missing"]] }
+    ];
+    const machine = machines[st.machineIdx] || machines[0];
+    const mColor = m => m.state === "offline" ? "var(--destructive)" : m.state === "host" ? "var(--primary)" : "var(--success)";
+
+    const sessions = [
+      { g: "ACTIVE", items: [
+        { id: "s1", title: "Migrate billing webhooks to idempotent handlers with replay protection", model: "claude-code/sonnet-4.6", reasoning: "think: high", machine: "macbook-pro-m3", mode: "build", auto: false, state: "APPROVAL", color: "var(--warning)" },
+        { id: "s2", title: "design-studio: onboarding v3, three variants for the empty state", model: "codex/gpt-5.3-codex", reasoning: "reasoning: med", machine: "macbook-pro-m3", mode: "plan", auto: false, state: "PREVIEW", color: "var(--primary)" },
+        { id: "s3", title: "repo-audit: dependency and license sweep across 41 packages", model: "openrouter/deepseek-v4", reasoning: "reasoning: off", machine: "hetzner-cx42", mode: "build", auto: true, state: "RUNNING", color: "var(--success)" }
+      ]},
+      { g: "BLOCKED", items: [
+        { id: "s4", title: "Rotate S3 credentials and update the deploy runbook", model: "codex/gpt-5.3", reasoning: "reasoning: high", machine: "hetzner-cx42", mode: "ask", auto: false, state: "HARD GATE", color: "var(--destructive)" },
+        { id: "s5", title: "Grok CLI: parse crash logs from last night's release", model: "grok/grok-4-code", reasoning: "reasoning: min", machine: "studio-arch", mode: "build", auto: false, state: "QUEUED", color: "var(--faint)" }
+      ]},
+      { g: "RECENT", items: [
+        { id: "s6", title: "Flaky auth test triage, 12 files, all green", model: "cursor-agent/composer-2", reasoning: "reasoning: med", machine: "thinkpad", mode: "build", auto: true, state: "DONE", color: "var(--muted-foreground)" },
+        { id: "s7", title: "plan-preview: Q3 infra consolidation", model: "kilo/kilo-coder-1", reasoning: "reasoning: low", machine: "win-desk", mode: "plan", auto: false, state: "DONE", color: "var(--muted-foreground)" }
+      ]}
+    ];
+    const modeChip = m => ({
+      label: m.toUpperCase(),
+      style: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .07em; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); color: " +
+        (m === "build" ? "var(--success)" : "var(--muted-foreground)") + ";"
+    });
+
+    const files = [
+      { path: "src/webhooks/handler.ts", badge: "M", add: "+62", del: "−14" },
+      { path: "src/webhooks/replay.ts", badge: "A", add: "+71", del: "−0" },
+      { path: "prisma/migrations/20260825_replay/migration.sql", badge: "A", add: "+18", del: "−0" },
+      { path: "src/webhooks/replay.spec.ts", badge: "M", add: "+21", del: "−19" },
+      { path: "src/lib/stripe.ts", badge: "M", add: "+12", del: "−4" }
+    ];
+
+    const diff = [
+      { n: "41", text: "export async function handleWebhook(evt: StripeEvent) {", k: "ctx" },
+      { n: "42", text: "-  await processEvent(evt)", k: "del" },
+      { n: "42", text: "+  const seen = await replay.claim(evt.id)", k: "add" },
+      { n: "43", text: "+  if (!seen.fresh) {", k: "add" },
+      { n: "44", text: "+    log.info('replay.skip', { id: evt.id })", k: "add" },
+      { n: "45", text: "+    return { ok: true, deduped: true }", k: "add" },
+      { n: "46", text: "+  }", k: "add" },
+      { n: "47", text: "+  await processEvent(evt)", k: "add" },
+      { n: "48", text: "+  await replay.commit(evt.id)", k: "add" },
+      { n: "49", text: "}", k: "ctx" },
+      { n: "50", text: "", k: "ctx" },
+      { n: "51", text: "// TODO(domovoi): backfill table before enabling in prod", k: "ctx" }
+    ];
+
+    const term = [
+      { text: "❯ pnpm vitest run webhooks", c: "var(--primary)" },
+      { text: " RUN  v2.1.4 /home/dl/src/acme-api", c: "var(--muted-foreground)" },
+      { text: " ✓ webhooks/handler.spec.ts (14)", c: "var(--success)" },
+      { text: " ✓ webhooks/idempotency.spec.ts (9)", c: "var(--success)" },
+      { text: " ✓ webhooks/claim.spec.ts (18)", c: "var(--success)" },
+      { text: " ✗ webhooks/replay.spec.ts (1)", c: "var(--destructive)" },
+      { text: "   → retries the same event twice", c: "var(--destructive)" },
+      { text: "     expected 2 handler invocations, received 1", c: "var(--muted-foreground)" },
+      { text: "", c: "var(--muted-foreground)" },
+      { text: " Test Files  3 passed | 1 failed (4)", c: "var(--strong)" },
+      { text: "      Tests  42 passed | 1 failed (43)", c: "var(--strong)" },
+      { text: "   Duration  6.42s", c: "var(--muted-foreground)" },
+      { text: "", c: "var(--muted-foreground)" },
+      { text: "❯ git -C .domovoi/wt-billing-idem status --short", c: "var(--primary)" },
+      { text: " M src/webhooks/handler.ts", c: "var(--muted-foreground)" },
+      { text: "?? src/webhooks/replay.ts", c: "var(--muted-foreground)" }
+    ];
+
+    const annotationsRaw = [
+      { id: "a1", n: "1", selector: "section.plan > li:nth-child(3)", body: "Step 3 shouldn't run the migration on hetzner, do it on the WSL box where staging DB lives.", meta: "iPad Pro · 12:44 · variant B" },
+      { id: "a2", n: "2", selector: "figure.diff-summary", body: "Show the replay table row count here, not just the file names. I need to see the backfill size.", meta: "macbook-pro-m3 · 12:47 · variant B" },
+      { id: "a3", n: "3", selector: "header h1", body: "Title is fine, drop the version chip.", meta: "iPhone · 11:20 · variant A", resolvedByDefault: true }
+    ];
+    const isResolved = a => st.resolvedIds.includes(a.id) || (a.resolvedByDefault && !st.resolvedIds.includes("un-" + a.id));
+
+    const captions = [
+      "[ variant A, single column ]\nplan-preview.html\nrendered by design-studio",
+      "[ variant B, split plan / diff ]\nplan-preview.html\nrendered by design-studio",
+      "[ variant C, checklist ]\nplan-preview.html\nrendered by design-studio"
+    ];
+    const widths = ["390", "768", "1280"];
+
+    return {
+      isMac: plat === "macos" && st.decoration === "domovoi",
+      isWin: plat === "windows" && st.decoration === "domovoi",
+      isLinux: plat === "linux" && st.decoration === "domovoi",
+      systemDeco: st.decoration === "system",
+      sysTitle: "Domovoi, acme-api",
+      sysBarStyle: "height: 30px; flex: 0 0 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--accent); border-bottom: 1px solid var(--border);",
+      sysControlsLeft: plat === "macos",
+      sysControlsRight: plat !== "macos",
+
+      machine,
+      machineDot: this.dot(mColor(machine), 7, machine.state !== "offline"),
+      machineDotSm: this.dot(mColor(machine), 6),
+      machineMenuOpen: st.machineMenuOpen,
+      toggleMachineMenu: () => this.setState({ machineMenuOpen: !st.machineMenuOpen }),
+      machineChipStyle: "display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: var(--background); border: 1px solid " +
+        (st.machineMenuOpen ? "var(--ring)" : "var(--border)") + "; border-radius: 999px; font-size: 10.5px; cursor: pointer; color: var(--strong);",
+      machineMenu: machines.map((m, i) => ({
+        name: m.name,
+        meta: m.state === "offline" ? "offline · last seen 09:14" : m.os.replace(" · daemon", " ·"),
+        dotStyle: this.dot(mColor(m), 7),
+        nameColor: i === st.machineIdx ? "var(--primary)" : m.state === "offline" ? "var(--muted-foreground)" : "var(--foreground)",
+        tag: i === st.machineIdx ? "CURRENT" : m.state === "offline" ? "UNREACHABLE" : m.transport,
+        tagStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .05em; padding: 2px 6px; border-radius: 4px; white-space: nowrap; background: " +
+          (i === st.machineIdx ? "color-mix(in oklab, var(--primary) 16%, transparent)" : "var(--muted)") + "; color: " +
+          (i === st.machineIdx ? "var(--primary)" : m.state === "offline" ? "var(--destructive)" : "var(--muted-foreground)") + ";",
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 4px; cursor: " + (m.state === "offline" ? "not-allowed" : "pointer") +
+          "; opacity: " + (m.state === "offline" ? "0.6" : "1") + "; background: " + (i === st.machineIdx ? "var(--accent)" : "transparent") + ";",
+        pick: () => {
+          if (m.state === "offline") return;
+          if (i === st.machineIdx) { this.setState({ machineMenuOpen: false }); return; }
+          this.setState({ transferTarget: i, machineMenuOpen: false });
+        }
+      })),
+
+      transferOpen: st.transferTarget !== null,
+      transfer: (() => {
+        const t = machines[st.transferTarget === null ? 1 : st.transferTarget];
+        const bundle = st.transferMethod === "bundle";
+        const checks = [
+          { label: "Repository present on target", value: "acme-api @ 8f3c1de", ok: "pass" },
+          { label: "Common base commit", value: "8f3c1de, shared", ok: "pass" },
+          { label: "Provider authenticated there", value: t.providers.some(p => p[1] === "expired") ? "claude-code token expired" : "codex ready", ok: t.providers.some(p => p[1] === "expired") ? "warn" : "pass" },
+          { label: "Toolchain match", value: "node 22.6 · pnpm 9.7", ok: "pass" },
+          { label: "Target checkout clean", value: "no local changes", ok: "pass" },
+          { label: "Payload to send", value: "1.2 MB bundle · 7 files", ok: "pass" },
+          { label: "Unversioned files (.env, dumps)", value: "held back, needs approval", ok: "warn" }
+        ];
+        return {
+          target: t.name,
+          checks: checks.map(c => ({
+            label: c.label, value: c.value,
+            valueColor: c.ok === "warn" ? "var(--warning)" : "var(--muted-foreground)",
+            dotStyle: this.dot(c.ok === "warn" ? "var(--warning)" : "var(--success)", 6),
+            rowStyle: "display: flex; align-items: center; gap: 10px; padding: 9px 13px; background: var(--card);"
+          })),
+          methods: [
+            {
+              k: "bundle", title: "Git bundle over daemon channel", cost: "~1.2 MB · 3s",
+              desc: "Commits your work to refs/domovoi/ckpt, bundles it incrementally from the shared base and streams it end-to-end encrypted. No remote needed, nothing pushed anywhere public.",
+              cmd: "git bundle create – ^8f3c1de refs/domovoi/ckpt/s1\n→ target: git bundle unbundle && git worktree add"
+            },
+            {
+              k: "remote", title: "Push a Domovoi ref to origin", cost: "needs remote write",
+              desc: "Pushes the checkpoint ref to origin and fetches it on the target. Much faster on large repos, but it touches your remote, off unless you pick it.",
+              cmd: "git push origin refs/domovoi/ckpt/s1\n→ target: git fetch origin refs/domovoi/*"
+            }
+          ].map(m2 => ({
+            title: m2.title, desc: m2.desc, cmd: m2.cmd, cost: m2.cost,
+            pick: () => this.setState({ transferMethod: m2.k }),
+            radioStyle: "width: 12px; height: 12px; flex: 0 0 12px; border-radius: 50%; border: 3px solid " +
+              (st.transferMethod === m2.k ? "var(--primary)" : "var(--muted)") + "; background: var(--popover);",
+            cardStyle: "flex: 1; padding: 12px 14px; border-radius: var(--radius); cursor: pointer; border: 1px solid " +
+              (st.transferMethod === m2.k ? "var(--ring)" : "var(--border)") + "; background: " +
+              (st.transferMethod === m2.k ? "var(--accent)" : "transparent") + ";"
+          }))
+        };
+      })(),
+      cancelTransfer: () => this.setState({ transferTarget: null }),
+      confirmTransfer: () => this.setState(s2 => ({
+        machineIdx: s2.transferTarget,
+        movedTo: machines[s2.transferTarget].name,
+        movedVia: s2.transferMethod,
+        moveDone: true,
+        transferTarget: null
+      })),
+      moveDone: st.moveDone,
+      moveReceipt: "Session moved to " + st.movedTo + " via " + (st.movedVia === "bundle" ? "git bundle over the daemon channel" : "a Domovoi ref on origin") +
+        ". Worktree wt-billing-idem rebuilt at ckpt_7f25 with 7 files intact; 42 tests re-run there. Dev server and PTY did not travel, restart them when you need them. Checkpoint kept on macbook-pro-m3.",
+
+      modes: ["ask", "plan", "build"].map(m => ({
+        label: m, pick: () => this.setState({ mode: m }),
+        style: this.chip(st.mode === m, st.mode === m ? " box-shadow: 0 1px 3px var(--shadow-md);" : "")
+      })),
+
+      hasPending: st.approval === "pending",
+      pendingLabel: "1 approval waiting",
+      openApproval: () => this.setState({ view: "sessions", sessionId: "s1" }),
+
+      paused: st.paused,
+      pauseLabel: st.paused ? "Resume fleet" : "Pause all",
+      pauseStyle: "padding: 5px 11px; border-radius: 999px; font-size: 11px; cursor: pointer; border: 1px solid " +
+        (st.paused ? "var(--primary)" : "var(--border)") + "; color: " + (st.paused ? "var(--primary)" : "var(--muted-foreground)") + ";",
+      togglePause: () => this.setState({ paused: !st.paused }),
+
+      offlineBanner: st.offline,
+      dismissOffline: () => this.setState({ offline: false }),
+
+      settingsStyle: "width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; cursor: pointer; background: " +
+        (st.view !== "sessions" ? "var(--accent)" : "transparent") + "; color: " + (st.view !== "sessions" ? "var(--primary)" : "var(--muted-foreground)") + ";",
+
+      isSessions: st.view === "sessions",
+      isFleet: st.view === "fleet",
+      isSkills: st.view === "skills",
+      isSettings: st.view === "settings",
+      goFleet: V("fleet"), goSkills: V("skills"),
+      goSettings: () => this.setState({ view: "settings", settingsPane: 0, launcherOpen: false }),
+      goPreview: () => this.setState({ dock: "preview" }),
+
+      sidebarOpen: st.sidebarOpen,
+      sidebarClosed: !st.sidebarOpen,
+      toggleSidebar: () => this.setState({ sidebarOpen: !st.sidebarOpen }),
+      collapsedSessions: sessions.reduce((all, g) => all.concat(g.items), []).map(s => ({
+        title: s.title,
+        dotStyle: this.dot(s.color, 8, s.state === "RUNNING"),
+        style: "width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: " +
+          (s.id === st.sessionId ? "var(--accent)" : "transparent") + ";",
+        pick: () => this.setState({ sessionId: s.id })
+      })),
+
+      groups: sessions.map(g => ({
+        label: g.g,
+        count: g.items.length,
+        open: !st.closedGroups.includes(g.g),
+        toggle: () => this.setState(s2 => ({
+          closedGroups: s2.closedGroups.includes(g.g) ? s2.closedGroups.filter(x => x !== g.g) : s2.closedGroups.concat([g.g])
+        })),
+        headerStyle: "display: flex; align-items: center; gap: 7px; padding: 11px 8px 6px; cursor: pointer;",
+        chevronStyle: "font-size: 8px; color: var(--muted-foreground); transition: transform .15s; display: inline-block; transform: rotate(" +
+          (st.closedGroups.includes(g.g) ? "0deg" : "90deg") + ");",
+        badgeStyle: "padding: 1px 6px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: var(--muted); color: " +
+          (g.g === "ACTIVE" ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+        items: g.items.map(s => ({
+          title: s.title, model: s.model, machine: s.machine,
+          reasoning: s.reasoning,
+          reasonStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); color: " +
+            (s.reasoning.endsWith("off") || s.reasoning.endsWith("min") ? "var(--faint)" : "var(--muted-foreground)") + ";",
+          auto: !!s.auto,
+          modeLabel: modeChip(s.mode).label,
+          modeStyle: modeChip(s.mode).style,
+          stateLabel: s.state, stateColor: s.color,
+          dotStyle: this.dot(s.color, 7, s.state === "RUNNING") + " margin-top: 4px;",
+          titleColor: s.id === st.sessionId ? "var(--foreground)" : "var(--muted-foreground)",
+          rowStyle: "padding: 9px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer; background: " +
+            (s.id === st.sessionId ? "var(--accent)" : "transparent") + ";",
+          pick: () => this.setState({ sessionId: s.id })
+        }))
+      })),
+
+      autoOn: st.auto,
+      autoTitle: st.mode === "build" ? "Auto: run project-scoped mutations without asking" : "Auto only applies in Build mode",
+      autoChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-size: 11px; cursor: " +
+        (st.mode === "build" ? "pointer" : "not-allowed") + "; opacity: " + (st.mode === "build" ? "1" : "0.45") +
+        "; border: 1px solid " + (st.auto && st.mode === "build" ? "color-mix(in oklab, var(--warning) 55%, transparent)" : "var(--border)") +
+        "; background: " + (st.auto && st.mode === "build" ? "color-mix(in oklab, var(--warning) 14%, transparent)" : "transparent") +
+        "; color: " + (st.auto && st.mode === "build" ? "var(--warning)" : "var(--muted-foreground)") + ";",
+      autoDotStyle: this.dot(st.auto && st.mode === "build" ? "var(--warning)" : "var(--border)", 6),
+      toggleAuto: () => { if (st.mode === "build") this.setState({ auto: !st.auto }); },
+
+      activeModel: "claude-code / sonnet-4.6",
+      activeReasoning: "think: " + st.reasoning,
+      modelChipStyle: "display: flex; align-items: center; gap: 8px; padding: 7px 11px; flex: 0 0 auto; white-space: nowrap; background: var(--card); border: 1px solid " +
+        (st.modelMenuOpen ? "var(--ring)" : "var(--border)") + "; border-radius: calc(var(--radius) - 3px); font-size: 11.5px; cursor: pointer;",
+      reasoningChipStyle: "display: flex; align-items: center; gap: 8px; padding: 7px 11px; flex: 0 0 auto; white-space: nowrap; background: var(--card); border: 1px solid " +
+        (st.reasoningMenuOpen ? "var(--ring)" : "var(--border)") + "; border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;",
+      reasoningMenuOpen: st.reasoningMenuOpen,
+      toggleReasoningMenu: () => this.setState({ reasoningMenuOpen: !st.reasoningMenuOpen, modelMenuOpen: false }),
+      reasoningOptions: [
+        { k: "off", note: "no extended thinking, fastest turnaround", cost: "1×" },
+        { k: "minimal", note: "short deliberation before tool calls", cost: "1.2×" },
+        { k: "low", note: "routine edits and small refactors", cost: "1.5×" },
+        { k: "medium", note: "multi-file changes, test triage", cost: "2.4×" },
+        { k: "high", note: "architecture, migrations, tricky bugs", cost: "4×" }
+      ].map(r => ({
+        label: r.k, note: r.note, cost: r.cost,
+        nameColor: st.reasoning === r.k ? "var(--primary)" : "var(--foreground)",
+        dotStyle: this.dot(st.reasoning === r.k ? "var(--primary)" : "var(--border)", 7),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 4px; cursor: pointer; background: " +
+          (st.reasoning === r.k ? "var(--accent)" : "transparent") + ";",
+        pick: () => this.setState({ reasoning: r.k, reasoningMenuOpen: false })
+      })),
+
+      modelMenuOpen: st.modelMenuOpen,
+      toggleModelMenu: () => this.setState({ modelMenuOpen: !st.modelMenuOpen, reasoningMenuOpen: false }),
+      modelOptions: [
+        { name: "claude-code / sonnet-4.6", note: "current · native in-session switching", cur: true, native: true },
+        { name: "claude-code / opus-4.6", note: "native switch, no handoff needed", native: true },
+        { name: "codex / gpt-5.3-codex", note: "checkpointed handoff · subscription CLI", native: false },
+        { name: "cursor-agent / composer-2", note: "checkpointed handoff · subscription CLI", native: false },
+        { name: "openrouter / deepseek-v4", note: "BYOK · key in macOS keychain", native: false },
+        { name: "opencode / qwen3-coder", note: "checkpointed handoff · local runtime", native: false },
+        { name: "kilo / kilo-coder-1", note: "checkpointed handoff · subscription CLI", native: false }
+      ].map(m => ({
+        name: m.name, note: m.note,
+        nameColor: m.cur ? "var(--primary)" : "var(--foreground)",
+        dotStyle: this.dot(m.cur ? "var(--primary)" : m.native ? "var(--success)" : "var(--info)", 7),
+        switchLabel: m.cur ? "Current" : m.native ? "Switch here" : "Handoff here",
+        switchStyle: "padding: 6px 11px; border-radius: calc(var(--radius) - 4px); font-size: 11px; font-weight: 500; cursor: " +
+          (m.cur ? "default" : "pointer") + "; background: " + (m.cur ? "var(--muted)" : "var(--primary)") +
+          "; color: " + (m.cur ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+        switchHere: () => this.setState({ modelMenuOpen: false }),
+        fork: () => this.setState({ modelMenuOpen: false })
+      })),
+
+      planSteps: [
+        { mark: "✓", done: true, title: "Add a replay table with a unique event-id claim", files: "prisma/schema.prisma · src/webhooks/replay.ts" },
+        { mark: "✓", done: true, title: "Make every handler claim-then-commit before side effects", files: "src/webhooks/handler.ts · src/lib/stripe.ts" },
+        { mark: "3", done: false, title: "Apply the migration on this machine's dev database", files: "prisma/migrations/20260825_replay/migration.sql" },
+        { mark: "4", done: false, title: "Rewrite replay.spec.ts to assert exactly-once delivery", files: "src/webhooks/replay.spec.ts" }
+      ].map(p => ({
+        mark: p.mark, title: p.title, files: p.files,
+        markStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; margin-top: 2px; background: " +
+          (p.done ? "color-mix(in oklab, var(--success) 18%, transparent)" : "var(--muted)") + "; color: " + (p.done ? "var(--success)" : "var(--muted-foreground)") + ";"
+      })),
+
+      toolCalls: [
+        { name: "read_file", arg: "src/webhooks/handler.ts", meta: "ok · 41ms", color: "var(--success)" },
+        { name: "write_file", arg: "src/webhooks/replay.ts", meta: "ok · +71", color: "var(--success)" },
+        { name: "bash", arg: "pnpm vitest run webhooks", meta: "1 failed · 6.42s", color: "var(--destructive)", log: true },
+        { name: "bash", arg: "pnpm prisma migrate deploy", meta: "blocked · hard gate", color: "var(--warning)" }
+      ].map(t => ({
+        name: t.name, arg: t.arg, meta: t.meta, metaColor: t.color, log: !!t.log,
+        dotStyle: this.dot(t.color, 6)
+      })),
+
+      approvalPending: st.approval === "pending",
+      approvalResolved: st.approval !== "pending",
+      approvalFacts: [
+        { k: "MACHINE", v: "macbook-pro-m3 · loopback" },
+        { k: "WORKING DIR", v: "~/src/acme-api" },
+        { k: "AFFECTS", v: "dev database acme_dev · 1 migration" },
+        { k: "NETWORK", v: "localhost:5432 only" },
+        { k: "ESTIMATED", v: "~40s" },
+        { k: "OUTSIDE PROJECT", v: "no" }
+      ],
+      approvalResult: st.approval === "once"
+        ? "Allowed once, migration applied in 38s. Checkpoint ckpt_7f24 taken first; revert available."
+        : st.approval === "rule"
+        ? "Rule created, prisma migrate is now auto-allowed in acme-api on this machine. Destructive and out-of-project actions still ask."
+        : "Denied. The agent was told the migration must run on the WSL box instead; it is rewriting step 3.",
+      resultDot: this.dot(st.approval === "denied" ? "var(--destructive)" : "var(--success)", 7),
+      approveOnce: () => this.setState({ approval: "once" }),
+      approveRule: () => this.setState({ approval: "rule" }),
+      denyApproval: () => this.setState({ approval: "denied" }),
+
+      dockPlan: st.dock === "plan",
+      openPlanDoc: () => this.setState({ dock: "preview", doc: 0 }),
+      planLive: [
+        { mark: "✓", title: "Add a replay table with a unique event-id claim", files: "prisma/schema.prisma\nsrc/webhooks/replay.ts", state: "done", meta: "3 tools · 41s", k: "done" },
+        { mark: "✓", title: "Make every handler claim-then-commit before side effects", files: "src/webhooks/handler.ts\nsrc/lib/stripe.ts", state: "done", meta: "5 tools · 1m 12s", k: "done" },
+        { mark: "3", title: "Apply the migration on this machine's dev database", files: "prisma/migrations/20260825_replay/migration.sql", state: "blocked, approval", meta: "waiting 4m", k: "blocked" },
+        { mark: "4", title: "Rewrite replay.spec.ts to assert exactly-once delivery", files: "src/webhooks/replay.spec.ts", state: "queued", meta: "not started", k: "queued" }
+      ].map(p => {
+        const c = p.k === "done" ? "var(--success)" : p.k === "blocked" ? "var(--warning)" : "var(--faint)";
+        return {
+          mark: p.mark, title: p.title, files: p.files, state: p.state, meta: p.meta,
+          titleColor: p.k === "queued" ? "var(--muted-foreground)" : "var(--foreground)",
+          markStyle: "width: 18px; height: 18px; flex: 0 0 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; margin-top: 1px; background: " +
+            (p.k === "done" ? "color-mix(in oklab, var(--success) 18%, transparent)" : p.k === "blocked" ? "color-mix(in oklab, var(--warning) 18%, transparent)" : "var(--muted)") + "; color: " + c + ";",
+          stateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; border: 1px solid " +
+            (p.k === "blocked" ? "color-mix(in oklab, var(--warning) 45%, transparent)" : "var(--border)") + "; color: " + c + ";",
+          cardStyle: "padding: 11px 13px; background: var(--card); border-radius: var(--radius); border: 1px solid " +
+            (p.k === "blocked" ? "color-mix(in oklab, var(--warning) 40%, transparent)" : "var(--border)") + ";"
+        };
+      }),
+
+      docs: [
+        { name: "plan-preview.html", by: "plan-preview · updated 12:51" },
+        { name: "design-studio/variants", by: "design-studio · 3 variants · 12:44" },
+        { name: "repo-audit.html", by: "repo-audit · 41 packages · 11:20" }
+      ].map((d, i) => ({
+        name: d.name, by: d.by,
+        pick: () => this.setState({ doc: i, docMenuOpen: false }),
+        nameColor: st.doc === i ? "var(--primary)" : "var(--foreground)",
+        dotStyle: this.dot(st.doc === i ? "var(--primary)" : "var(--border)", 6),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 4px; cursor: pointer; background: " +
+          (st.doc === i ? "var(--accent)" : "transparent") + ";"
+      })),
+      activeDoc: ["plan-preview.html", "design-studio/variants", "repo-audit.html"][st.doc],
+      docMenuOpen: st.docMenuOpen,
+      toggleDocMenu: () => this.setState({ docMenuOpen: !st.docMenuOpen }),
+      docChipStyle: "display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 5px; cursor: pointer; color: var(--muted-foreground); background: " +
+        (st.docMenuOpen ? "var(--accent)" : "transparent") + ";",
+
+      dockTabs: [
+        { k: "plan", label: "Plan", count: 0 },
+        { k: "preview", label: "Preview", count: 3 },
+        { k: "changes", label: "Changes", count: 7 },
+        { k: "terminal", label: "Terminal", count: 0 },
+        { k: "history", label: "History", count: 0 }
+      ].map(t => ({
+        label: t.label, count: t.count || false, pick: D(t.k),
+        badgeStyle: "margin-left: 6px; padding: 1px 5px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: " +
+          (st.dock === t.k ? "var(--primary)" : "var(--muted)") + "; color: " + (st.dock === t.k ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";",
+        style: "display: flex; align-items: center; padding: 6px 11px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+          (st.dock === t.k ? "var(--accent)" : "transparent") + "; color: " + (st.dock === t.k ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      dockOpen: st.dockOpen,
+      dockClosed: !st.dockOpen,
+      toggleDock: () => this.setState({ dockOpen: !st.dockOpen }),
+      dockStyle: "width: " + st.dockWidth + "px; flex: 0 0 auto; min-width: 0; display: flex; flex-direction: column; background: var(--sidebar); border-left: 1px solid var(--border);",
+      dockWidthLabel: st.dockWidth + "px",
+      handleStyle: "width: 5px; flex: 0 0 5px; cursor: col-resize; background: " + (st.resizing ? "var(--primary)" : "var(--border)") + "; transition: background .12s;",
+      startResize: e => this.beginResize(e),
+      resetDock: () => this.setState({ dockWidth: 470 }),
+      dockRail: [
+        { k: "plan", glyph: "☰", label: "Plan" },
+        { k: "preview", glyph: "◫", label: "Preview" },
+        { k: "changes", glyph: "±", label: "Changes" },
+        { k: "terminal", glyph: "❯", label: "Terminal" },
+        { k: "history", glyph: "◷", label: "History" }
+      ].map(r => ({
+        glyph: r.glyph, label: r.label,
+        pick: () => this.setState({ dock: r.k, dockOpen: true }),
+        style: "width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; background: " +
+          (st.dock === r.k ? "var(--accent)" : "transparent") + "; color: " + (st.dock === r.k ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+
+      dockPreview: st.dock === "preview",
+      dockChanges: st.dock === "changes",
+      dockTerminal: st.dock === "terminal",
+      dockHistory: st.dock === "history",
+
+      variants: ["Variant A", "Variant B", "Variant C"].map((label, i) => ({
+        label, pick: () => this.setState({ variant: i }),
+        style: this.chip(st.variant === i, " border: 1px solid " + (st.variant === i ? "var(--border)" : "transparent") + ";")
+      })),
+      widthPresets: widths.map((label, i) => ({
+        label, pick: () => this.setState({ widthPreset: i }),
+        style: "font-family: 'JetBrains Mono', monospace; padding: 3px 7px; border-radius: 5px; font-size: 9.5px; cursor: pointer; background: " +
+          (st.widthPreset === i ? "var(--accent)" : "transparent") + "; color: " + (st.widthPreset === i ? "var(--foreground)" : "var(--faint)") + ";"
+      })),
+      canvasStyle: "border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); margin: 0 auto; max-width: " +
+        (st.widthPreset === 0 ? "300px" : st.widthPreset === 1 ? "100%" : "100%") + ";",
+      previewCaption: st.doc === 0
+        ? "[ plan-preview.html ]\nmarkdown plan rendered by plan-preview\nlive · updates as steps complete"
+        : st.doc === 2
+        ? "[ repo-audit.html ]\n41 packages · 3 license flags\nrendered by repo-audit"
+        : captions[st.variant],
+      pinLabel: st.pinned ? "Pinned" : "Pin",
+      pinStyle: "padding: 3px 8px; border-radius: 5px; font-size: 10px; cursor: pointer; border: 1px solid " +
+        (st.pinned ? "var(--primary)" : "var(--border)") + "; color: " + (st.pinned ? "var(--primary)" : "var(--muted-foreground)") + ";",
+      togglePin: () => this.setState({ pinned: !st.pinned }),
+      annotateLabel: st.annotating ? "◎ Element picker on" : "◎ Element picker",
+      annotateStyle: "padding: 4px 9px; border-radius: 6px; font-size: 10.5px; cursor: pointer; border: 1px solid " +
+        (st.annotating ? "var(--primary)" : "var(--border)") + "; color: " + (st.annotating ? "var(--primary)" : "var(--muted-foreground)") + ";",
+      toggleAnnotate: () => this.setState({ annotating: !st.annotating }),
+
+      resolvedLabel: st.showResolved ? "Hide resolved" : "Show resolved (1)",
+      toggleResolved: () => this.setState({ showResolved: !st.showResolved }),
+      annotations: annotationsRaw.filter(a => st.showResolved || !isResolved(a)).map(a => {
+        const res = isResolved(a);
+        return {
+          n: a.n, selector: a.selector, body: a.body, meta: a.meta,
+          status: res ? "RESOLVED" : "OPEN",
+          statusStyle: "font-size: 9px; letter-spacing: .07em; padding: 2px 6px; border-radius: 4px; background: " +
+            (res ? "var(--muted)" : "color-mix(in oklab, var(--primary) 16%, transparent)") + "; color: " + (res ? "var(--muted-foreground)" : "var(--primary)") + ";",
+          pinStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; background: " +
+            (res ? "var(--muted)" : "var(--primary)") + "; color: " + (res ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+          cardStyle: "padding: 11px 13px; background: var(--card); border: 1px solid " + (res ? "var(--border)" : "color-mix(in oklab, var(--primary) 35%, transparent)") + "; border-radius: var(--radius);",
+          action: res ? "Reopen" : "Resolve",
+          toggle: () => this.setState(s => ({
+            resolvedIds: res
+              ? s.resolvedIds.filter(x => x !== a.id).concat(a.resolvedByDefault ? ["un-" + a.id] : [])
+              : s.resolvedIds.concat([a.id])
+          }))
+        };
+      }),
+
+      changedFiles: files.map((f, i) => ({
+        path: f.path, badge: f.badge, add: f.add, del: f.del,
+        nameColor: i === st.fileIdx ? "var(--foreground)" : "var(--muted-foreground)",
+        badgeStyle: "width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; background: " +
+          (f.badge === "A" ? "color-mix(in oklab, var(--success) 18%, transparent)" : "color-mix(in oklab, var(--info) 18%, transparent)") + "; color: " + (f.badge === "A" ? "var(--success)" : "var(--info)") + ";",
+        rowStyle: "display: flex; align-items: center; gap: 9px; padding: 7px 12px; cursor: pointer; background: " +
+          (i === st.fileIdx ? "var(--accent)" : "transparent") + ";",
+        pick: () => this.setState({ fileIdx: i })
+      })),
+      diffLines: diff.map(d => ({
+        n: d.n, text: d.text,
+        style: "padding: 0 12px; white-space: pre-wrap; color: " +
+          (d.k === "add" ? "var(--success)" : d.k === "del" ? "var(--destructive)" : "var(--muted-foreground)") +
+          "; background: " + (d.k === "add" ? "color-mix(in oklab, var(--success) 9%, transparent)" : d.k === "del" ? "color-mix(in oklab, var(--destructive) 9%, transparent)" : "transparent") + ";"
+      })),
+      termLines: term.map(t => ({ text: t.text, color: t.c })),
+
+      timeline: [
+        { title: "Approval requested, prisma migrate deploy", meta: "hard gate · awaiting you", time: "12:52", dotColor: "var(--warning)" },
+        { title: "Checkpoint ckpt_7f23", meta: "7 files · +184 −37 · before migration", time: "12:51", dotColor: "var(--primary)", restore: true },
+        { title: "Tests run, 42 pass, 1 fail", meta: "vitest · 6.42s · replay.spec.ts", time: "12:48", dotColor: "var(--destructive)" },
+        { title: "Handoff codex → claude-code", meta: "checkpointed · plan + worktree + 2 annotations carried", time: "12:41", dotColor: "var(--info)", restore: true },
+        { title: "Checkpoint ckpt_7f21", meta: "before provider handoff", time: "12:41", dotColor: "var(--primary)", restore: true },
+        { title: "Worktree created wt-billing-idem", meta: "from main @ 8f3c1de", time: "12:30", dotColor: "var(--muted-foreground)" }
+      ].map(t => ({
+        title: t.title, meta: t.meta, time: t.time, restore: !!t.restore,
+        dotStyle: this.dot(t.dotColor, 9) + " margin-top: 4px;"
+      })),
+
+      transportOrder: ["this machine", "LAN", "tailnet", "SSH", "Domovoi Cloud"].map((label, i) => ({
+        label, n: "0" + (i + 1),
+        style: "display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; border: 1px solid " +
+          (i === 0 ? "var(--primary)" : "var(--border)") + "; color: " + (i === 0 ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+
+      machines: machines.map(m => ({
+        name: m.name, os: m.os, stale: !!m.stale,
+        dotStyle: this.dot(mColor(m), 9, m.state === "host"),
+        badge: m.state === "host" ? "THIS MACHINE" : m.state === "offline" ? "OFFLINE" : m.transport.toUpperCase(),
+        badgeStyle: "padding: 2px 7px; border-radius: 4px; font-size: 9px; letter-spacing: .06em; background: " +
+          (m.state === "host" ? "color-mix(in oklab, var(--primary) 16%, transparent)" : "var(--muted)") + "; color: " +
+          (m.state === "host" ? "var(--primary)" : m.state === "offline" ? "var(--destructive)" : "var(--muted-foreground)") + ";",
+        stats: [
+          { k: "SESSIONS", v: m.sessions, color: "var(--foreground)" },
+          { k: "TOOLS", v: m.tools, color: m.tools === "1 approval" ? "var(--warning)" : "var(--foreground)" },
+          { k: "TRANSPORT", v: m.transport, color: "var(--foreground)" },
+          { k: "ARCH", v: m.os.includes("arm64") ? "arm64" : "x64", color: "var(--foreground)" }
+        ],
+        providers: m.providers.map(p => ({
+          name: p[0],
+          dotStyle: this.dot(p[1] === "ok" ? "var(--success)" : p[1] === "expired" ? "var(--warning)" : "var(--border)", 5),
+          style: "display: flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; border: 1px solid " +
+            (p[1] === "expired" ? "color-mix(in oklab, var(--warning) 45%, transparent)" : "var(--border)") + "; color: " +
+            (p[1] === "ok" ? "var(--strong)" : p[1] === "expired" ? "var(--warning)" : "var(--faint)") + ";"
+        })),
+        cardStyle: "padding: 15px 17px; background: var(--card); border: 1px solid " +
+          (m.state === "host" ? "color-mix(in oklab, var(--primary) 40%, transparent)" : "var(--border)") + "; border-radius: var(--radius); opacity: " +
+          (m.state === "offline" ? "0.66" : "1") + ";",
+        useLabel: m.state === "host" ? "In use" : m.state === "offline" ? "Reconnect" : "Open here",
+        useStyle: "padding: 7px 12px; border-radius: calc(var(--radius) - 4px); font-size: 11px; font-weight: 500; cursor: pointer; background: " +
+          (m.state === "host" ? "var(--muted)" : m.state === "offline" ? "transparent" : "var(--primary)") + "; border: 1px solid " +
+          (m.state === "offline" ? "var(--destructive)" : "transparent") + "; color: " +
+          (m.state === "host" ? "var(--muted-foreground)" : m.state === "offline" ? "var(--destructive)" : "var(--primary-foreground)") + ";",
+        use: () => { if (m.state === "offline") this.setState({ offline: true, view: "sessions" }); else this.setState({ view: "sessions" }); }
+      })),
+
+      addSkillOpen: st.addSkillOpen,
+      openAddSkill: () => this.setState({ addSkillOpen: true }),
+      closeAddSkill: () => this.setState({ addSkillOpen: false }),
+      addSources: [
+        { k: "folder", title: "From a folder", hint: "A directory containing SKILL.md on this machine" },
+        { k: "bundle", title: "From a bundle or URL", hint: "Signed, content-addressed .dvskill" },
+        { k: "command", title: "Run an installer", hint: "npx / npm / pnpm / bun, in a staged sandbox" },
+        { k: "machine", title: "From another machine", hint: "Copy one already installed in your fleet" },
+        { k: "new", title: "Write a new skill", hint: "Scaffold SKILL.md and open it in your editor" }
+      ].map(s2 => ({
+        title: s2.title, hint: s2.hint,
+        titleColor: st.addSource === s2.k ? "var(--foreground)" : "var(--strong)",
+        style: "padding: 10px 11px; border-radius: calc(var(--radius) - 3px); cursor: pointer; background: " +
+          (st.addSource === s2.k ? "var(--accent)" : "transparent") + ";",
+        pick: () => this.setState({ addSource: s2.k })
+      })),
+      addPane: {
+        folder: {
+          label: "FOLDER ON MACBOOK-PRO-M3",
+          input: "~/work/skills/pr-triage\n  SKILL.md          2.1 kB\n  scripts/triage.ts  6.4 kB",
+          note: "Discovered directories are watched, edits to SKILL.md take effect on the next session without reinstalling."
+        },
+        bundle: {
+          label: "BUNDLE OR URL",
+          input: "https://skills.domovoi.sh/acme/pr-triage@1.2.0.dvskill\nsigner  acme-eng (verified)\ndigest  sha256:4b91…e7c",
+          note: "Signature and digest are checked before extraction. Unsigned bundles can be installed, but Domovoi marks the skill untrusted and blocks it in build-auto."
+        },
+        command: {
+          label: "INSTALLER COMMAND · RUNS ON MACBOOK-PRO-M3",
+          input: "npx @acme/pr-triage-skill@1.2.0 --install\n\nstaging   ~/.domovoi/staging/pr-triage-4b91\nnetwork   registry.npmjs.org (allowed for install)\nequivalent  pnpm dlx · bunx · npm exec",
+          note: "An installer is arbitrary code, so Domovoi runs it as an approved tool call into a staging directory rather than into your project. Whatever SKILL.md it produces gets the same capability review below before anything is enabled. Nothing is written to the real skill path until you approve."
+        },
+        machine: {
+          label: "ALREADY INSTALLED IN YOUR FLEET",
+          input: "k8s-triage        hetzner-cx42 · ~/.codex/skills\nrelease-notes     thinkpad · ~/.domovoi/skills",
+          note: "Copied as a signed bundle over the daemon channel, the source machine never executes anything on your behalf."
+        },
+        new: {
+          label: "SCAFFOLD",
+          input: "domovoi skill new pr-triage --scope project\n→ .agents/skills/pr-triage/SKILL.md",
+          note: "Creates the folder in your project, commits nothing, and opens SKILL.md in your configured external editor."
+        }
+      }[st.addSource],
+      addCaps: [
+        { name: "read project files", verdict: "project scope", ok: true },
+        { name: "write .domovoi/previews", verdict: "project scope", ok: true },
+        { name: "spawn node, gh", verdict: "declared", ok: true },
+        { name: "network: api.github.com", verdict: "needs your approval", ok: false }
+      ].map(c => ({
+        name: c.name, verdict: c.verdict,
+        color: c.ok ? "var(--muted-foreground)" : "var(--warning)",
+        dotStyle: this.dot(c.ok ? "var(--success)" : "var(--warning)", 6)
+      })),
+      addScopes: ["This project only", "All my projects", "This machine"].map((label, i) => ({
+        label,
+        pick: () => this.setState({ addScope: i }),
+        style: "padding: 7px 12px; border-radius: 999px; font-size: 11px; cursor: pointer; border: 1px solid " +
+          (st.addScope === i ? "var(--ring)" : "var(--border)") + "; background: " + (st.addScope === i ? "var(--accent)" : "transparent") +
+          "; color: " + (st.addScope === i ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      pushLabel: st.pushRemote ? "On" : "Off",
+      pushDotStyle: this.dot(st.pushRemote ? "var(--primary)" : "var(--border)", 7),
+      pushToggleStyle: "padding: 5px 12px; border-radius: 999px; font-size: 10.5px; font-weight: 500; cursor: pointer; background: " +
+        (st.pushRemote ? "var(--primary)" : "var(--muted)") + "; color: " + (st.pushRemote ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";",
+      togglePush: () => this.setState({ pushRemote: !st.pushRemote }),
+      addChecksum: st.addSource === "bundle" ? "sha256:4b91…e7c · signed by acme-eng · verified" : st.addSource === "command" ? "installer runs as an approved tool call · staged, then reviewed" : "installs to " + (st.addScope === 0 ? ".agents/skills" : st.addScope === 1 ? "~/.domovoi/skills" : "/etc/domovoi/skills"),
+      addCta: st.addSource === "new" ? "Scaffold and open" : st.addSource === "command" ? "Run in staging" : "Review and install",
+
+      skillGroups: [
+        { label: "DOMOVOI BUILT-IN", count: "3", items: [
+          { name: "plan-preview", desc: "Renders plans as reviewable HTML", on: true },
+          { name: "design-studio", desc: "Design briefs → HTML variants", on: true, sel: true },
+          { name: "repo-audit", desc: "Dependency, license and risk sweep", on: true }
+        ]},
+        { label: "USER · ~/.domovoi/skills", count: "6", items: [
+          { name: "release-notes", desc: "Changelog from merged PRs", on: true },
+          { name: "sql-explain", desc: "Query plan annotation", on: false }
+        ]},
+        { label: "DISCOVERED · CLAUDE + CODEX DIRS", count: "11", items: [
+          { name: "pdf-forms", desc: "~/.claude/skills", on: false },
+          { name: "k8s-triage", desc: "~/.codex/skills", on: true }
+        ]},
+        { label: "PROJECT · .agents/skills", count: "4", items: [
+          { name: "acme-deploy", desc: "Staging deploy runbook", on: true },
+          { name: "acme-seed", desc: "Seed dev database", on: false }
+        ]}
+      ].map(g => ({
+        label: g.label, count: g.count,
+        items: g.items.map(s => ({
+          name: s.name, desc: s.desc,
+          dotStyle: this.dot(s.on ? "var(--success)" : "var(--border)", 6),
+          nameColor: s.sel ? "var(--primary)" : "var(--strong)",
+          rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer; background: " +
+            (s.sel ? "var(--accent)" : "transparent") + ";",
+          pick: () => {}
+        }))
+      })),
+      skillMeta: [
+        { k: "SOURCE", v: "domovoi built-in · signed bundle" },
+        { k: "VERSION", v: "1.4.0 · sha256 9c1f…a7" },
+        { k: "RUNS ON", v: "the machine holding the repo" },
+        { k: "OUTPUT", v: "sandboxed HTML + annotations" }
+      ],
+      capabilities: [
+        { name: "read project files", scope: "project scope", ok: true },
+        { name: "write to .domovoi/previews", scope: "project scope", ok: true },
+        { name: "spawn node", scope: "no network", ok: true },
+        { name: "network access", scope: "denied by default", ok: false }
+      ].map(c => ({
+        name: c.name, scope: c.scope,
+        dotStyle: this.dot(c.ok ? "var(--success)" : "var(--destructive)", 6)
+      })),
+
+      settingsNav: [
+        { label: "Fleet & machines", v: "fleet" },
+        { label: "Skills", v: "skills" },
+        { label: "Providers", v: "settings", pane: 0 },
+        { label: "Appearance & window", v: "settings", pane: 1 },
+        { label: "Permissions & rules", v: "settings", pane: 0 },
+        { label: "External editor", v: "settings", pane: 0 },
+        { label: "Notifications", v: "settings", pane: 0 },
+        { label: "Account & relay", v: "settings", pane: 0 },
+        { label: "Advanced", v: "settings", pane: 0 }
+      ].map((n, i) => {
+        const on = n.v === st.view && (n.v !== "settings" || n.pane === st.settingsPane) && (n.v !== "settings" || i === (st.settingsPane === 1 ? 3 : 2));
+        return {
+          label: n.label,
+          pick: () => this.setState({ view: n.v, settingsPane: n.pane ?? st.settingsPane }),
+          style: "padding: 8px 10px; border-radius: calc(var(--radius) - 3px); font-size: 12px; cursor: pointer; background: " +
+            (on ? "var(--accent)" : "transparent") + "; color: " + (on ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+        };
+      }),
+      isConfig: st.view === "settings" || st.view === "fleet" || st.view === "skills",
+      goSessions: V("sessions"),
+      sessionsBtnStyle: "width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; background: " +
+        (st.view === "sessions" ? "var(--accent)" : "transparent") + "; color: " + (st.view === "sessions" ? "var(--primary)" : "var(--muted-foreground)") + ";",
+      paneProviders: st.settingsPane === 0,
+      paneWindow: st.settingsPane === 1,
+      themeClass: (st.theme === "system" ? (st.systemDark ? "dv-dark" : "dv-light") : st.theme === "light" ? "dv-light" : "dv-dark"),
+      themeOptions: [
+        { k: "system", label: "System", note: "Follows your OS appearance, including scheduled switches.", bar: "linear-gradient(90deg, oklch(0.205 0.006 285) 0 50%, oklch(0.975 0.003 285) 50% 100%)" },
+        { k: "dark", label: "Dark", note: "The default. Tuned for long sessions and terminal output.", bar: "oklch(0.205 0.006 285)" },
+        { k: "light", label: "Light", note: "Same tokens inverted, diffs and previews read on paper-white.", bar: "oklch(0.975 0.003 285)" }
+      ].map(t => ({
+        label: t.label, note: t.note,
+        pick: () => this.setState({ theme: t.k }),
+        radioStyle: "width: 12px; height: 12px; flex: 0 0 12px; border-radius: 50%; border: 3px solid " +
+          (st.theme === t.k ? "var(--primary)" : "var(--muted)") + "; background: var(--background);",
+        cardStyle: "flex: 1; padding: 13px 14px; border-radius: var(--radius); cursor: pointer; border: 1px solid " +
+          (st.theme === t.k ? "var(--ring)" : "var(--border)") + "; background: " + (st.theme === t.k ? "var(--accent)" : "var(--card)") + ";",
+        swatchStyle: "margin-top: 10px; height: 34px; border-radius: 6px; border: 1px solid var(--border); overflow: hidden; display: flex; align-items: flex-end; gap: 0; background: " + t.bar + ";",
+        swatchBarStyle: "flex: 1; height: 9px; background: color-mix(in oklab, var(--muted-foreground) 40%, transparent);",
+        swatchAccentStyle: "width: 26px; height: 9px; background: " + (t.k === "light" ? "oklch(0.52 0.2 275)" : "oklch(0.72 0.17 275)") + ";"
+      })),
+
+      decorationOptions: [
+        {
+          k: "domovoi", title: "Domovoi window", tag: "DEFAULT",
+          desc: "One unified titlebar: project switcher, machine chip, permission mode and approvals all live in the frame. Maximum vertical room for the thread.",
+          barLeft: plat === "macos" ? "● ● ●" : "Domovoi",
+          barRight: plat === "macos" ? "acme-api · build" : "− ◻ ✕",
+          platforms: "macOS   traffic lights inset, drag anywhere on the bar\nWindows  caption buttons drawn by Domovoi, snap layouts kept\nLinux   client-side decorations via GTK/Qt hints"
+        },
+        {
+          k: "system", title: "System window decorations", tag: "NATIVE",
+          desc: "Your desktop draws the frame and controls. Domovoi's own bar stays, minus the window buttons, adds a title strip but follows your WM theme, tiling rules and keybindings exactly.",
+          barLeft: plat === "macos" ? "● ● ●" : "Domovoi, acme-api",
+          barRight: plat === "macos" ? "Domovoi, acme-api" : "− ◻ ✕",
+          platforms: "macOS   standard titlebar above the app bar\nWindows  Win32 caption, Aero snap and shake as usual\nLinux   server-side decorations where the compositor offers them"
+        }
+      ].map(d => ({
+        title: d.title, desc: d.desc, tag: d.tag, platforms: d.platforms,
+        barLeft: d.barLeft, barRight: d.barRight,
+        pick: () => this.setState({ decoration: d.k }),
+        radioStyle: "width: 13px; height: 13px; flex: 0 0 13px; margin-top: 3px; border-radius: 50%; border: 3px solid " +
+          (st.decoration === d.k ? "var(--primary)" : "var(--muted)") + "; background: var(--background);",
+        tagStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; padding: 2px 6px; border-radius: 4px; background: " +
+          (st.decoration === d.k ? "color-mix(in oklab, var(--primary) 16%, transparent)" : "var(--muted)") + "; color: " +
+          (st.decoration === d.k ? "var(--primary)" : "var(--muted-foreground)") + ";",
+        cardStyle: "padding: 14px 16px; border-radius: var(--radius); cursor: pointer; border: 1px solid " +
+          (st.decoration === d.k ? "var(--ring)" : "var(--border)") + "; background: " + (st.decoration === d.k ? "var(--accent)" : "var(--card)") + ";",
+        previewStyle: "margin-top: 10px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;",
+        barStyle: "display: flex; align-items: center; gap: 8px; height: 22px; padding: 0 8px; background: var(--sidebar); border-bottom: 1px solid var(--border);",
+        barLeftStyle: "font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .1em; color: " +
+          (d.k === "domovoi" ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+      windowToggles: [
+        { k: "nativeMenu", label: "Use the native menu bar", hint: plat === "macos" ? "Menu in the system bar instead of the in-app command menu." : "System menu bar instead of Domovoi's compact one." },
+        { k: "rememberLayout", label: "Remember layout per project", hint: "Sidebar width, dock tab and panel size restore when you reopen a project." },
+        { k: "alwaysTop", label: "Keep approvals window on top", hint: "A small always-on-top window for approvals when Domovoi is in the background." }
+      ].map(t => ({
+        label: t.label, hint: t.hint,
+        toggle: () => this.setState(s3 => ({ [t.k]: !s3[t.k] })),
+        switchStyle: "width: 36px; height: 20px; flex: 0 0 36px; border-radius: 999px; padding: 2px; cursor: pointer; display: flex; justify-content: " +
+          (st[t.k] ? "flex-end" : "flex-start") + "; background: " + (st[t.k] ? "var(--primary)" : "var(--muted)") + ";",
+        knobStyle: "width: 16px; height: 16px; border-radius: 50%; background: " + (st[t.k] ? "var(--primary-foreground)" : "var(--faint)") + ";"
+      })),
+      providerRuntimes: [
+        { name: "claude-code", version: "2.1.8", state: "authenticated via claude auth login · CLI holds the credential", ok: "ok", btn: "Signed in" },
+        { name: "codex", version: "0.9.4", state: "authenticated via codex login · ChatGPT subscription", ok: "ok", btn: "Signed in" },
+        { name: "cursor-agent", version: "0.7.2", state: "authenticated · Pro plan", ok: "ok", btn: "Signed in" },
+        { name: "grok", version: "0.3.1", state: "token expired 2 days ago, sessions on this machine will fail", ok: "expired", btn: "Re-auth" },
+        { name: "opencode", version: ", ", state: "not installed · brew install opencode", ok: "missing", btn: "Install" },
+        { name: "kilo", version: "1.2.0", state: "authenticated via kilo login · team plan", ok: "ok", btn: "Signed in" }
+      ].map(p => ({
+        name: p.name, version: p.version, state: p.state,
+        dotStyle: this.dot(p.ok === "ok" ? "var(--success)" : p.ok === "expired" ? "var(--warning)" : "var(--border)", 8),
+        stateColor: p.ok === "ok" ? "var(--muted-foreground)" : p.ok === "expired" ? "var(--warning)" : "var(--faint)",
+        borderColor: p.ok === "expired" ? "color-mix(in oklab, var(--warning) 45%, transparent)" : "var(--border)",
+        btn: p.btn,
+        btnStyle: "padding: 7px 12px; border-radius: calc(var(--radius) - 4px); font-size: 11px; font-weight: 500; cursor: pointer; background: " +
+          (p.ok === "ok" ? "var(--muted)" : "var(--primary)") + "; color: " + (p.ok === "ok" ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";"
+      })),
+      apiKeys: [
+        { name: "OPENAI_API_KEY", hint: "sk-proj…4f21", store: "macOS Keychain", ok: true },
+        { name: "ANTHROPIC_API_KEY", hint: "sk-ant…9c02", store: "macOS Keychain", ok: true },
+        { name: "OPENROUTER_API_KEY", hint: "not set", store: ", ", ok: false }
+      ].map(k => ({
+        name: k.name, hint: k.hint, store: k.store,
+        dotStyle: this.dot(k.ok ? "var(--success)" : "var(--border)", 6)
+      })),
+
+      launcherOpen: st.launcherOpen,
+      openLauncher: () => this.setState({ launcherOpen: true }),
+      closeLauncher: () => this.setState({ launcherOpen: false }),
+      launcherItems: [
+        { title: "acme-api", meta: "~/src/acme-api · main · macbook-pro-m3", kind: "PROJECT", c: "var(--primary)" },
+        { title: "acme-web", meta: "~/src/acme-web · feat/pricing · macbook-pro-m3", kind: "PROJECT", c: "var(--primary)" },
+        { title: "infra-terraform", meta: "/srv/infra · main · hetzner-cx42 · tailnet", kind: "PROJECT", c: "var(--primary)" },
+        { title: "Migrate billing webhooks to idempotent handlers", meta: "claude-code · 1 approval waiting", kind: "SESSION", c: "var(--warning)" },
+        { title: "Ubuntu-24.04", meta: "WSL2 · domovoi open . · thinkpad", kind: "MACHINE", c: "var(--success)" },
+        { title: "design-studio", meta: "built-in skill · enabled here", kind: "SKILL", c: "var(--info)" }
+      ].map(i => ({
+        title: i.title, meta: i.meta, kind: i.kind,
+        dotStyle: this.dot(i.c, 7),
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 8px 10px; margin: 0 4px; border-radius: 4px; cursor: pointer;"
+      })),
+
+      pairingOpen: st.pairingOpen,
+      openPairing: () => this.setState({ pairingOpen: true }),
+      pairFromMenu: () => this.setState({ pairingOpen: true, machineMenuOpen: false }),
+      closePairing: () => this.setState({ pairingOpen: false }),
+
+      firstRunOpen: st.firstRunOpen,
+      openFirstRun: () => this.setState({ firstRunOpen: true, launcherOpen: false }),
+      closeFirstRun: () => this.setState({ firstRunOpen: false }),
+      firstRun: [
+        { mark: "✓", done: true, title: "Local daemon running", desc: "launchd service · loopback only · daemon 0.14.2", btn: "Healthy" },
+        { mark: "2", done: false, title: "Connect a coding agent", desc: "Found claude-code and codex already signed in on this machine.", btn: "Use both" },
+        { mark: "3", done: false, title: "Choose a permission mode for new projects", desc: "Build manual is the default: reads run free, mutations ask.", btn: "Build manual" }
+      ].map(f => ({
+        title: f.title, desc: f.desc, mark: f.mark, btn: f.btn,
+        markStyle: "width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+          (f.done ? "color-mix(in oklab, var(--success) 18%, transparent)" : "var(--muted)") + "; color: " + (f.done ? "var(--success)" : "var(--muted-foreground)") + ";",
+        cardStyle: "display: flex; align-items: center; gap: 13px; padding: 15px 17px; background: var(--card); border: 1px solid " +
+          (f.done ? "var(--border)" : "color-mix(in oklab, var(--primary) 30%, transparent)") + "; border-radius: var(--radius);",
+        btnStyle: "padding: 7px 13px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+          (f.done ? "var(--muted)" : "var(--primary)") + "; color: " + (f.done ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";"
+      })),
+
+      composerRef: this.composerRef,
+      expandStyle: "width: 22px; height: 22px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;",
+      editorOpen: st.editorOpen,
+      openEditor: () => this.setState({ editorOpen: true }),
+      closeEditor: () => this.setState({ editorOpen: false }),
+      sendFromEditor: () => { this.sendNow(); this.setState({ editorOpen: false }); },
+      richBtnStyle: "min-width: 26px; height: 22px; padding: 0 7px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; background: " +
+        (!st.mono ? "var(--card)" : "transparent") + "; color: " + (!st.mono ? "var(--foreground)" : "var(--muted-foreground)") +
+        "; box-shadow: " + (!st.mono ? "0 1px 2px var(--shadow-md)" : "none") + ";",
+      mdBtnStyle: "min-width: 26px; height: 22px; padding: 0 7px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 700; cursor: pointer; background: " +
+        (st.mono ? "var(--card)" : "transparent") + "; color: " + (st.mono ? "var(--foreground)" : "var(--muted-foreground)") +
+        "; box-shadow: " + (st.mono ? "0 1px 2px var(--shadow-md)" : "none") + ";",
+      setRich: () => this.setState({ mono: false }),
+      setMarkdown: () => this.setState({ mono: true }),
+      textareaStyle: "width: 100%; height: 300px; resize: vertical; background: var(--code); border: 1px solid var(--input); border-radius: calc(var(--radius) - 2px); padding: 13px 14px; outline: none; color: var(--foreground); line-height: 1.65; font-size: " +
+        (st.mono ? "12.5px" : "13.5px") + "; font-family: " + (st.mono ? "'JetBrains Mono', monospace" : "'Instrument Sans', system-ui, sans-serif") + ";",
+      editorPlaceholder: st.mono
+        ? "Markdown, ## headings, - lists, ``` fences for code and logs. Rendered as written when the agent reads it."
+        : "Describe the change in as much detail as you need. Plain prose; @file attaches context and /skill runs one.",
+      editorInserts: st.mono
+        ? ["```diff", "`inline code`", "## heading", "- list item"]
+        : ["@file", "/skill", "@selection", "@error"],
+      draftStats: st.draft.trim() ? st.draft.trim().split(/\s+/).length + " words · " + st.draft.length + " chars" : "empty draft",
+      machineLabelStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10px; max-width: " + (compact ? "0px" : "180px") +
+        "; overflow: hidden; white-space: nowrap; display: inline-block;",
+      skillChipLabel: compact ? "⚑" : "plan-preview",
+      skillChipStyle: "padding: 4px " + (compact ? "8px" : "10px") + "; background: var(--background); border: 1px solid var(--border); border-radius: 999px; font-size: 10.5px; color: var(--strong); cursor: pointer;",
+      addSkillLabel: compact ? "+" : "+ skill",
+      hintStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint); display: " + (compact ? "none" : "block") + ";",
+      sendLabel: compact ? "↑" : "Send",
+      sendStyle: "padding: " + (compact ? "5px 10px" : "6px 15px") + "; background: var(--primary); border-radius: calc(var(--radius) - 4px); font-size: " +
+        (compact ? "12px" : "11.5px") + "; font-weight: 500; color: var(--primary-foreground); cursor: pointer;",
+
+      draft: st.draft,
+      onDraft: e => this.setState({ draft: e.target.value }),
+      onKey: e => { if (e.key === "Enter") this.sendNow(); },
+      send: () => this.sendNow(),
+      sent: st.sent.map(text => ({ text }))
+    };
+  }
+
+  beginResize(e) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = this.state.dockWidth;
+    this.setState({ resizing: true });
+    const move = ev => {
+      const w = Math.min(820, Math.max(300, startW - (ev.clientX - startX)));
+      this.setState({ dockWidth: w });
+    };
+    const up = () => {
+      this.setState({ resizing: false });
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  sendNow() {
+    const t = this.state.draft.trim();
+    if (!t) return;
+    this.setState(s => ({ sent: s.sent.concat([t]), draft: "" }));
+  }
+}
+
+</script>
+</body>
+</html>

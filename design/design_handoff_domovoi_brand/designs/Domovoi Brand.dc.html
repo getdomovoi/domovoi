@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: oklch(0.78 0.14 275); text-decoration: none; }
+  a:hover { color: oklch(0.87 0.1 275); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); }
+  ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%); border-radius: 11px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .6);
+    --popover: var(--card); --ring: var(--primary); --radius: 0.65rem;
+  }
+</style>
+</helmet>
+<div class="dv-dark" style="min-height: 100vh; padding: 40px 44px 64px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+  <div style="max-width: 1240px; margin: 0 auto;">
+
+    <div style="display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap;">
+      <div>
+        <div style="font-size: 11px; letter-spacing: .16em; color: var(--primary);">DOMOVOI · BRAND</div>
+        <div style="font-size: 30px; font-weight: 600; letter-spacing: -.02em; margin-top: 10px;">Identity directions</div>
+        <div style="font-size: 13.5px; line-height: 1.7; color: var(--muted-foreground); margin-top: 10px; max-width: 700px; text-wrap: pretty;">Six marks under the same constraint: recognisable as one flat shape at 28px and above, reducing to a simpler form below that and staying legible down to 16px, and derived from something true about the product. The chosen mark, 01, is real drawn geometry and buildable as-is. The two alternate spirits are geometric stand-ins for comparing silhouettes, not finished drawings.</div>
+      </div>
+      <span style="flex: 1;"></span>
+      <div style="display: flex; flex-direction: column; gap: 7px;">
+        <a href="Domovoi Foundations.dc.html" style="padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);">Foundations</a>
+        <a href="Domovoi Desktop.dc.html" style="padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);">Desktop app</a>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 34px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">01 · MARK DIRECTIONS</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground);">click one to preview it in context</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px;">
+      <sc-for list="{{ marks }}" as="mk" hint-placeholder-count="4">
+        <div onClick="{{ mk.pick }}" style="{{ mk.cardStyle }}">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ mk.n }}</span>
+            <span style="font-size: 13px; font-weight: 500; flex: 1;">{{ mk.name }}</span>
+            <sc-if value="{{ mk.on }}" hint-placeholder-val="{{ true }}">
+              <span style="font-size: 8.5px; letter-spacing: .08em; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);">SHOWN</span>
+            </sc-if>
+          </div>
+          <div style="height: 138px; margin-top: 13px; border-radius: var(--radius); background: var(--code); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;">
+            <span style="{{ mk.glyphStyle }}">{{ mk.glyphInner }}</span>
+          </div>
+          <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 11px;">{{ mk.rationale }}</div>
+          <div style="font-size: 11px; line-height: 1.55; color: var(--faint); margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border);">{{ mk.risk }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">02 · {{ chosenName }} IN CONTEXT</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 18px;">
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Lockups</div>
+        <div style="display: flex; flex-direction: column; gap: 14px; margin-top: 16px;">
+          <div style="display: flex; align-items: center; gap: 11px;">
+            <span style="{{ lockLargeGlyph }}">{{ chosenInner }}</span>
+            <span style="font-size: 26px; font-weight: 600; letter-spacing: -.025em;">Domovoi</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="{{ lockMidGlyph }}">{{ lockMidInner }}</span>
+            <span style="font-size: 17px; font-weight: 600; letter-spacing: -.015em;">Domovoi</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px;">
+            <span style="{{ lockSmallGlyph }}">{{ lockSmallInner }}</span>
+            <span style="font-size: 13px; font-weight: 600;">Domovoi</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+            <span style="{{ lockTinyGlyph }}">{{ lockTinyInner }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">16px · reduced glyph, tray and favicon</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">App icons</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">The mark itself is always flat colour. The field behind it may carry the hearth glow. macOS gets the squircle, Android the adaptive circle, favicon the bare glyph.</div>
+        <div style="display: flex; align-items: flex-end; gap: 12px; margin-top: 16px;">
+          <sc-for list="{{ icons }}" as="ic" hint-placeholder-count="4">
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+              <div style="{{ ic.boxStyle }}">
+                <span style="{{ ic.glyphStyle }}">{{ ic.glyphInner }}</span>
+              </div>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); text-align: center; white-space: pre-line;">{{ ic.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isCreature }}" hint-placeholder-val="{{ true }}">
+          <div style="font-size: 11px; line-height: 1.6; color: var(--faint); margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border);">The spirit stays optically centred so it holds the middle of a squircle, a square and a circle alike, while the hearth glow sits in the lower third of the field and lights it from below. The favicon drops the glow and the field entirely: at 32px a warm haze turns to mud, and the reduced glyph carries it alone.</div>
+        </sc-if>
+      </div>
+
+      <div style="padding: 18px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">On surfaces</div>
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 14px;">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 9px 11px; background: var(--sidebar); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px);">
+            <span style="{{ lockSmallGlyph }}">{{ lockSmallInner }}</span>
+            <span style="font-size: 13px; font-weight: 600; flex: 1;">Domovoi</span>
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--success);"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">5 machines</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 9px; padding: 8px 11px; background: var(--code); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px);">
+            <span style="{{ lockTinyGlyph }}">{{ lockTinyInner }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">domovoi daemon · running</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 9px; padding: 9px 11px; background: var(--background); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px);">
+            <span style="{{ lockTinyGlyph }}">{{ lockTinyInner }}</span>
+            <span style="font-size: 11px; font-weight: 500; letter-spacing: .02em; flex: 1;">DOMOVOI</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">now</span>
+          </div>
+          <div style="font-size: 11px; line-height: 1.6; color: var(--faint);">Notification, tray and CLI banner all use the mark alone. The wordmark only appears where there is room for it to be read.</div>
+        </div>
+      </div>
+    </div>
+
+    <sc-if value="{{ isCreature }}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+        <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">03 · THE SPIRIT'S FOUR STATES</span>
+        <span style="flex: 1; height: 1px; background: var(--border);"></span>
+        <span style="font-size: 11.5px; color: var(--muted-foreground);">tray icon, dock badge, notification avatar</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; margin-top: 18px;">
+        <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="font-size: 12.5px; font-weight: 500;">One character, four readings</div>
+          <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">This is what a creature mark buys you that a geometric one cannot: fleet state told by the icon itself, before you open anything. The silhouette never changes. Only the eyes and the hearth do.</div>
+          <div style="display: flex; align-items: flex-start; gap: 18px; margin-top: 18px; flex-wrap: wrap;">
+            <sc-for list="{{ states }}" as="sp" hint-placeholder-count="4">
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 9px; width: 92px;">
+                <div style="{{ sp.boxStyle }}">
+                  <span style="{{ sp.glyphStyle }}">{{ sp.glyphInner }}</span>
+                </div>
+                <div style="font-size: 11.5px; font-weight: 500;">{{ sp.label }}</div>
+                <div style="font-size: 10px; line-height: 1.5; color: var(--faint); text-align: center;">{{ sp.note }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="font-size: 12.5px; font-weight: 500;">Where the states are allowed</div>
+          <div style="display: flex; flex-direction: column; gap: 0; margin-top: 13px;">
+            <sc-for list="{{ stateRules }}" as="sr" hint-placeholder-count="5">
+              <div style="{{ sr.rowStyle }}">
+                <span style="{{ sr.markStyle }}">{{ sr.mark }}</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; color: {{ sr.color }};">{{ sr.text }}</div>
+                  <div style="font-size: 10.5px; line-height: 1.5; color: var(--faint); margin-top: 3px;">{{ sr.note }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">04 · WORDMARK</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; margin-top: 18px;">
+      <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Set in the product's own type</div>
+        <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">Instrument Sans 600 at <span style="font-family: 'JetBrains Mono', monospace;">-.025em</span>. No custom letterforms, no ligature tricks. The name is nine characters and unusual enough to carry itself.</div>
+        <div style="margin-top: 18px; padding: 22px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+          <div style="font-size: 44px; font-weight: 600; letter-spacing: -.03em;">Domovoi</div>
+          <div style="display: flex; align-items: baseline; gap: 16px; margin-top: 12px; flex-wrap: wrap;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">/dəməˈvoj/</span>
+            <span style="font-size: 11.5px; color: var(--muted-foreground);">stress on the last syllable · never abbreviated to "Dom"</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 12px;">
+          <div style="flex: 1; padding: 13px 15px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 15px; letter-spacing: -.01em;">domovoi</div>
+            <div style="font-size: 10.5px; color: var(--faint); margin-top: 6px;">CLI, packages, domain. Always lowercase.</div>
+          </div>
+          <div style="flex: 1; padding: 13px 15px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 15px; letter-spacing: -.01em;">getdomovoi</div>
+            <div style="font-size: 10.5px; color: var(--faint); margin-top: 6px;">GitHub org, npm scope. One word, no hyphen.</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Rules</div>
+        <div style="display: flex; flex-direction: column; gap: 0; margin-top: 13px;">
+          <sc-for list="{{ wordRules }}" as="wr" hint-placeholder-count="6">
+            <div style="{{ wr.rowStyle }}">
+              <span style="{{ wr.markStyle }}">{{ wr.mark }}</span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 12px; color: {{ wr.color }};">{{ wr.text }}</div>
+                <sc-if value="{{ wr.note }}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size: 10.5px; color: var(--faint); margin-top: 3px;">{{ wr.note }}</div>
+                </sc-if>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">05 · VOICE</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground);">the copy constraint, made concrete</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px;">
+      <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">How Domovoi talks</div>
+        <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+          <sc-for list="{{ voice }}" as="vo" hint-placeholder-count="4">
+            <div>
+              <div style="font-size: 12px; font-weight: 500; color: var(--strong);">{{ vo.t }}</div>
+              <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 4px;">{{ vo.d }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="padding: 20px 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Rewrites</div>
+        <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 14px;">
+          <sc-for list="{{ rewrites }}" as="rw" hint-placeholder-count="4">
+            <div style="padding-bottom: 12px; border-bottom: 1px solid var(--border);">
+              <div style="display: flex; align-items: baseline; gap: 8px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--destructive); flex: 0 0 14px;">✕</span>
+                <span style="font-size: 11.5px; line-height: 1.5; color: var(--faint); text-decoration: line-through;">{{ rw.bad }}</span>
+              </div>
+              <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 5px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--success); flex: 0 0 14px;">✓</span>
+                <span style="font-size: 11.5px; line-height: 1.5; color: var(--strong);">{{ rw.good }}</span>
+              </div>
+              <div style="font-size: 10.5px; line-height: 1.5; color: var(--faint); margin-top: 5px; padding-left: 22px;">{{ rw.why }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; margin-top: 40px;">
+      <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">06 · WHAT THE BRAND DOES NOT DO</span>
+      <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px;">
+      <sc-for list="{{ nots }}" as="nt" hint-placeholder-count="6">
+        <div style="padding: 17px 19px; background: var(--card); border: 1px dashed var(--border); border-radius: 14px;">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="width: 16px; height: 16px; border-radius: 5px; background: color-mix(in oklab, var(--destructive) 18%, transparent); color: var(--destructive); font-family: 'JetBrains Mono', monospace; font-size: 9px; display: flex; align-items: center; justify-content: center;">✕</span>
+            <span style="font-size: 12.5px; font-weight: 500;">{{ nt.t }}</span>
+          </div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground); margin-top: 8px;">{{ nt.d }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1400,&quot;height&quot;:1100}}">
+class Component extends DCLogic {
+  state = { mark: 0 };
+
+  // Each mark is a flat CSS-composed glyph, not illustration: a container style + optional inner text.
+  markDefs() {
+    return [
+      {
+        n: "01", name: "The spirit", chosen: true,
+        rationale: "Hair and beard as one mass with the face cut out of it, eyes and mustache set back inside. Two fills, no strokes, no gradient. It reads as a bearded household spirit rather than a shape, and it simplifies itself below 28px by dropping the mustache and opening the eyes.",
+        risk: "Buildable as-is, though an illustrator would tighten the beard silhouette and give the mustache real asymmetry. Below 28px it reduces automatically: mustache dropped, eyes opened. At 16px only that reduced form is legible.",
+        creature: true, variant: "beard"
+      },
+      {
+        n: "02", name: "Alt · threshold",
+        rationale: "A doorway with a lit gap. The daemon is the thing that stands at the boundary of a machine and decides what passes. Reads as a bracket at 16px, which is quietly correct for a developer tool.",
+        risk: "Risk: brackets and doorways are common in dev tooling. Needs the gap to be distinctive enough to own.",
+        box: n => "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: " + Math.round(n * 0.22) +
+          "px; border: " + Math.max(2, Math.round(n * 0.13)) + "px solid var(--primary); border-right-color: transparent; display: block;",
+        inner: ""
+      },
+      {
+        n: "03", name: "Alt · hooded",
+        rationale: "A hooded silhouette with a beard notch. Softest of the three, closest to a cowl. Reads as one solid mass at any size, which is the safest behaviour in a tray.",
+        risk: "Risk: at small sizes the dome can read as a generic pin or a ghost rather than a household spirit.",
+        creature: true, variant: "hood"
+      },
+      {
+        n: "04", name: "Alt · capped",
+        rationale: "The pointed felt cap the domovoi is usually described wearing, over a rounded body. The silhouette is asymmetric and pointed, so it is far more identifiable at 16px than any dome, and it is unmistakably a character rather than a shape.",
+        risk: "Risk: pointed caps carry gnome and elf associations. The proportion has to stay squat and the cap short, or it drifts toward garden ornament.",
+        creature: true, variant: "cap"
+      },
+
+      {
+        n: "05", name: "Alt · monogram Д",
+        rationale: "The Cyrillic Д from домовой. Earns the name instead of decorating it, carries the origin without a folk illustration, and no other developer tool is using it.",
+        risk: "Risk: unfamiliar letterform for a Latin-reading audience, and it can read as a house or a table rather than a letter.",
+        box: n => "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: " + Math.round(n * 0.24) +
+          "px; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: " +
+          Math.round(n * 0.52) + "px; display: flex; align-items: center; justify-content: center;",
+        inner: "Д"
+      },
+      {
+        n: "06", name: "Alt · fleet",
+        rationale: "Three squares on a diagonal: many machines, one system. The most literal about what the product actually is, and the only direction that says plural at a glance.",
+        risk: "Risk: generic. Grids and dots are the default gesture for anything distributed, and it says nothing about local-first.",
+        box: n => "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: " + Math.max(2, Math.round(n * 0.09)) + "px;",
+        grid: true
+      }
+    ];
+  }
+
+  glyph(def, n, opts) {
+    if (def.creature) {
+      const o = opts || {};
+      const cut = o.cut || "var(--code)";
+      const body = o.body || "var(--primary)";
+      const v = def.variant || "hood";
+      const eye = Math.max(1.5, n * 0.095);
+      let eyeTop = n * 0.4, eyeX = 0.29, kids = [];
+
+      if (v === "cap") {
+        eyeTop = n * 0.54; eyeX = 0.3;
+        kids = [
+          React.createElement("span", { key: "c", style: {
+            position: "absolute", left: n * 0.04, right: n * 0.04, top: 0, height: n * 0.52,
+            background: body, clipPath: "polygon(50% 0%, 100% 100%, 0% 100%)", display: "block"
+          } }),
+          React.createElement("span", { key: "b", style: {
+            position: "absolute", left: n * 0.16, right: n * 0.16, top: n * 0.46, bottom: 0,
+            background: body, borderRadius: "44% 44% 34% 34% / 40% 40% 46% 46%", display: "block"
+          } }),
+          React.createElement("span", { key: "d", style: {
+            position: "absolute", left: "50%", bottom: -n * 0.01, width: n * 0.22, height: n * 0.17,
+            transform: "translateX(-50%)", background: cut, borderRadius: "50% 50% 0 0", display: "block"
+          } })
+        ];
+      } else if (v === "beard") {
+        const asleep = o.state === "asleep";
+        const wide = o.state === "working";
+        // domed head flaring into a three-lobed beard, drawn on a 100-unit grid
+        // hair and beard as one mass, the face punched out of it, eyes drawn back inside
+        const hair =
+          "M50 4" +
+          "C67 4 79 14 81 31" +
+          "C83 45 88 60 84 73" +          // beard flares wide and low
+          "C79 87 66 96 50 96" +
+          "C34 96 21 87 16 73" +
+          "C12 60 17 45 19 31" +
+          "C21 14 33 4 50 4Z";
+        const face =
+          "M50 16" +
+          "C60 16 67 22 67 32" +
+          "C67 43 60 51 50 51" +
+          "C40 51 33 43 33 32" +
+          "C33 22 40 16 50 16Z";
+        const tiny = n < 28;
+        const ex = tiny ? 9 : 8, ey = tiny ? 32 : 31, er = tiny ? 4.6 : (wide ? 3.8 : 3.3);
+        const eye = (cx) => asleep
+          ? "M" + (cx - er * 1.6) + " " + ey +
+            "q" + (er * 1.6) + " " + (er * 1.7) + " " + (er * 3.2) + " 0" +
+            "q" + (-er * 1.6) + " " + (-er * 0.6) + " " + (-er * 3.2) + " 0Z"
+          : "M" + (cx - er) + " " + ey + "a" + er + " " + er + " 0 1 0 " + (2 * er) + " 0a" + er + " " + er + " 0 1 0 " + (-2 * er) + " 0Z";
+        // mustache: a soft band under the nose, joining the beard mass on both sides
+        const tache = "M34 43C40 40 45 43 50 43C55 43 60 40 66 43C59 50 54 47 50 47C46 47 41 50 34 43Z";
+        return {
+          style: "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; display: block;" +
+            (o.glow ? " filter: drop-shadow(0 " + (n * 0.04) + "px " + Math.round(n * 0.18) + "px color-mix(in oklab, " + body + " 45%, transparent));" : ""),
+          inner: React.createElement("svg", {
+            viewBox: "0 0 100 100", width: "100%", height: "100%", style: { display: "block" }
+          },
+            React.createElement("path", { d: hair + face, fill: body, fillRule: "evenodd" }),
+            React.createElement("path", { d: eye(50 - ex) + eye(50 + ex) + (tiny ? "" : tache), fill: body })
+          )
+        };
+      } else {
+        kids = [
+          React.createElement("span", { key: "b", style: {
+            position: "absolute", left: 0, right: 0, top: n * 0.06, bottom: 0, background: body,
+            borderRadius: "50% 50% 26% 26% / 62% 62% 38% 38%", display: "block"
+          } }),
+          React.createElement("span", { key: "d", style: {
+            position: "absolute", left: "50%", bottom: -n * 0.02, width: n * 0.3, height: n * 0.22,
+            transform: "translateX(-50%)", background: cut, borderRadius: "50% 50% 0 0", display: "block"
+          } })
+        ];
+      }
+      if (o.state === "asleep") {
+        [-1, 1].forEach((s, i) => kids.push(React.createElement("span", { key: "e" + i, style: {
+          position: "absolute", left: s < 0 ? n * (eyeX - 0.03) : "auto", right: s > 0 ? n * (eyeX - 0.03) : "auto",
+          top: eyeTop + eye * 0.4, width: eye * 1.9, height: Math.max(1, eye * 0.42),
+          borderRadius: "999px", background: cut, display: "block"
+        } })));
+      } else {
+        const wide = o.state === "working";
+        [-1, 1].forEach((s, i) => kids.push(React.createElement("span", { key: "e" + i, style: {
+          position: "absolute", left: s < 0 ? n * (wide ? eyeX - 0.03 : eyeX) : "auto",
+          right: s > 0 ? n * (wide ? eyeX - 0.03 : eyeX) : "auto",
+          top: eyeTop, width: eye, height: eye * (wide ? 1.25 : 1),
+          borderRadius: "50%", background: cut, display: "block"
+        } })));
+      }
+      return {
+        style: "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; position: relative; display: block;" +
+          (o.glow ? " filter: drop-shadow(0 0 " + Math.round(n * 0.22) + "px color-mix(in oklab, " + body + " 55%, transparent));" : ""),
+        inner: React.createElement(React.Fragment, null, kids)
+      };
+    }
+    if (def.grid) {
+      const c = Math.max(2, Math.round(n * 0.22));
+      return {
+        style: def.box(n),
+        inner: React.createElement(React.Fragment, null,
+          React.createElement("span", { style: { borderRadius: c + "px", background: "var(--primary)", display: "block" } }),
+          React.createElement("span", { style: { borderRadius: c + "px", background: "var(--muted)", display: "block" } }),
+          React.createElement("span", { style: { borderRadius: c + "px", background: "var(--muted)", display: "block" } }),
+          React.createElement("span", { style: { borderRadius: c + "px", background: "var(--primary)", display: "block" } })
+        )
+      };
+    }
+    if (def.innerStyle) {
+      return { style: def.box(n), inner: React.createElement("span", { style: { width: Math.round(n * 0.34) + "px", height: Math.round(n * 0.34) + "px", borderRadius: "50%", background: "var(--primary)", display: "block" } }) };
+    }
+    return { style: def.box(n), inner: def.inner };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const defs = this.markDefs();
+    const chosen = defs[st.mark];
+
+    return {
+      marks: defs.map((d, i) => {
+        const g = this.glyph(d, 66);
+        return {
+          n: d.n, name: d.name, rationale: d.rationale, risk: d.risk, on: st.mark === i,
+          pick: () => this.setState({ mark: i }),
+          glyphStyle: g.style, glyphInner: g.inner,
+          cardStyle: "padding: 17px 18px; background: var(--card); border-radius: 14px; cursor: pointer; border: 1px solid " +
+            (st.mark === i ? "var(--ring)" : "var(--border)") + ";"
+        };
+      }),
+
+      chosenName: chosen.name.toUpperCase(),
+      chosenInner: this.glyph(chosen, 40).inner,
+      lockLargeGlyph: this.glyph(chosen, 40).style,
+      lockMidGlyph: this.glyph(chosen, 26).style,
+      lockMidInner: this.glyph(chosen, 26).inner,
+      lockSmallGlyph: this.glyph(chosen, 20).style,
+      lockSmallInner: this.glyph(chosen, 20).inner,
+      lockTinyGlyph: this.glyph(chosen, 16).style,
+      lockTinyInner: this.glyph(chosen, 16).inner,
+
+      isCreature: !!chosen.creature,
+      icons: [
+        { label: "macOS\n1024", size: 62, radius: "22%", hearth: true },
+        { label: "Windows\n256", size: 54, radius: "0", hearth: true },
+        { label: "Android\n432", size: 54, radius: "50%", hearth: true },
+        { label: "favicon\n32", size: 32, radius: "6px", bare: true }
+      ].map(ic => {
+        const g = this.glyph(chosen, Math.round(ic.size * 0.54), { glow: chosen.creature && ic.hearth });
+        return {
+          label: ic.label,
+          boxStyle: "width: " + ic.size + "px; height: " + ic.size + "px; border-radius: " + ic.radius +
+            "; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden; background: " +
+            (ic.bare ? "transparent"
+              : chosen.creature
+                ? "radial-gradient(88% 52% at 50% 100%, color-mix(in oklab, var(--warning) 34%, var(--background)) 0%, var(--background) 76%)"
+                : "var(--background)") + ";",
+          glyphStyle: g.style, glyphInner: g.inner
+        };
+      }),
+
+      states: [
+        { k: "asleep", label: "Idle", note: "No sessions. Eyes closed, no glow." },
+        { k: "watching", label: "Watching", note: "Connected, nothing running." },
+        { k: "working", label: "Working", note: "Tools in flight. Eyes wide, hearth lit." },
+        { k: "waiting", label: "Waiting", note: "Approval pending. Amber body." }
+      ].map(s => {
+        const body = s.k === "waiting" ? "var(--warning)" : "var(--primary)";
+        const g = this.glyph(chosen, 34, { state: s.k, body: body, glow: s.k === "working" || s.k === "waiting" });
+        return {
+          label: s.label, note: s.note,
+          glyphStyle: g.style, glyphInner: g.inner,
+          boxStyle: "width: 58px; height: 58px; border-radius: 16px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; overflow: hidden; background: " +
+            (s.k === "asleep"
+              ? "var(--code)"
+              : "radial-gradient(88% 52% at 50% 100%, color-mix(in oklab, " + body + " " + (s.k === "watching" ? "16%" : "34%") + ", var(--code)) 0%, var(--code) 76%)") + ";"
+        };
+      }),
+
+      stateRules: [
+        { mark: "✓", ok: true, text: "Tray and menu bar icon", note: "The one place state earns its keep. Glance at the bar, know whether anything wants you." },
+        { mark: "✓", ok: true, text: "Dock or taskbar badge", note: "Waiting state only, paired with the count. Never Working, or it flickers all day." },
+        { mark: "✓", ok: true, text: "Notification avatar", note: "Matches the reason for the notification: Waiting for an approval, Working for a completion." },
+        { mark: "✕", ok: false, text: "The app icon on disk", note: "Installers, stores and Finder get the neutral Watching mark. An icon that changes in Finder reads as a bug." },
+        { mark: "✕", ok: false, text: "In-product chrome", note: "Inside the app, state belongs to the status dots and the approval card. The spirit does not narrate what the UI already says." },
+        { mark: "✕", ok: false, text: "Marketing and the site", note: "One neutral mark. A logo that winks at visitors undercuts the security argument." }
+      ].map((r, i, arr) => ({
+        text: r.text, note: r.note, mark: r.mark,
+        color: r.ok ? "var(--strong)" : "var(--faint)",
+        markStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10px; flex: 0 0 14px; margin-top: 2px; color: " +
+          (r.ok ? "var(--success)" : "var(--destructive)") + ";",
+        rowStyle: "display: flex; gap: 9px; padding: 9px 0; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+
+      wordRules: [
+        { mark: "✓", ok: true, text: "Domovoi", note: "Capital D in prose, product names and titles." },
+        { mark: "✓", ok: true, text: "domovoi", note: "The binary, the packages, the domain. Lowercase everywhere it is typed." },
+        { mark: "✓", ok: true, text: "the Domovoi daemon", note: "Lowercase daemon. It is a common noun, not a product name." },
+        { mark: "✕", ok: false, text: "DOMOVOI", note: "Only as a notification channel label, never in prose." },
+        { mark: "✕", ok: false, text: "Domovoi.sh in a sentence", note: "Use domovoi.sh. The domain is always lowercase." },
+        { mark: "✕", ok: false, text: "Dom, DMV, D-voi", note: "No short forms. If it does not fit, use the mark alone." }
+      ].map((r, i, arr) => ({
+        text: r.text, note: r.note, mark: r.mark,
+        color: r.ok ? "var(--strong)" : "var(--faint)",
+        markStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10px; flex: 0 0 14px; margin-top: 2px; color: " +
+          (r.ok ? "var(--success)" : "var(--destructive)") + ";",
+        rowStyle: "display: flex; gap: 9px; padding: 9px 0; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+
+      voice: [
+        { t: "State the mechanism, not the feeling", d: "\"Each machine runs a daemon that holds the session\" beats \"seamless everywhere\". The audience can evaluate a mechanism." },
+        { t: "Name the limit in the same breath as the promise", d: "A handoff carries the thread, plan and worktree. It does not carry hidden reasoning. Both halves ship together or neither does." },
+        { t: "Say what is not decided", d: "Where behavior is unsettled, the product says so rather than implying a guarantee. This is what earns the security claims." },
+        { t: "Plain punctuation", d: "No em dashes. Short sentences. Mono for anything a machine produced. No exclamation marks anywhere in the product." }
+      ],
+
+      rewrites: [
+        { bad: "The AI-powered control plane for your entire dev workflow", good: "One window for the coding agents already on your machines", why: "No borrowed category language. Says what it is and where the work happens." },
+        { bad: "Runs with no account at all", good: "Bring your own agents and keys", why: "The first is an artifact of backend iteration 1, not a promise. Never market it." },
+        { bad: "Seamlessly switch between models mid-conversation", good: "Change model at the next safe turn boundary. Thread, plan and worktree come with it.", why: "Seamless is unfalsifiable. The real behavior is more reassuring than the adjective." },
+        { bad: "Enterprise-grade security you can trust", good: "The relay carries encrypted payloads it cannot read. Keys stay in your OS keychain.", why: "Trust is claimed by describing the boundary, not by asserting the adjective." }
+      ],
+
+      nots: [
+        { t: "No cottages, stoves or ornament", d: "If the mark is the spirit itself, that is the whole illustration budget. No hearth scenes, no folk borders, no woodcut texture around it." },
+        { t: "No gradient in the mark", d: "The silhouette is flat colour, always. Only the icon field may carry the hearth glow, and it never bleeds into the shape. The mark has to survive a monochrome favicon and a black-and-white print sheet." },
+        { t: "No second accent colour", d: "One primary. The other hues are semantic and belong to product state: success, warning, destructive, info. Marketing may not borrow them for decoration." },
+        { t: "No Cyrillic as texture", d: "Section headings in Cyrillic were tried and dropped. If Cyrillic appears it is because it means something, like the Д monogram or the etymology line." },
+        { t: "A character, not a mascot", d: "If the spirit is the mark, it stays a silhouette in the chrome. It does not gain a face in dialogs, speak in first person, or appear in empty states apologising. The audit log is the personality." },
+        { t: "No dark-only lockup", d: "Every mark and lockup has to work on the light theme too. The desktop app ships both, so the brand cannot assume a dark background." }
+      ]
+    };
+  }
+}
+
+</script>
+</body>
+</html>

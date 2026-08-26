@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-25T00:00:00-06:00",
+  "title": "Design System: Domovoi",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Active Violet", "canonical": "oklch(0.72 0.17 275)", "tonalRamp": ["oklch(0.15 0.08 275)", "oklch(0.25 0.11 275)", "oklch(0.36 0.14 275)", "oklch(0.48 0.17 275)", "oklch(0.6 0.18 275)", "oklch(0.72 0.17 275)", "oklch(0.84 0.11 275)", "oklch(0.95 0.04 275)"] },
+      "success": { "role": "success", "displayName": "Running Green", "canonical": "oklch(0.75 0.14 158)", "tonalRamp": ["oklch(0.15 0.05 158)", "oklch(0.25 0.08 158)", "oklch(0.36 0.11 158)", "oklch(0.48 0.13 158)", "oklch(0.61 0.14 158)", "oklch(0.75 0.14 158)", "oklch(0.85 0.09 158)", "oklch(0.95 0.03 158)"] },
+      "warning": { "role": "warning", "displayName": "Decision Amber", "canonical": "oklch(0.79 0.13 62)", "tonalRamp": ["oklch(0.15 0.04 62)", "oklch(0.25 0.07 62)", "oklch(0.37 0.1 62)", "oklch(0.49 0.12 62)", "oklch(0.63 0.13 62)", "oklch(0.79 0.13 62)", "oklch(0.87 0.08 62)", "oklch(0.95 0.03 62)"] },
+      "destructive": { "role": "destructive", "displayName": "Hard Gate Red", "canonical": "oklch(0.63 0.19 25)", "tonalRamp": ["oklch(0.15 0.07 25)", "oklch(0.25 0.11 25)", "oklch(0.35 0.15 25)", "oklch(0.47 0.18 25)", "oklch(0.63 0.19 25)", "oklch(0.74 0.14 25)", "oklch(0.85 0.08 25)", "oklch(0.95 0.03 25)"] },
+      "info": { "role": "info", "displayName": "Handoff Blue", "canonical": "oklch(0.72 0.1 240)", "tonalRamp": ["oklch(0.15 0.04 240)", "oklch(0.25 0.06 240)", "oklch(0.36 0.08 240)", "oklch(0.48 0.1 240)", "oklch(0.6 0.11 240)", "oklch(0.72 0.1 240)", "oklch(0.84 0.07 240)", "oklch(0.95 0.025 240)"] }
+    },
+    "typographyMeta": {
+      "ui": { "displayName": "Interface and prose", "purpose": "All UI and human-authored copy outside Android." },
+      "title": { "displayName": "Window and section title", "purpose": "Compact hierarchy for application surfaces." },
+      "machine": { "displayName": "Machine output", "purpose": "Commands, paths, identifiers, counts, and timings only." }
+    },
+    "shadows": [
+      { "name": "medium", "value": "var(--shadow-md)", "purpose": "Floating controls and compact popovers." },
+      { "name": "large", "value": "var(--shadow-lg)", "purpose": "Menus, sheets, and larger popovers." },
+      { "name": "extra-large", "value": "var(--shadow-xl)", "purpose": "Protected-focus dialogs and overlays." }
+    ],
+    "motion": [
+      { "name": "work-in-flight", "value": "dvPulse 2.4s ease-out infinite", "purpose": "Running status dots only; disabled under reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "phone-ios", "value": "390px" },
+      { "name": "phone-android", "value": "412px" },
+      { "name": "tablet-browser", "value": "1024px" },
+      { "name": "desktop", "value": "1440px" }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "One daemon-owned system across every client",
+    "overview": "Domovoi renders the same machines, projects, sessions, turns, artifacts, annotations, and attributed decisions across desktop, browser, tablet, and phone.",
+    "keyCharacteristics": ["Local-first execution", "Attributed consequential decisions", "Cross-client state parity", "Full preview and annotation workflows"],
+    "rules": [
+      { "name": "Daemon Source of Truth", "body": "No client holds state the daemon does not have.", "section": "layout" },
+      { "name": "Attributed Decisions", "body": "Every approval, annotation, and handoff records its originating client.", "section": "components" },
+      { "name": "Collapse Never Omit", "body": "Smaller surfaces stack or collapse the same decision facts instead of removing them.", "section": "layout" }
+    ],
+    "dos": ["Use the Claude handoff as the normative design source.", "Preserve exact status semantics and decision facts."],
+    "donts": ["Do not use retired Design Studio variants as implementation references.", "Do not implement the unfinished public site prototype."]
+  }
+}
