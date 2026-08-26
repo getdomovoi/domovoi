@@ -42,6 +42,10 @@ export const helloParamsSchema = z.object({
   clientVersion: z.string().min(1),
 })
 
+export const systemPauseAllParamsSchema = z.object({
+  client: clientKindSchema,
+})
+
 export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
@@ -121,6 +125,10 @@ export const annotationSetStatusParamsSchema = z.object({
 
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
+  "system.pauseAll": {
+    params: systemPauseAllParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
   "runtime.models": {
     params: runtimeModelsParamsSchema,

@@ -186,6 +186,10 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  pauseAll(): Promise<WorkspaceSnapshot> {
+    return this.request("system.pauseAll", { client: this.kind })
+  }
+
   createAnnotation(input: {
     sessionId: string
     artifactId: string

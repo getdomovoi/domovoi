@@ -31,12 +31,15 @@ describe("RuntimeControls", () => {
 })
 
 describe("AppBar", () => {
-  it("does not offer pause-all before the command is implemented", () => {
+  it("disables pause-all without an active turn", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    for (const session of snapshot.sessions) delete session.activeTurnId
     const markup = renderToStaticMarkup(
       <AppBar
-        snapshot={demoWorkspace}
+        snapshot={snapshot}
         connected
         onOpenProject={vi.fn()}
+        onPauseAll={vi.fn()}
       />,
     )
 

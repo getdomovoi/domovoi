@@ -140,12 +140,15 @@ export function AppBar({
   connected,
   bridge,
   onOpenProject,
+  onPauseAll,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
   bridge?: DesktopWindowBridge | undefined
   onOpenProject: () => void
+  onPauseAll: () => void
 }) {
+  const canPause = connected && Boolean(snapshot?.sessions.some((session) => session.activeTurnId))
   return (
     <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
       {bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
@@ -166,7 +169,13 @@ export function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
-        <Button variant="ghost" size="sm" aria-label="Pause all" disabled>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Pause all"
+          disabled={!canPause}
+          onClick={onPauseAll}
+        >
           <CircleStopIcon data-icon="inline-start" />
           Pause all
         </Button>
@@ -1228,6 +1237,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createSession,
     listModels,
     openProject,
+    pauseAll,
     reconnect,
     resolveApproval,
     replyToAnnotation,
@@ -1252,6 +1262,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setConnectionError("")
     void reconnect().catch((cause: unknown) => {
       setConnectionError(cause instanceof Error ? cause.message : "The daemon could not be reached")
+    })
+  }
+  const pauseActiveTurns = () => {
+    setWorkspaceError("")
+    void pauseAll().catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Active agents could not be paused")
     })
   }
   const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
@@ -1292,7 +1308,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} />
+        <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} onPauseAll={pauseActiveTurns} />
         {!connected ? (
           <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
             <span className="size-2 shrink-0 rounded-full bg-destructive" />
@@ -1336,7 +1352,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             className="absolute bottom-3 left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]"
           >
             <CircleStopIcon />
-            <AlertTitle>Session switch failed</AlertTitle>
+            <AlertTitle>Workspace action failed</AlertTitle>
             <AlertDescription>{workspaceError}</AlertDescription>
           </Alert>
         ) : null}

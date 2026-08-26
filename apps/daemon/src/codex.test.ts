@@ -223,6 +223,15 @@ describe("CodexAppServerAdapter", () => {
     transport.receive({ id: 4, result: { turn: { id: "turn-1" } } })
     await expect(turning).resolves.toBe("turn-1")
 
+    const interrupting = adapter.interruptTurn("thread-1", "turn-1")
+    expect(transport.sent[5]).toMatchObject({
+      id: 5,
+      method: "turn/interrupt",
+      params: { threadId: "thread-1", turnId: "turn-1" },
+    })
+    transport.receive({ id: 5, result: {} })
+    await expect(interrupting).resolves.toBeUndefined()
+
     transport.receive({
       method: "item/agentMessage/delta",
       params: { threadId: "thread-1", turnId: "turn-1", delta: "Tests are running." },
