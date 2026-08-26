@@ -10,6 +10,8 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   projectOpenParamsSchema,
+  previewBridgePickerMessageSchema,
+  previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
   sessionCreateParamsSchema,
   sessionSendParamsSchema,
@@ -66,6 +68,31 @@ describe("workspace protocol", () => {
       status: "resolved",
       client: "phone",
     }).status).toBe("resolved")
+  })
+
+  it("validates preview bridge messages", () => {
+    const channel = "preview_channel_123456"
+    expect(previewBridgePickerMessageSchema.parse({
+      type: "domovoi.preview.picker",
+      channel,
+      active: true,
+    }).active).toBe(true)
+    expect(previewBridgeSelectionMessageSchema.parse({
+      type: "domovoi.preview.selection",
+      channel,
+      artifactId: "artifact-preview",
+      anchor: {
+        cssSelector: "main > section:nth-of-type(2)",
+        textQuote: "Review this migration step",
+        bbox: { x: 24, y: 96, width: 320, height: 48 },
+      },
+      label: "section · Review this migration step",
+    }).artifactId).toBe("artifact-preview")
+    expect(previewBridgePickerMessageSchema.safeParse({
+      type: "domovoi.preview.picker",
+      channel: "short",
+      active: true,
+    }).success).toBe(false)
   })
 
   it("upgrades snapshots that predate annotation state", () => {

@@ -734,6 +734,19 @@ describe("DomovoiDaemon", () => {
     expect(preview.headers.get("content-security-policy")).toContain("default-src 'none'")
     await expect(preview.text()).resolves.toBe("<h1>Domovoi preview</h1>")
 
+    const bridgedPreview = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456`,
+    )
+    const bridgedContent = await bridgedPreview.text()
+    expect(bridgedContent).toContain("domovoi.preview.selection")
+    expect(bridgedContent).toContain("preview_channel_123456")
+    expect(bridgedContent).toContain(artifact!.id)
+
+    const invalidBridge = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,
+    )
+    await expect(invalidBridge.text()).resolves.toBe("<h1>Domovoi preview</h1>")
+
     const rebindingStatus = await new Promise<number | undefined>((resolve, reject) => {
       const request = httpRequest({
         host: address.host,
