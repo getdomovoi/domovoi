@@ -662,11 +662,17 @@ function ArtifactDock({
   defaultTab: "changes" | "preview"
   rpcUrl: string
 }) {
+  const activeSession = snapshot.sessions.find(
+    (session) => session.id === snapshot.activeSessionId,
+  )
   const sessionArtifacts = snapshot.artifacts.filter(
     (artifact) => artifact.sessionId === snapshot.activeSessionId,
   )
   const preview = sessionArtifacts.findLast(
     (artifact) => artifact.type === "preview" && artifact.path && artifact.mimeType === "text/html",
+  )
+  const plan = sessionArtifacts.findLast(
+    (artifact) => artifact.type === "plan" && artifact.content,
   )
   const diff = sessionArtifacts.findLast((artifact) => artifact.type === "diff")
 
@@ -705,7 +711,28 @@ function ArtifactDock({
             </Empty>
           )}
         </TabsContent>
-        <TabsContent value="plan" className="p-4 text-muted-foreground">Four steps · one migration · one hard gate.</TabsContent>
+        <TabsContent value="plan" className="min-h-0 overflow-auto p-3">
+          {plan?.content ? (
+            <div className="min-h-full overflow-hidden rounded-xl border bg-card">
+              <div className="flex min-h-10 items-center gap-2 border-b px-3">
+                <span className="text-[11px] font-medium">{plan.title}</span>
+                <span className="font-machine text-[9px] text-faint">revision {plan.revision}</span>
+                {activeSession ? <Badge variant="outline" className="ml-auto">{activeSession.state}</Badge> : null}
+              </div>
+              <pre className="m-0 whitespace-pre-wrap break-words p-4 font-machine text-[11px] leading-relaxed text-muted-foreground">
+                {plan.content}
+              </pre>
+            </div>
+          ) : (
+            <Empty className="min-h-full border">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
+                <EmptyTitle>No working plan yet</EmptyTitle>
+                <EmptyDescription>Plan updates from the agent appear here and remain attached to this session.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
+        </TabsContent>
         <TabsContent value="changes" className="min-h-0 overflow-auto p-4 font-machine text-[11px] text-muted-foreground">
           {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
         </TabsContent>
