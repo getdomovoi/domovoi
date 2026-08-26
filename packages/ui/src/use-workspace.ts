@@ -19,7 +19,11 @@ export function useWorkspace(url: string, kind: ClientKind) {
     const onDisconnected = () => {
       if (active) setConnected(false)
     }
+    const onConnected = () => {
+      if (active) setConnected(true)
+    }
     client.addEventListener("snapshot", onSnapshot)
+    client.addEventListener("connected", onConnected)
     client.addEventListener("disconnected", onDisconnected)
     client.connect().then(
       (next) => {
@@ -35,6 +39,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
     return () => {
       active = false
       client.removeEventListener("snapshot", onSnapshot)
+      client.removeEventListener("connected", onConnected)
       client.removeEventListener("disconnected", onDisconnected)
       client.disconnect()
       clientRef.current = null

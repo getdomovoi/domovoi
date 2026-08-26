@@ -821,7 +821,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
         </div>
-        {!connected ? <div className="absolute bottom-3 left-3 rounded-md border border-destructive bg-popover px-3 py-1.5 font-machine text-[10px] text-destructive shadow-[var(--shadow-md)]">Daemon offline · showing local fixture</div> : null}
+        {!connected ? <div className="absolute bottom-3 left-3 rounded-md border border-destructive bg-popover px-3 py-1.5 font-machine text-[10px] text-destructive shadow-[var(--shadow-md)]">Daemon offline · retrying</div> : null}
         {workspaceError ? (
           <Alert
             variant="destructive"

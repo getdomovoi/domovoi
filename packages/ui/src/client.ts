@@ -15,44 +15,102 @@ type PendingRequest = {
   reject: (error: Error) => void
 }
 
+type DomovoiClientOptions = {
+  reconnectDelayMs?: number
+}
+
 export class DomovoiClient extends EventTarget {
   readonly url: string
   readonly kind: ClientKind
   #socket: WebSocket | undefined
   #requestId = 0
   #pending = new Map<number, PendingRequest>()
+  #opening: Promise<WorkspaceSnapshot> | undefined
+  #reconnectDelayMs: number
+  #reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  #shouldReconnect = false
 
-  constructor(url: string, kind: ClientKind) {
+  constructor(url: string, kind: ClientKind, options: DomovoiClientOptions = {}) {
     super()
     this.url = url
     this.kind = kind
+    this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000
   }
 
   connect(): Promise<WorkspaceSnapshot> {
-    return new Promise((resolve, reject) => {
+    this.#shouldReconnect = true
+    this.#clearReconnectTimer()
+    return this.#open()
+  }
+
+  #open(): Promise<WorkspaceSnapshot> {
+    if (this.#opening) return this.#opening
+    if (this.#socket) return Promise.reject(new Error("Daemon connection is already open"))
+
+    const opening = new Promise<WorkspaceSnapshot>((resolve, reject) => {
       const socket = new WebSocket(this.url)
       this.#socket = socket
-      socket.addEventListener("error", () => reject(new Error(`Cannot reach ${this.url}`)), {
-        once: true,
-      })
+      let opening = true
+      const rejectOpening = (error: Error) => {
+        if (!opening) return
+        opening = false
+        reject(error)
+      }
+      socket.addEventListener("error", () => {
+        rejectOpening(new Error(`Cannot reach ${this.url}`))
+        socket.close()
+      }, { once: true })
       socket.addEventListener(
         "open",
         () => {
           this.request("system.hello", { client: this.kind, clientVersion: "0.0.1" }).then(
-            resolve,
-            reject,
+            (snapshot) => {
+              if (socket !== this.#socket) return
+              opening = false
+              this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
+              this.dispatchEvent(new Event("connected"))
+              resolve(snapshot)
+            },
+            (cause: unknown) => {
+              const error = cause instanceof Error ? cause : new Error("Daemon handshake failed")
+              rejectOpening(error)
+              socket.close()
+            },
           )
         },
         { once: true },
       )
-      socket.addEventListener("message", (event) => this.#receive(String(event.data)))
-      socket.addEventListener("close", () => this.dispatchEvent(new Event("disconnected")))
+      socket.addEventListener("message", (event) => {
+        if (socket === this.#socket) this.#receive(String(event.data))
+      })
+      socket.addEventListener("close", () => {
+        if (socket !== this.#socket) return
+        this.#socket = undefined
+        const error = new Error("Daemon connection closed")
+        rejectOpening(error)
+        this.#rejectPending(error)
+        this.dispatchEvent(new Event("disconnected"))
+        this.#scheduleReconnect()
+      })
     })
+    this.#opening = opening
+    void opening.then(
+      () => {
+        if (this.#opening === opening) this.#opening = undefined
+      },
+      () => {
+        if (this.#opening === opening) this.#opening = undefined
+      },
+    )
+    return opening
   }
 
   disconnect(): void {
-    this.#socket?.close(1000, "client closed")
-    this.#socket = undefined
+    this.#shouldReconnect = false
+    this.#clearReconnectTimer()
+    const socket = this.#socket
+    this.#rejectPending(new Error("Daemon connection closed"))
+    socket?.close(1000, "client closed")
   }
 
   request(method: RpcMethod, params: unknown): Promise<WorkspaceSnapshot> {
@@ -106,6 +164,25 @@ export class DomovoiClient extends EventTarget {
       client: this.kind,
       ...(label ? { label } : {}),
     })
+  }
+
+  #scheduleReconnect(): void {
+    if (!this.#shouldReconnect || this.#reconnectTimer) return
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = undefined
+      void this.#open().catch(() => undefined)
+    }, this.#reconnectDelayMs)
+  }
+
+  #clearReconnectTimer(): void {
+    if (!this.#reconnectTimer) return
+    clearTimeout(this.#reconnectTimer)
+    this.#reconnectTimer = undefined
+  }
+
+  #rejectPending(error: Error): void {
+    for (const pending of this.#pending.values()) pending.reject(error)
+    this.#pending.clear()
   }
 
   #receive(raw: string): void {
