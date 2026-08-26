@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
+  createEmptyWorkspace,
   demoWorkspace,
   projectOpenParamsSchema,
   sessionCreateParamsSchema,
@@ -11,6 +12,20 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("represents a machine before a project is opened", () => {
+    const empty = createEmptyWorkspace(demoWorkspace.machine)
+
+    expect(workspaceSnapshotSchema.parse(empty)).toMatchObject({
+      project: null,
+      sessions: [],
+      activeSessionId: null,
+    })
+
+    const inconsistent = structuredClone(empty)
+    inconsistent.sessions = structuredClone(demoWorkspace.sessions)
+    expect(workspaceSnapshotSchema.safeParse(inconsistent).success).toBe(false)
+  })
+
   it("accepts the shared demo snapshot", () => {
     expect(workspaceSnapshotSchema.parse(demoWorkspace)).toEqual(demoWorkspace)
   })

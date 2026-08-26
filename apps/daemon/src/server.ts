@@ -1,10 +1,11 @@
 import { createServer, type Server as HttpServer } from "node:http"
 import { createHash, randomUUID } from "node:crypto"
 import { readFile, realpath } from "node:fs/promises"
-import { homedir } from "node:os"
+import { arch, homedir, hostname, platform } from "node:os"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  createEmptyWorkspace,
   demoWorkspace,
   protocolVersion,
   rpcMethods,
@@ -62,9 +63,22 @@ export class DomovoiDaemon {
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
+    const machineName = hostname()
+    const machinePlatform = platform()
+    const machineArch = arch()
+    const initialSnapshot = createEmptyWorkspace({
+      id: `machine-${createHash("sha256").update(`${machineName}:${machinePlatform}:${machineArch}`).digest("hex").slice(0, 12)}`,
+      name: machineName,
+      platform: machinePlatform,
+      arch: machineArch,
+      version: "0.0.1",
+      connection: "local",
+      reachable: true,
+    })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       options.statePath ?? join(homedir(), ".domovoi", "state.sqlite"),
-      workspaceSnapshotSchema.parse(structuredClone(demoWorkspace)),
+      initialSnapshot,
+      { legacySnapshots: [demoWorkspace] },
     )
     this.#snapshot = this.#store.load()
     this.#agent = options.agent ?? new CodexAppServerAdapter()
@@ -264,9 +278,14 @@ export class DomovoiDaemon {
           this.#agent.resolveApproval(approval.providerRequestId, params.decision)
         }
         if (params.decision === "always-project") {
+          const project = this.#snapshot.project
+          if (!project) {
+            this.#error(socket, request.id, internalError, "Approval has no open project")
+            return
+          }
           this.#snapshot.approvalRules.push({
             id: `rule-${approval.id}-${Date.now()}`,
-            projectId: this.#snapshot.project.id,
+            projectId: project.id,
             operation: approval.operation,
             command: approval.command,
             createdBy: params.client,
@@ -340,8 +359,18 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Only the Codex provider is available")
           return
         }
+        const project = this.#snapshot.project
+        if (!project) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Open a valid Git repository with project.open before creating a session",
+          )
+          return
+        }
         try {
-          await this.#workspaceService.inspect(this.#snapshot.project.path)
+          await this.#workspaceService.inspect(project.path)
         } catch {
           this.#error(
             socket,
@@ -353,7 +382,7 @@ export class DomovoiDaemon {
         }
         const sessionId = `session-${randomUUID()}`
         const workspace = await this.#workspaceService.createSessionWorkspace(
-          this.#snapshot.project.path,
+          project.path,
           sessionId,
         )
         let providerThreadId: string
@@ -378,7 +407,7 @@ export class DomovoiDaemon {
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
           id: sessionId,
-          projectId: this.#snapshot.project.id,
+          projectId: project.id,
           title: params.title,
           state: "idle",
           runtime: params.runtime,
@@ -548,8 +577,10 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "approval-requested") {
+      const project = this.#snapshot.project
+      if (!project) return
       const matchingRule = this.#snapshot.approvalRules.find(
-        (rule) => rule.projectId === this.#snapshot.project.id && rule.command === event.command,
+        (rule) => rule.projectId === project.id && rule.command === event.command,
       )
       if (matchingRule) {
         this.#agent.resolveApproval(event.requestId, "always-project")
@@ -563,7 +594,7 @@ export class DomovoiDaemon {
           machine: this.#snapshot.machine.name,
           agent: `${session.runtime.provider} / ${session.runtime.model}`,
           mode: session.runtime.permissionMode,
-          directory: event.cwd ?? session.workspacePath ?? this.#snapshot.project.path,
+          directory: event.cwd ?? session.workspacePath ?? project.path,
           affects: "Files and processes in the session worktree.",
           network: "No agent network access granted.",
           estimatedDuration: "Unknown",

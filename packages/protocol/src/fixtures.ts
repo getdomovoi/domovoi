@@ -1,7 +1,21 @@
-import type { WorkspaceSnapshot } from "./schema.js"
+import type { Machine, WorkspaceSnapshot } from "./schema.js"
 import { protocolVersion } from "./schema.js"
 
 const now = "2026-08-25T21:52:00.000Z"
+
+export function createEmptyWorkspace(machine: Machine): WorkspaceSnapshot {
+  return {
+    protocolVersion,
+    machine,
+    project: null,
+    activeSessionId: null,
+    sessions: [],
+    approvals: [],
+    approvalRules: [],
+    thread: [],
+    artifacts: [],
+  }
+}
 
 export const demoWorkspace: WorkspaceSnapshot = {
   protocolVersion,

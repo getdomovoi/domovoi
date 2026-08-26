@@ -6,8 +6,11 @@ import { join } from "node:path"
 import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { demoWorkspace } from "@getdomovoi/protocol"
+
 import { DomovoiDaemon } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
+import { SqliteWorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
 
 const running: DomovoiDaemon[] = []
@@ -19,7 +22,7 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
-  it("serves the initial workspace over JSON-RPC", async () => {
+  it("serves an empty initial workspace over JSON-RPC", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
     const address = await daemon.start()
@@ -43,23 +46,73 @@ describe("DomovoiDaemon", () => {
     expect(response).toMatchObject({
       jsonrpc: "2.0",
       id: 1,
-      result: { activeSessionId: "session-billing" },
+      result: {
+        project: null,
+        sessions: [],
+        activeSessionId: null,
+      },
     })
 
-    const approvalResponse = new Promise<Record<string, unknown>>((resolve) => {
+    const rejectedSession = new Promise<Record<string, unknown>>((resolve) => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number }
         if (message.id === 2) resolve(message as Record<string, unknown>)
       })
     })
-    socket.send(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "approval.resolve",
-        params: { approvalId: "approval-migrate", decision: "always-project", client: "desktop" },
-      }),
-    )
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session.create",
+      params: {
+        title: "Should not start",
+        runtime: {
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          reasoning: "medium",
+          permissionMode: "ask",
+          auto: false,
+        },
+        client: "desktop",
+      },
+    }))
+    await expect(rejectedSession).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "Open a valid Git repository with project.open before creating a session",
+      },
+    })
+    socket.close()
+  })
+
+  it("records a project-scoped rule for standing approval", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const approvalResponse = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "approval.resolve",
+      params: {
+        approvalId: "approval-migrate",
+        decision: "always-project",
+        client: "desktop",
+      },
+    }))
 
     await expect(approvalResponse).resolves.toMatchObject({
       result: {
@@ -102,7 +155,10 @@ describe("DomovoiDaemon", () => {
   })
 
   it("rejects an unexplained denial and records a supplied explanation", async () => {
-    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+    })
     running.push(daemon)
     const address = await daemon.start()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
@@ -164,7 +220,10 @@ describe("DomovoiDaemon", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-daemon-"))
     scratchDirectories.push(scratch)
     const statePath = join(scratch, "state.sqlite")
-    const first = new DomovoiDaemon({ port: 0, statePath })
+    const first = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(statePath, demoWorkspace),
+    })
     running.push(first)
     const firstAddress = await first.start()
     const firstSocket = new WebSocket(`ws://${firstAddress.host}:${firstAddress.port}/rpc`)

@@ -135,8 +135,10 @@ function AppBar({
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
         <Separator orientation="vertical" className="mx-1 h-5" />
         <Button variant="ghost" size="sm" onClick={onOpenProject}>
-          {snapshot.project.name}
-          <span className="font-machine text-[10px] text-faint">{snapshot.project.branch}</span>
+          {snapshot.project?.name ?? "Open project"}
+          {snapshot.project ? (
+            <span className="font-machine text-[10px] text-faint">{snapshot.project.branch}</span>
+          ) : null}
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
         <Badge variant="machine">
@@ -212,7 +214,9 @@ function SessionsSidebar({
         </Button>
       </div>
       <div className="flex flex-col gap-2 px-3 pb-3">
-        <Button variant="outline" className="w-full justify-start" onClick={onNewSession}>New session</Button>
+        <Button variant="outline" className="w-full justify-start" onClick={onNewSession}>
+          {snapshot.project ? "New session" : "Open project"}
+        </Button>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
           <Input className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
@@ -463,16 +467,24 @@ function Thread({
   const [sendError, setSendError] = useState("")
 
   if (!active) {
+    const hasProject = snapshot.project !== null
     return (
       <main className="flex h-full min-w-0 bg-background">
         <Empty>
           <EmptyHeader>
-            <EmptyMedia variant="icon"><BotIcon /></EmptyMedia>
-            <EmptyTitle>No session is open</EmptyTitle>
-            <EmptyDescription>Start a session to create an isolated worktree and talk to an agent.</EmptyDescription>
+            <EmptyMedia variant="icon">{hasProject ? <BotIcon /> : <FolderOpenIcon />}</EmptyMedia>
+            <EmptyTitle>{hasProject ? "No session is open" : "No project is open"}</EmptyTitle>
+            <EmptyDescription>
+              {hasProject
+                ? "Start a session to create an isolated worktree and talk to an agent."
+                : "Open a local Git repository before starting an agent session."}
+            </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button onClick={onNewSession}><BotIcon data-icon="inline-start" />New session</Button>
+            <Button onClick={onNewSession}>
+              {hasProject ? <BotIcon data-icon="inline-start" /> : <FolderOpenIcon data-icon="inline-start" />}
+              {hasProject ? "New session" : "Open project"}
+            </Button>
           </EmptyContent>
         </Empty>
       </main>
@@ -534,7 +546,7 @@ function Thread({
           </h1>
           <div className="mt-1 flex flex-wrap items-center gap-2 font-machine text-[10px] text-faint">
             {active.workspacePath ? <span>{active.workspacePath}</span> : null}
-            {active.baseCommit ? <span>from {snapshot.project.branch} @ {active.baseCommit.slice(0, 8)}</span> : null}
+            {active.baseCommit && snapshot.project ? <span>from {snapshot.project.branch} @ {active.baseCommit.slice(0, 8)}</span> : null}
             <span>{active.changedFiles} files</span>
             <span className="text-success">{active.testsPassed} pass</span>
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
@@ -686,7 +698,7 @@ function ArtifactDock({
         </TabsContent>
         <TabsContent value="comments" className="p-4 text-muted-foreground">2 open annotations</TabsContent>
         <TabsContent value="terminal" className="bg-code p-4 font-machine text-[11px] text-muted-foreground">$ pnpm test<br /><span className="text-success">42 passed</span> · <span className="text-destructive">1 failed</span></TabsContent>
-        <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project.path}</TabsContent>
+        <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
     </aside>
   )
@@ -774,8 +786,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
             }}
           >
-            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onNewSession={() => setLauncherMode("session")} /></ResizablePanel><ResizableHandle /></> : null}
-            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode("session")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
+            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
+            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
             {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} /></ResizablePanel></> : null}
           </ResizablePanelGroup>
           {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}

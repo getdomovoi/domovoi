@@ -2,11 +2,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import {
-  demoWorkspace,
-  workspaceSnapshotSchema,
-  type WorkspaceSnapshot,
-} from "@getdomovoi/protocol"
+import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 type StoredWorkspace = {
   snapshot: string
@@ -18,11 +14,15 @@ export interface WorkspaceStore {
   close(): void
 }
 
+export type WorkspaceStoreOptions = {
+  legacySnapshots?: WorkspaceSnapshot[]
+}
+
 export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly path: string
   #database: DatabaseSync
 
-  constructor(path: string, initial: WorkspaceSnapshot = demoWorkspace) {
+  constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true })
     this.#database = new DatabaseSync(path)
@@ -38,7 +38,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
-    if (!existing) this.save(initial)
+    const isLegacySeed = existing && options.legacySnapshots?.some(
+      (snapshot) => existing.snapshot === JSON.stringify(workspaceSnapshotSchema.parse(snapshot)),
+    )
+    if (!existing || isLegacySeed) this.save(initial)
   }
 
   load(): WorkspaceSnapshot {

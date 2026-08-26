@@ -150,13 +150,29 @@ export const artifactSchema = z.object({
 export const workspaceSnapshotSchema = z.object({
   protocolVersion: z.literal(protocolVersion),
   machine: machineSchema,
-  project: projectSchema,
+  project: projectSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
   activeSessionId: z.string().min(1).nullable(),
   approvals: z.array(approvalRequestSchema),
   approvalRules: z.array(approvalRuleSchema),
   thread: z.array(threadItemSchema),
   artifacts: z.array(artifactSchema),
+}).superRefine((snapshot, context) => {
+  if (snapshot.project !== null) return
+  const populatedFields = [
+    snapshot.sessions,
+    snapshot.approvals,
+    snapshot.approvalRules,
+    snapshot.thread,
+    snapshot.artifacts,
+  ]
+  if (snapshot.activeSessionId !== null || populatedFields.some((field) => field.length > 0)) {
+    context.addIssue({
+      code: "custom",
+      message: "An unopened workspace cannot contain project state",
+      path: ["project"],
+    })
+  }
 })
 
 export type ClientKind = z.infer<typeof clientKindSchema>
