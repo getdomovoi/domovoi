@@ -41,9 +41,9 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto: boolean): Runt
 
 describe("codexPolicyFor", () => {
   it.each([
-    [runtime("ask", false), "onRequest", "workspaceWrite"],
+    [runtime("ask", false), "on-request", "workspaceWrite"],
     [runtime("plan", false), "never", "readOnly"],
-    [runtime("build", false), "onRequest", "workspaceWrite"],
+    [runtime("build", false), "on-request", "workspaceWrite"],
     [runtime("build", true), "never", "workspaceWrite"],
   ] as const)("maps Domovoi runtime to Codex enforcement", (input, approvalPolicy, sandboxType) => {
     expect(codexPolicyFor(input, "/worktree")).toMatchObject({
@@ -54,6 +54,25 @@ describe("codexPolicyFor", () => {
 })
 
 describe("CodexAppServerAdapter", () => {
+  it("translates plan mode to the Codex read-only sandbox", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("plan", false) })
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "thread/start",
+      params: { sandbox: "read-only" },
+    })
+    transport.receive({ id: 2, result: { thread: { id: "thread-plan" } } })
+    await expect(starting).resolves.toBe("thread-plan")
+    await adapter.close()
+  })
+
   it("initializes, starts a turn, streams events, and resolves approval", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()
@@ -74,7 +93,12 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.sent[2]).toMatchObject({
       id: 2,
       method: "thread/start",
-      params: { cwd: "/worktree", model: "gpt-5.6-sol", serviceName: "domovoi" },
+      params: {
+        cwd: "/worktree",
+        model: "gpt-5.6-sol",
+        sandbox: "workspace-write",
+        serviceName: "domovoi",
+      },
     })
     transport.receive({ id: 2, result: { thread: { id: "thread-1" } } })
     await expect(starting).resolves.toBe("thread-1")
@@ -100,7 +124,7 @@ describe("CodexAppServerAdapter", () => {
       params: {
         threadId: "thread-1",
         input: [{ type: "text", text: "Run the tests" }],
-        approvalPolicy: "onRequest",
+        approvalPolicy: "on-request",
         sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/worktree"] },
       },
     })

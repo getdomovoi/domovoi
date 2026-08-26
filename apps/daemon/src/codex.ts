@@ -19,7 +19,7 @@ export interface CodexTransport {
 }
 
 export type CodexPolicy = {
-  approvalPolicy: "onRequest" | "never"
+  approvalPolicy: "on-request" | "never"
   sandboxPolicy:
     | { type: "readOnly"; access: { type: "fullAccess" } }
     | {
@@ -79,7 +79,7 @@ export function codexPolicyFor(runtime: Runtime, cwd: string): CodexPolicy {
     }
   }
   return {
-    approvalPolicy: runtime.permissionMode === "build" && runtime.auto ? "never" : "onRequest",
+    approvalPolicy: runtime.permissionMode === "build" && runtime.auto ? "never" : "on-request",
     sandboxPolicy: {
       type: "workspaceWrite",
       writableRoots: [cwd],
@@ -162,11 +162,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
     const policy = codexPolicyFor(runtime, cwd)
+    const sandbox = policy.sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write"
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
       approvalPolicy: policy.approvalPolicy,
-      sandbox: policy.sandboxPolicy.type,
+      sandbox,
       serviceName: "domovoi",
     }) as { thread?: { id?: string } }
     const threadId = result.thread?.id
