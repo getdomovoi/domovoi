@@ -141,7 +141,7 @@ function AppBar({
   bridge,
   onOpenProject,
 }: {
-  snapshot: WorkspaceSnapshot
+  snapshot: WorkspaceSnapshot | null
   connected: boolean
   bridge?: DesktopWindowBridge | undefined
   onOpenProject: () => void
@@ -153,24 +153,24 @@ function AppBar({
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
         <Separator orientation="vertical" className="mx-1 h-5" />
-        <Button variant="ghost" size="sm" onClick={onOpenProject}>
-          {snapshot.project?.name ?? "Open project"}
-          {snapshot.project ? (
+        <Button variant="ghost" size="sm" disabled={!snapshot} onClick={onOpenProject}>
+          {snapshot?.project?.name ?? "Open project"}
+          {snapshot?.project ? (
             <span className="font-machine text-[10px] text-faint">{snapshot.project.branch}</span>
           ) : null}
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
         <Badge variant="machine">
           <span className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
-          {snapshot.machine.name}
+          {snapshot?.machine.name ?? "daemon"}
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
-        <Button variant="ghost" size="sm">
+        <Button variant="ghost" size="sm" disabled={!snapshot}>
           <CircleStopIcon data-icon="inline-start" />
           Pause all
         </Button>
-        {snapshot.approvals.length ? (
+        {snapshot?.approvals.length ? (
           <Badge variant="warning">{snapshot.approvals.length} approval</Badge>
         ) : null}
       </div>
@@ -1207,6 +1207,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createSession,
     listModels,
     openProject,
+    reconnect,
     resolveApproval,
     replyToAnnotation,
     sendMessage,
@@ -1219,10 +1220,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const [workspaceError, setWorkspaceError] = useState("")
+  const [connectionError, setConnectionError] = useState("")
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+    })
+  }
+  const reconnectDaemon = () => {
+    setConnectionError("")
+    void reconnect().catch((cause: unknown) => {
+      setConnectionError(cause instanceof Error ? cause.message : "The daemon could not be reached")
     })
   }
   const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
@@ -1245,6 +1253,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [dockCollapsed])
 
   useEffect(() => {
+    if (connected) setConnectionError("")
+  }, [connected])
+
+  useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
     const observer = new ResizeObserver(([entry]) => {
@@ -1260,40 +1272,59 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} />
-        <div className="flex min-h-0 flex-1">
-          {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} /> : null}
-          <ResizablePanelGroup
-            key={layoutKey}
-            orientation="horizontal"
-            className="min-h-0 min-w-0 flex-1"
-            {...(defaultLayout ? { defaultLayout } : {})}
-            onLayoutChanged={(layout, meta) => {
-              if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
-            }}
-          >
-            {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
-            <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
-            {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
-          </ResizablePanelGroup>
-          {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
-        </div>
-        {!connected ? <div className="absolute bottom-3 left-3 rounded-md border border-destructive bg-popover px-3 py-1.5 font-machine text-[10px] text-destructive shadow-[var(--shadow-md)]">Daemon offline · retrying</div> : null}
+        {!connected ? (
+          <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
+            <span className="size-2 shrink-0 rounded-full bg-destructive" />
+            <span>{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
+            <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
+            <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
+          </div>
+        ) : null}
+        {snapshot ? (
+          <div className="flex min-h-0 flex-1">
+            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} /> : null}
+            <ResizablePanelGroup
+              key={layoutKey}
+              orientation="horizontal"
+              className="min-h-0 min-w-0 flex-1"
+              {...(defaultLayout ? { defaultLayout } : {})}
+              onLayoutChanged={(layout, meta) => {
+                if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
+              }}
+            >
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+            </ResizablePanelGroup>
+            {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
+          </div>
+        ) : (
+          <main className="flex min-h-0 flex-1 bg-background">
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><DomovoiMark reduced className="size-5" /></EmptyMedia>
+                <EmptyTitle>Connecting to the daemon</EmptyTitle>
+                <EmptyDescription>Domovoi will show workspace state after the execution machine responds.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          </main>
+        )}
         {workspaceError ? (
           <Alert
             variant="destructive"
-            className={cn("absolute left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]", connected ? "bottom-3" : "bottom-12")}
+            className="absolute bottom-3 left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]"
           >
             <CircleStopIcon />
             <AlertTitle>Session switch failed</AlertTitle>
             <AlertDescription>{workspaceError}</AlertDescription>
           </Alert>
         ) : null}
-        <LauncherDialog
+        {snapshot ? <LauncherDialog
           mode={launcherMode}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
           onOpenProject={openProject}
           onCreateSession={createSession}
-        />
+        /> : null}
       </div>
     </TooltipProvider>
   )

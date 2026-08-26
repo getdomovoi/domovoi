@@ -1,5 +1,4 @@
 import {
-  demoWorkspace,
   rpcNotificationSchema,
   rpcResponseSchema,
   providerModelsSchema,
@@ -262,8 +261,4 @@ export class DomovoiClient extends EventTarget {
       pending.reject(new Error("Daemon returned an invalid RPC result"))
     }
   }
-}
-
-export function getDemoWorkspace(): WorkspaceSnapshot {
-  return workspaceSnapshotSchema.parse(structuredClone(demoWorkspace))
 }
