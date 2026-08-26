@@ -135,6 +135,12 @@ export function useWorkspace(url: string, kind: ClientKind) {
     updateSnapshot(await client.pauseAll())
   }, [updateSnapshot])
 
+  const pauseSession = useCallback(async (sessionId: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshot(await client.pauseSession(sessionId))
+  }, [updateSnapshot])
+
   const listModels = useCallback(async (provider: "codex"): Promise<ProviderModel[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -187,6 +193,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
     listModels,
     openProject,
     pauseAll,
+    pauseSession,
     reconnect,
     replyToAnnotation,
     resolveApproval,

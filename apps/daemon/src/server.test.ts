@@ -32,7 +32,7 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
-  it("interrupts every active turn and records who paused them", async () => {
+  it("interrupts scoped and global turns and records who paused them", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.sessions[0]!.state = "active"
     snapshot.sessions[0]!.providerThreadId = "thread-billing"
@@ -81,14 +81,44 @@ describe("DomovoiDaemon", () => {
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
-      method: "system.pauseAll",
-      params: { client: "tablet" },
+      method: "session.pause",
+      params: { sessionId: "session-billing", client: "phone" },
     }))
 
     await expect(response).resolves.toMatchObject({
       result: {
         sessions: expect.arrayContaining([
           expect.objectContaining({ id: "session-billing", state: "idle" }),
+          expect.objectContaining({ id: "session-onboarding", state: "active" }),
+        ]),
+        approvals: [],
+        thread: expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: "session-billing",
+            kind: "system",
+            body: "Paused by phone.",
+          }),
+        ]),
+      },
+    })
+    expect(agent.interruptTurn).toHaveBeenCalledOnce()
+    expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
+
+    const globalResponse = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 2) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "system.pauseAll",
+      params: { client: "tablet" },
+    }))
+    await expect(globalResponse).resolves.toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([
           expect.objectContaining({ id: "session-onboarding", state: "idle" }),
           expect.objectContaining({
             id: "session-audit",
@@ -96,13 +126,7 @@ describe("DomovoiDaemon", () => {
             activeTurnId: "turn-audit",
           }),
         ]),
-        approvals: [],
         thread: expect.arrayContaining([
-          expect.objectContaining({
-            sessionId: "session-billing",
-            kind: "system",
-            body: "Paused by tablet.",
-          }),
           expect.objectContaining({
             sessionId: "session-onboarding",
             kind: "system",
@@ -118,7 +142,6 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(agent.interruptTurn).toHaveBeenCalledTimes(3)
-    expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-onboarding", "turn-onboarding")
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-audit", "turn-audit")
 
@@ -134,10 +157,10 @@ describe("DomovoiDaemon", () => {
     const afterLateApproval = new Promise<Record<string, unknown>>((resolve) => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number }
-        if (message.id === 2) resolve(message as Record<string, unknown>)
+        if (message.id === 3) resolve(message as Record<string, unknown>)
       })
     })
-    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "workspace.get", params: {} }))
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "workspace.get", params: {} }))
     await expect(afterLateApproval).resolves.toMatchObject({ result: { approvals: [] } })
     socket.close()
   })
