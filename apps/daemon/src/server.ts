@@ -24,6 +24,7 @@ import {
 } from "./codex.js"
 import { GitWorkspaceService, type WorkspaceService } from "./workspace.js"
 import { injectPreviewBridge, validPreviewBridgeChannel } from "./preview-bridge.js"
+import { agentPromptWithAnnotations } from "./annotation-context.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -523,7 +524,7 @@ export class DomovoiDaemon {
           this.#agent.startTurn({
             threadId: session.providerThreadId,
             cwd: session.workspacePath,
-            prompt: params.prompt,
+            prompt: agentPromptWithAnnotations(this.#snapshot, session.id, params.prompt),
             runtime: session.runtime,
           }),
           this.#agentTimeoutMs,

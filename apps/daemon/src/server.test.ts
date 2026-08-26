@@ -265,6 +265,66 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("sends unresolved annotations with the next agent turn", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "provider-thread-billing"
+    snapshot.annotations[1]!.status = "resolved"
+    const agent = {
+      connect: vi.fn(async () => {}),
+      startThread: vi.fn(async () => "provider-thread-unused"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.send",
+      params: {
+        sessionId: "session-billing",
+        prompt: "Revise the migration plan.",
+        client: "desktop",
+      },
+    }))
+
+    await expect(response).resolves.toMatchObject({ result: { activeSessionId: "session-billing" } })
+    expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "provider-thread-billing",
+      prompt: expect.stringContaining('"annotationId":"annotation-migration-machine"'),
+    }))
+    expect(agent.startTurn.mock.calls[0]![0].prompt).not.toContain("annotation-replay-copy")
+    socket.close()
+  })
+
   it("rejects browser connections from an untrusted origin", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
