@@ -84,6 +84,7 @@ import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 import { commandsForActiveSession, type CommandTranscript } from "./commands"
+import { latestArtifactForActiveSession } from "./artifacts"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -689,13 +690,12 @@ function ArtifactDock({
     body: string
   }) => Promise<void>
 }) {
-  const sessionArtifacts = snapshot.artifacts.filter(
-    (artifact) => artifact.sessionId === snapshot.activeSessionId,
-  )
-  const preview = sessionArtifacts.findLast(
-    (artifact) => artifact.type === "preview" && artifact.path && artifact.mimeType === "text/html",
-  )
-  const diff = sessionArtifacts.findLast((artifact) => artifact.type === "diff")
+  const plan = latestArtifactForActiveSession(snapshot, "plan")
+  const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
+  const preview = previewCandidate?.path && previewCandidate.mimeType === "text/html"
+    ? previewCandidate
+    : undefined
+  const diff = latestArtifactForActiveSession(snapshot, "diff")
   const annotations = annotationsForActiveSession(snapshot)
   const commands = commandsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
@@ -832,7 +832,29 @@ function ArtifactDock({
             </Empty>
           )}
         </TabsContent>
-        <TabsContent value="plan" className="p-4 text-muted-foreground">Four steps · one migration · one hard gate.</TabsContent>
+        <TabsContent value="plan" className="min-h-0">
+          {plan?.content ? (
+            <ScrollArea className="h-full">
+              <article className="p-4">
+                <div className="mb-4 border-b pb-3">
+                  <h2 className="m-0 text-[13px] font-semibold">{plan.title}</h2>
+                  <p className="mt-1 font-machine text-[9px] text-faint">revision {plan.revision}</p>
+                </div>
+                <pre className="m-0 whitespace-pre-wrap break-words font-sans text-[12px] leading-relaxed text-muted-foreground">
+                  {plan.content}
+                </pre>
+              </article>
+            </ScrollArea>
+          ) : (
+            <Empty className="min-h-full border-0">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
+                <EmptyTitle>No plan content yet</EmptyTitle>
+                <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
+        </TabsContent>
         <TabsContent value="changes" className="min-h-0 overflow-auto p-4 font-machine text-[11px] text-muted-foreground">
           {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
         </TabsContent>
