@@ -54,6 +54,24 @@ describe("codexPolicyFor", () => {
 })
 
 describe("CodexAppServerAdapter", () => {
+  it("resumes a persisted thread before another turn", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const resuming = adapter.resumeThread("thread-restored")
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "thread/resume",
+      params: { threadId: "thread-restored" },
+    })
+    transport.receive({ id: 2, result: { thread: { id: "thread-restored" } } })
+    await expect(resuming).resolves.toBeUndefined()
+    await adapter.close()
+  })
+
   it("lists visible models from the installed Codex app server", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)

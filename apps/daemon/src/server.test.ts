@@ -99,6 +99,7 @@ describe("DomovoiDaemon", () => {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused"),
       interruptTurn: vi.fn(async (threadId: string) => {
@@ -477,6 +478,7 @@ describe("DomovoiDaemon", () => {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "provider-thread-unused"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
       interruptTurn: vi.fn(async () => {}),
@@ -532,6 +534,7 @@ describe("DomovoiDaemon", () => {
         finishModels = () => resolve(models)
       })),
       startThread: vi.fn(async () => "unused-thread"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
       interruptTurn: vi.fn(async () => {}),
@@ -716,10 +719,15 @@ describe("DomovoiDaemon", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-daemon-"))
     scratchDirectories.push(scratch)
     const statePath = join(scratch, "state.sqlite")
+    const initial = structuredClone(demoWorkspace)
+    const restoredSession = initial.sessions.find((session) => session.id === "session-billing")!
+    restoredSession.workspacePath = "/worktrees/session-billing"
+    restoredSession.providerThreadId = "provider-thread-restored"
     const persistedAgent = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused-thread"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
       interruptTurn: vi.fn(async () => {}),
@@ -729,7 +737,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const first = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(statePath, demoWorkspace),
+      store: new SqliteWorkspaceStore(statePath, initial),
       agent: persistedAgent,
     })
     running.push(first)
@@ -766,7 +774,19 @@ describe("DomovoiDaemon", () => {
     await first.stop()
     running.splice(running.indexOf(first), 1)
 
-    const second = new DomovoiDaemon({ port: 0, statePath })
+    const resumedAgent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused-thread"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-after-restart"),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const second = new DomovoiDaemon({ port: 0, statePath, agent: resumedAgent })
     running.push(second)
     const secondAddress = await second.start()
     const secondSocket = new WebSocket(`ws://${secondAddress.host}:${secondAddress.port}/rpc`)
@@ -800,6 +820,34 @@ describe("DomovoiDaemon", () => {
         ]),
       },
     })
+    const continued = new Promise<Record<string, unknown>>((resolve) => {
+      secondSocket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 3) resolve(message as Record<string, unknown>)
+      })
+    })
+    secondSocket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session.send",
+      params: {
+        sessionId: "session-billing",
+        prompt: "Continue after restart",
+        client: "desktop",
+      },
+    }))
+    await expect(continued).resolves.toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ id: "session-billing", activeTurnId: "turn-after-restart" }),
+        ]),
+      },
+    })
+    expect(resumedAgent.resumeThread).toHaveBeenCalledOnce()
+    expect(resumedAgent.resumeThread).toHaveBeenCalledWith("provider-thread-restored")
+    expect(resumedAgent.resumeThread.mock.invocationCallOrder[0]).toBeLessThan(
+      resumedAgent.startTurn.mock.invocationCallOrder[0]!,
+    )
     secondSocket.close()
   })
 
@@ -811,6 +859,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn()
         .mockImplementationOnce(() => new Promise<string>(() => {}))
         .mockResolvedValue("provider-thread-1"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-1"),
       interruptTurn: vi.fn(async () => {}),
@@ -1065,6 +1114,7 @@ describe("DomovoiDaemon", () => {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "provider-thread-preview"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-preview"),
       interruptTurn: vi.fn(async () => {}),
