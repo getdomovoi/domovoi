@@ -53,6 +53,7 @@ export interface AgentAdapter {
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
   stopThread(threadId: string): Promise<void>
+  interruptTurn(threadId: string, turnId: string): Promise<void>
   startTurn(input: {
     threadId: string
     cwd: string
@@ -223,6 +224,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    await this.#request("turn/interrupt", { threadId, turnId })
   }
 
   async startTurn({

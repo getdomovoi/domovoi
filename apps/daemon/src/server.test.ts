@@ -32,6 +32,116 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("interrupts every active turn and records who paused them", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.sessions[0]!.state = "active"
+    snapshot.sessions[0]!.providerThreadId = "thread-billing"
+    snapshot.sessions[0]!.activeTurnId = "turn-billing"
+    snapshot.sessions[1]!.providerThreadId = "thread-onboarding"
+    snapshot.sessions[1]!.activeTurnId = "turn-onboarding"
+    snapshot.sessions[2]!.state = "active"
+    snapshot.sessions[2]!.providerThreadId = "thread-audit"
+    snapshot.sessions[2]!.activeTurnId = "turn-audit"
+    const agentListeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      interruptTurn: vi.fn(async (threadId: string) => {
+        if (threadId === "thread-audit") await new Promise<void>(() => {})
+      }),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        agentListeners.add(listener)
+        return () => agentListeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      agentTimeoutMs: 10,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.pauseAll",
+      params: { client: "tablet" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ id: "session-billing", state: "idle" }),
+          expect.objectContaining({ id: "session-onboarding", state: "idle" }),
+          expect.objectContaining({
+            id: "session-audit",
+            state: "active",
+            activeTurnId: "turn-audit",
+          }),
+        ]),
+        approvals: [],
+        thread: expect.arrayContaining([
+          expect.objectContaining({
+            sessionId: "session-billing",
+            kind: "system",
+            body: "Paused by tablet.",
+          }),
+          expect.objectContaining({
+            sessionId: "session-onboarding",
+            kind: "system",
+            body: "Paused by tablet.",
+          }),
+          expect.objectContaining({
+            sessionId: "session-audit",
+            kind: "system",
+            body: "Pause failed for tablet.",
+            detail: "Agent interrupt timed out",
+          }),
+        ]),
+      },
+    })
+    expect(agent.interruptTurn).toHaveBeenCalledTimes(3)
+    expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
+    expect(agent.interruptTurn).toHaveBeenCalledWith("thread-onboarding", "turn-onboarding")
+    expect(agent.interruptTurn).toHaveBeenCalledWith("thread-audit", "turn-audit")
+
+    for (const listener of agentListeners) {
+      listener({
+        type: "approval-requested",
+        requestId: 99,
+        threadId: "thread-billing",
+        turnId: "turn-billing",
+        command: "pnpm deploy",
+      })
+    }
+    const afterLateApproval = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 2) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "workspace.get", params: {} }))
+    await expect(afterLateApproval).resolves.toMatchObject({ result: { approvals: [] } })
+    socket.close()
+  })
+
   it("serves an empty initial workspace over JSON-RPC", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
@@ -294,6 +404,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => "provider-thread-unused"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
+      interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
@@ -348,6 +459,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => "unused-thread"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
+      interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
@@ -490,6 +602,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => "unused-thread"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
+      interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
@@ -580,6 +693,7 @@ describe("DomovoiDaemon", () => {
         .mockResolvedValue("provider-thread-1"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-1"),
+      interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
         agentListeners.add(listener)
@@ -824,6 +938,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => "provider-thread-preview"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-preview"),
+      interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
         agentListeners.add(listener)

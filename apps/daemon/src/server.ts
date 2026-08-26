@@ -355,6 +355,49 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "system.pauseAll") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const active = this.#snapshot.sessions.filter(
+          (session) => session.providerThreadId && session.activeTurnId,
+        )
+        const results = await Promise.allSettled(active.map((session) =>
+          withTimeout(
+            this.#agent.interruptTurn(session.providerThreadId!, session.activeTurnId!),
+            this.#agentTimeoutMs,
+            "Agent interrupt timed out",
+          ),
+        ))
+        const createdAt = new Date().toISOString()
+        results.forEach((result, index) => {
+          const session = active[index]!
+          session.updatedAt = createdAt
+          if (result.status === "fulfilled") {
+            session.state = "idle"
+            delete session.activeTurnId
+            this.#snapshot.approvals = this.#snapshot.approvals.filter(
+              (approval) => approval.sessionId !== session.id,
+            )
+            this.#snapshot.thread.push({
+              id: `system-${randomUUID()}`,
+              sessionId: session.id,
+              kind: "system",
+              body: `Paused by ${params.client}.`,
+              createdAt,
+            })
+          } else {
+            this.#snapshot.thread.push({
+              id: `system-${randomUUID()}`,
+              sessionId: session.id,
+              kind: "system",
+              body: `Pause failed for ${params.client}.`,
+              detail: result.reason instanceof Error ? result.reason.message : "Unknown provider error",
+              createdAt,
+            })
+          }
+        })
+        changed = active.length > 0
+      }
+
       if (method === "annotation.create") {
         const params = rpcMethods[method].params.parse(request.params)
         const artifact = this.#snapshot.artifacts.find(
@@ -693,6 +736,8 @@ export class DomovoiDaemon {
       (candidate) => candidate.providerThreadId === threadId,
     )
     if (!session) return
+    const eventTurnId = turnIdForAgentEvent(event)
+    if (eventTurnId && eventTurnId !== session.activeTurnId) return
     const createdAt = new Date().toISOString()
 
     if (event.type === "text-delta") {
@@ -928,6 +973,17 @@ export class DomovoiDaemon {
     }
     if (errors.length) throw new AggregateError(errors, "Domovoi could not clean up all sessions")
   }
+}
+
+function turnIdForAgentEvent(event: AgentEvent): string | undefined {
+  if ("turnId" in event && typeof event.turnId === "string") return event.turnId
+  if (!("params" in event)) return undefined
+  if (typeof event.params.turnId === "string") return event.params.turnId
+  const turn = event.params.turn
+  if (turn && typeof turn === "object" && "id" in turn && typeof turn.id === "string") {
+    return turn.id
+  }
+  return undefined
 }
 
 function resolveInside(root: string, candidate: string): string | undefined {

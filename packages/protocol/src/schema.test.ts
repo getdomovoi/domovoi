@@ -12,6 +12,7 @@ import {
   projectOpenParamsSchema,
   providerModelSchema,
   runtimeModelsParamsSchema,
+  systemPauseAllParamsSchema,
   previewBridgePickerMessageSchema,
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
@@ -212,6 +213,9 @@ describe("workspace protocol", () => {
   })
 
   it("validates the local project and session lifecycle", () => {
+    expect(systemPauseAllParamsSchema.parse({ client: "desktop" })).toEqual({
+      client: "desktop",
+    })
     expect(projectOpenParamsSchema.parse({ path: "/code/domovoi", client: "desktop" })).toEqual({
       path: "/code/domovoi",
       client: "desktop",

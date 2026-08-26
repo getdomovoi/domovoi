@@ -224,4 +224,22 @@ describe("DomovoiClient", () => {
     ])
     client.disconnect()
   })
+
+  it("attributes the global pause to the current client", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "phone")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const pausing = client.pauseAll()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "system.pauseAll",
+      params: { client: "phone" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(pausing).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
 })
