@@ -54,6 +54,53 @@ describe("codexPolicyFor", () => {
 })
 
 describe("CodexAppServerAdapter", () => {
+  it("lists visible models from the installed Codex app server", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const listing = adapter.listModels()
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "model/list",
+      params: { includeHidden: false, limit: 100 },
+    })
+    transport.receive({
+      id: 2,
+      result: {
+        data: [{
+          id: "gpt-5.6-sol",
+          model: "gpt-5.6-sol",
+          displayName: "GPT-5.6 Sol",
+          description: "Coding model",
+          hidden: false,
+          supportedReasoningEfforts: [
+            { reasoningEffort: "none", description: "No reasoning" },
+            { reasoningEffort: "medium", description: "Balanced" },
+            { reasoningEffort: "xhigh", description: "Deeper" },
+            { reasoningEffort: "max", description: "Maximum" },
+          ],
+          defaultReasoningEffort: "xhigh",
+          isDefault: true,
+        }],
+        nextCursor: null,
+      },
+    })
+
+    await expect(listing).resolves.toEqual([{
+      provider: "codex",
+      id: "gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      description: "Coding model",
+      supportedReasoningEfforts: ["none", "medium", "xhigh", "max"],
+      defaultReasoningEffort: "xhigh",
+      isDefault: true,
+    }])
+    await adapter.close()
+  })
+
   it("translates plan mode to the Codex read-only sandbox", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)

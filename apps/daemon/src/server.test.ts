@@ -16,6 +16,16 @@ import type { WorkspaceService } from "./workspace.js"
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 
+const codexModels = () => [{
+  provider: "codex" as const,
+  id: "gpt-5.6-sol",
+  displayName: "GPT-5.6 Sol",
+  description: "Coding model",
+  supportedReasoningEfforts: ["none", "medium", "high", "xhigh", "max"],
+  defaultReasoningEffort: "xhigh",
+  isDefault: true,
+}]
+
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
   await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
@@ -280,6 +290,7 @@ describe("DomovoiDaemon", () => {
     snapshot.annotations[1]!.status = "resolved"
     const agent = {
       connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "provider-thread-unused"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
@@ -322,6 +333,72 @@ describe("DomovoiDaemon", () => {
       prompt: expect.stringContaining('"annotationId":"annotation-migration-machine"'),
     }))
     expect(agent.startTurn.mock.calls[0]![0].prompt).not.toContain("annotation-replay-copy")
+    socket.close()
+  })
+
+  it("shares slow agent initialization across timed-out model requests", async () => {
+    let finishConnect: (() => void) | undefined
+    let finishModels: (() => void) | undefined
+    const models = codexModels()
+    const agent = {
+      connect: vi.fn(() => new Promise<void>((resolve) => { finishConnect = resolve })),
+      listModels: vi.fn(() => new Promise<typeof models>((resolve) => {
+        finishModels = () => resolve(models)
+      })),
+      startThread: vi.fn(async () => "unused-thread"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agent,
+      agentTimeoutMs: 100,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const rpc = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "runtime.models",
+        params: { provider: "codex", client: "desktop" },
+      }))
+    })
+
+    await expect(rpc(1)).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
+    const second = rpc(2)
+    expect(agent.connect).toHaveBeenCalledOnce()
+    finishConnect!()
+    await vi.waitFor(
+      () => expect(agent.listModels).toHaveBeenCalledOnce(),
+      { interval: 1, timeout: 20 },
+    )
+    const third = rpc(3)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(agent.listModels).toHaveBeenCalledOnce()
+    finishModels!()
+    await expect(second).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    await expect(third).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
     socket.close()
   })
 
@@ -407,9 +484,20 @@ describe("DomovoiDaemon", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-daemon-"))
     scratchDirectories.push(scratch)
     const statePath = join(scratch, "state.sqlite")
+    const persistedAgent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused-thread"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
     const first = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, demoWorkspace),
+      agent: persistedAgent,
     })
     running.push(first)
     const firstAddress = await first.start()
@@ -486,6 +574,7 @@ describe("DomovoiDaemon", () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
     const agent = {
       connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn()
         .mockImplementationOnce(() => new Promise<string>(() => {}))
         .mockResolvedValue("provider-thread-1"),
@@ -542,6 +631,14 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
+
+    const listedModels = await rpc("runtime.models", {
+      provider: "codex",
+      client: "desktop",
+    })
+    expect(listedModels).toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol", provider: "codex" })],
+    })
 
     const opened = await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
     expect(opened).toMatchObject({
@@ -671,6 +768,18 @@ describe("DomovoiDaemon", () => {
       error: { code: -32602, message: "Only the Codex provider is available" },
     })
 
+    const unsupportedReasoning = await rpc("session.setRuntime", {
+      sessionId,
+      runtime: { ...runtime, reasoning: "impossible" },
+      client: "desktop",
+    })
+    expect(unsupportedReasoning).toMatchObject({
+      error: {
+        code: -32602,
+        message: "Reasoning effort is not supported by the selected model",
+      },
+    })
+
     let resolveLateTurn: ((turnId: string) => void) | undefined
     agent.startTurn.mockImplementationOnce(
       () => new Promise<string>((resolve) => { resolveLateTurn = resolve }),
@@ -711,6 +820,7 @@ describe("DomovoiDaemon", () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
     const agent = {
       connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "provider-thread-preview"),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "provider-turn-preview"),
