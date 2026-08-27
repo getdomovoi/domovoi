@@ -2,13 +2,13 @@ import {
   rpcNotificationSchema,
   rpcMethods,
   rpcResponseSchema,
-  providerModelsSchema,
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
   type Annotation,
   type ProviderModel,
   type RpcMethod,
+  type RpcParams,
   type RpcResult,
   type Runtime,
   type WorkspaceSnapshot,
@@ -118,11 +118,15 @@ export class DomovoiClient extends EventTarget {
     socket?.close(1000, "client closed")
   }
 
-  request<M extends RpcMethod>(method: M, params: unknown): Promise<RpcResult<M>>
-  request<T>(method: RpcMethod, params: unknown, parse: (value: unknown) => T): Promise<T>
-  request<T>(
-    method: RpcMethod,
-    params: unknown,
+  request<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>>
+  request<M extends RpcMethod, T>(
+    method: M,
+    params: RpcParams<M>,
+    parse: (value: unknown) => T,
+  ): Promise<T>
+  request<M extends RpcMethod, T>(
+    method: M,
+    params: RpcParams<M>,
     parse?: (value: unknown) => T,
   ): Promise<T> {
     const id = ++this.#requestId
@@ -204,11 +208,7 @@ export class DomovoiClient extends EventTarget {
   }
 
   listModels(provider: "codex"): Promise<ProviderModel[]> {
-    return this.request(
-      "runtime.models",
-      { provider, client: this.kind },
-      (value) => providerModelsSchema.parse(value),
-    )
+    return this.request("runtime.models", { provider, client: this.kind })
   }
 
   #scheduleReconnect(): void {
