@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ClientKind, ProviderModel, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
 
@@ -147,6 +147,15 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.listModels(provider)
   }, [])
 
+  const authorizeArtifact = useCallback(async (
+    artifactId: string,
+    bridgeChannel?: string,
+  ): Promise<ArtifactAccess> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.authorizeArtifact(artifactId, bridgeChannel)
+  }, [])
+
   const createAnnotation = useCallback(async (input: {
     sessionId: string
     artifactId: string
@@ -186,6 +195,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
 
   return {
     activateSession,
+    authorizeArtifact,
     connected,
     createCheckpoint,
     createAnnotation,

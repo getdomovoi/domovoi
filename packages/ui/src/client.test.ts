@@ -105,6 +105,38 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("requests preview access scoped to the bridge channel", async () => {
+    const client = new DomovoiClient("wss://machine.example/rpc", "tablet")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const authorizing = client.authorizeArtifact("artifact-preview", "preview_channel_123456")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "artifact.authorize",
+      params: {
+        artifactId: "artifact-preview",
+        bridgeChannel: "preview_channel_123456",
+        client: "tablet",
+      },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        artifactId: "artifact-preview",
+        bridgeChannel: "preview_channel_123456",
+        expiresAt: 1_800_000_000,
+        signature: "a".repeat(43),
+      },
+    })
+
+    await expect(authorizing).resolves.toMatchObject({ artifactId: "artifact-preview" })
+    client.disconnect()
+  })
+
   it("does not retry a rejected daemon credential", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
       authToken: "wrong-token",

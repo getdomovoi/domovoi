@@ -25,6 +25,7 @@ import type {
   ApprovalRequest,
   ApprovalDecision,
   Annotation,
+  ArtifactAccess,
   ClientKind,
   PermissionMode,
   ProviderModel,
@@ -744,6 +745,8 @@ function ArtifactDock({
   onCollapse,
   defaultTab,
   rpcUrl,
+  authorizeArtifact,
+  connected,
   onReplyToAnnotation,
   onSetAnnotationStatus,
   onCreateAnnotation,
@@ -752,6 +755,8 @@ function ArtifactDock({
   onCollapse: () => void
   defaultTab: "changes" | "preview"
   rpcUrl: string
+  authorizeArtifact: (artifactId: string, bridgeChannel?: string) => Promise<ArtifactAccess>
+  connected: boolean
   onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
   onSetAnnotationStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
   onCreateAnnotation: (input: {
@@ -780,6 +785,28 @@ function ArtifactDock({
   const [comment, setComment] = useState("")
   const [annotationPending, setAnnotationPending] = useState(false)
   const [annotationError, setAnnotationError] = useState("")
+  const [previewUrl, setPreviewUrl] = useState<string>()
+  const [previewError, setPreviewError] = useState("")
+
+  useEffect(() => {
+    let active = true
+    setPreviewUrl(undefined)
+    setPreviewError("")
+    if (!preview || !connected) return () => { active = false }
+    void authorizeArtifact(preview.id, bridgeChannel).then(
+      (access) => {
+        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access))
+      },
+      (cause: unknown) => {
+        if (!active) return
+        setPreviewUrl(undefined)
+        setPreviewError(
+          cause instanceof Error ? cause.message : "Preview access could not be authorized",
+        )
+      },
+    )
+    return () => { active = false }
+  }, [authorizeArtifact, bridgeChannel, connected, preview?.id, preview?.revision, rpcUrl])
 
   const postPickerState = (active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -876,15 +903,23 @@ function ArtifactDock({
                   <Badge variant="success">Live</Badge>
                 </div>
               </div>
-              <iframe
-                ref={previewFrameRef}
-                className="min-h-0 flex-1 border-0 bg-background"
-                referrerPolicy="no-referrer"
-                sandbox="allow-scripts"
-                src={artifactUrlFor(rpcUrl, preview.id, bridgeChannel)}
-                title={preview.title}
-                onLoad={() => postPickerState(pickerActive)}
-              />
+              {previewError ? (
+                <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
+                  <CircleStopIcon />
+                  <AlertTitle>Preview unavailable</AlertTitle>
+                  <AlertDescription>{previewError}</AlertDescription>
+                </Alert>
+              ) : (
+                <iframe
+                  ref={previewFrameRef}
+                  className="min-h-0 flex-1 border-0 bg-background"
+                  referrerPolicy="no-referrer"
+                  sandbox="allow-scripts"
+                  src={previewUrl ?? "about:blank"}
+                  title={preview.title}
+                  onLoad={() => postPickerState(pickerActive)}
+                />
+              )}
             </div>
           ) : (
             <Empty className="min-h-full border">
@@ -1213,6 +1248,7 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge }: WorkspaceShellProps) {
   const {
     activateSession,
+    authorizeArtifact,
     connected,
     createCheckpoint,
     createAnnotation,
@@ -1314,7 +1350,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>
