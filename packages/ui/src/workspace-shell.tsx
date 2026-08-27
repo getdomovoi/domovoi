@@ -1261,6 +1261,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const {
     activateSession,
     authorizeArtifact,
+    claimTerminal,
     closeTerminal,
     connected,
     createCheckpoint,
@@ -1280,15 +1281,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setAnnotationStatus,
     snapshot,
     subscribeTerminal,
+    terminalClientId,
     writeTerminal,
   } = useWorkspace(rpcUrl, clientKind, rpcToken)
   const terminalControls = useMemo<TerminalControls>(() => ({
+    clientId: terminalClientId,
     create: createTerminal,
+    claim: claimTerminal,
     write: writeTerminal,
     resize: resizeTerminal,
     close: closeTerminal,
     subscribe: subscribeTerminal,
-  }), [closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, writeTerminal])
+  }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, TerminalClosedNotification, TerminalOutputNotification, TerminalSession, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
 
@@ -43,6 +43,7 @@ export function applyConnectionSnapshot<T>(
 export function useWorkspace(url: string, kind: ClientKind, authToken?: string) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
+  const clientIdRef = useRef(crypto.randomUUID())
   const [workspace, setWorkspace] = useState<WorkspaceSnapshotState>(() => ({
     target,
     snapshot: null,
@@ -63,7 +64,10 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     let active = true
     setConnected(false)
     setWorkspace({ target, snapshot: null })
-    const client = new DomovoiClient(url, kind, { ...(authToken ? { authToken } : {}) })
+    const client = new DomovoiClient(url, kind, {
+      ...(authToken ? { authToken } : {}),
+      clientId: clientIdRef.current,
+    })
     clientRef.current = client
     const onSnapshot = (event: Event) => {
       if (active) updateSnapshotFrom(client, (event as CustomEvent<WorkspaceSnapshot>).detail)
@@ -206,11 +210,20 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.closeTerminal(terminalId)
   }, [])
 
+  const claimTerminal = useCallback(async (
+    terminalId: string,
+  ): Promise<TerminalOwnershipNotification> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.claimTerminal(terminalId)
+  }, [])
+
   const subscribeTerminal = useCallback((
     terminalId: string,
     handlers: {
       output: (event: TerminalOutputNotification) => void
       closed: (event: TerminalClosedNotification) => void
+      ownership: (event: TerminalOwnershipNotification) => void
     },
   ): (() => void) => {
     const client = clientRef.current
@@ -223,11 +236,17 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       const detail = (event as CustomEvent<TerminalClosedNotification>).detail
       if (detail.terminalId === terminalId) handlers.closed(detail)
     }
+    const ownership = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalOwnershipNotification>).detail
+      if (detail.terminalId === terminalId) handlers.ownership(detail)
+    }
     client.addEventListener("terminal-output", output)
     client.addEventListener("terminal-closed", closed)
+    client.addEventListener("terminal-ownership", ownership)
     return () => {
       client.removeEventListener("terminal-output", output)
       client.removeEventListener("terminal-closed", closed)
+      client.removeEventListener("terminal-ownership", ownership)
     }
   }, [])
 
@@ -271,6 +290,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   return {
     activateSession,
     authorizeArtifact,
+    claimTerminal,
     closeTerminal,
     connected,
     createCheckpoint,
@@ -290,6 +310,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     setRuntime,
     snapshot,
     subscribeTerminal,
+    terminalClientId: clientIdRef.current,
     writeTerminal,
   }
 }

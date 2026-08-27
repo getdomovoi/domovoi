@@ -138,14 +138,18 @@ describe("DomovoiClient", () => {
   })
 
   it("streams interactive terminal events and input", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      clientId: "desktop-client-1",
+    })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
     const output = vi.fn()
+    const ownership = vi.fn()
     client.addEventListener("terminal-output", output)
+    client.addEventListener("terminal-ownership", ownership)
 
     const creating = client.createTerminal(
       "session-billing",
@@ -154,7 +158,13 @@ describe("DomovoiClient", () => {
     )
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "terminal.create",
-      params: { terminalId: "terminal-1", sessionId: "session-billing", cols: 120, rows: 32 },
+      params: {
+        terminalId: "terminal-1",
+        sessionId: "session-billing",
+        cols: 120,
+        rows: 32,
+        clientId: "desktop-client-1",
+      },
     })
     socket.receive({
       jsonrpc: "2.0",
@@ -167,6 +177,7 @@ describe("DomovoiClient", () => {
         shell: "bash",
         cwd: "/worktrees/billing",
         buffer: "",
+        owner: { client: "desktop", clientId: "desktop-client-1" },
       },
     })
     await expect(creating).resolves.toMatchObject({ terminalId: "terminal-1" })
@@ -183,10 +194,44 @@ describe("DomovoiClient", () => {
     const writing = client.writeTerminal("terminal-1", "pnpm test\r")
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "terminal.input",
-      params: { terminalId: "terminal-1", data: "pnpm test\r" },
+      params: {
+        terminalId: "terminal-1",
+        data: "pnpm test\r",
+        clientId: "desktop-client-1",
+      },
     })
     socket.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } })
     await expect(writing).resolves.toBeUndefined()
+
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "terminal.ownership",
+      params: {
+        terminalId: "terminal-1",
+        owner: { client: "tablet", clientId: "tablet-client-1" },
+      },
+    })
+    expect((ownership.mock.calls[0]![0] as CustomEvent).detail).toMatchObject({
+      terminalId: "terminal-1",
+      owner: { client: "tablet", clientId: "tablet-client-1" },
+    })
+
+    const claiming = client.claimTerminal("terminal-1")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "terminal.claim",
+      params: { terminalId: "terminal-1", clientId: "desktop-client-1" },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: {
+        terminalId: "terminal-1",
+        owner: { client: "desktop", clientId: "desktop-client-1" },
+      },
+    })
+    await expect(claiming).resolves.toMatchObject({
+      owner: { clientId: "desktop-client-1" },
+    })
     client.disconnect()
   })
 

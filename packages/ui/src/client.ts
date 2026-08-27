@@ -6,6 +6,7 @@ import {
   artifactAuthorizeResultSchema,
   terminalAcceptedSchema,
   terminalClosedNotificationSchema,
+  terminalOwnershipNotificationSchema,
   terminalOutputNotificationSchema,
   terminalSessionSchema,
   workspaceSnapshotSchema,
@@ -19,6 +20,7 @@ import {
   type RpcResult,
   type Runtime,
   type TerminalSession,
+  type TerminalOwnershipNotification,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -41,11 +43,13 @@ type PendingRequest = {
 type DomovoiClientOptions = {
   reconnectDelayMs?: number
   authToken?: string
+  clientId?: string
 }
 
 export class DomovoiClient extends EventTarget {
   readonly url: string
   readonly kind: ClientKind
+  readonly clientId: string
   #socket: WebSocket | undefined
   #requestId = 0
   #pending = new Map<number, PendingRequest>()
@@ -59,6 +63,7 @@ export class DomovoiClient extends EventTarget {
     super()
     this.url = url
     this.kind = kind
+    this.clientId = options.clientId ?? crypto.randomUUID()
     this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000
     this.#authToken = options.authToken
   }
@@ -238,21 +243,44 @@ export class DomovoiClient extends EventTarget {
   ): Promise<TerminalSession> {
     return this.request(
       "terminal.create",
-      { terminalId, sessionId, ...dimensions, client: this.kind },
+      { terminalId, sessionId, ...dimensions, client: this.kind, clientId: this.clientId },
       (value) => terminalSessionSchema.parse(value),
     )
   }
 
   writeTerminal(terminalId: string, data: string): Promise<void> {
-    return this.#terminalCommand("terminal.input", { terminalId, data, client: this.kind })
+    return this.#terminalCommand("terminal.input", {
+      terminalId,
+      data,
+      client: this.kind,
+      clientId: this.clientId,
+    })
   }
 
   resizeTerminal(terminalId: string, cols: number, rows: number): Promise<void> {
-    return this.#terminalCommand("terminal.resize", { terminalId, cols, rows, client: this.kind })
+    return this.#terminalCommand("terminal.resize", {
+      terminalId,
+      cols,
+      rows,
+      client: this.kind,
+      clientId: this.clientId,
+    })
   }
 
   closeTerminal(terminalId: string): Promise<void> {
-    return this.#terminalCommand("terminal.close", { terminalId, client: this.kind })
+    return this.#terminalCommand("terminal.close", {
+      terminalId,
+      client: this.kind,
+      clientId: this.clientId,
+    })
+  }
+
+  claimTerminal(terminalId: string): Promise<TerminalOwnershipNotification> {
+    return this.request(
+      "terminal.claim",
+      { terminalId, client: this.kind, clientId: this.clientId },
+      (value) => terminalOwnershipNotificationSchema.parse(value),
+    )
   }
 
   #terminalCommand<M extends "terminal.input" | "terminal.resize" | "terminal.close">(
@@ -336,6 +364,13 @@ export class DomovoiClient extends EventTarget {
         const closed = terminalClosedNotificationSchema.safeParse(notification.data.params)
         if (closed.success) {
           this.dispatchEvent(new CustomEvent("terminal-closed", { detail: closed.data }))
+        }
+        return
+      }
+      if (notification.data.method === "terminal.ownership") {
+        const ownership = terminalOwnershipNotificationSchema.safeParse(notification.data.params)
+        if (ownership.success) {
+          this.dispatchEvent(new CustomEvent("terminal-ownership", { detail: ownership.data }))
         }
         return
       }

@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css"
 import type {
   TerminalClosedNotification,
   TerminalOutputNotification,
+  TerminalOwnershipNotification,
   TerminalSession,
 } from "@getdomovoi/protocol"
 
@@ -18,11 +19,13 @@ import { settleTerminalWrite } from "./terminal-input"
 import { terminalQuickKeyData, terminalQuickKeys } from "./terminal-keys"
 
 export type TerminalControls = {
+  clientId: string
   create(
     sessionId: string,
     dimensions: { cols: number; rows: number },
     terminalId: string,
   ): Promise<TerminalSession>
+  claim(terminalId: string): Promise<TerminalOwnershipNotification>
   write(terminalId: string, data: string): Promise<void>
   resize(terminalId: string, cols: number, rows: number): Promise<void>
   close(terminalId: string): Promise<void>
@@ -31,6 +34,7 @@ export type TerminalControls = {
     handlers: {
       output: (event: TerminalOutputNotification) => void
       closed: (event: TerminalClosedNotification) => void
+      ownership: (event: TerminalOwnershipNotification) => void
     },
   ): () => void
 }
@@ -62,12 +66,14 @@ export function TerminalPane({
     if (!container || !connected || !sessionId || !terminalId) return
     let active = true
     let attached = false
+    let ownsTerminal = false
     setMetadata(undefined)
     setError("")
     setClosed(false)
     const styles = getComputedStyle(container)
     const terminal = new Terminal({
       cursorBlink: true,
+      disableStdin: true,
       fontFamily: "JetBrains Mono Variable, JetBrains Mono, monospace",
       fontSize: 11,
       lineHeight: 1.55,
@@ -91,15 +97,21 @@ export function TerminalPane({
         setClosed(true)
         terminal.write(`\r\n[process exited${exitCode === undefined ? "" : ` ${exitCode}`}]\r\n`)
       },
+      ownership: ({ owner }) => {
+        ownsTerminal = owner.clientId === controls.clientId
+        terminal.options.disableStdin = !ownsTerminal
+        setMetadata((current) => current ? { ...current, owner } : current)
+      },
     })
     const input = terminal.onData((data) => {
+      if (!ownsTerminal) return
       void controls.write(terminalId, data).catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : "Terminal input failed")
       })
     })
     const observer = new ResizeObserver(() => {
       fit.fit()
-      if (!attached) return
+      if (!attached || !ownsTerminal) return
       void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
     })
     observer.observe(container)
@@ -111,10 +123,14 @@ export function TerminalPane({
       (session) => {
         if (!active) return
         attached = true
+        ownsTerminal = session.owner.clientId === controls.clientId
+        terminal.options.disableStdin = !ownsTerminal
         setMetadata(session)
         if (session.buffer) terminal.write(session.buffer)
-        void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
-        terminal.focus()
+        if (ownsTerminal) {
+          void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
+          terminal.focus()
+        }
       },
       (cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : "Terminal could not start")
@@ -142,15 +158,16 @@ export function TerminalPane({
     )
   }
 
+  const writable = metadata?.owner.clientId === controls.clientId
   const sendInterrupt = () => {
-    if (!terminalId) return
+    if (!terminalId || !writable) return
     void controls.write(terminalId, "\x03").catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Terminal interrupt failed")
     })
   }
   const sendInput = (data: string) => {
     const terminal = xtermRef.current
-    if (!terminalId || !terminal) return
+    if (!terminalId || !terminal || !writable) return
     void settleTerminalWrite(
       controls.write(terminalId, data),
       terminal,
@@ -162,7 +179,7 @@ export function TerminalPane({
     )
   }
   const close = () => {
-    if (!terminalId) return
+    if (!terminalId || !writable) return
     void controls.close(terminalId).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Terminal could not close")
     })
@@ -170,6 +187,15 @@ export function TerminalPane({
   const restart = () => {
     setError("")
     setRestartKey((current) => current + 1)
+  }
+  const claim = () => {
+    if (!terminalId) return
+    void controls.claim(terminalId).then(
+      ({ owner }) => setMetadata((current) => current ? { ...current, owner } : current),
+      (cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Terminal takeover failed")
+      },
+    )
   }
 
   return (
@@ -180,7 +206,11 @@ export function TerminalPane({
           pty · {machineName} · {metadata?.shell ?? "connecting"} · {metadata?.cwd ?? "session worktree"}
         </span>
         <div className="ml-auto flex items-center gap-1">
-          {closed || error ? (
+          {metadata && !writable && !closed ? (
+            <Button variant="outline" size="xs" disabled={!connected} onClick={claim}>
+              Take over
+            </Button>
+          ) : closed || error ? (
             <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>
               <TerminalSquareIcon data-icon="inline-start" />Restart
             </Button>
@@ -189,7 +219,12 @@ export function TerminalPane({
               <CircleStopIcon data-icon="inline-start" />Interrupt ⌃C
             </Button>
           )}
-          <Button variant="ghost" size="icon-xs" aria-label="Close terminal" disabled={closed || !connected} onClick={close}>
+          {metadata ? (
+            <span className="hidden font-machine text-[10px] text-faint sm:inline">
+              {metadata.owner.client}-owned
+            </span>
+          ) : null}
+          <Button variant="ghost" size="icon-xs" aria-label="Close terminal" disabled={closed || !connected || !writable} onClick={close}>
             <XIcon />
           </Button>
         </div>
@@ -214,7 +249,7 @@ export function TerminalPane({
             variant="outline"
             className="h-11 min-w-11 shrink-0 touch-manipulation px-3 font-machine text-[11px]"
             aria-label={key.ariaLabel}
-            disabled={!connected || closed || !metadata}
+            disabled={!connected || closed || !metadata || !writable}
             onClick={() => sendInput(terminalQuickKeyData(
               key,
               xtermRef.current?.modes.applicationCursorKeysMode ?? false,
