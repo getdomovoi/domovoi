@@ -3,10 +3,12 @@ import {
   rpcNotificationSchema,
   rpcMethods,
   rpcResponseSchema,
+  artifactAuthorizeResultSchema,
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
   type Annotation,
+  type ArtifactAccess,
   type ProviderModel,
   type RpcMethod,
   type RpcParams,
@@ -210,6 +212,18 @@ export class DomovoiClient extends EventTarget {
 
   pauseSession(sessionId: string): Promise<WorkspaceSnapshot> {
     return this.request("session.pause", { sessionId, client: this.kind })
+  }
+
+  authorizeArtifact(artifactId: string, bridgeChannel?: string): Promise<ArtifactAccess> {
+    return this.request(
+      "artifact.authorize",
+      {
+        artifactId,
+        ...(bridgeChannel ? { bridgeChannel } : {}),
+        client: this.kind,
+      },
+      (value) => artifactAuthorizeResultSchema.parse(value),
+    )
   }
 
   createAnnotation(input: {

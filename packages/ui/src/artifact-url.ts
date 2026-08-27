@@ -1,15 +1,19 @@
+import type { ArtifactAccess } from "@getdomovoi/protocol"
+
 export function artifactUrlFor(
   rpcUrl: string,
-  artifactId: string,
-  bridgeChannel?: string,
+  access: ArtifactAccess,
   parentOrigin?: string,
 ): string {
   const url = new URL(rpcUrl)
   url.protocol = url.protocol === "wss:" ? "https:" : "http:"
-  url.pathname = `/artifacts/${encodeURIComponent(artifactId)}`
-  url.search = bridgeChannel && parentOrigin
-    ? new URLSearchParams({ bridge: bridgeChannel, parentOrigin }).toString()
-    : ""
+  url.pathname = `/artifacts/${encodeURIComponent(access.artifactId)}`
+  url.search = new URLSearchParams({
+    ...(access.bridgeChannel ? { bridge: access.bridgeChannel } : {}),
+    ...(access.bridgeChannel && parentOrigin ? { parentOrigin } : {}),
+    expires: String(access.expiresAt),
+    signature: access.signature,
+  }).toString()
   url.hash = ""
   return url.toString()
 }
