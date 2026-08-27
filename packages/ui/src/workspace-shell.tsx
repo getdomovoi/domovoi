@@ -135,7 +135,7 @@ function WindowControls({ bridge }: { bridge: DesktopWindowBridge }) {
   )
 }
 
-function AppBar({
+export function AppBar({
   snapshot,
   connected,
   bridge,
@@ -166,7 +166,7 @@ function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
-        <Button variant="ghost" size="sm" disabled={!snapshot}>
+        <Button variant="ghost" size="sm" aria-label="Pause all" disabled>
           <CircleStopIcon data-icon="inline-start" />
           Pause all
         </Button>
@@ -498,7 +498,9 @@ function Thread({
     : undefined
   const [prompt, setPrompt] = useState("")
   const [pending, setPending] = useState(false)
+  const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
+  const [runtimeError, setRuntimeError] = useState("")
 
   if (!active) {
     const hasProject = snapshot.project !== null
@@ -553,11 +555,17 @@ function Thread({
     }
   }
 
-  const updateRuntime = (runtime: Runtime) => {
-    setSendError("")
-    void onSetRuntime(runtime).catch((cause: unknown) => {
-      setSendError(cause instanceof Error ? cause.message : "The runtime could not be updated")
-    })
+  const updateRuntime = async (runtime: Runtime) => {
+    if (runtimePending) return
+    setRuntimePending(true)
+    setRuntimeError("")
+    try {
+      await onSetRuntime(runtime)
+    } catch (cause) {
+      setRuntimeError(cause instanceof Error ? cause.message : "The runtime could not be updated")
+    } finally {
+      setRuntimePending(false)
+    }
   }
 
   const resolveCurrentApproval = (
@@ -586,7 +594,12 @@ function Thread({
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
           </div>
         </div>
-        <RuntimeControls runtime={active.runtime} onChange={updateRuntime} onListModels={onListModels} />
+        <RuntimeControls
+          runtime={active.runtime}
+          pending={runtimePending}
+          onChange={(runtime) => void updateRuntime(runtime)}
+          onListModels={onListModels}
+        />
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
@@ -612,6 +625,7 @@ function Thread({
         </div>
       </ScrollArea>
       <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
+        {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         <div className="mx-auto flex max-w-[620px] flex-col gap-2 rounded-xl border bg-card p-3">
           <Textarea
@@ -641,12 +655,14 @@ function Thread({
   )
 }
 
-function RuntimeControls({
+export function RuntimeControls({
   runtime,
+  pending,
   onChange,
   onListModels,
 }: {
   runtime: Runtime
+  pending: boolean
   onChange: (runtime: Runtime) => void
   onListModels: (provider: "codex") => Promise<ProviderModel[]>
 }) {
@@ -680,7 +696,7 @@ function RuntimeControls({
     <div className="flex max-w-[52%] flex-wrap items-center justify-end gap-1.5">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm"><BotIcon data-icon="inline-start" />{runtime.provider} / {runtime.model}<ChevronDownIcon data-icon="inline-end" /></Button>
+          <Button variant="outline" size="sm" disabled={pending}><BotIcon data-icon="inline-start" />{runtime.provider} / {runtime.model}<ChevronDownIcon data-icon="inline-end" /></Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>Provider and model</DropdownMenuLabel>
@@ -690,6 +706,7 @@ function RuntimeControls({
             {models.map((model) => (
               <DropdownMenuItem
                 key={`${model.provider}:${model.id}`}
+                disabled={pending}
                 onSelect={() => onChange(selectRuntimeModel(runtime, model))}
               >
                 {model.id === runtime.model && model.provider === runtime.provider ? <CheckIcon /> : null}
@@ -703,15 +720,15 @@ function RuntimeControls({
         </DropdownMenuContent>
       </DropdownMenu>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={reasoningUnavailable}>Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
+        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={pending || reasoningUnavailable}>Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuGroup>{reasoningOptions.map((reasoning) => <DropdownMenuItem key={reasoning} onSelect={() => onChange({ ...runtime, reasoning })}>{reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}</DropdownMenuItem>)}</DropdownMenuGroup>
+          <DropdownMenuGroup>{reasoningOptions.map((reasoning) => <DropdownMenuItem key={reasoning} disabled={pending} onSelect={() => onChange({ ...runtime, reasoning })}>{reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}</DropdownMenuItem>)}</DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
-      <ToggleGroup type="single" value={runtime.permissionMode} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
+      <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} onCheckedChange={(auto) => onChange({ ...runtime, auto })} />Auto</label>
+      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending} onCheckedChange={(auto) => onChange({ ...runtime, auto })} />Auto</label>
     </div>
   )
 }
