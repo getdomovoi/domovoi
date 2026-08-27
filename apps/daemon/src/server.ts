@@ -11,6 +11,7 @@ import {
   rpcMethods,
   rpcRequestSchema,
   workspaceSnapshotSchema,
+  type Annotation,
   type Artifact,
   type ProviderModel,
   type RpcMethod,
@@ -42,6 +43,7 @@ class RuntimeValidationError extends Error {}
 
 export function appendPlanDelta(
   artifacts: Artifact[],
+  annotations: Annotation[],
   sessionId: string,
   delta: string,
 ): Artifact {
@@ -67,6 +69,7 @@ export function appendPlanDelta(
     return artifact
   }
 
+  const mergedIds = new Set(matching.map((candidate) => candidate.id))
   const artifact = matching.find((candidate) => candidate.id === artifactId) ?? matching[0]!
   artifact.id = artifactId
   artifact.title = "Working plan"
@@ -76,6 +79,11 @@ export function appendPlanDelta(
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {
     if (matching.includes(artifacts[index]!) && artifacts[index] !== artifact) artifacts.splice(index, 1)
+  }
+  for (const annotation of annotations) {
+    if (annotation.sessionId === sessionId && mergedIds.has(annotation.artifactId)) {
+      annotation.artifactId = artifactId
+    }
   }
   return artifact
 }
@@ -775,7 +783,12 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-delta") {
-      appendPlanDelta(this.#snapshot.artifacts, session.id, event.delta)
+      appendPlanDelta(
+        this.#snapshot.artifacts,
+        this.#snapshot.annotations,
+        session.id,
+        event.delta,
+      )
     }
 
     if (event.type === "command-output") {

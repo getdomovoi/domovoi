@@ -61,13 +61,27 @@ describe("DomovoiDaemon", () => {
       },
     ]
 
-    expect(appendPlanDelta(artifacts, "session-a", "3. Verify.")).toMatchObject({
+    const annotations = [{
+      id: "annotation-a",
+      sessionId: "session-a",
+      artifactId: "plan-session-a-turn-2",
+      anchor: { textQuote: "Implement" },
+      body: "Keep this step.",
+      status: "open" as const,
+      origin: "desktop" as const,
+      thread: [],
+      createdAt: "2026-08-26T20:00:00.000Z",
+      updatedAt: "2026-08-26T20:00:00.000Z",
+    }]
+
+    expect(appendPlanDelta(artifacts, annotations, "session-a", "3. Verify.")).toMatchObject({
       id: "plan-session-a",
       revision: 4,
       content: "1. Inspect.\n2. Implement.\n3. Verify.",
     })
     expect(artifacts.filter((artifact) => artifact.type === "plan")).toHaveLength(1)
     expect(artifacts.find((artifact) => artifact.id === "preview-a")).toBeDefined()
+    expect(annotations[0]!.artifactId).toBe("plan-session-a")
   })
 
   it("serves an empty initial workspace over JSON-RPC", async () => {
