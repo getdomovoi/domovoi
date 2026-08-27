@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "description": "Typed wire protocol shared by Domovoi daemons and clients.",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

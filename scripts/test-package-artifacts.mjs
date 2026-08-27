@@ -56,6 +56,7 @@ for (const contract of contracts) {
   assert.equal(manifest.license, "Apache-2.0")
   assert.equal(manifest.publishConfig?.access, "public")
   assert.equal(manifest.homepage, "https://domovoi.sh")
+  assert.equal(manifest.engines?.node, ">=22")
 
   for (const requiredFile of contract.requiredFiles) {
     assert.ok(files.has(requiredFile), `${contract.selector} must pack ${requiredFile}`)
