@@ -2,6 +2,8 @@ import { execFile } from "node:child_process"
 
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 
+export type ProviderDetection = Omit<ProviderRuntime, "sessionCapable">
+
 export type CommandResult = {
   exitCode: number
   stdout: string
@@ -14,14 +16,14 @@ export type ProviderCommandRunner = (
 ) => Promise<CommandResult>
 
 export interface ProviderProbe {
-  inspect(): Promise<ProviderRuntime[]>
+  inspect(): Promise<ProviderDetection[]>
 }
 
 type ProviderDefinition = {
   id: string
   command: string
   authArgs?: string[]
-  authStatus?: (result: CommandResult) => ProviderRuntime["status"]
+  authStatus?: (result: CommandResult) => ProviderDetection["status"]
 }
 
 const definitions: ProviderDefinition[] = [
@@ -50,11 +52,11 @@ export class CliProviderProbe implements ProviderProbe {
     this.#run = run
   }
 
-  async inspect(): Promise<ProviderRuntime[]> {
+  async inspect(): Promise<ProviderDetection[]> {
     return Promise.all(definitions.map((definition) => this.#inspect(definition)))
   }
 
-  async #inspect(definition: ProviderDefinition): Promise<ProviderRuntime> {
+  async #inspect(definition: ProviderDefinition): Promise<ProviderDetection> {
     let versionResult: CommandResult
     try {
       versionResult = await this.#run(definition.command, ["--version"])
@@ -69,7 +71,7 @@ export class CliProviderProbe implements ProviderProbe {
     }
 
     const version = parseVersion(`${versionResult.stdout}\n${versionResult.stderr}`)
-    let status: ProviderRuntime["status"] = "unknown"
+    let status: ProviderDetection["status"] = "unknown"
     if (definition.authArgs && definition.authStatus) {
       try {
         status = definition.authStatus(await this.#run(definition.command, definition.authArgs))
@@ -106,7 +108,7 @@ function parseVersion(output: string): string | undefined {
   return output.match(/\b\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0]
 }
 
-function claudeAuthStatus(result: CommandResult): ProviderRuntime["status"] {
+function claudeAuthStatus(result: CommandResult): ProviderDetection["status"] {
   try {
     const status = JSON.parse(result.stdout) as { loggedIn?: unknown }
     if (status.loggedIn === true) return "ready"
@@ -117,7 +119,7 @@ function claudeAuthStatus(result: CommandResult): ProviderRuntime["status"] {
   return textAuthStatus(result)
 }
 
-function textAuthStatus(result: CommandResult): ProviderRuntime["status"] {
+function textAuthStatus(result: CommandResult): ProviderDetection["status"] {
   const output = `${result.stdout}\n${result.stderr}`
   if (/not logged|login required|unauthenticated|token expired/i.test(output)) {
     return "auth-required"
