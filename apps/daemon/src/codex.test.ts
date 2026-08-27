@@ -115,8 +115,11 @@ describe("CodexAppServerAdapter", () => {
         data: [{
           model: "model-a",
           displayName: "Model A",
-          supportedReasoningEfforts: [{ reasoningEffort: "low" }],
-          defaultReasoningEffort: "high",
+          supportedReasoningEfforts: [
+            { reasoningEffort: " low " },
+            { reasoningEffort: "   " },
+          ],
+          defaultReasoningEffort: " high ",
         }],
         nextCursor: "repeat",
       },

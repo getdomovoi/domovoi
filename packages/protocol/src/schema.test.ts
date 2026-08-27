@@ -129,6 +129,15 @@ describe("workspace protocol", () => {
       defaultReasoningEffort: "high",
       isDefault: true,
     }).success).toBe(false)
+    expect(providerModelSchema.safeParse({
+      provider: "codex",
+      id: "gpt-5.6-sol",
+      displayName: "GPT-5.6 Sol",
+      description: "Coding model",
+      supportedReasoningEfforts: [],
+      defaultReasoningEffort: "medium",
+      isDefault: false,
+    }).success).toBe(true)
   })
 
   it("upgrades snapshots that predate annotation state", () => {

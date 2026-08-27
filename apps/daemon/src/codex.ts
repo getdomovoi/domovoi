@@ -210,9 +210,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
         if (!id || !candidate.displayName || candidate.hidden) continue
         const supportedReasoningEfforts = (candidate.supportedReasoningEfforts ?? [])
           .map((option) => option.reasoningEffort)
-          .filter((effort): effort is string => typeof effort === "string" && effort.length > 0)
-        const defaultReasoningEffort = candidate.defaultReasoningEffort?.length
-          ? candidate.defaultReasoningEffort
+          .filter((effort): effort is string => typeof effort === "string")
+          .map((effort) => effort.trim())
+          .filter((effort) => effort.length > 0)
+        const requestedDefault = candidate.defaultReasoningEffort?.trim()
+        const defaultReasoningEffort = requestedDefault
+          ? requestedDefault
           : supportedReasoningEfforts[0] ?? "medium"
         if (
           supportedReasoningEfforts.length > 0

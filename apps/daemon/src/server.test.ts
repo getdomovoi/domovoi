@@ -425,7 +425,7 @@ describe("DomovoiDaemon", () => {
     finishConnect!()
     await vi.waitFor(
       () => expect(agent.listModels).toHaveBeenCalledOnce(),
-      { interval: 1, timeout: 20 },
+      { interval: 1, timeout: 500 },
     )
     const third = rpc(3)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -437,6 +437,51 @@ describe("DomovoiDaemon", () => {
     await expect(third).resolves.toMatchObject({
       result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
     })
+    socket.close()
+  })
+
+  it("retries model discovery after an empty catalog", async () => {
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValue(codexModels()),
+      startThread: vi.fn(async () => "unused-thread"),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", agent })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const rpc = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "runtime.models",
+        params: { provider: "codex", client: "desktop" },
+      }))
+    })
+
+    await expect(rpc(1)).resolves.toMatchObject({ result: [] })
+    await expect(rpc(2)).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    expect(agent.listModels).toHaveBeenCalledTimes(2)
     socket.close()
   })
 

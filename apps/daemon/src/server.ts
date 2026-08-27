@@ -288,8 +288,10 @@ export class DomovoiDaemon {
       const discovery = this.#agent.listModels().then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === "codex")
-        this.#providerModels = parsed
-        this.#providerModelsCachedAt = Date.now()
+        if (parsed.length > 0) {
+          this.#providerModels = parsed
+          this.#providerModelsCachedAt = Date.now()
+        }
         return parsed
       })
       this.#providerModelsRequest = discovery
