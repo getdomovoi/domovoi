@@ -89,6 +89,126 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("authenticates the initial daemon handshake", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      authToken: "secret-token",
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+      method: "system.hello",
+      params: { client: "web", authToken: "secret-token" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    client.disconnect()
+  })
+
+  it("requests preview access scoped to the bridge channel", async () => {
+    const client = new DomovoiClient("wss://machine.example/rpc", "tablet")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const authorizing = client.authorizeArtifact("artifact-preview", "preview_channel_123456")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "artifact.authorize",
+      params: {
+        artifactId: "artifact-preview",
+        bridgeChannel: "preview_channel_123456",
+        client: "tablet",
+      },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        artifactId: "artifact-preview",
+        bridgeChannel: "preview_channel_123456",
+        expiresAt: 1_800_000_000,
+        signature: "a".repeat(43),
+      },
+    })
+
+    await expect(authorizing).resolves.toMatchObject({ artifactId: "artifact-preview" })
+    client.disconnect()
+  })
+
+  it("streams interactive terminal events and input", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const output = vi.fn()
+    client.addEventListener("terminal-output", output)
+
+    const creating = client.createTerminal(
+      "session-billing",
+      { cols: 120, rows: 32 },
+      "terminal-1",
+    )
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "terminal.create",
+      params: { terminalId: "terminal-1", sessionId: "session-billing", cols: 120, rows: 32 },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        terminalId: "terminal-1",
+        sessionId: "session-billing",
+        cols: 120,
+        rows: 32,
+        shell: "bash",
+        cwd: "/worktrees/billing",
+        buffer: "",
+      },
+    })
+    await expect(creating).resolves.toMatchObject({ terminalId: "terminal-1" })
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "terminal.output",
+      params: { terminalId: "terminal-1", data: "ready\r\n" },
+    })
+    expect((output.mock.calls[0]![0] as CustomEvent).detail).toEqual({
+      terminalId: "terminal-1",
+      data: "ready\r\n",
+    })
+
+    const writing = client.writeTerminal("terminal-1", "pnpm test\r")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "terminal.input",
+      params: { terminalId: "terminal-1", data: "pnpm test\r" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } })
+    await expect(writing).resolves.toBeUndefined()
+    client.disconnect()
+  })
+
+  it("does not retry a rejected daemon credential", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      authToken: "wrong-token",
+      reconnectDelayMs: 25,
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+
+    await expect(connecting).rejects.toThrow("Daemon authentication failed")
+    await vi.advanceTimersByTimeAsync(25)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
   it("rejects an in-flight request when the connection closes", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
       reconnectDelayMs: 25,

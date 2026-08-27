@@ -5,14 +5,22 @@ import {
   annotationCreateParamsSchema,
   annotationReplyParamsSchema,
   annotationSetStatusParamsSchema,
+  artifactAuthorizeParamsSchema,
+  artifactAuthorizeResultSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
   createEmptyWorkspace,
   demoWorkspace,
   projectOpenParamsSchema,
   providerModelSchema,
+  helloParamsSchema,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
+  terminalCloseParamsSchema,
+  terminalCreateParamsSchema,
+  terminalInputParamsSchema,
+  terminalResizeParamsSchema,
+  terminalSessionSchema,
   previewBridgePickerMessageSchema,
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
@@ -23,6 +31,82 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("validates scoped artifact access capabilities", () => {
+    expect(artifactAuthorizeParamsSchema.parse({
+      artifactId: "preview-1",
+      bridgeChannel: "preview_channel_123456",
+      client: "tablet",
+    })).toEqual({
+      artifactId: "preview-1",
+      bridgeChannel: "preview_channel_123456",
+      client: "tablet",
+    })
+    expect(artifactAuthorizeParamsSchema.safeParse({
+      artifactId: "preview-1",
+      bridgeChannel: "short",
+      client: "tablet",
+    }).success).toBe(false)
+    expect(artifactAuthorizeResultSchema.parse({
+      artifactId: "preview-1",
+      bridgeChannel: "preview_channel_123456",
+      expiresAt: 1_800_000_000,
+      signature: "a".repeat(43),
+    }).signature).toHaveLength(43)
+  })
+
+  it("validates interactive terminal operations", () => {
+    expect(terminalCreateParamsSchema.parse({
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      client: "desktop",
+    }).cols).toBe(120)
+    expect(terminalSessionSchema.parse({
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      shell: "/bin/bash",
+      cwd: "/worktrees/billing",
+      buffer: "ready\r\n",
+    }).shell).toBe("/bin/bash")
+    expect(terminalInputParamsSchema.parse({
+      terminalId: "terminal-1",
+      data: "pnpm test\r",
+      client: "tablet",
+    }).data).toBe("pnpm test\r")
+    expect(terminalResizeParamsSchema.parse({
+      terminalId: "terminal-1",
+      cols: 80,
+      rows: 24,
+      client: "web",
+    }).rows).toBe(24)
+    expect(terminalCloseParamsSchema.parse({
+      terminalId: "terminal-1",
+      client: "phone",
+    }).client).toBe("phone")
+    expect(terminalResizeParamsSchema.safeParse({
+      terminalId: "terminal-1",
+      cols: 0,
+      rows: 24,
+      client: "web",
+    }).success).toBe(false)
+  })
+
+  it("accepts an optional daemon credential during hello", () => {
+    expect(helloParamsSchema.parse({
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "token-with-enough-entropy",
+    }).authToken).toBe("token-with-enough-entropy")
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "",
+    }).success).toBe(false)
+  })
+
   it("validates anchored annotation threads", () => {
     const annotation = {
       id: "annotation-1",

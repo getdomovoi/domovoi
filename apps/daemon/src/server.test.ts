@@ -8,7 +8,14 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { DomovoiDaemon } from "./server.js"
+import {
+  artifactAccessMatches,
+  canServeArtifacts,
+  frameAncestorsFor,
+  DomovoiDaemon,
+  hostAuthorityMatches,
+  signArtifactAccess,
+} from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
@@ -32,6 +39,323 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("requires signed access for preview documents outside loopback", () => {
+    expect(canServeArtifacts("127.0.0.1")).toBe(true)
+    expect(canServeArtifacts("::1")).toBe(true)
+    expect(canServeArtifacts("100.64.0.10")).toBe(false)
+    expect(canServeArtifacts("100.64.0.10", true)).toBe(true)
+    expect(canServeArtifacts("0.0.0.0")).toBe(false)
+  })
+
+  it("scopes artifact access to id, bridge channel, and expiry", () => {
+    const signature = signArtifactAccess(
+      "artifact-secret",
+      "preview-1",
+      "preview_channel_123456",
+      1_800_000_000,
+    )
+    expect(signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      "preview-1",
+      "preview_channel_123456",
+      1_800_000_000,
+      signature,
+      1_799_999_999,
+    )).toBe(true)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      "preview-2",
+      "preview_channel_123456",
+      1_800_000_000,
+      signature,
+      1_799_999_999,
+    )).toBe(false)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      "preview-1",
+      "preview_channel_changed",
+      1_800_000_000,
+      signature,
+      1_799_999_999,
+    )).toBe(false)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      "preview-1",
+      "preview_channel_123456",
+      1_800_000_000,
+      signature,
+      1_800_000_001,
+    )).toBe(false)
+  })
+
+  it("limits preview embedding to configured browser origins", () => {
+    expect(frameAncestorsFor([
+      "https://app.domovoi.sh",
+      "http://localhost:5178",
+      "file://",
+      "javascript:alert(1)",
+      "not a URL",
+    ])).toBe("https://app.domovoi.sh http://localhost:5178 file:")
+  })
+
+  it("normalizes loopback Host authorities without widening them", () => {
+    expect(hostAuthorityMatches("[::1]:47831", "::1", 47831)).toBe(true)
+    expect(hostAuthorityMatches("localhost:47831", "::1", 47831)).toBe(true)
+    expect(hostAuthorityMatches("127.0.0.1:47831", "127.0.0.1", 47831)).toBe(true)
+    expect(hostAuthorityMatches("localhost:47832", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("attacker.example:47831", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1", "127.0.0.1", 80)).toBe(true)
+    expect(hostAuthorityMatches("localhost", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("user@127.0.0.1:47831", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1:47831/path", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1:47831?query", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1:47831#fragment", "127.0.0.1", 47831)).toBe(false)
+  })
+
+  it("refuses an unauthenticated non-loopback listener", () => {
+    expect(() => new DomovoiDaemon({
+      host: "0.0.0.0",
+      port: 0,
+      statePath: ":memory:",
+    })).toThrow("Non-loopback listeners require explicit protected-transport opt-in")
+    expect(() => new DomovoiDaemon({
+      host: "0.0.0.0",
+      port: 0,
+      statePath: ":memory:",
+      allowRemoteTransport: true,
+    })).toThrow("A daemon token is required outside loopback")
+  })
+
+  it("serves remote previews only with a signed capability", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-remote-artifact-"))
+    scratchDirectories.push(scratch)
+    await writeFile(join(scratch, "preview.html"), "<h1>Remote preview</h1>")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.workspacePath = scratch
+    const artifact = snapshot.artifacts.find((candidate) => candidate.id === "artifact-preview")!
+    artifact.path = "preview.html"
+    artifact.mimeType = "text/html"
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      host: "0.0.0.0",
+      port: 0,
+      allowRemoteTransport: true,
+      authToken: "remote-daemon-token",
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    await rpc("system.hello", {
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "remote-daemon-token",
+    })
+    const accessResponse = await rpc("artifact.authorize", {
+      artifactId: artifact.id,
+      client: "web",
+    })
+    const access = accessResponse.result as { expiresAt: number; signature: string }
+    const baseUrl = `http://${address.host}:${address.port}/artifacts/${artifact.id}`
+
+    expect((await fetch(baseUrl)).status).toBe(404)
+    const authorized = await fetch(
+      `${baseUrl}?expires=${access.expiresAt}&signature=${access.signature}`,
+    )
+    expect(authorized.status).toBe(200)
+    await expect(authorized.text()).resolves.toBe("<h1>Remote preview</h1>")
+    expect((await fetch(
+      `${baseUrl}?expires=${access.expiresAt}&signature=${"x".repeat(43)}`,
+    )).status).toBe(404)
+    socket.close()
+  })
+
+  it("requires the configured token before serving daemon state", async () => {
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+      authToken: "correct-horse-battery-staple",
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const unauthenticated = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const unauthenticatedMessages: Array<Record<string, unknown>> = []
+    unauthenticated.on("message", (data) => {
+      unauthenticatedMessages.push(JSON.parse(data.toString()) as Record<string, unknown>)
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await new Promise<void>((resolve, reject) => {
+      unauthenticated.once("open", resolve)
+      unauthenticated.once("error", reject)
+    })
+    const rpc = (id: number, method: string, params: Record<string, unknown>) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await expect(rpc(1, "workspace.get", {})).resolves.toMatchObject({
+      error: { code: -32001, message: "Daemon authentication required" },
+    })
+    await expect(rpc(2, "system.hello", {
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "wrong-token",
+    })).resolves.toMatchObject({
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+    await expect(rpc(3, "system.hello", {
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "correct-horse-battery-staple",
+    })).resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
+    await expect(rpc(4, "workspace.get", {})).resolves.toMatchObject({
+      result: { project: { id: "project-acme-api" } },
+    })
+    await expect(rpc(5, "session.activate", {
+      sessionId: "session-audit",
+      client: "web",
+    })).resolves.toMatchObject({ result: { activeSessionId: "session-audit" } })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(unauthenticatedMessages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "workspace.changed" }),
+    ]))
+
+    const pipelined = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      pipelined.once("open", resolve)
+      pipelined.once("error", reject)
+    })
+    const pipelinedResponses = new Map<number, Record<string, unknown>>()
+    const receivedBoth = new Promise<void>((resolve) => {
+      pipelined.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+        if (message.id === 6 || message.id === 7) pipelinedResponses.set(message.id, message)
+        if (pipelinedResponses.size === 2) resolve()
+      })
+    })
+    pipelined.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "system.hello",
+      params: {
+        client: "web",
+        clientVersion: "0.0.1",
+        authToken: "correct-horse-battery-staple",
+      },
+    }))
+    pipelined.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "runtime.models",
+      params: { provider: "codex", client: "web" },
+    }))
+    await receivedBoth
+    expect(pipelinedResponses.get(6)).toHaveProperty("result")
+    expect(pipelinedResponses.get(7)).toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    pipelined.close()
+
+    const attacker = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      attacker.once("open", resolve)
+      attacker.once("error", reject)
+    })
+    const rejected = new Promise<{ code: number; reason: string }>((resolve) => {
+      attacker.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
+    })
+    for (const id of [8, 9, 10]) {
+      attacker.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "system.hello",
+        params: { client: "web", clientVersion: "0.0.1", authToken: "wrong-token" },
+      }))
+    }
+    await expect(rejected).resolves.toEqual({ code: 1008, reason: "authentication failed" })
+    unauthenticated.close()
+    socket.close()
+  })
+
+  it("closes sockets that never authenticate", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "correct-horse-battery-staple",
+      authTimeoutMs: 10,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const closed = new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      socket.once("error", reject)
+      socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
+    })
+
+    await expect(closed).resolves.toEqual({ code: 1008, reason: "authentication timeout" })
+  })
+
   it("interrupts scoped and global turns and records who paused them", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.sessions[0]!.state = "active"
@@ -1141,6 +1465,31 @@ describe("DomovoiDaemon", () => {
     expect(artifact).toMatchObject({ sessionId, type: "preview" })
     expect((snapshot.result as { artifacts: unknown[] }).artifacts).toHaveLength(2)
 
+    const accessResponse = await rpc("artifact.authorize", {
+      artifactId: artifact!.id,
+      bridgeChannel: "preview_channel_123456",
+      client: "desktop",
+    })
+    const access = accessResponse.result as {
+      artifactId: string
+      bridgeChannel: string
+      expiresAt: number
+      signature: string
+    }
+    expect(access).toMatchObject({
+      artifactId: artifact!.id,
+      bridgeChannel: "preview_channel_123456",
+    })
+    expect(access.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1_000))
+    expect(access.signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
+
+    await expect(rpc("artifact.authorize", {
+      artifactId: "missing-preview",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Preview artifact does not exist" },
+    })
+
     const preview = await fetch(
       `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}`,
     )
@@ -1155,6 +1504,12 @@ describe("DomovoiDaemon", () => {
     expect(bridgedContent).toContain("domovoi.preview.selection")
     expect(bridgedContent).toContain("preview_channel_123456")
     expect(bridgedContent).toContain(artifact!.id)
+
+    const signedPreview = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?bridge=${access.bridgeChannel}&expires=${access.expiresAt}&signature=${access.signature}`,
+    )
+    expect(signedPreview.status).toBe(200)
+    expect(await signedPreview.text()).toContain("domovoi.preview.selection")
 
     const invalidBridge = await fetch(
       `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,

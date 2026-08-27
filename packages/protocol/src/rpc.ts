@@ -8,8 +8,10 @@ import {
   runtimeSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
+import { previewBridgeChannelSchema } from "./preview-bridge.js"
 
 export const requestIdSchema = z.union([z.string(), z.number()])
+export const daemonAuthenticationErrorCode = -32001 as const
 
 export const rpcRequestSchema = z.object({
   jsonrpc: z.literal("2.0"),
@@ -40,6 +42,70 @@ export const rpcNotificationSchema = z.object({
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
   clientVersion: z.string().min(1),
+  authToken: z.string().min(1).optional(),
+})
+
+export const artifactAuthorizeParamsSchema = z.object({
+  artifactId: z.string().min(1),
+  bridgeChannel: previewBridgeChannelSchema.optional(),
+  client: clientKindSchema,
+})
+
+export const artifactAuthorizeResultSchema = z.object({
+  artifactId: z.string().min(1),
+  bridgeChannel: previewBridgeChannelSchema.optional(),
+  expiresAt: z.number().int().positive(),
+  signature: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+})
+
+const terminalIdSchema = z.string().min(1).max(128)
+const terminalDimensionSchema = z.number().int().min(2).max(1_000)
+
+export const terminalCreateParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+  sessionId: z.string().min(1),
+  cols: terminalDimensionSchema,
+  rows: terminalDimensionSchema,
+  client: clientKindSchema,
+})
+
+export const terminalInputParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+  data: z.string().min(1).max(65_536),
+  client: clientKindSchema,
+})
+
+export const terminalResizeParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+  cols: terminalDimensionSchema,
+  rows: terminalDimensionSchema,
+  client: clientKindSchema,
+})
+
+export const terminalCloseParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+  client: clientKindSchema,
+})
+
+export const terminalSessionSchema = z.object({
+  terminalId: terminalIdSchema,
+  sessionId: z.string().min(1),
+  cols: terminalDimensionSchema,
+  rows: terminalDimensionSchema,
+  shell: z.string().min(1),
+  cwd: z.string().min(1),
+  buffer: z.string(),
+})
+
+export const terminalAcceptedSchema = z.object({ accepted: z.literal(true) })
+export const terminalOutputNotificationSchema = z.object({
+  terminalId: terminalIdSchema,
+  data: z.string().min(1),
+})
+export const terminalClosedNotificationSchema = z.object({
+  terminalId: terminalIdSchema,
+  exitCode: z.number().int().optional(),
+  signal: z.number().int().optional(),
 })
 
 export const systemPauseAllParamsSchema = z.object({
@@ -130,6 +196,14 @@ export const annotationSetStatusParamsSchema = z.object({
 
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
+  "artifact.authorize": {
+    params: artifactAuthorizeParamsSchema,
+    result: artifactAuthorizeResultSchema,
+  },
+  "terminal.create": { params: terminalCreateParamsSchema, result: terminalSessionSchema },
+  "terminal.input": { params: terminalInputParamsSchema, result: terminalAcceptedSchema },
+  "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
+  "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "system.pauseAll": {
     params: systemPauseAllParamsSchema,
     result: workspaceSnapshotSchema,
@@ -174,3 +248,7 @@ export type RpcMethod = keyof typeof rpcMethods
 export type RpcRequest = z.infer<typeof rpcRequestSchema>
 export type RpcResponse = z.infer<typeof rpcResponseSchema>
 export type RpcNotification = z.infer<typeof rpcNotificationSchema>
+export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>
+export type TerminalSession = z.infer<typeof terminalSessionSchema>
+export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
+export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>

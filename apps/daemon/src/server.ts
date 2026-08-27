@@ -1,11 +1,12 @@
 import { createServer, type Server as HttpServer } from "node:http"
-import { createHash, randomUUID } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { readFile, realpath } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
   createEmptyWorkspace,
+  daemonAuthenticationErrorCode,
   demoWorkspace,
   protocolVersion,
   rpcMethods,
@@ -28,11 +29,18 @@ import {
 import { GitWorkspaceService, type WorkspaceService } from "./workspace.js"
 import { injectPreviewBridge, validPreviewBridgeChannel } from "./preview-bridge.js"
 import { agentPromptWithAnnotations } from "./annotation-context.js"
+import {
+  NodePtyTerminalService,
+  type TerminalProcess,
+  type TerminalService,
+} from "./terminal.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
 const internalError = -32603
+const maximumAuthenticationFailures = 3
+const maximumTerminalBufferLength = 256 * 1_024
 
 class RuntimeValidationError extends Error {}
 
@@ -46,6 +54,22 @@ export type DaemonServerOptions = {
   workspaceService?: WorkspaceService
   worktreeRoot?: string
   agentTimeoutMs?: number
+  authToken?: string
+  allowRemoteTransport?: boolean
+  authTimeoutMs?: number
+  terminalService?: TerminalService
+}
+
+type ActiveTerminal = {
+  sessionId: string
+  process: TerminalProcess
+  cols: number
+  rows: number
+  shell: string
+  cwd: string
+  buffer: string
+  disposeData: () => void
+  disposeExit: () => void
 }
 
 export class DomovoiDaemon {
@@ -67,10 +91,25 @@ export class DomovoiDaemon {
   #mutationQueue = Promise.resolve()
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
+  #authToken: string | undefined
+  #authenticatedClients = new WeakSet<WebSocket>()
+  #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
+  #authenticationFailures = new WeakMap<WebSocket, number>()
+  #authTimeoutMs: number
+  #artifactSigningSecret = randomBytes(32).toString("base64url")
+  #artifactAccessTtlSeconds = 60
+  #terminalService: TerminalService
+  #terminals = new Map<string, ActiveTerminal>()
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
+    if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
+      throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
+    }
+    if (!isLoopbackHost(this.host) && !options.authToken) {
+      throw new Error("A daemon token is required outside loopback")
+    }
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
@@ -97,6 +136,9 @@ export class DomovoiDaemon {
       options.worktreeRoot ?? join(homedir(), ".domovoi", "worktrees"),
     )
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
+    this.#authToken = options.authToken
+    this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
+    this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#unsubscribeAgent = this.#agent.onEvent((event) => {
       this.#enqueueMutation(() => this.#handleAgentEvent(event))
     })
@@ -141,9 +183,19 @@ export class DomovoiDaemon {
       verifyClient,
     })
     this.#websocket.on("connection", (socket) => {
+      if (this.#authToken) {
+        const deadline = setTimeout(() => {
+          if (!this.#authenticatedClients.has(socket)) socket.close(1008, "authentication timeout")
+        }, this.#authTimeoutMs)
+        this.#authenticationDeadlines.set(socket, deadline)
+        socket.once("close", () => clearTimeout(deadline))
+      }
       socket.on("message", (data) => {
         const raw = data.toString()
-        if (this.#isModelDiscovery(raw)) void this.#handle(socket, raw)
+        if (
+          this.#isModelDiscovery(raw)
+          && (!this.#authToken || this.#authenticatedClients.has(socket))
+        ) void this.#handle(socket, raw)
         else this.#enqueueMutation(() => this.#handle(socket, raw))
       })
     })
@@ -157,6 +209,7 @@ export class DomovoiDaemon {
   }
 
   async stop(): Promise<void> {
+    this.#closeAllTerminals()
     for (const client of this.#websocket?.clients ?? []) client.close(1001, "daemon stopping")
 
     await new Promise<void>((resolve, reject) => {
@@ -178,14 +231,17 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
-    const message = JSON.stringify({
-      jsonrpc: "2.0",
-      method: "workspace.changed",
-      params: this.#snapshot,
-    })
+    this.#broadcastNotification("workspace.changed", this.#snapshot)
+  }
+
+  #broadcastNotification(method: string, params: unknown): void {
+    const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
     for (const client of this.#websocket?.clients ?? []) {
-      if (client.readyState === WebSocket.OPEN) client.send(message)
+      if (
+        client.readyState === WebSocket.OPEN
+        && (!this.#authToken || this.#authenticatedClients.has(client))
+      ) client.send(message)
     }
   }
 
@@ -196,9 +252,7 @@ export class DomovoiDaemon {
   #acceptsHost(host: string | undefined): boolean {
     const address = this.address
     if (!host || !address) return false
-    const accepted = new Set([`${address.host}:${address.port}`])
-    if (address.host === "127.0.0.1") accepted.add(`localhost:${address.port}`)
-    return accepted.has(host)
+    return hostAuthorityMatches(host, address.host, address.port)
   }
 
   #enqueueMutation(task: () => Promise<void>): void {
@@ -276,11 +330,26 @@ export class DomovoiDaemon {
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
     let artifactId: string
     let bridgeChannel: string | undefined
+    let authorized = false
     try {
       const requestUrl = new URL(url, "http://domovoi.local")
       artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
       bridgeChannel = validPreviewBridgeChannel(requestUrl.searchParams.get("bridge"))
+      const expiresAt = Number(requestUrl.searchParams.get("expires"))
+      const signature = requestUrl.searchParams.get("signature")
+      authorized = artifactAccessMatches(
+        this.#artifactSigningSecret,
+        artifactId,
+        bridgeChannel,
+        expiresAt,
+        signature,
+      )
     } catch {
+      response.writeHead(404, { "content-type": "application/json" })
+      response.end(JSON.stringify({ error: "not_found" }))
+      return
+    }
+    if (!canServeArtifacts(this.host, authorized)) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -305,7 +374,7 @@ export class DomovoiDaemon {
       const content = await readFile(path, "utf8")
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
-        "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors http://127.0.0.1:5178 http://localhost:5178 file:",
+        "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`,
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
@@ -345,8 +414,190 @@ export class DomovoiDaemon {
       return
     }
 
+    if (this.#authToken && !this.#authenticatedClients.has(socket)) {
+      if (method !== "system.hello") {
+        this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
+        return
+      }
+      const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
+      if (!secureTokenMatch(this.#authToken, supplied)) {
+        this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
+        return
+      }
+      this.#authenticatedClients.add(socket)
+      const deadline = this.#authenticationDeadlines.get(socket)
+      if (deadline) clearTimeout(deadline)
+      this.#authenticationDeadlines.delete(socket)
+    }
+
     try {
       let changed = false
+      if (method === "terminal.create") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!session?.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        const existing = this.#terminals.get(params.terminalId)
+        if (existing) {
+          if (existing.sessionId !== session.id) {
+            this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
+            return
+          }
+          existing.process.resize(params.cols, params.rows)
+          existing.cols = params.cols
+          existing.rows = params.rows
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({
+              terminalId: params.terminalId,
+              sessionId: existing.sessionId,
+              cols: existing.cols,
+              rows: existing.rows,
+              shell: existing.shell,
+              cwd: existing.cwd,
+              buffer: existing.buffer,
+            }),
+          })
+          return
+        }
+        const process = this.#terminalService.spawn({
+          cwd: session.workspacePath,
+          cols: params.cols,
+          rows: params.rows,
+        })
+        const activeTerminal: ActiveTerminal = {
+          sessionId: session.id,
+          process,
+          cols: params.cols,
+          rows: params.rows,
+          shell: process.process,
+          cwd: session.workspacePath,
+          buffer: "",
+          disposeData: () => {},
+          disposeExit: () => {},
+        }
+        this.#terminals.set(params.terminalId, activeTerminal)
+        const dataDisposable = process.onData((data) => {
+          const active = this.#terminals.get(params.terminalId)
+          if (active?.process === process) {
+            active.buffer = `${active.buffer}${data}`.slice(-maximumTerminalBufferLength)
+          }
+          this.#broadcastNotification("terminal.output", {
+            terminalId: params.terminalId,
+            data,
+          })
+        })
+        const exitDisposable = process.onExit(({ exitCode, signal }) => {
+          const active = this.#terminals.get(params.terminalId)
+          if (!active || active.process !== process) return
+          this.#terminals.delete(params.terminalId)
+          active.disposeData()
+          active.disposeExit()
+          this.#broadcastNotification("terminal.closed", {
+            terminalId: params.terminalId,
+            exitCode,
+            ...(signal === undefined ? {} : { signal }),
+          })
+        })
+        activeTerminal.disposeData = () => dataDisposable.dispose()
+        activeTerminal.disposeExit = () => exitDisposable.dispose()
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            terminalId: params.terminalId,
+            sessionId: session.id,
+            cols: params.cols,
+            rows: params.rows,
+            shell: process.process,
+            cwd: session.workspacePath,
+            buffer: activeTerminal.buffer,
+          }),
+        })
+        return
+      }
+
+      if (method === "terminal.input") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        terminal.process.write(params.data)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ accepted: true }),
+        })
+        return
+      }
+
+      if (method === "terminal.resize") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        terminal.process.resize(params.cols, params.rows)
+        terminal.cols = params.cols
+        terminal.rows = params.rows
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ accepted: true }),
+        })
+        return
+      }
+
+      if (method === "terminal.close") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (!this.#closeTerminal(params.terminalId)) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ accepted: true }),
+        })
+        return
+      }
+
+      if (method === "artifact.authorize") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const artifact = this.#snapshot.artifacts.find(
+          (candidate) => candidate.id === params.artifactId && candidate.type === "preview",
+        )
+        if (!artifact || artifact.mimeType !== "text/html" || !artifact.path) {
+          this.#error(socket, request.id, invalidParams, "Preview artifact does not exist")
+          return
+        }
+        const expiresAt = Math.floor(Date.now() / 1_000) + this.#artifactAccessTtlSeconds
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            artifactId: params.artifactId,
+            ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+            expiresAt,
+            signature: signArtifactAccess(
+              this.#artifactSigningSecret,
+              params.artifactId,
+              params.bridgeChannel,
+              expiresAt,
+            ),
+          }),
+        })
+        return
+      }
+
       if (method === "runtime.models") {
         const models = await this.#listProviderModels()
         this.#send(socket, {
@@ -515,6 +766,7 @@ export class DomovoiDaemon {
       if (method === "project.open") {
         const params = rpcMethods[method].params.parse(request.params)
         const repository = await this.#workspaceService.inspect(params.path)
+        this.#closeAllTerminals()
         await this.#cleanupSessions()
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         this.#snapshot.project = {
@@ -964,6 +1216,34 @@ export class DomovoiDaemon {
     return active.length > 0
   }
 
+  #rejectAuthentication(
+    socket: WebSocket,
+    id: string | number | null,
+    message: string,
+  ): void {
+    this.#error(socket, id, daemonAuthenticationErrorCode, message)
+    const failures = (this.#authenticationFailures.get(socket) ?? 0) + 1
+    this.#authenticationFailures.set(socket, failures)
+    if (failures >= maximumAuthenticationFailures) {
+      setTimeout(() => socket.close(1008, "authentication failed"), 0)
+    }
+  }
+
+  #closeTerminal(terminalId: string): boolean {
+    const terminal = this.#terminals.get(terminalId)
+    if (!terminal) return false
+    this.#terminals.delete(terminalId)
+    terminal.disposeData()
+    terminal.disposeExit()
+    terminal.process.kill()
+    this.#broadcastNotification("terminal.closed", { terminalId })
+    return true
+  }
+
+  #closeAllTerminals(): void {
+    for (const terminalId of [...this.#terminals.keys()]) this.#closeTerminal(terminalId)
+  }
+
   #scheduleDeltaFlush(): void {
     if (this.#deltaFlush) clearTimeout(this.#deltaFlush)
     this.#deltaFlush = setTimeout(() => {
@@ -1024,6 +1304,92 @@ function turnIdForAgentEvent(event: AgentEvent): string | undefined {
     return turn.id
   }
   return undefined
+}
+
+function secureTokenMatch(expected: string, supplied: unknown): boolean {
+  if (typeof supplied !== "string") return false
+  const expectedBytes = Buffer.from(expected)
+  const suppliedBytes = Buffer.from(supplied)
+  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes)
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost"
+}
+
+export function canServeArtifacts(host: string, authorized = false): boolean {
+  return isLoopbackHost(host) || authorized
+}
+
+export function frameAncestorsFor(origins: Iterable<string>): string {
+  const sources: string[] = []
+  for (const origin of origins) {
+    try {
+      const parsed = new URL(origin)
+      if (parsed.protocol === "file:") sources.push("file:")
+      else if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        sources.push(parsed.origin)
+      }
+    } catch {
+      continue
+    }
+  }
+  return sources.length > 0 ? [...new Set(sources)].join(" ") : "'none'"
+}
+
+function artifactAccessPayload(
+  artifactId: string,
+  bridgeChannel: string | undefined,
+  expiresAt: number,
+): string {
+  return JSON.stringify([artifactId, bridgeChannel ?? null, expiresAt])
+}
+
+export function signArtifactAccess(
+  secret: string,
+  artifactId: string,
+  bridgeChannel: string | undefined,
+  expiresAt: number,
+): string {
+  return createHmac("sha256", secret)
+    .update(artifactAccessPayload(artifactId, bridgeChannel, expiresAt))
+    .digest("base64url")
+}
+
+export function artifactAccessMatches(
+  secret: string,
+  artifactId: string,
+  bridgeChannel: string | undefined,
+  expiresAt: number,
+  suppliedSignature: string | null,
+  now = Math.floor(Date.now() / 1_000),
+): boolean {
+  if (!Number.isSafeInteger(expiresAt) || expiresAt < now || typeof suppliedSignature !== "string") {
+    return false
+  }
+  return secureTokenMatch(
+    signArtifactAccess(secret, artifactId, bridgeChannel, expiresAt),
+    suppliedSignature,
+  )
+}
+
+export function hostAuthorityMatches(
+  authority: string,
+  listenerHost: string,
+  listenerPort: number,
+): boolean {
+  if (/[@/?#\\\\]/.test(authority)) return false
+  let parsed: URL
+  try {
+    parsed = new URL(`http://${authority}`)
+  } catch {
+    return false
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "")
+  const authorityPort = parsed.port === "" ? 80 : Number(parsed.port)
+  if (authorityPort !== listenerPort) return false
+  if (hostname === listenerHost) return true
+  return hostname === "localhost" && isLoopbackHost(listenerHost)
 }
 
 function resolveInside(root: string, candidate: string): string | undefined {
