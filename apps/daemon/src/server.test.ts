@@ -1023,7 +1023,7 @@ describe("DomovoiDaemon", () => {
       listener({
         type: "plan-delta",
         threadId: "provider-thread-1",
-        turnId: "provider-turn-2",
+        turnId: "provider-turn-1",
         delta: "\n3. Verify the next turn.",
       })
       listener({
