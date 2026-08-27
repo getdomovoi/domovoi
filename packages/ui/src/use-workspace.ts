@@ -163,7 +163,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.pauseSession(sessionId))
   }, [updateSnapshotFrom])
 
-  const listModels = useCallback(async (provider: "codex"): Promise<ProviderModel[]> => {
+  const listModels = useCallback(async (provider: string): Promise<ProviderModel[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.listModels(provider)

@@ -507,7 +507,7 @@ function Thread({
     explanation?: string,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
-  onListModels: (provider: "codex") => Promise<ProviderModel[]>
+  onListModels: (provider: string) => Promise<ProviderModel[]>
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
@@ -703,7 +703,7 @@ export function RuntimeControls({
   runtime: Runtime
   pending: boolean
   onChange: (runtime: Runtime) => void
-  onListModels: (provider: "codex") => Promise<ProviderModel[]>
+  onListModels: (provider: string) => Promise<ProviderModel[]>
 }) {
   const [models, setModels] = useState<ProviderModel[]>([])
   const [modelsPending, setModelsPending] = useState(false)

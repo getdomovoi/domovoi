@@ -6,7 +6,7 @@ import { join } from "node:path"
 import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, type ProviderModel } from "@getdomovoi/protocol"
 
 import {
   appendPlanDelta,
@@ -412,11 +412,13 @@ describe("DomovoiDaemon", () => {
   it("interrupts scoped and global turns and records who paused them", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.sessions[0]!.state = "active"
+    snapshot.sessions[0]!.runtime.provider = "codex"
     snapshot.sessions[0]!.providerThreadId = "thread-billing"
     snapshot.sessions[0]!.activeTurnId = "turn-billing"
     snapshot.sessions[1]!.providerThreadId = "thread-onboarding"
     snapshot.sessions[1]!.activeTurnId = "turn-onboarding"
     snapshot.sessions[2]!.state = "active"
+    snapshot.sessions[2]!.runtime.provider = "codex"
     snapshot.sessions[2]!.providerThreadId = "thread-audit"
     snapshot.sessions[2]!.activeTurnId = "turn-audit"
     const agentListeners = new Set<(event: AgentEvent) => void>()
@@ -1058,6 +1060,8 @@ describe("DomovoiDaemon", () => {
     const statePath = join(scratch, "state.sqlite")
     const initial = structuredClone(demoWorkspace)
     const restoredSession = initial.sessions.find((session) => session.id === "session-billing")!
+    restoredSession.runtime.provider = "codex"
+    restoredSession.runtime.model = "gpt-5.6-sol"
     restoredSession.workspacePath = "/worktrees/session-billing"
     restoredSession.providerThreadId = "provider-thread-restored"
     const persistedAgent = {
@@ -1409,7 +1413,7 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(unsupportedRuntime).toMatchObject({
-      error: { code: -32602, message: "Only the Codex provider is available" },
+      error: { code: -32602, message: "Provider handoff is not available yet" },
     })
 
     const unsupportedReasoning = await rpc("session.setRuntime", {
@@ -1461,6 +1465,111 @@ describe("DomovoiDaemon", () => {
     expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(`/worktrees/${sessionId}`)
     socket.close()
+  })
+
+  it("routes model discovery and sessions through the requested provider adapter", async () => {
+    const makeAgent = (models: ProviderModel[]) => ({
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => models),
+      startThread: vi.fn(async () => "thread"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter)
+    const codex = makeAgent(codexModels())
+    const claude = makeAgent([{
+      ...codexModels()[0]!,
+      provider: "claude-code",
+      id: "claude-sonnet-4-6",
+      displayName: "Claude Sonnet 4.6",
+    }])
+    const workspaceService = {
+      inspect: vi.fn(async () => ({
+        root: "/code/domovoi",
+        name: "domovoi",
+        branch: "main",
+        head: "a".repeat(40),
+      })),
+      createSessionWorkspace: vi.fn(async (_path: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "a".repeat(40),
+      })),
+      removeSessionWorkspace: vi.fn(async () => {}),
+      checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agents: { codex, "claude-code": claude },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await expect(rpc("runtime.models", {
+      provider: "claude-code",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: [expect.objectContaining({ provider: "claude-code", id: "claude-sonnet-4-6" })],
+    })
+    await expect(rpc("runtime.models", {
+      provider: "opencode",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Agent provider opencode is unavailable" },
+    })
+    await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
+    const created = await rpc("session.create", {
+      title: "Claude session",
+      runtime: {
+        provider: "claude-code",
+        model: "claude-sonnet-4-6",
+        reasoning: "medium",
+        permissionMode: "plan",
+        auto: false,
+      },
+      client: "desktop",
+    })
+    const sessionId = (created.result as { activeSessionId: string }).activeSessionId
+    await rpc("session.send", { sessionId, prompt: "Inspect the repository", client: "desktop" })
+
+    expect(claude.connect).toHaveBeenCalledOnce()
+    expect(claude.listModels).toHaveBeenCalledOnce()
+    expect(claude.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ provider: "claude-code" }),
+    }))
+    expect(claude.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "Inspect the repository",
+      runtime: expect.objectContaining({ provider: "claude-code" }),
+    }))
+    expect(codex.connect).not.toHaveBeenCalled()
+    expect(codex.startThread).not.toHaveBeenCalled()
   })
 
   it("serves agent-created HTML only from the active session worktree", async () => {

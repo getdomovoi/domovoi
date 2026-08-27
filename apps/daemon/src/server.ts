@@ -26,9 +26,13 @@ import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import {
   CodexAppServerAdapter,
+} from "./codex.js"
+import {
+  AgentProviderUnavailableError,
+  AgentRegistry,
   type AgentAdapter,
   type AgentEvent,
-} from "./codex.js"
+} from "./agents.js"
 import { GitWorkspaceService, type WorkspaceService } from "./workspace.js"
 import {
   injectPreviewBridge,
@@ -105,6 +109,7 @@ export type DaemonServerOptions = {
   statePath?: string
   store?: WorkspaceStore
   agent?: AgentAdapter
+  agents?: Readonly<Record<string, AgentAdapter>>
   workspaceService?: WorkspaceService
   worktreeRoot?: string
   agentTimeoutMs?: number
@@ -136,15 +141,14 @@ export class DomovoiDaemon {
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
   #store: WorkspaceStore
-  #agent: AgentAdapter
+  #agents: AgentRegistry
   #workspaceService: WorkspaceService
-  #agentConnected = false
-  #agentConnection: Promise<void> | undefined
-  #providerModels: ProviderModel[] | undefined
-  #providerModelsCachedAt = 0
-  #providerModelsRequest: Promise<ProviderModel[]> | undefined
+  #connectedAgents = new Set<string>()
+  #agentConnections = new Map<string, Promise<void>>()
+  #providerModels = new Map<string, { models: ProviderModel[]; cachedAt: number }>()
+  #providerModelRequests = new Map<string, Promise<ProviderModel[]>>()
   #loadedAgentThreads = new Set<string>()
-  #unsubscribeAgent: () => void
+  #unsubscribeAgents: Array<() => void>
   #mutationQueue = Promise.resolve()
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
@@ -190,7 +194,9 @@ export class DomovoiDaemon {
       { legacySnapshots: [demoWorkspace] },
     )
     this.#snapshot = this.#store.load()
-    this.#agent = options.agent ?? new CodexAppServerAdapter()
+    this.#agents = new AgentRegistry(
+      options.agents ?? { codex: options.agent ?? new CodexAppServerAdapter() },
+    )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(homedir(), ".domovoi", "worktrees"),
     )
@@ -198,9 +204,11 @@ export class DomovoiDaemon {
     this.#authToken = options.authToken
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
-    this.#unsubscribeAgent = this.#agent.onEvent((event) => {
-      this.#enqueueMutation(() => this.#handleAgentEvent(event))
-    })
+    this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
+      agent.onEvent((event) => {
+        this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
+      }),
+    )
   }
 
   get address(): { host: string; port: number } | undefined {
@@ -280,8 +288,8 @@ export class DomovoiDaemon {
     this.#http = undefined
     await this.#mutationQueue
     if (this.#deltaFlush) this.#flushAgentState()
-    this.#unsubscribeAgent()
-    await this.#agent.close()
+    for (const unsubscribe of this.#unsubscribeAgents) unsubscribe()
+    await Promise.all(this.#agents.adapters().map((agent) => agent.close()))
     this.#store.close()
   }
 
@@ -329,59 +337,67 @@ export class DomovoiDaemon {
     }
   }
 
-  async #ensureAgentConnected(): Promise<void> {
-    if (this.#agentConnected) return
-    if (!this.#agentConnection) {
-      const connection = this.#agent.connect().then(() => {
-        this.#agentConnected = true
+  async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
+    const agent = this.#agents.require(provider)
+    if (this.#connectedAgents.has(provider)) return agent
+    if (!this.#agentConnections.has(provider)) {
+      const connection = agent.connect().then(() => {
+        this.#connectedAgents.add(provider)
       })
-      this.#agentConnection = connection
+      this.#agentConnections.set(provider, connection)
       void connection.then(
-        () => { if (this.#agentConnection === connection) this.#agentConnection = undefined },
-        () => { if (this.#agentConnection === connection) this.#agentConnection = undefined },
+        () => { if (this.#agentConnections.get(provider) === connection) this.#agentConnections.delete(provider) },
+        () => { if (this.#agentConnections.get(provider) === connection) this.#agentConnections.delete(provider) },
       )
     }
-    await withTimeout(this.#agentConnection, this.#agentTimeoutMs, "Agent setup timed out")
+    await withTimeout(
+      this.#agentConnections.get(provider)!,
+      this.#agentTimeoutMs,
+      "Agent setup timed out",
+    )
+    return agent
   }
 
-  async #listProviderModels(): Promise<ProviderModel[]> {
-    if (
-      this.#providerModels
-      && Date.now() - this.#providerModelsCachedAt < this.#modelCacheTtlMs
-    ) return this.#providerModels
-    await this.#ensureAgentConnected()
-    if (!this.#providerModelsRequest) {
-      const discovery = this.#agent.listModels().then((models) => {
+  async #listProviderModels(provider: string): Promise<ProviderModel[]> {
+    const cached = this.#providerModels.get(provider)
+    if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
+    const agent = await this.#ensureAgentConnected(provider)
+    if (!this.#providerModelRequests.has(provider)) {
+      const discovery = agent.listModels().then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
-          .filter((model) => model.provider === "codex")
+          .filter((model) => model.provider === provider)
         if (parsed.length > 0) {
-          this.#providerModels = parsed
-          this.#providerModelsCachedAt = Date.now()
+          this.#providerModels.set(provider, { models: parsed, cachedAt: Date.now() })
         }
         return parsed
       })
-      this.#providerModelsRequest = discovery
+      this.#providerModelRequests.set(provider, discovery)
       void discovery.then(
-        () => { if (this.#providerModelsRequest === discovery) this.#providerModelsRequest = undefined },
-        () => { if (this.#providerModelsRequest === discovery) this.#providerModelsRequest = undefined },
+        () => { if (this.#providerModelRequests.get(provider) === discovery) this.#providerModelRequests.delete(provider) },
+        () => { if (this.#providerModelRequests.get(provider) === discovery) this.#providerModelRequests.delete(provider) },
       )
     }
     return withTimeout(
-      this.#providerModelsRequest,
+      this.#providerModelRequests.get(provider)!,
       this.#agentTimeoutMs,
       "Model discovery timed out",
     )
   }
 
   async #resolveRuntime(runtime: Runtime): Promise<Runtime> {
-    if (runtime.provider !== "codex") {
-      throw new RuntimeValidationError("Only the Codex provider is available")
+    let models: ProviderModel[]
+    try {
+      models = await this.#listProviderModels(runtime.provider)
+    } catch (error) {
+      if (error instanceof AgentProviderUnavailableError) {
+        throw new RuntimeValidationError(error.message)
+      }
+      throw error
     }
-    const models = await this.#listProviderModels()
     const model = runtime.model === "default"
       ? models.find((candidate) => candidate.isDefault) ?? models[0]
       : models.find((candidate) => candidate.id === runtime.model)
-    if (!model) throw new RuntimeValidationError("Model is not available from Codex")
+    if (!model) throw new RuntimeValidationError(`Model is not available from ${runtime.provider}`)
     const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
       ? model.supportedReasoningEfforts
       : [model.defaultReasoningEffort]
@@ -709,7 +725,15 @@ export class DomovoiDaemon {
       }
 
       if (method === "runtime.models") {
-        const models = await this.#listProviderModels()
+        const params = rpcMethods[method].params.parse(request.params)
+        let models: ProviderModel[]
+        try {
+          models = await this.#listProviderModels(params.provider)
+        } catch (error) {
+          if (!(error instanceof AgentProviderUnavailableError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -811,8 +835,12 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
-        if (approval.providerRequestId !== undefined) {
-          this.#agent.resolveApproval(approval.providerRequestId, params.decision)
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === approval.sessionId,
+        )
+        if (approval.providerRequestId !== undefined && session) {
+          this.#agents.require(session.runtime.provider)
+            .resolveApproval(approval.providerRequestId, params.decision)
         }
         if (params.decision === "always-project") {
           const project = this.#snapshot.project
@@ -843,9 +871,6 @@ export class DomovoiDaemon {
         this.#snapshot.approvals = this.#snapshot.approvals.filter(
           (approval) => approval.id !== params.approvalId,
         )
-        const session = this.#snapshot.sessions.find(
-          (candidate) => candidate.id === approval.sessionId,
-        )
         if (session) {
           session.state = params.decision === "deny" || params.decision === "deny-explain"
             ? "idle"
@@ -859,6 +884,10 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (params.runtime.provider !== session.runtime.provider) {
+          this.#error(socket, request.id, invalidParams, "Provider handoff is not available yet")
           return
         }
         let runtime: Runtime
@@ -952,8 +981,9 @@ export class DomovoiDaemon {
         )
         let providerThreadId: string
         try {
+          const agent = this.#agents.require(runtime.provider)
           providerThreadId = await withTimeout(
-            this.#agent.startThread({ cwd: workspace.path, runtime }),
+            agent.startThread({ cwd: workspace.path, runtime }),
             this.#agentTimeoutMs,
             "Agent setup timed out",
           )
@@ -980,7 +1010,7 @@ export class DomovoiDaemon {
           providerThreadId,
           baseCommit: workspace.baseCommit,
         })
-        this.#loadedAgentThreads.add(providerThreadId)
+        this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#snapshot.activeSessionId = sessionId
         this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
@@ -1001,18 +1031,19 @@ export class DomovoiDaemon {
           return
         }
         const createdAt = new Date().toISOString()
-        await this.#ensureAgentConnected()
-        if (!this.#loadedAgentThreads.has(session.providerThreadId)) {
+        const agent = await this.#ensureAgentConnected(session.runtime.provider)
+        const loadedThread = providerThreadKey(session.runtime.provider, session.providerThreadId)
+        if (!this.#loadedAgentThreads.has(loadedThread)) {
           await withTimeout(
-            this.#agent.resumeThread(session.providerThreadId),
+            agent.resumeThread(session.providerThreadId),
             this.#agentTimeoutMs,
             "Agent thread resume timed out",
           )
-          this.#loadedAgentThreads.add(session.providerThreadId)
+          this.#loadedAgentThreads.add(loadedThread)
         }
         const prompt = agentPromptWithAnnotations(this.#snapshot, session.id, params.prompt)
         const turnId = session.activeTurnId ?? await withTimeout(
-          this.#agent.startTurn({
+          agent.startTurn({
             threadId: session.providerThreadId,
             cwd: session.workspacePath,
             prompt,
@@ -1023,7 +1054,7 @@ export class DomovoiDaemon {
         )
         if (session.activeTurnId) {
           await withTimeout(
-            this.#agent.steerTurn(session.providerThreadId, session.activeTurnId, prompt),
+            agent.steerTurn(session.providerThreadId, session.activeTurnId, prompt),
             this.#agentTimeoutMs,
             "Agent steering timed out",
           )
@@ -1092,14 +1123,14 @@ export class DomovoiDaemon {
     }
   }
 
-  async #handleAgentEvent(event: AgentEvent): Promise<void> {
+  async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
     let threadId: string | undefined
     if ("threadId" in event) threadId = event.threadId
     else if ("params" in event && typeof event.params.threadId === "string") {
       threadId = event.params.threadId
     }
     const session = this.#snapshot.sessions.find(
-      (candidate) => candidate.providerThreadId === threadId,
+      (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
     if (!session) return
     const eventTurnId = turnIdForAgentEvent(event)
@@ -1172,7 +1203,7 @@ export class DomovoiDaemon {
         (rule) => rule.projectId === project.id && rule.command === event.command,
       )
       if (matchingRule) {
-        this.#agent.resolveApproval(event.requestId, "always-project")
+        this.#agents.require(provider).resolveApproval(event.requestId, "always-project")
       } else {
         this.#snapshot.approvals.push({
           id: `approval-${randomUUID()}`,
@@ -1285,9 +1316,10 @@ export class DomovoiDaemon {
     active: WorkspaceSnapshot["sessions"],
     client: ClientKind,
   ): Promise<boolean> {
-    const results = await Promise.allSettled(active.map((session) =>
+    const results = await Promise.allSettled(active.map(async (session) =>
       withTimeout(
-        this.#agent.interruptTurn(session.providerThreadId!, session.activeTurnId!),
+        this.#agents.require(session.runtime.provider)
+          .interruptTurn(session.providerThreadId!, session.activeTurnId!),
         this.#agentTimeoutMs,
         "Agent interrupt timed out",
       ),
@@ -1379,7 +1411,7 @@ export class DomovoiDaemon {
       if (session.providerThreadId) {
         try {
           await withTimeout(
-            this.#agent.stopThread(session.providerThreadId),
+            this.#agents.require(session.runtime.provider).stopThread(session.providerThreadId),
             this.#agentTimeoutMs,
             "Agent cleanup timed out",
           )
@@ -1387,7 +1419,9 @@ export class DomovoiDaemon {
           errors.push(error)
           console.error("Domovoi could not stop a provider thread", error)
         }
-        this.#loadedAgentThreads.delete(session.providerThreadId)
+        this.#loadedAgentThreads.delete(
+          providerThreadKey(session.runtime.provider, session.providerThreadId),
+        )
       }
       if (session.workspacePath) {
         try {
@@ -1411,6 +1445,10 @@ function turnIdForAgentEvent(event: AgentEvent): string | undefined {
     return turn.id
   }
   return undefined
+}
+
+function providerThreadKey(provider: string, threadId: string): string {
+  return `${provider}\u0000${threadId}`
 }
 
 function secureTokenMatch(expected: string, supplied: unknown): boolean {

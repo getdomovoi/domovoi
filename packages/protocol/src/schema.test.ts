@@ -205,6 +205,10 @@ describe("workspace protocol", () => {
       provider: "codex",
       client: "desktop",
     }).provider).toBe("codex")
+    expect(runtimeModelsParamsSchema.parse({
+      provider: "claude-code",
+      client: "web",
+    }).provider).toBe("claude-code")
     expect(providerModelSchema.parse({
       provider: "codex",
       id: "gpt-5.6-sol",

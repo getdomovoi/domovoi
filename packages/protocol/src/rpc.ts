@@ -149,7 +149,7 @@ export const sessionSetRuntimeParamsSchema = z.object({
 })
 
 export const runtimeModelsParamsSchema = z.object({
-  provider: z.literal("codex"),
+  provider: z.string().trim().min(1),
   client: clientKindSchema,
 })
 

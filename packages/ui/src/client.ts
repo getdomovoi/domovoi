@@ -313,7 +313,7 @@ export class DomovoiClient extends EventTarget {
     return this.request("annotation.setStatus", { annotationId, status, client: this.kind })
   }
 
-  listModels(provider: "codex"): Promise<ProviderModel[]> {
+  listModels(provider: string): Promise<ProviderModel[]> {
     return this.request("runtime.models", { provider, client: this.kind })
   }
 
