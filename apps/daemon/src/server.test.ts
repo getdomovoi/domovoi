@@ -1616,7 +1616,7 @@ describe("DomovoiDaemon", () => {
     expect(bridgedContent).toContain(artifact!.id)
 
     const signedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?bridge=${access.bridgeChannel}&expires=${access.expiresAt}&signature=${access.signature}`,
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
     )
     expect(signedPreview.status).toBe(200)
     expect(await signedPreview.text()).toContain("domovoi.preview.selection")
