@@ -61,7 +61,11 @@ describe("CodexAppServerAdapter", () => {
     transport.receive({ id: 1, result: {} })
     await connecting
 
-    const resuming = adapter.resumeThread("thread-restored")
+    const resuming = adapter.resumeThread({
+      threadId: "thread-restored",
+      cwd: "/worktree",
+      runtime: runtime("build", false),
+    })
     expect(transport.sent[2]).toMatchObject({
       id: 2,
       method: "thread/resume",

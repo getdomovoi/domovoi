@@ -210,7 +210,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await this.#request("thread/archive", { threadId })
   }
 
-  async resumeThread(threadId: string): Promise<void> {
+  async resumeThread({ threadId }: {
+    threadId: string
+    cwd: string
+    runtime: Runtime
+  }): Promise<void> {
     const result = await this.#request("thread/resume", { threadId }) as {
       thread?: { id?: string }
     }
