@@ -1,6 +1,15 @@
-import type { ProviderModel, Runtime } from "@getdomovoi/protocol"
+import type { ProviderModel, ProviderRuntime, Runtime } from "@getdomovoi/protocol"
 
 const fallbackReasoningOptions = ["low", "medium", "high"] as const
+
+const providerNames: Readonly<Record<string, string>> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  "cursor-agent": "Cursor Agent",
+  opencode: "OpenCode",
+  grok: "Grok CLI",
+  kilo: "Kilo Code",
+}
 
 export function reasoningOptionsFor(model?: ProviderModel): readonly string[] {
   return model ? model.supportedReasoningEfforts : fallbackReasoningOptions
@@ -15,4 +24,28 @@ export function selectRuntimeModel(runtime: Runtime, model: ProviderModel): Runt
       ? runtime.reasoning
       : model.defaultReasoningEffort,
   }
+}
+
+export function providerCanStartSession(provider: ProviderRuntime): boolean {
+  return provider.sessionCapable
+    && provider.status !== "auth-required"
+    && provider.status !== "missing"
+}
+
+export function providerStatusLabel(provider: ProviderRuntime): string {
+  if (provider.status === "auth-required") return "Sign in required"
+  if (provider.status === "missing") return "Not installed"
+  if (provider.status === "unknown") return "Detected"
+  return "Ready"
+}
+
+export function providerDisplayName(providerId: string): string {
+  return providerNames[providerId] ?? providerId
+}
+
+export function preferredSessionProvider(
+  providers: readonly ProviderRuntime[],
+): ProviderRuntime | undefined {
+  const available = providers.filter(providerCanStartSession)
+  return available.find((provider) => provider.id === "codex") ?? available[0]
 }

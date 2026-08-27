@@ -1,11 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
-import type { Runtime } from "@getdomovoi/protocol"
+import type { ProviderRuntime, Runtime } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AppBar, RuntimeControls } from "./workspace-shell"
+import { activeThreadKey, AppBar, ProviderReadinessList, RuntimeControls } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -44,6 +44,42 @@ describe("AppBar", () => {
     )
 
     expect(markup).toMatch(/<button(?=[^>]*aria-label="Pause all")(?=[^>]*disabled="")/)
+  })
+})
+
+describe("ProviderReadinessList", () => {
+  it("shows machine readiness without enabling unsupported adapters", () => {
+    const providers: ProviderRuntime[] = [
+      {
+        id: "claude-code",
+        command: "claude",
+        status: "ready",
+        version: "2.1.247",
+        sessionCapable: false,
+      },
+      {
+        id: "codex",
+        command: "codex",
+        status: "ready",
+        version: "0.149.0",
+        sessionCapable: true,
+      },
+      {
+        id: "grok",
+        command: "grok",
+        status: "missing",
+        sessionCapable: false,
+      },
+    ]
+
+    const markup = renderToStaticMarkup(<ProviderReadinessList providers={providers} />)
+
+    expect(markup).toContain("Claude Code")
+    expect(markup).toContain("adapter unavailable")
+    expect(markup).toContain("Codex")
+    expect(markup).toContain("Ready")
+    expect(markup).toContain("Not installed")
+    expect(markup).toContain("2.1.247")
   })
 })
 

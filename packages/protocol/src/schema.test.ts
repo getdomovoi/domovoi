@@ -254,7 +254,13 @@ describe("workspace protocol", () => {
       command: "claude",
       status: "ready",
       version: "2.1.247",
-    }).status).toBe("ready")
+      sessionCapable: false,
+    })).toMatchObject({ status: "ready", sessionCapable: false })
+    expect(providerRuntimeSchema.parse({
+      id: "codex",
+      command: "codex",
+      status: "ready",
+    }).sessionCapable).toBe(false)
     expect(providerRuntimeSchema.safeParse({
       id: "codex",
       command: "codex",

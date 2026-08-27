@@ -56,6 +56,7 @@ export const providerRuntimeSchema = z.object({
   command: z.string().trim().min(1),
   status: providerRuntimeStatusSchema,
   version: z.string().trim().min(1).optional(),
+  sessionCapable: z.boolean().default(false),
 })
 
 export const machineSchema = z.object({

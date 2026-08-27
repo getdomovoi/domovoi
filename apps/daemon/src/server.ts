@@ -326,7 +326,11 @@ export class DomovoiDaemon {
   }
 
   async #refreshProviderReadiness(): Promise<void> {
-    const providers = await this.#providerProbe!.inspect()
+    const sessionProviders = new Set(this.#agents.providers())
+    const providers = (await this.#providerProbe!.inspect()).map((provider) => ({
+      ...provider,
+      sessionCapable: sessionProviders.has(provider.id),
+    }))
     this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
       this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
