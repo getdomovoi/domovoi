@@ -7,6 +7,7 @@ import { latestArtifactForActiveSession } from "./artifacts"
 describe("latestArtifactForActiveSession", () => {
   it("returns the newest matching artifact for the active session", () => {
     const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+    snapshot.activeSessionId = "session-billing"
     snapshot.artifacts.push({
       id: "artifact-plan-next",
       sessionId: "session-billing",

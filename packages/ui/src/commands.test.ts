@@ -7,6 +7,7 @@ import { commandsForActiveSession } from "./commands"
 describe("commandsForActiveSession", () => {
   it("returns only command tools owned by the active session", () => {
     const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+    snapshot.activeSessionId = "session-billing"
     snapshot.thread.push(
       {
         id: "tool-test",
