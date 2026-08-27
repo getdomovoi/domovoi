@@ -29,6 +29,7 @@ import type {
   ClientKind,
   PermissionMode,
   ProviderModel,
+  ProviderRuntime,
   Runtime,
   SessionSummary,
   WorkspaceSnapshot,
@@ -86,7 +87,14 @@ import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 import { latestArtifactForActiveSession } from "./artifacts"
-import { reasoningOptionsFor, selectRuntimeModel } from "./runtime"
+import {
+  preferredSessionProvider,
+  providerCanStartSession,
+  providerDisplayName,
+  providerStatusLabel,
+  reasoningOptionsFor,
+  selectRuntimeModel,
+} from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
 
 const TerminalPane = lazy(async () => {
@@ -397,29 +405,139 @@ function ApprovalCard({
 
 type LauncherMode = "project" | "session" | null
 
+export function ProviderReadinessList({
+  providers,
+}: {
+  providers: readonly ProviderRuntime[]
+}) {
+  if (providers.length === 0) {
+    return <FieldDescription>Provider readiness has not been reported by this machine yet.</FieldDescription>
+  }
+
+  return (
+    <div role="list" aria-label="Provider readiness" className="divide-y rounded-lg border bg-background/40">
+      {providers.map((provider) => {
+        const status = providerStatusLabel(provider)
+        const variant = provider.status === "ready"
+          ? "success"
+          : provider.status === "auth-required"
+            ? "warning"
+            : "outline"
+        return (
+          <div key={provider.id} role="listitem" className="flex min-h-10 items-center justify-between gap-3 px-3 py-2">
+            <span className="flex min-w-0 flex-col">
+              <span className="font-medium text-foreground">{providerDisplayName(provider.id)}</span>
+              <span className="truncate font-machine text-[9px] text-faint">
+                {provider.command}{provider.version ? ` · ${provider.version}` : ""}
+                {!provider.sessionCapable && provider.status !== "missing" ? " · adapter unavailable" : ""}
+              </span>
+            </span>
+            <Badge variant={variant}>{status}</Badge>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function LauncherDialog({
   mode,
+  providers,
   onOpenChange,
   onOpenProject,
   onCreateSession,
+  onListModels,
 }: {
   mode: LauncherMode
+  providers: readonly ProviderRuntime[]
   onOpenChange: (open: boolean) => void
   onOpenProject: (path: string) => Promise<void>
   onCreateSession: (title: string, runtime: Runtime) => Promise<void>
+  onListModels: (provider: string) => Promise<ProviderModel[]>
 }) {
   const [value, setValue] = useState("")
   const [error, setError] = useState("")
   const [pending, setPending] = useState(false)
+  const [runtime, setRuntime] = useState(defaultRuntime)
+  const [models, setModels] = useState<ProviderModel[]>([])
+  const [modelsPending, setModelsPending] = useState(false)
+  const [modelsError, setModelsError] = useState("")
+  const modelRequest = useRef(0)
+  const providerReadinessKey = providers
+    .map((provider) => `${provider.id}:${provider.status}:${provider.version ?? ""}:${provider.sessionCapable}`)
+    .join("|")
 
   useEffect(() => {
     if (mode) {
       setValue("")
       setError("")
     }
-  }, [mode])
+    if (mode !== "session") {
+      modelRequest.current += 1
+      return
+    }
+
+    const provider = preferredSessionProvider(providers)
+    if (!provider) {
+      setModels([])
+      setModelsError("No provider on this machine can start a session")
+      return
+    }
+
+    const request = ++modelRequest.current
+    setRuntime({ ...defaultRuntime, provider: provider.id })
+    setModels([])
+    setModelsPending(true)
+    setModelsError("")
+    void onListModels(provider.id).then(
+      (nextModels) => {
+        if (request !== modelRequest.current) return
+        setModels(nextModels)
+        const selected = nextModels.find((model) => model.isDefault) ?? nextModels[0]
+        if (selected) setRuntime((current) => selectRuntimeModel(current, selected))
+        else setModelsError(`${providerDisplayName(provider.id)} did not report any models`)
+      },
+      (cause: unknown) => {
+        if (request === modelRequest.current) {
+          setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
+        }
+      },
+    ).finally(() => {
+      if (request === modelRequest.current) setModelsPending(false)
+    })
+  }, [mode, onListModels, providerReadinessKey])
+
+  const selectProvider = (provider: ProviderRuntime) => {
+    if (!providerCanStartSession(provider)) return
+    const request = ++modelRequest.current
+    setRuntime((current) => ({ ...current, provider: provider.id, model: "default" }))
+    setModels([])
+    setModelsPending(true)
+    setModelsError("")
+    void onListModels(provider.id).then(
+      (nextModels) => {
+        if (request !== modelRequest.current) return
+        setModels(nextModels)
+        const selected = nextModels.find((model) => model.isDefault) ?? nextModels[0]
+        if (selected) setRuntime((current) => selectRuntimeModel(current, selected))
+        else setModelsError(`${providerDisplayName(provider.id)} did not report any models`)
+      },
+      (cause: unknown) => {
+        if (request === modelRequest.current) {
+          setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
+        }
+      },
+    ).finally(() => {
+      if (request === modelRequest.current) setModelsPending(false)
+    })
+  }
 
   const isProject = mode === "project"
+  const selectedProvider = providers.find((provider) => provider.id === runtime.provider)
+  const selectedModel = models.find((model) =>
+    model.provider === runtime.provider && model.id === runtime.model,
+  )
+  const runtimeReady = Boolean(selectedProvider && providerCanStartSession(selectedProvider) && selectedModel)
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     const input = value.trim()
@@ -428,7 +546,7 @@ function LauncherDialog({
     setError("")
     try {
       if (isProject) await onOpenProject(input)
-      else await onCreateSession(input, defaultRuntime)
+      else await onCreateSession(input, runtime)
       onOpenChange(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Domovoi could not complete the request")
@@ -445,7 +563,7 @@ function LauncherDialog({
         onOpenChange(open)
       }}
     >
-      <DialogContent>
+      <DialogContent className={cn("max-h-[calc(100dvh-2rem)] overflow-y-auto", !isProject && "sm:max-w-lg")}>
         <form className="contents" onSubmit={(event) => void submit(event)}>
           <DialogHeader>
             <DialogTitle>{isProject ? "Open a project" : "Start a session"}</DialogTitle>
@@ -474,10 +592,86 @@ function LauncherDialog({
               </FieldDescription>
               <FieldError>{error}</FieldError>
             </Field>
+            {!isProject ? (
+              <Field>
+                <FieldLabel>Provider and model</FieldLabel>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="justify-between"
+                        aria-label="Execution provider"
+                        disabled={pending}
+                      >
+                        <span className="truncate">
+                          {selectedProvider ? providerDisplayName(selectedProvider.id) : "No provider available"}
+                        </span>
+                        <ChevronDownIcon data-icon="inline-end" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-72">
+                      <DropdownMenuLabel>Execution provider</DropdownMenuLabel>
+                      <DropdownMenuGroup>
+                        {providers.map((provider) => (
+                          <DropdownMenuItem
+                            key={provider.id}
+                            disabled={pending || !providerCanStartSession(provider)}
+                            onSelect={() => selectProvider(provider)}
+                          >
+                            {provider.id === runtime.provider ? <CheckIcon /> : null}
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span>{providerDisplayName(provider.id)}</span>
+                              <span className="truncate font-machine text-[9px] text-faint">
+                                {providerStatusLabel(provider)}{provider.version ? ` · ${provider.version}` : ""}
+                                {!provider.sessionCapable && provider.status !== "missing" ? " · adapter unavailable" : ""}
+                              </span>
+                            </span>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="justify-between"
+                        aria-label="Model"
+                        aria-describedby={modelsError ? "launcher-model-error" : undefined}
+                        aria-invalid={Boolean(modelsError)}
+                        disabled={pending || modelsPending || models.length === 0}
+                      >
+                        <span className="truncate">{modelsPending ? "Loading models" : selectedModel?.displayName ?? "Select model"}</span>
+                        <ChevronDownIcon data-icon="inline-end" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-72">
+                      <DropdownMenuLabel>{providerDisplayName(runtime.provider)} models</DropdownMenuLabel>
+                      <DropdownMenuGroup>
+                        {models.map((model) => (
+                          <DropdownMenuItem key={model.id} onSelect={() => setRuntime((current) => selectRuntimeModel(current, model))}>
+                            {model.id === runtime.model ? <CheckIcon /> : null}
+                            <span className="flex min-w-0 flex-col">
+                              <span>{model.displayName}</span>
+                              <span className="truncate font-machine text-[9px] text-faint">{model.id}</span>
+                            </span>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <FieldError id="launcher-model-error">{modelsError}</FieldError>
+                <ProviderReadinessList providers={providers} />
+              </Field>
+            ) : null}
           </FieldGroup>
           <DialogFooter>
             <Button type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={!value.trim() || pending}>
+            <Button type="submit" disabled={!value.trim() || pending || (!isProject && !runtimeReady)}>
               {isProject ? <FolderOpenIcon data-icon="inline-start" /> : <BotIcon data-icon="inline-start" />}
               {pending ? "Working" : isProject ? "Open project" : "Create session"}
             </Button>
@@ -715,11 +909,10 @@ export function RuntimeControls({
   const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
 
   useEffect(() => {
-    if (runtime.provider !== "codex") return
     let active = true
     setModelsPending(true)
     setModelsError("")
-    void onListModels("codex").then(
+    void onListModels(runtime.provider).then(
       (nextModels) => { if (active) setModels(nextModels) },
       (cause: unknown) => {
         if (active) setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
@@ -1405,9 +1598,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
         {snapshot ? <LauncherDialog
           mode={launcherMode}
+          providers={snapshot.machine.providers}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
           onOpenProject={openProject}
           onCreateSession={createSession}
+          onListModels={listModels}
         /> : null}
       </div>
     </TooltipProvider>
