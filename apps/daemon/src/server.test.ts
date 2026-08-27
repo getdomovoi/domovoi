@@ -1283,7 +1283,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      agent,
+      agents: { codex: agent },
       workspaceService,
       agentTimeoutMs: 100,
       modelCacheTtlMs: 0,
@@ -1464,7 +1464,7 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(unsupportedRuntime).toMatchObject({
-      error: { code: -32602, message: "Provider handoff is not available yet" },
+      error: { code: -32602, message: "Stop the active turn before changing providers" },
     })
 
     const unsupportedReasoning = await rpc("session.setRuntime", {
@@ -1519,10 +1519,10 @@ describe("DomovoiDaemon", () => {
   })
 
   it("routes model discovery and sessions through the requested provider adapter", async () => {
-    const makeAgent = (models: ProviderModel[]) => ({
+    const makeAgent = (models: ProviderModel[], threadId: string) => ({
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => models),
-      startThread: vi.fn(async () => "thread"),
+      startThread: vi.fn(async () => threadId),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "turn"),
@@ -1532,13 +1532,13 @@ describe("DomovoiDaemon", () => {
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter)
-    const codex = makeAgent(codexModels())
+    const codex = makeAgent(codexModels(), "codex-thread")
     const claude = makeAgent([{
       ...codexModels()[0]!,
       provider: "claude-code",
       id: "claude-sonnet-4-6",
       displayName: "Claude Sonnet 4.6",
-    }])
+    }], "claude-thread")
     const workspaceService = {
       inspect: vi.fn(async () => ({
         root: "/code/domovoi",
@@ -1608,19 +1608,71 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     const sessionId = (created.result as { activeSessionId: string }).activeSessionId
-    await rpc("session.send", { sessionId, prompt: "Inspect the repository", client: "desktop" })
 
     expect(claude.connect).toHaveBeenCalledOnce()
     expect(claude.listModels).toHaveBeenCalledOnce()
     expect(claude.startThread).toHaveBeenCalledWith(expect.objectContaining({
       runtime: expect.objectContaining({ provider: "claude-code" }),
     }))
-    expect(claude.startTurn).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: "Inspect the repository",
-      runtime: expect.objectContaining({ provider: "claude-code" }),
-    }))
     expect(codex.connect).not.toHaveBeenCalled()
     expect(codex.startThread).not.toHaveBeenCalled()
+
+    const handedOff = await rpc("session.setRuntime", {
+      sessionId,
+      runtime: {
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        reasoning: "high",
+        permissionMode: "build",
+        auto: false,
+      },
+      client: "desktop",
+    })
+    expect(handedOff).toMatchObject({
+      result: {
+        sessions: [expect.objectContaining({
+          id: sessionId,
+          providerThreadId: "codex-thread",
+          runtime: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol" }),
+        })],
+        thread: expect.arrayContaining([expect.objectContaining({
+          kind: "system",
+          body: "Handed off claude-code / claude-sonnet-4-6 to codex / gpt-5.6-sol.",
+        })]),
+      },
+    })
+    expect(workspaceService.checkpoint).toHaveBeenCalledWith(
+      `/worktrees/${sessionId}`,
+      "before provider handoff",
+    )
+    expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: `/worktrees/${sessionId}`,
+      runtime: expect.objectContaining({ provider: "codex" }),
+    }))
+    expect(claude.stopThread).toHaveBeenCalledWith("claude-thread")
+
+    await rpc("session.send", { sessionId, prompt: "Inspect the repository", client: "desktop" })
+    expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "codex-thread",
+      prompt: expect.stringMatching(/<domovoi_handoff_context>[\s\S]*Inspect the repository/),
+      runtime: expect.objectContaining({ provider: "codex" }),
+    }))
+    expect(claude.startTurn).not.toHaveBeenCalled()
+
+    await expect(rpc("session.setRuntime", {
+      sessionId,
+      runtime: {
+        provider: "claude-code",
+        model: "claude-sonnet-4-6",
+        reasoning: "medium",
+        permissionMode: "plan",
+        auto: false,
+      },
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Stop the active turn before changing providers" },
+    })
+    expect(claude.startThread).toHaveBeenCalledOnce()
   })
 
   it("serves agent-created HTML only from the active session worktree", async () => {
