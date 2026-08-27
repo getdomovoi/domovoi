@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { mkdir, realpath } from "node:fs/promises"
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
 const execute = promisify(execFile)
@@ -33,6 +33,13 @@ export interface WorkspaceService {
 
 async function git(repositoryPath: string, arguments_: string[]): Promise<string> {
   const result = await execute("git", ["-C", repositoryPath, ...arguments_], {
+    encoding: "utf8",
+  })
+  return result.stdout.trim()
+}
+
+async function gitDirectory(directory: string, arguments_: string[]): Promise<string> {
+  const result = await execute("git", [`--git-dir=${directory}`, ...arguments_], {
     encoding: "utf8",
   })
   return result.stdout.trim()
@@ -115,9 +122,9 @@ export class GitWorkspaceService implements WorkspaceService {
       "--path-format=absolute",
       "--git-common-dir",
     ])
-    await git(path, ["worktree", "remove", "--force", path])
+    await gitDirectory(commonDirectory, ["worktree", "remove", "--force", path])
     if (branch.startsWith("domovoi/")) {
-      await git(dirname(commonDirectory), ["branch", "-D", branch])
+      await gitDirectory(commonDirectory, ["branch", "-D", branch])
     }
   }
 }
