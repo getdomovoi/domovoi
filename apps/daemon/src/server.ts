@@ -1,5 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http"
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { readFile, realpath } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
@@ -77,6 +77,8 @@ export class DomovoiDaemon {
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
   #authTimeoutMs: number
+  #artifactSigningSecret = randomBytes(32).toString("base64url")
+  #artifactAccessTtlSeconds = 60
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -137,7 +139,7 @@ export class DomovoiDaemon {
       }
 
       if (request.method === "GET" && request.url?.startsWith("/artifacts/")) {
-        if (!canServeArtifacts(this.host) || !this.#acceptsHost(request.headers.host)) {
+        if (!this.#acceptsHost(request.headers.host)) {
           response.writeHead(404, { "content-type": "application/json" })
           response.end(JSON.stringify({ error: "not_found" }))
           return
@@ -305,11 +307,26 @@ export class DomovoiDaemon {
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
     let artifactId: string
     let bridgeChannel: string | undefined
+    let authorized = false
     try {
       const requestUrl = new URL(url, "http://domovoi.local")
       artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
       bridgeChannel = validPreviewBridgeChannel(requestUrl.searchParams.get("bridge"))
+      const expiresAt = Number(requestUrl.searchParams.get("expires"))
+      const signature = requestUrl.searchParams.get("signature")
+      authorized = artifactAccessMatches(
+        this.#artifactSigningSecret,
+        artifactId,
+        bridgeChannel,
+        expiresAt,
+        signature,
+      )
     } catch {
+      response.writeHead(404, { "content-type": "application/json" })
+      response.end(JSON.stringify({ error: "not_found" }))
+      return
+    }
+    if (!canServeArtifacts(this.host, authorized)) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -334,7 +351,7 @@ export class DomovoiDaemon {
       const content = await readFile(path, "utf8")
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
-        "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors http://127.0.0.1:5178 http://localhost:5178 file:",
+        "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`,
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
@@ -392,6 +409,34 @@ export class DomovoiDaemon {
 
     try {
       let changed = false
+      if (method === "artifact.authorize") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const artifact = this.#snapshot.artifacts.find(
+          (candidate) => candidate.id === params.artifactId && candidate.type === "preview",
+        )
+        if (!artifact || artifact.mimeType !== "text/html" || !artifact.path) {
+          this.#error(socket, request.id, invalidParams, "Preview artifact does not exist")
+          return
+        }
+        const expiresAt = Math.floor(Date.now() / 1_000) + this.#artifactAccessTtlSeconds
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            artifactId: params.artifactId,
+            ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+            expiresAt,
+            signature: signArtifactAccess(
+              this.#artifactSigningSecret,
+              params.artifactId,
+              params.bridgeChannel,
+              expiresAt,
+            ),
+          }),
+        })
+        return
+      }
+
       if (method === "runtime.models") {
         const models = await this.#listProviderModels()
         this.#send(socket, {
@@ -1095,8 +1140,60 @@ function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost"
 }
 
-export function canServeArtifacts(host: string): boolean {
-  return isLoopbackHost(host)
+export function canServeArtifacts(host: string, authorized = false): boolean {
+  return isLoopbackHost(host) || authorized
+}
+
+export function frameAncestorsFor(origins: Iterable<string>): string {
+  const sources: string[] = []
+  for (const origin of origins) {
+    try {
+      const parsed = new URL(origin)
+      if (parsed.protocol === "file:") sources.push("file:")
+      else if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        sources.push(parsed.origin)
+      }
+    } catch {
+      continue
+    }
+  }
+  return sources.length > 0 ? [...new Set(sources)].join(" ") : "'none'"
+}
+
+function artifactAccessPayload(
+  artifactId: string,
+  bridgeChannel: string | undefined,
+  expiresAt: number,
+): string {
+  return JSON.stringify([artifactId, bridgeChannel ?? null, expiresAt])
+}
+
+export function signArtifactAccess(
+  secret: string,
+  artifactId: string,
+  bridgeChannel: string | undefined,
+  expiresAt: number,
+): string {
+  return createHmac("sha256", secret)
+    .update(artifactAccessPayload(artifactId, bridgeChannel, expiresAt))
+    .digest("base64url")
+}
+
+export function artifactAccessMatches(
+  secret: string,
+  artifactId: string,
+  bridgeChannel: string | undefined,
+  expiresAt: number,
+  suppliedSignature: string | null,
+  now = Math.floor(Date.now() / 1_000),
+): boolean {
+  if (!Number.isSafeInteger(expiresAt) || expiresAt < now || typeof suppliedSignature !== "string") {
+    return false
+  }
+  return secureTokenMatch(
+    signArtifactAccess(secret, artifactId, bridgeChannel, expiresAt),
+    suppliedSignature,
+  )
 }
 
 export function hostAuthorityMatches(

@@ -8,6 +8,7 @@ import {
   runtimeSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
+import { previewBridgeChannelSchema } from "./preview-bridge.js"
 
 export const requestIdSchema = z.union([z.string(), z.number()])
 export const daemonAuthenticationErrorCode = -32001 as const
@@ -42,6 +43,19 @@ export const helloParamsSchema = z.object({
   client: clientKindSchema,
   clientVersion: z.string().min(1),
   authToken: z.string().min(1).optional(),
+})
+
+export const artifactAuthorizeParamsSchema = z.object({
+  artifactId: z.string().min(1),
+  bridgeChannel: previewBridgeChannelSchema.optional(),
+  client: clientKindSchema,
+})
+
+export const artifactAuthorizeResultSchema = z.object({
+  artifactId: z.string().min(1),
+  bridgeChannel: previewBridgeChannelSchema.optional(),
+  expiresAt: z.number().int().positive(),
+  signature: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
 })
 
 export const systemPauseAllParamsSchema = z.object({
@@ -132,6 +146,10 @@ export const annotationSetStatusParamsSchema = z.object({
 
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
+  "artifact.authorize": {
+    params: artifactAuthorizeParamsSchema,
+    result: artifactAuthorizeResultSchema,
+  },
   "system.pauseAll": {
     params: systemPauseAllParamsSchema,
     result: workspaceSnapshotSchema,
@@ -176,3 +194,4 @@ export type RpcMethod = keyof typeof rpcMethods
 export type RpcRequest = z.infer<typeof rpcRequestSchema>
 export type RpcResponse = z.infer<typeof rpcResponseSchema>
 export type RpcNotification = z.infer<typeof rpcNotificationSchema>
+export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>

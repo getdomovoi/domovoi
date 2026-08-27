@@ -5,6 +5,8 @@ import {
   annotationCreateParamsSchema,
   annotationReplyParamsSchema,
   annotationSetStatusParamsSchema,
+  artifactAuthorizeParamsSchema,
+  artifactAuthorizeResultSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
   createEmptyWorkspace,
@@ -24,6 +26,29 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("validates scoped artifact access capabilities", () => {
+    expect(artifactAuthorizeParamsSchema.parse({
+      artifactId: "preview-1",
+      bridgeChannel: "preview_channel_123456",
+      client: "tablet",
+    })).toEqual({
+      artifactId: "preview-1",
+      bridgeChannel: "preview_channel_123456",
+      client: "tablet",
+    })
+    expect(artifactAuthorizeParamsSchema.safeParse({
+      artifactId: "preview-1",
+      bridgeChannel: "short",
+      client: "tablet",
+    }).success).toBe(false)
+    expect(artifactAuthorizeResultSchema.parse({
+      artifactId: "preview-1",
+      bridgeChannel: "preview_channel_123456",
+      expiresAt: 1_800_000_000,
+      signature: "a".repeat(43),
+    }).signature).toHaveLength(43)
+  })
+
   it("accepts an optional daemon credential during hello", () => {
     expect(helloParamsSchema.parse({
       client: "web",
