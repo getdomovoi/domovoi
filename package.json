@@ -12,6 +12,7 @@
     "dev": "pnpm --parallel --filter @getdomovoi/daemon --filter @getdomovoi/web dev",
     "dev:desktop": "pnpm --filter @getdomovoi/desktop dev",
     "lint": "pnpm -r --if-present lint",
+    "pretest": "pnpm --filter @getdomovoi/protocol build",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck"
   }
