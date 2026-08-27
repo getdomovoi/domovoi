@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose an outcome that would improve Domovoi
+title: "feat: "
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: I am describing the user problem, not only a preferred implementation.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who is blocked, in what environment, and what are they trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the behavior and how a user would know it worked.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Primary surface
+      options:
+        - Desktop app
+        - Web or installed PWA
+        - Mobile or tablet
+        - Daemon or remote transport
+        - Agent runtime or permissions
+        - Preview or annotations
+        - Protocol or integrations
+        - Packaging or distribution
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Example workflow
+      description: Walk through the proposed experience from the user's perspective.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds and relevant tradeoffs.
+  - type: textarea
+    id: technical
+    attributes:
+      label: Technical context
+      description: Optional protocol, security, platform, or compatibility constraints.

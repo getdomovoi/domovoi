@@ -1,0 +1,81 @@
+name: Bug report
+description: Report reproducible behavior that is not working as intended
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Domovoi. Do not include credentials, tokens, private repository
+        content, or undisclosed vulnerabilities. Report security issues through the private link
+        below.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests.
+          required: true
+        - label: This is not an undisclosed security vulnerability.
+          required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Desktop app
+        - Web or installed PWA
+        - Daemon
+        - Terminal
+        - Preview or annotations
+        - Protocol
+        - Packaging or installation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Use the app version, package version, or commit SHA.
+      placeholder: 86ba86f
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture, client, Node version, and whether the daemon is local, WSL, or remote.
+      placeholder: Fedora 43 x86_64, web client, Node 22, remote daemon over Tailscale
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Start...
+        2. Open...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted logs or screenshots
+      description: Drag files here after removing secrets and private code. Use code fences for logs.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
