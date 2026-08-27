@@ -11,6 +11,7 @@ import {
   rpcMethods,
   rpcRequestSchema,
   workspaceSnapshotSchema,
+  type Artifact,
   type ProviderModel,
   type RpcMethod,
   type Runtime,
@@ -39,6 +40,46 @@ const internalError = -32603
 
 class RuntimeValidationError extends Error {}
 
+export function appendPlanDelta(
+  artifacts: Artifact[],
+  sessionId: string,
+  delta: string,
+): Artifact {
+  const artifactId = `plan-${sessionId}`
+  const legacyPrefix = `${artifactId}-`
+  const matching = artifacts.filter((artifact) =>
+    artifact.sessionId === sessionId
+    && artifact.type === "plan"
+    && (artifact.id === artifactId || artifact.id.startsWith(legacyPrefix)),
+  )
+
+  if (matching.length === 0) {
+    const artifact: Artifact = {
+      id: artifactId,
+      sessionId,
+      title: "Working plan",
+      type: "plan",
+      revision: 1,
+      mimeType: "text/markdown",
+      content: delta,
+    }
+    artifacts.push(artifact)
+    return artifact
+  }
+
+  const artifact = matching.find((candidate) => candidate.id === artifactId) ?? matching[0]!
+  artifact.id = artifactId
+  artifact.title = "Working plan"
+  artifact.mimeType = "text/markdown"
+  artifact.content = `${matching.map((candidate) => candidate.content ?? "").join("")}${delta}`
+  artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
+
+  for (let index = artifacts.length - 1; index >= 0; index -= 1) {
+    if (matching.includes(artifacts[index]!) && artifacts[index] !== artifact) artifacts.splice(index, 1)
+  }
+  return artifact
+}
+
 export type DaemonServerOptions = {
   host?: string
   port?: number
@@ -49,6 +90,7 @@ export type DaemonServerOptions = {
   workspaceService?: WorkspaceService
   worktreeRoot?: string
   agentTimeoutMs?: number
+  modelCacheTtlMs?: number
 }
 
 export class DomovoiDaemon {
@@ -64,15 +106,18 @@ export class DomovoiDaemon {
   #agentConnected = false
   #agentConnection: Promise<void> | undefined
   #providerModels: ProviderModel[] | undefined
+  #providerModelsCachedAt = 0
   #providerModelsRequest: Promise<ProviderModel[]> | undefined
   #unsubscribeAgent: () => void
   #mutationQueue = Promise.resolve()
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
+  #modelCacheTtlMs: number
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
+    this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
@@ -234,13 +279,17 @@ export class DomovoiDaemon {
   }
 
   async #listProviderModels(): Promise<ProviderModel[]> {
-    if (this.#providerModels) return this.#providerModels
+    if (
+      this.#providerModels
+      && Date.now() - this.#providerModelsCachedAt < this.#modelCacheTtlMs
+    ) return this.#providerModels
     await this.#ensureAgentConnected()
     if (!this.#providerModelsRequest) {
       const discovery = this.#agent.listModels().then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === "codex")
         this.#providerModels = parsed
+        this.#providerModelsCachedAt = Date.now()
         return parsed
       })
       this.#providerModelsRequest = discovery
@@ -265,10 +314,13 @@ export class DomovoiDaemon {
       ? models.find((candidate) => candidate.isDefault) ?? models[0]
       : models.find((candidate) => candidate.id === runtime.model)
     if (!model) throw new RuntimeValidationError("Model is not available from Codex")
-    const reasoning = runtime.model === "default" ? model.defaultReasoningEffort : runtime.reasoning
     const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
       ? model.supportedReasoningEfforts
       : [model.defaultReasoningEffort]
+    const reasoning = runtime.model === "default"
+      && !supportedReasoningEfforts.includes(runtime.reasoning)
+      ? model.defaultReasoningEffort
+      : runtime.reasoning
     if (!supportedReasoningEfforts.includes(reasoning)) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
     }
@@ -721,22 +773,7 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-delta") {
-      const artifactId = `plan-${session.id}-${event.turnId ?? "current"}`
-      const existing = this.#snapshot.artifacts.find((artifact) => artifact.id === artifactId)
-      if (existing) {
-        existing.content = `${existing.content ?? ""}${event.delta}`
-        existing.revision += 1
-      } else {
-        this.#snapshot.artifacts.push({
-          id: artifactId,
-          sessionId: session.id,
-          title: "Working plan",
-          type: "plan",
-          revision: 1,
-          mimeType: "text/markdown",
-          content: event.delta,
-        })
-      }
+      appendPlanDelta(this.#snapshot.artifacts, session.id, event.delta)
     }
 
     if (event.type === "command-output") {

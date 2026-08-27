@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { DomovoiDaemon } from "./server.js"
+import { appendPlanDelta, DomovoiDaemon } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
@@ -32,6 +32,44 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("migrates turn-scoped plan artifacts into one session plan", () => {
+    const artifacts = [
+      {
+        id: "plan-session-a-turn-1",
+        sessionId: "session-a",
+        title: "Working plan",
+        type: "plan" as const,
+        revision: 1,
+        mimeType: "text/markdown",
+        content: "1. Inspect.\n",
+      },
+      {
+        id: "preview-a",
+        sessionId: "session-a",
+        title: "Preview",
+        type: "preview" as const,
+        revision: 1,
+      },
+      {
+        id: "plan-session-a-turn-2",
+        sessionId: "session-a",
+        title: "Working plan",
+        type: "plan" as const,
+        revision: 2,
+        mimeType: "text/markdown",
+        content: "2. Implement.\n",
+      },
+    ]
+
+    expect(appendPlanDelta(artifacts, "session-a", "3. Verify.")).toMatchObject({
+      id: "plan-session-a",
+      revision: 4,
+      content: "1. Inspect.\n2. Implement.\n3. Verify.",
+    })
+    expect(artifacts.filter((artifact) => artifact.type === "plan")).toHaveLength(1)
+    expect(artifacts.find((artifact) => artifact.id === "preview-a")).toBeDefined()
+  })
+
   it("serves an empty initial workspace over JSON-RPC", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
@@ -608,6 +646,7 @@ describe("DomovoiDaemon", () => {
       agent,
       workspaceService,
       agentTimeoutMs: 100,
+      modelCacheTtlMs: 0,
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -639,6 +678,8 @@ describe("DomovoiDaemon", () => {
     expect(listedModels).toMatchObject({
       result: [expect.objectContaining({ id: "gpt-5.6-sol", provider: "codex" })],
     })
+    await rpc("runtime.models", { provider: "codex", client: "desktop" })
+    expect(agent.listModels).toHaveBeenCalledTimes(2)
 
     const opened = await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
     expect(opened).toMatchObject({
@@ -662,7 +703,7 @@ describe("DomovoiDaemon", () => {
 
     const created = await rpc("session.create", {
       title: "Build persistence",
-      runtime,
+      runtime: { ...runtime, model: "default" },
       client: "desktop",
     })
     const createdResult = created.result as { activeSessionId: string; sessions: Array<{ id: string }> }
@@ -711,6 +752,12 @@ describe("DomovoiDaemon", () => {
         delta: "2. Fix the implementation.",
       })
       listener({
+        type: "plan-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-2",
+        delta: "\n3. Verify the next turn.",
+      })
+      listener({
         type: "approval-requested",
         requestId: 71,
         threadId: "provider-thread-1",
@@ -730,9 +777,9 @@ describe("DomovoiDaemon", () => {
         artifacts: [expect.objectContaining({
           sessionId,
           type: "plan",
-          revision: 2,
+          revision: 3,
           mimeType: "text/markdown",
-          content: "1. Inspect the failing test.\n2. Fix the implementation.",
+          content: "1. Inspect the failing test.\n2. Fix the implementation.\n3. Verify the next turn.",
         })],
         approvals: [expect.objectContaining({ providerRequestId: 71, command: "pnpm build" })],
       },
