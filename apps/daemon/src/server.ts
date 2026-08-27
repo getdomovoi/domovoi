@@ -27,6 +27,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import {
   CodexAppServerAdapter,
 } from "./codex.js"
+import { ClaudeAgentSdkAdapter } from "./claude.js"
 import {
   AgentProviderUnavailableError,
   AgentRegistry,
@@ -200,7 +201,10 @@ export class DomovoiDaemon {
     )
     this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
-      options.agents ?? { codex: options.agent ?? new CodexAppServerAdapter() },
+      options.agents ?? {
+        "claude-code": new ClaudeAgentSdkAdapter(),
+        codex: options.agent ?? new CodexAppServerAdapter(),
+      },
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
       options.worktreeRoot ?? join(homedir(), ".domovoi", "worktrees"),
