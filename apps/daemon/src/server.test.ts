@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { DomovoiDaemon } from "./server.js"
+import { canServeArtifacts, DomovoiDaemon, hostAuthorityMatches } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
@@ -32,6 +32,193 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("serves preview documents only through loopback", () => {
+    expect(canServeArtifacts("127.0.0.1")).toBe(true)
+    expect(canServeArtifacts("::1")).toBe(true)
+    expect(canServeArtifacts("100.64.0.10")).toBe(false)
+    expect(canServeArtifacts("0.0.0.0")).toBe(false)
+  })
+
+  it("normalizes loopback Host authorities without widening them", () => {
+    expect(hostAuthorityMatches("[::1]:47831", "::1", 47831)).toBe(true)
+    expect(hostAuthorityMatches("localhost:47831", "::1", 47831)).toBe(true)
+    expect(hostAuthorityMatches("127.0.0.1:47831", "127.0.0.1", 47831)).toBe(true)
+    expect(hostAuthorityMatches("localhost:47832", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("attacker.example:47831", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1", "127.0.0.1", 80)).toBe(true)
+    expect(hostAuthorityMatches("localhost", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("user@127.0.0.1:47831", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1:47831/path", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1:47831?query", "127.0.0.1", 47831)).toBe(false)
+    expect(hostAuthorityMatches("127.0.0.1:47831#fragment", "127.0.0.1", 47831)).toBe(false)
+  })
+
+  it("refuses an unauthenticated non-loopback listener", () => {
+    expect(() => new DomovoiDaemon({
+      host: "0.0.0.0",
+      port: 0,
+      statePath: ":memory:",
+    })).toThrow("Non-loopback listeners require explicit protected-transport opt-in")
+    expect(() => new DomovoiDaemon({
+      host: "0.0.0.0",
+      port: 0,
+      statePath: ":memory:",
+      allowRemoteTransport: true,
+    })).toThrow("A daemon token is required outside loopback")
+  })
+
+  it("requires the configured token before serving daemon state", async () => {
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+      authToken: "correct-horse-battery-staple",
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const unauthenticated = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const unauthenticatedMessages: Array<Record<string, unknown>> = []
+    unauthenticated.on("message", (data) => {
+      unauthenticatedMessages.push(JSON.parse(data.toString()) as Record<string, unknown>)
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await new Promise<void>((resolve, reject) => {
+      unauthenticated.once("open", resolve)
+      unauthenticated.once("error", reject)
+    })
+    const rpc = (id: number, method: string, params: Record<string, unknown>) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await expect(rpc(1, "workspace.get", {})).resolves.toMatchObject({
+      error: { code: -32001, message: "Daemon authentication required" },
+    })
+    await expect(rpc(2, "system.hello", {
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "wrong-token",
+    })).resolves.toMatchObject({
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+    await expect(rpc(3, "system.hello", {
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "correct-horse-battery-staple",
+    })).resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
+    await expect(rpc(4, "workspace.get", {})).resolves.toMatchObject({
+      result: { project: { id: "project-acme-api" } },
+    })
+    await expect(rpc(5, "session.activate", {
+      sessionId: "session-audit",
+      client: "web",
+    })).resolves.toMatchObject({ result: { activeSessionId: "session-audit" } })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(unauthenticatedMessages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "workspace.changed" }),
+    ]))
+
+    const pipelined = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      pipelined.once("open", resolve)
+      pipelined.once("error", reject)
+    })
+    const pipelinedResponses = new Map<number, Record<string, unknown>>()
+    const receivedBoth = new Promise<void>((resolve) => {
+      pipelined.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+        if (message.id === 6 || message.id === 7) pipelinedResponses.set(message.id, message)
+        if (pipelinedResponses.size === 2) resolve()
+      })
+    })
+    pipelined.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "system.hello",
+      params: {
+        client: "web",
+        clientVersion: "0.0.1",
+        authToken: "correct-horse-battery-staple",
+      },
+    }))
+    pipelined.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "runtime.models",
+      params: { provider: "codex", client: "web" },
+    }))
+    await receivedBoth
+    expect(pipelinedResponses.get(6)).toHaveProperty("result")
+    expect(pipelinedResponses.get(7)).toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    pipelined.close()
+
+    const attacker = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      attacker.once("open", resolve)
+      attacker.once("error", reject)
+    })
+    const rejected = new Promise<{ code: number; reason: string }>((resolve) => {
+      attacker.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
+    })
+    for (const id of [8, 9, 10]) {
+      attacker.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "system.hello",
+        params: { client: "web", clientVersion: "0.0.1", authToken: "wrong-token" },
+      }))
+    }
+    await expect(rejected).resolves.toEqual({ code: 1008, reason: "authentication failed" })
+    unauthenticated.close()
+    socket.close()
+  })
+
+  it("closes sockets that never authenticate", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "correct-horse-battery-staple",
+      authTimeoutMs: 10,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const closed = new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      socket.once("error", reject)
+      socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
+    })
+
+    await expect(closed).resolves.toEqual({ code: 1008, reason: "authentication timeout" })
+  })
+
   it("interrupts scoped and global turns and records who paused them", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.sessions[0]!.state = "active"

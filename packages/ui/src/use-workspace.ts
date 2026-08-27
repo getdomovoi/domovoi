@@ -28,7 +28,7 @@ export function isCurrentConnection<T>(current: T | null, candidate: T): boolean
   return current === candidate
 }
 
-export function useWorkspace(url: string, kind: ClientKind) {
+export function useWorkspace(url: string, kind: ClientKind, authToken?: string) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
   const [workspace, setWorkspace] = useState<WorkspaceSnapshotState>(() => ({
@@ -45,7 +45,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
     let active = true
     setConnected(false)
     setWorkspace({ target, snapshot: null })
-    const client = new DomovoiClient(url, kind)
+    const client = new DomovoiClient(url, kind, { ...(authToken ? { authToken } : {}) })
     clientRef.current = client
     const onSnapshot = (event: Event) => {
       if (active) updateSnapshot((event as CustomEvent<WorkspaceSnapshot>).detail)
@@ -78,7 +78,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
       client.disconnect()
       clientRef.current = null
     }
-  }, [kind, target, updateSnapshot, url])
+  }, [authToken, kind, target, updateSnapshot, url])
 
   const resolveApproval = useCallback(
     async (

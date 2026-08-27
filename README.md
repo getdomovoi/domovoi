@@ -51,6 +51,10 @@ pnpm dev
 pnpm dev:desktop
 ```
 
+Remote daemon listeners require both `DOMOVOI_AUTH_TOKEN` and
+`DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. The opt-in is only for an encrypted outer transport such as
+a Tailscale tailnet or SSH tunnel; the daemon does not provide TLS itself.
+
 ## Verify
 
 ```bash
