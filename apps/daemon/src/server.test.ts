@@ -642,7 +642,7 @@ describe("DomovoiDaemon", () => {
       result: {
         machine: {
           providers: [
-            { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: false },
+            { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: true },
             { id: "opencode", command: "opencode", status: "missing", sessionCapable: false },
           ],
         },
@@ -1230,7 +1230,15 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(resumedAgent.resumeThread).toHaveBeenCalledOnce()
-    expect(resumedAgent.resumeThread).toHaveBeenCalledWith("provider-thread-restored")
+    expect(resumedAgent.resumeThread).toHaveBeenCalledWith({
+      threadId: "provider-thread-restored",
+      cwd: "/worktrees/session-billing",
+      runtime: expect.objectContaining({
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        permissionMode: "plan",
+      }),
+    })
     expect(resumedAgent.resumeThread.mock.invocationCallOrder[0]).toBeLessThan(
       resumedAgent.startTurn.mock.invocationCallOrder[0]!,
     )
