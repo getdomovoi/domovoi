@@ -43,11 +43,12 @@ represents the community in public spaces.
 
 ## Enforcement
 
-For conduct on GitHub, use the **Report content** action on the relevant issue, comment, or other
-content. When GitHub offers **Report to repository admins**, that option sends the report privately
-to Domovoi's administrators. For incidents in another Domovoi community space, email
-[conduct@domovoi.sh](mailto:conduct@domovoi.sh). If a report concerns a repository administrator or
-the conduct may violate GitHub policy, report it independently to
+Report any conduct incident privately to
+[conduct@domovoi.sh](mailto:conduct@domovoi.sh), including incidents in any Domovoi community space
+or complaints involving repository administrators. For conduct on GitHub, you may also use the
+**Report content** action on the relevant issue, comment, or other content. When GitHub offers
+**Report to repository admins**, that option sends the report privately to Domovoi's administrators.
+If the conduct may violate GitHub policy, report it independently to
 [GitHub Support](https://support.github.com/contact/report-abuse). Do not open a public issue about
 a conduct incident.
 
