@@ -41,6 +41,7 @@ import {
   validPreviewParentOrigin,
 } from "./preview-bridge.js"
 import { agentPromptWithAnnotations } from "./annotation-context.js"
+import { agentPromptWithHandoff } from "./handoff-context.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -918,8 +919,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (params.runtime.provider !== session.runtime.provider) {
-          this.#error(socket, request.id, invalidParams, "Provider handoff is not available yet")
+        const providerChanged = params.runtime.provider !== session.runtime.provider
+        if (providerChanged && (!session.workspacePath || !session.providerThreadId)) {
+          this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
+          return
+        }
+        if (providerChanged && session.activeTurnId) {
+          this.#error(socket, request.id, invalidParams, "Stop the active turn before changing providers")
           return
         }
         let runtime: Runtime
@@ -937,7 +943,69 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session no longer exists")
           return
         }
-        currentSession.runtime = runtime
+        if (runtime.provider !== currentSession.runtime.provider) {
+          if (!currentSession.workspacePath || !currentSession.providerThreadId) {
+            this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
+            return
+          }
+          const previousRuntime = currentSession.runtime
+          const previousThreadId = currentSession.providerThreadId
+          const nextAgent = await this.#ensureAgentConnected(runtime.provider)
+          const nextThreadId = await withTimeout(
+            nextAgent.startThread({ cwd: currentSession.workspacePath, runtime }),
+            this.#agentTimeoutMs,
+            "Provider handoff timed out",
+          )
+          const previousAgent = this.#agents.require(previousRuntime.provider)
+          let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
+          try {
+            checkpoint = await withTimeout(
+              this.#workspaceService.checkpoint(currentSession.workspacePath, "before provider handoff"),
+              this.#agentTimeoutMs,
+              "Provider handoff checkpoint timed out",
+            )
+            await withTimeout(
+              previousAgent.stopThread(previousThreadId),
+              this.#agentTimeoutMs,
+              "Previous provider cleanup timed out",
+            )
+          } catch (error) {
+            try {
+              await nextAgent.stopThread(nextThreadId)
+            } catch (cleanupError) {
+              console.error("Domovoi could not stop a failed handoff thread", cleanupError)
+            }
+            throw error
+          }
+          const createdAt = new Date().toISOString()
+          currentSession.runtime = runtime
+          currentSession.providerThreadId = nextThreadId
+          currentSession.changedFiles = checkpoint.changedFiles.length
+          currentSession.state = "idle"
+          currentSession.updatedAt = createdAt
+          this.#loadedAgentThreads.delete(providerThreadKey(previousRuntime.provider, previousThreadId))
+          this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, nextThreadId))
+          this.#snapshot.thread.push({
+            id: `checkpoint-${randomUUID()}`,
+            sessionId: currentSession.id,
+            kind: "checkpoint",
+            label: `${checkpoint.commit.slice(0, 8)} · before provider handoff`,
+            createdAt,
+          })
+          const openAnnotationCount = this.#snapshot.annotations.filter(
+            (annotation) => annotation.sessionId === currentSession.id && annotation.status === "open",
+          ).length
+          this.#snapshot.thread.push({
+            id: `handoff-${randomUUID()}`,
+            sessionId: currentSession.id,
+            kind: "system",
+            body: `Handed off ${previousRuntime.provider} / ${previousRuntime.model} to ${runtime.provider} / ${runtime.model}.`,
+            detail: `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
+            createdAt,
+          })
+        } else {
+          currentSession.runtime = runtime
+        }
         changed = true
       }
 
@@ -1077,7 +1145,11 @@ export class DomovoiDaemon {
           )
           this.#loadedAgentThreads.add(loadedThread)
         }
-        const prompt = agentPromptWithAnnotations(this.#snapshot, session.id, params.prompt)
+        const prompt = agentPromptWithAnnotations(
+          this.#snapshot,
+          session.id,
+          agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
+        )
         const turnId = session.activeTurnId ?? await withTimeout(
           agent.startTurn({
             threadId: session.providerThreadId,
