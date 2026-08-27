@@ -13,7 +13,7 @@ body:
     attributes:
       label: Before submitting
       options:
-        - label: I searched existing issues and pull requests.
+        - label: I searched existing issues and pull requests and confirmed this is not a duplicate.
           required: true
         - label: This is not an undisclosed security vulnerability.
           required: true

@@ -28,6 +28,7 @@ Remove this section when not applicable. -->
 
 ## Checklist
 
+- [ ] I searched existing issues and pull requests and confirmed this is not a duplicate
 - [ ] The change is focused and commits are small, concise savepoints
 - [ ] No credentials, tokens, private repository content, or generated secrets are included
 - [ ] Documentation and distribution metadata are updated when behavior or packaging changed
