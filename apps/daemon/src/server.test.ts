@@ -602,8 +602,11 @@ describe("DomovoiDaemon", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValue(codexModels()),
       startThread: vi.fn(async () => "unused-thread"),
+      resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused-turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
