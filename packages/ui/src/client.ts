@@ -257,8 +257,8 @@ export class DomovoiClient extends EventTarget {
 
     try {
       pending.resolve(pending.parse(response.data.result))
-    } catch {
-      pending.reject(new Error("Daemon returned an invalid RPC result"))
+    } catch (cause) {
+      pending.reject(new Error("Daemon returned an invalid RPC result", { cause }))
     }
   }
 }

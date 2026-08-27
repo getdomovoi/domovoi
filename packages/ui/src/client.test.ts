@@ -224,4 +224,22 @@ describe("DomovoiClient", () => {
     ])
     client.disconnect()
   })
+
+  it("preserves the parser failure for an invalid RPC result", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const listing = client.listModels("codex")
+    socket.receive({ jsonrpc: "2.0", id: 2, result: [{}] })
+    const error = await listing.catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe("Daemon returned an invalid RPC result")
+    expect((error as Error).cause).toBeInstanceOf(Error)
+    client.disconnect()
+  })
 })
