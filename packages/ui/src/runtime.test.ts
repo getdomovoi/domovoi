@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest"
 import type { ProviderModel, ProviderRuntime, Runtime } from "@getdomovoi/protocol"
 
 import {
+  providerHandoffDescription,
   preferredSessionProvider,
   providerCanStartSession,
   providerStatusLabel,
   reasoningOptionsFor,
+  requiresProviderHandoff,
   selectRuntimeModel,
 } from "./runtime"
 
@@ -46,6 +48,17 @@ describe("selectRuntimeModel", () => {
   it("preserves an explicit empty reasoning catalog", () => {
     expect(reasoningOptionsFor(model([]))).toEqual([])
     expect(reasoningOptionsFor()).toEqual(["low", "medium", "high"])
+  })
+
+  it("requires a handoff only when the provider changes", () => {
+    expect(requiresProviderHandoff(runtime, model([]))).toBe(false)
+    expect(requiresProviderHandoff(runtime, { ...model([]), provider: "claude-code" })).toBe(true)
+  })
+
+  it("discloses what a provider handoff carries and leaves behind", () => {
+    expect(providerHandoffDescription("Claude Code", "Claude Sonnet 4.6")).toBe(
+      "Domovoi checkpoints this worktree and carries the thread, plan, diff, test results, and open annotations to Claude Code / Claude Sonnet 4.6. Hidden reasoning, provider caches, and private session metadata do not transfer.",
+    )
   })
 })
 
