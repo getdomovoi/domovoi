@@ -22,7 +22,7 @@ export interface AgentAdapter {
   connect(): Promise<void>
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
-  resumeThread(threadId: string): Promise<void>
+  resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void>
   stopThread(threadId: string): Promise<void>
   interruptTurn(threadId: string, turnId: string): Promise<void>
   startTurn(input: {

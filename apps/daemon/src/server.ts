@@ -1063,7 +1063,11 @@ export class DomovoiDaemon {
         const loadedThread = providerThreadKey(session.runtime.provider, session.providerThreadId)
         if (!this.#loadedAgentThreads.has(loadedThread)) {
           await withTimeout(
-            agent.resumeThread(session.providerThreadId),
+            agent.resumeThread({
+              threadId: session.providerThreadId,
+              cwd: session.workspacePath,
+              runtime: session.runtime,
+            }),
             this.#agentTimeoutMs,
             "Agent thread resume timed out",
           )
