@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { demoWorkspace } from "@getdomovoi/protocol"
 
 import {
+  applyConnectionSnapshot,
   applyWorkspaceSnapshot,
   isCurrentConnection,
   useWorkspace,
@@ -45,5 +46,21 @@ describe("useWorkspace", () => {
     const machineB = {}
     expect(isCurrentConnection(machineB, machineA)).toBe(false)
     expect(isCurrentConnection(machineB, machineB)).toBe(true)
+  })
+
+  it("rejects a stale client after an A to B to A reconnect", () => {
+    const oldMachineA = {}
+    const currentMachineA = {}
+    const state = { target: "web:ws://machine-a/rpc", snapshot: demoWorkspace }
+    const late = structuredClone(demoWorkspace)
+    late.machine.name = "stale-machine-a"
+
+    expect(applyConnectionSnapshot(
+      currentMachineA,
+      oldMachineA,
+      state,
+      "web:ws://machine-a/rpc",
+      late,
+    )).toBe(state)
   })
 })

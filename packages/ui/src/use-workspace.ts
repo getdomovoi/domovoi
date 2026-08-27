@@ -28,6 +28,18 @@ export function isCurrentConnection<T>(current: T | null, candidate: T): boolean
   return current === candidate
 }
 
+export function applyConnectionSnapshot<T>(
+  currentClient: T | null,
+  candidateClient: T,
+  state: WorkspaceSnapshotState,
+  target: string,
+  snapshot: WorkspaceSnapshot,
+): WorkspaceSnapshotState {
+  return isCurrentConnection(currentClient, candidateClient)
+    ? applyWorkspaceSnapshot(state, target, snapshot)
+    : state
+}
+
 export function useWorkspace(url: string, kind: ClientKind) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
@@ -37,8 +49,14 @@ export function useWorkspace(url: string, kind: ClientKind) {
   }))
   const [connected, setConnected] = useState(false)
   const snapshot = visibleWorkspaceSnapshot(workspace, target)
-  const updateSnapshot = useCallback((next: WorkspaceSnapshot) => {
-    setWorkspace((current) => applyWorkspaceSnapshot(current, target, next))
+  const updateSnapshotFrom = useCallback((client: DomovoiClient, next: WorkspaceSnapshot) => {
+    setWorkspace((current) => applyConnectionSnapshot(
+      clientRef.current,
+      client,
+      current,
+      target,
+      next,
+    ))
   }, [target])
 
   useEffect(() => {
@@ -48,7 +66,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
     const client = new DomovoiClient(url, kind)
     clientRef.current = client
     const onSnapshot = (event: Event) => {
-      if (active) updateSnapshot((event as CustomEvent<WorkspaceSnapshot>).detail)
+      if (active) updateSnapshotFrom(client, (event as CustomEvent<WorkspaceSnapshot>).detail)
     }
     const onDisconnected = () => {
       if (active) setConnected(false)
@@ -62,7 +80,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
     client.connect().then(
       (next) => {
         if (!active) return
-        updateSnapshot(next)
+        updateSnapshotFrom(client, next)
         setConnected(true)
       },
       () => {
@@ -78,7 +96,7 @@ export function useWorkspace(url: string, kind: ClientKind) {
       client.disconnect()
       clientRef.current = null
     }
-  }, [kind, target, updateSnapshot, url])
+  }, [kind, target, updateSnapshotFrom, url])
 
   const resolveApproval = useCallback(
     async (
@@ -88,46 +106,46 @@ export function useWorkspace(url: string, kind: ClientKind) {
     ) => {
       const client = clientRef.current
       if (!client) throw new Error("Daemon connection is not open")
-      updateSnapshot(await client.resolveApproval(approvalId, decision, explanation))
+      updateSnapshotFrom(client, await client.resolveApproval(approvalId, decision, explanation))
     },
-    [updateSnapshot],
+    [updateSnapshotFrom],
   )
 
   const setRuntime = useCallback(async (sessionId: string, runtime: Runtime) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.setRuntime(sessionId, runtime))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.setRuntime(sessionId, runtime))
+  }, [updateSnapshotFrom])
 
   const activateSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.activateSession(sessionId))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.activateSession(sessionId))
+  }, [updateSnapshotFrom])
 
   const openProject = useCallback(async (path: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.openProject(path))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.openProject(path))
+  }, [updateSnapshotFrom])
 
   const createSession = useCallback(async (title: string, runtime: Runtime) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.createSession(title, runtime))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.createSession(title, runtime))
+  }, [updateSnapshotFrom])
 
   const sendMessage = useCallback(async (sessionId: string, prompt: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.sendMessage(sessionId, prompt))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt))
+  }, [updateSnapshotFrom])
 
   const createCheckpoint = useCallback(async (sessionId: string, label?: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.createCheckpoint(sessionId, label))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.createCheckpoint(sessionId, label))
+  }, [updateSnapshotFrom])
 
   const listModels = useCallback(async (provider: "codex"): Promise<ProviderModel[]> => {
     const client = clientRef.current
@@ -144,14 +162,14 @@ export function useWorkspace(url: string, kind: ClientKind) {
   }) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.createAnnotation(input))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.createAnnotation(input))
+  }, [updateSnapshotFrom])
 
   const replyToAnnotation = useCallback(async (annotationId: string, body: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.replyToAnnotation(annotationId, body))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.replyToAnnotation(annotationId, body))
+  }, [updateSnapshotFrom])
 
   const setAnnotationStatus = useCallback(async (
     annotationId: string,
@@ -159,8 +177,8 @@ export function useWorkspace(url: string, kind: ClientKind) {
   ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshot(await client.setAnnotationStatus(annotationId, status))
-  }, [updateSnapshot])
+    updateSnapshotFrom(client, await client.setAnnotationStatus(annotationId, status))
+  }, [updateSnapshotFrom])
 
   const reconnect = useCallback(async () => {
     const client = clientRef.current
@@ -168,9 +186,9 @@ export function useWorkspace(url: string, kind: ClientKind) {
     setConnected(false)
     const next = await client.connect()
     if (!isCurrentConnection(clientRef.current, client)) return
-    updateSnapshot(next)
+    updateSnapshotFrom(client, next)
     setConnected(true)
-  }, [updateSnapshot])
+  }, [updateSnapshotFrom])
 
   return {
     activateSession,
