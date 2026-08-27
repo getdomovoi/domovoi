@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import { defineConfig, externalizeDepsPlugin } from "electron-vite"
 
+import { vendorChunkFor } from "../../packages/ui/src/vite-chunks"
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -13,6 +15,11 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react(), tailwindcss()],
+    build: {
+      minify: "esbuild",
+      reportCompressedSize: true,
+      rollupOptions: { output: { manualChunks: vendorChunkFor } },
+    },
     resolve: {
       alias: {
         "@": path.resolve(import.meta.dirname, "../../packages/ui/src"),
