@@ -178,8 +178,16 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async listModels(): Promise<ProviderModel[]> {
     const models: ProviderModel[] = []
+    const seenCursors = new Set<string>()
     let cursor: string | null = null
+    let pageCount = 0
     do {
+      if (cursor) {
+        if (seenCursors.has(cursor)) break
+        seenCursors.add(cursor)
+      }
+      if (pageCount >= 50) break
+      pageCount += 1
       const result = await this.#request("model/list", {
         includeHidden: false,
         limit: 100,
@@ -206,6 +214,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const defaultReasoningEffort = candidate.defaultReasoningEffort?.length
           ? candidate.defaultReasoningEffort
           : supportedReasoningEfforts[0] ?? "medium"
+        if (
+          supportedReasoningEfforts.length > 0
+          && !supportedReasoningEfforts.includes(defaultReasoningEffort)
+        ) {
+          supportedReasoningEfforts.unshift(defaultReasoningEffort)
+        }
         models.push({
           provider: "codex",
           id,

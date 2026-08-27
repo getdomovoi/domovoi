@@ -101,6 +101,48 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  it("normalizes reasoning defaults and stops repeated pagination cursors", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const listing = adapter.listModels()
+    transport.receive({
+      id: 2,
+      result: {
+        data: [{
+          model: "model-a",
+          displayName: "Model A",
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+          defaultReasoningEffort: "high",
+        }],
+        nextCursor: "repeat",
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(transport.sent.at(-1)).toMatchObject({
+      id: 3,
+      method: "model/list",
+      params: { cursor: "repeat" },
+    })
+    transport.receive({
+      id: 3,
+      result: { data: [], nextCursor: "repeat" },
+    })
+
+    await expect(listing).resolves.toEqual([
+      expect.objectContaining({
+        id: "model-a",
+        supportedReasoningEfforts: ["high", "low"],
+        defaultReasoningEffort: "high",
+      }),
+    ])
+    expect(transport.sent.filter((message) => message.method === "model/list")).toHaveLength(2)
+    await adapter.close()
+  })
+
   it("translates plan mode to the Codex read-only sandbox", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)
