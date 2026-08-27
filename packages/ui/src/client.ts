@@ -4,6 +4,10 @@ import {
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
+  terminalAcceptedSchema,
+  terminalClosedNotificationSchema,
+  terminalOutputNotificationSchema,
+  terminalSessionSchema,
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
@@ -14,6 +18,7 @@ import {
   type RpcParams,
   type RpcResult,
   type Runtime,
+  type TerminalSession,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -226,6 +231,36 @@ export class DomovoiClient extends EventTarget {
     )
   }
 
+  createTerminal(
+    sessionId: string,
+    dimensions: { cols: number; rows: number },
+    terminalId: string = crypto.randomUUID(),
+  ): Promise<TerminalSession> {
+    return this.request(
+      "terminal.create",
+      { terminalId, sessionId, ...dimensions, client: this.kind },
+      (value) => terminalSessionSchema.parse(value),
+    )
+  }
+
+  writeTerminal(terminalId: string, data: string): Promise<void> {
+    return this.#terminalCommand("terminal.input", { terminalId, data, client: this.kind })
+  }
+
+  resizeTerminal(terminalId: string, cols: number, rows: number): Promise<void> {
+    return this.#terminalCommand("terminal.resize", { terminalId, cols, rows, client: this.kind })
+  }
+
+  closeTerminal(terminalId: string): Promise<void> {
+    return this.#terminalCommand("terminal.close", { terminalId, client: this.kind })
+  }
+
+  #terminalCommand(method: "terminal.input" | "terminal.resize" | "terminal.close", params: unknown) {
+    return this.request(method, params, (value) => {
+      terminalAcceptedSchema.parse(value)
+    })
+  }
+
   createAnnotation(input: {
     sessionId: string
     artifactId: string
@@ -279,12 +314,28 @@ export class DomovoiClient extends EventTarget {
     }
 
     const notification = rpcNotificationSchema.safeParse(input)
-    if (notification.success && notification.data.method === "workspace.changed") {
-      const snapshot = workspaceSnapshotSchema.safeParse(notification.data.params)
-      if (snapshot.success) {
-        this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot.data }))
+    if (notification.success) {
+      if (notification.data.method === "workspace.changed") {
+        const snapshot = workspaceSnapshotSchema.safeParse(notification.data.params)
+        if (snapshot.success) {
+          this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot.data }))
+        }
+        return
       }
-      return
+      if (notification.data.method === "terminal.output") {
+        const output = terminalOutputNotificationSchema.safeParse(notification.data.params)
+        if (output.success) {
+          this.dispatchEvent(new CustomEvent("terminal-output", { detail: output.data }))
+        }
+        return
+      }
+      if (notification.data.method === "terminal.closed") {
+        const closed = terminalClosedNotificationSchema.safeParse(notification.data.params)
+        if (closed.success) {
+          this.dispatchEvent(new CustomEvent("terminal-closed", { detail: closed.data }))
+        }
+        return
+      }
     }
 
     const response = rpcResponseSchema.safeParse(input)

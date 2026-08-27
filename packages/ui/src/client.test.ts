@@ -137,6 +137,59 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("streams interactive terminal events and input", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const output = vi.fn()
+    client.addEventListener("terminal-output", output)
+
+    const creating = client.createTerminal(
+      "session-billing",
+      { cols: 120, rows: 32 },
+      "terminal-1",
+    )
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "terminal.create",
+      params: { terminalId: "terminal-1", sessionId: "session-billing", cols: 120, rows: 32 },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        terminalId: "terminal-1",
+        sessionId: "session-billing",
+        cols: 120,
+        rows: 32,
+        shell: "bash",
+        cwd: "/worktrees/billing",
+        buffer: "",
+      },
+    })
+    await expect(creating).resolves.toMatchObject({ terminalId: "terminal-1" })
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "terminal.output",
+      params: { terminalId: "terminal-1", data: "ready\r\n" },
+    })
+    expect((output.mock.calls[0]![0] as CustomEvent).detail).toEqual({
+      terminalId: "terminal-1",
+      data: "ready\r\n",
+    })
+
+    const writing = client.writeTerminal("terminal-1", "pnpm test\r")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "terminal.input",
+      params: { terminalId: "terminal-1", data: "pnpm test\r" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } })
+    await expect(writing).resolves.toBeUndefined()
+    client.disconnect()
+  })
+
   it("does not retry a rejected daemon credential", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
       authToken: "wrong-token",
