@@ -255,7 +255,10 @@ export class DomovoiClient extends EventTarget {
     return this.#terminalCommand("terminal.close", { terminalId, client: this.kind })
   }
 
-  #terminalCommand(method: "terminal.input" | "terminal.resize" | "terminal.close", params: unknown) {
+  #terminalCommand<M extends "terminal.input" | "terminal.resize" | "terminal.close">(
+    method: M,
+    params: RpcParams<M>,
+  ): Promise<void> {
     return this.request(method, params, (value) => {
       terminalAcceptedSchema.parse(value)
     })
