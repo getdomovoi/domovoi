@@ -5,7 +5,7 @@ import type { Runtime } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { AppBar, RuntimeControls } from "./workspace-shell"
+import { activeThreadKey, AppBar, RuntimeControls } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -41,5 +41,15 @@ describe("AppBar", () => {
     )
 
     expect(markup).toMatch(/<button(?=[^>]*aria-label="Pause all")(?=[^>]*disabled="")/)
+  })
+})
+
+describe("activeThreadKey", () => {
+  it("changes when the active session changes", () => {
+    const first = structuredClone(demoWorkspace)
+    const second = structuredClone(demoWorkspace)
+    second.activeSessionId = "session-audit"
+
+    expect(activeThreadKey(first)).not.toBe(activeThreadKey(second))
   })
 })
