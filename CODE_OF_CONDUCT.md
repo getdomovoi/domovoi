@@ -45,8 +45,10 @@ represents the community in public spaces.
 
 For conduct on GitHub, use the **Report content** action on the relevant issue, comment, or other
 content. When GitHub offers **Report to repository admins**, that option sends the report privately
-to Domovoi's administrators. If that option is unavailable, the report concerns a repository
-administrator, or the conduct may violate GitHub policy, report it privately to
+to Domovoi's administrators. For incidents in another Domovoi community space, use the project's
+private [report form](https://github.com/getdomovoi/domovoi/security/advisories/new) and begin the
+title with `Conduct:`. If a report concerns a repository administrator or the conduct may violate
+GitHub policy, report it independently to
 [GitHub Support](https://support.github.com/contact/report-abuse). Do not open a public issue about
 a conduct incident.
 
