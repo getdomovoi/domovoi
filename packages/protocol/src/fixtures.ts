@@ -28,6 +28,7 @@ export const demoWorkspace: WorkspaceSnapshot = {
     version: "0.0.1",
     connection: "local",
     reachable: true,
+    providers: [],
   },
   project: {
     id: "project-acme-api",

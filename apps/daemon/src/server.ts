@@ -187,6 +187,7 @@ export class DomovoiDaemon {
       version: "0.0.1",
       connection: "local",
       reachable: true,
+      providers: [],
     })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       options.statePath ?? join(homedir(), ".domovoi", "state.sqlite"),

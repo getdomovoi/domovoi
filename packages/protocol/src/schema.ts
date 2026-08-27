@@ -45,6 +45,19 @@ export const providerModelSchema = z.object({
 })
 export const providerModelsSchema = z.array(providerModelSchema)
 
+export const providerRuntimeStatusSchema = z.enum([
+  "ready",
+  "auth-required",
+  "missing",
+  "unknown",
+])
+export const providerRuntimeSchema = z.object({
+  id: z.string().trim().min(1),
+  command: z.string().trim().min(1),
+  status: providerRuntimeStatusSchema,
+  version: z.string().trim().min(1).optional(),
+})
+
 export const machineSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -53,6 +66,7 @@ export const machineSchema = z.object({
   version: z.string().min(1),
   connection: connectionKindSchema,
   reachable: z.boolean(),
+  providers: z.array(providerRuntimeSchema),
 })
 
 export const projectSchema = z.object({
@@ -262,4 +276,5 @@ export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
 export type Annotation = z.infer<typeof annotationSchema>
 export type ProviderModel = z.infer<typeof providerModelSchema>
+export type ProviderRuntime = z.infer<typeof providerRuntimeSchema>
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>

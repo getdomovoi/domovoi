@@ -13,6 +13,7 @@ import {
   demoWorkspace,
   projectOpenParamsSchema,
   providerModelSchema,
+  providerRuntimeSchema,
   helloParamsSchema,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
@@ -245,6 +246,20 @@ describe("workspace protocol", () => {
       defaultReasoningEffort: "medium",
       isDefault: false,
     }).success).toBe(true)
+  })
+
+  it("validates machine provider readiness", () => {
+    expect(providerRuntimeSchema.parse({
+      id: "claude-code",
+      command: "claude",
+      status: "ready",
+      version: "2.1.247",
+    }).status).toBe("ready")
+    expect(providerRuntimeSchema.safeParse({
+      id: "codex",
+      command: "codex",
+      status: "logged-in-ish",
+    }).success).toBe(false)
   })
 
   it("upgrades snapshots that predate annotation state", () => {
