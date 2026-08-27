@@ -1,20 +1,18 @@
 import { join } from "node:path"
+import { randomBytes } from "node:crypto"
 
 import { DomovoiDaemon } from "@getdomovoi/daemon"
-import { app, BrowserWindow, ipcMain } from "electron"
+import { app, BrowserWindow, dialog, ipcMain } from "electron"
+
+import { startOwnedDaemon } from "./owned-daemon.js"
 
 let mainWindow: BrowserWindow | undefined
 let localDaemon: DomovoiDaemon | undefined
+const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 
 async function ensureDaemon(): Promise<void> {
-  const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831 })
-  try {
-    await daemon.start()
-    localDaemon = daemon
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== "EADDRINUSE") throw error
-  }
+  const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831, authToken: rpcToken })
+  localDaemon = await startOwnedDaemon(daemon)
 }
 
 function createWindow(): void {
@@ -54,6 +52,7 @@ ipcMain.on("window:maximize", () => {
   else mainWindow?.maximize()
 })
 ipcMain.on("window:close", () => mainWindow?.close())
+ipcMain.handle("domovoi:rpc-token", () => rpcToken)
 
 app.whenReady().then(async () => {
   await ensureDaemon()
@@ -61,6 +60,10 @@ app.whenReady().then(async () => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : "Unknown daemon startup failure"
+  dialog.showErrorBox("Domovoi could not start", message)
+  app.quit()
 })
 
 app.on("window-all-closed", () => {

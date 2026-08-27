@@ -4,21 +4,33 @@ import { artifactUrlFor } from "./artifact-url"
 
 describe("artifactUrlFor", () => {
   it("maps the RPC WebSocket endpoint to an encoded HTTP artifact URL", () => {
-    expect(artifactUrlFor("ws://127.0.0.1:47831/rpc", "preview/a b")).toBe(
-      "http://127.0.0.1:47831/artifacts/preview%2Fa%20b",
+    expect(artifactUrlFor("ws://127.0.0.1:47831/rpc", {
+      artifactId: "preview/a b",
+      expiresAt: 1_800_000_000,
+      signature: "a".repeat(43),
+    })).toBe(
+      `http://127.0.0.1:47831/artifacts/preview%2Fa%20b?expires=1800000000&signature=${"a".repeat(43)}`,
     )
-    expect(artifactUrlFor("wss://domovoi.example/rpc", "preview-1")).toBe(
-      "https://domovoi.example/artifacts/preview-1",
+    expect(artifactUrlFor("wss://domovoi.example/rpc", {
+      artifactId: "preview-1",
+      expiresAt: 1_800_000_000,
+      signature: "b".repeat(43),
+    })).toBe(
+      `https://domovoi.example/artifacts/preview-1?expires=1800000000&signature=${"b".repeat(43)}`,
     )
   })
 
   it("adds an isolated preview bridge channel", () => {
     expect(artifactUrlFor(
       "ws://127.0.0.1:47831/rpc",
-      "preview-1",
-      "preview_channel_123456",
+      {
+        artifactId: "preview-1",
+        bridgeChannel: "preview_channel_123456",
+        expiresAt: 1_800_000_000,
+        signature: "c".repeat(43),
+      },
     )).toBe(
-      "http://127.0.0.1:47831/artifacts/preview-1?bridge=preview_channel_123456",
+      `http://127.0.0.1:47831/artifacts/preview-1?bridge=preview_channel_123456&expires=1800000000&signature=${"c".repeat(43)}`,
     )
   })
 })

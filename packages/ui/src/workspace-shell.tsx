@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import {
   BotIcon,
   CheckIcon,
@@ -25,6 +25,7 @@ import type {
   ApprovalRequest,
   ApprovalDecision,
   Annotation,
+  ArtifactAccess,
   ClientKind,
   PermissionMode,
   ProviderModel,
@@ -84,12 +85,18 @@ import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { previewSelectionFor } from "./preview-bridge"
-import { commandsForActiveSession, type CommandTranscript } from "./commands"
 import { latestArtifactForActiveSession } from "./artifacts"
 import { reasoningOptionsFor, selectRuntimeModel } from "./runtime"
+import type { TerminalControls } from "./terminal-pane"
+
+const TerminalPane = lazy(async () => {
+  const module = await import("./terminal-pane")
+  return { default: module.TerminalPane }
+})
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
+  getRpcToken(): Promise<string>
   minimize(): void
   maximize(): void
   close(): void
@@ -98,6 +105,7 @@ export type DesktopWindowBridge = {
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
   rpcUrl?: string
+  rpcToken?: string
   windowBridge?: DesktopWindowBridge
 }
 
@@ -140,12 +148,15 @@ function AppBar({
   connected,
   bridge,
   onOpenProject,
+  onPauseAll,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
   bridge?: DesktopWindowBridge | undefined
   onOpenProject: () => void
+  onPauseAll: () => void
 }) {
+  const canPause = connected && Boolean(snapshot?.sessions.some((session) => session.activeTurnId))
   return (
     <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
       {bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
@@ -166,7 +177,7 @@ function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
-        <Button variant="ghost" size="sm" disabled={!snapshot}>
+        <Button variant="ghost" size="sm" disabled={!canPause} onClick={onPauseAll}>
           <CircleStopIcon data-icon="inline-start" />
           Pause all
         </Button>
@@ -473,14 +484,17 @@ function LauncherDialog({
 
 function Thread({
   snapshot,
+  connected,
   onResolve,
   onSetRuntime,
   onListModels,
   onNewSession,
   onSend,
   onCheckpoint,
+  onPauseSession,
 }: {
   snapshot: WorkspaceSnapshot
+  connected: boolean
   onResolve: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -491,6 +505,7 @@ function Thread({
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
+  onPauseSession: (sessionId: string) => Promise<void>
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -548,6 +563,19 @@ function Thread({
       await onCheckpoint(active.id)
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be created")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const pauseSession = async () => {
+    if (pending || !active.activeTurnId) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onPauseSession(active.id)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The session could not be paused")
     } finally {
       setPending(false)
     }
@@ -632,6 +660,7 @@ function Thread({
             <div className="flex items-center gap-2">
               <Badge variant="machine">{snapshot.machine.name}</Badge>
               <Button variant="ghost" size="sm" disabled={pending} onClick={() => void createCheckpoint()}>Checkpoint</Button>
+              {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
             </div>
             <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
@@ -721,6 +750,9 @@ function ArtifactDock({
   onCollapse,
   defaultTab,
   rpcUrl,
+  authorizeArtifact,
+  connected,
+  terminalControls,
   onReplyToAnnotation,
   onSetAnnotationStatus,
   onCreateAnnotation,
@@ -729,6 +761,9 @@ function ArtifactDock({
   onCollapse: () => void
   defaultTab: "changes" | "preview"
   rpcUrl: string
+  authorizeArtifact: (artifactId: string, bridgeChannel?: string) => Promise<ArtifactAccess>
+  connected: boolean
+  terminalControls: TerminalControls
   onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
   onSetAnnotationStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
   onCreateAnnotation: (input: {
@@ -745,7 +780,6 @@ function ArtifactDock({
     : undefined
   const diff = latestArtifactForActiveSession(snapshot, "diff")
   const annotations = annotationsForActiveSession(snapshot)
-  const commands = commandsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const bridgeChannel = useMemo(
@@ -757,6 +791,29 @@ function ArtifactDock({
   const [comment, setComment] = useState("")
   const [annotationPending, setAnnotationPending] = useState(false)
   const [annotationError, setAnnotationError] = useState("")
+  const [previewUrl, setPreviewUrl] = useState<string>()
+  const [previewError, setPreviewError] = useState("")
+  const [activeTab, setActiveTab] = useState<string>(defaultTab)
+
+  useEffect(() => {
+    let active = true
+    setPreviewUrl(undefined)
+    setPreviewError("")
+    if (!preview || !connected) return () => { active = false }
+    void authorizeArtifact(preview.id, bridgeChannel).then(
+      (access) => {
+        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access))
+      },
+      (cause: unknown) => {
+        if (!active) return
+        setPreviewUrl(undefined)
+        setPreviewError(
+          cause instanceof Error ? cause.message : "Preview access could not be authorized",
+        )
+      },
+    )
+    return () => { active = false }
+  }, [authorizeArtifact, bridgeChannel, connected, preview?.id, preview?.revision, rpcUrl])
 
   const postPickerState = (active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -820,7 +877,7 @@ function ArtifactDock({
 
   return (
     <aside className="flex h-full min-w-0 flex-col bg-sidebar">
-      <Tabs defaultValue={defaultTab} className="h-full gap-0">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
         <div className="flex h-11 items-center border-b px-2">
           <TabsList variant="line" className="min-w-0 flex-1 justify-start overflow-x-auto">
             <TabsTrigger value="plan"><FileTextIcon />Plan</TabsTrigger>
@@ -853,15 +910,23 @@ function ArtifactDock({
                   <Badge variant="success">Live</Badge>
                 </div>
               </div>
-              <iframe
-                ref={previewFrameRef}
-                className="min-h-0 flex-1 border-0 bg-background"
-                referrerPolicy="no-referrer"
-                sandbox="allow-scripts"
-                src={artifactUrlFor(rpcUrl, preview.id, bridgeChannel)}
-                title={preview.title}
-                onLoad={() => postPickerState(pickerActive)}
-              />
+              {previewError ? (
+                <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
+                  <CircleStopIcon />
+                  <AlertTitle>Preview unavailable</AlertTitle>
+                  <AlertDescription>{previewError}</AlertDescription>
+                </Alert>
+              ) : (
+                <iframe
+                  ref={previewFrameRef}
+                  className="min-h-0 flex-1 border-0 bg-background"
+                  referrerPolicy="no-referrer"
+                  sandbox="allow-scripts"
+                  src={previewUrl ?? "about:blank"}
+                  title={preview.title}
+                  onLoad={() => postPickerState(pickerActive)}
+                />
+              )}
             </div>
           ) : (
             <Empty className="min-h-full border">
@@ -903,7 +968,22 @@ function ArtifactDock({
           />
         </TabsContent>
         <TabsContent value="terminal" className="min-h-0 bg-code">
-          <TerminalTranscript commands={commands} />
+          <Suspense fallback={(
+            <Empty className="min-h-full border-0 text-muted-foreground">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
+                <EmptyTitle>Loading terminal</EmptyTitle>
+                <EmptyDescription>Preparing the interactive terminal renderer.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}>
+            <TerminalPane
+              connected={connected}
+              controls={terminalControls}
+              machineName={snapshot.machine.name}
+              sessionId={snapshot.activeSessionId}
+            />
+          </Suspense>
         </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
@@ -962,54 +1042,6 @@ function ArtifactDock({
         </DialogContent>
       </Dialog>
     </aside>
-  )
-}
-
-function TerminalTranscript({ commands }: { commands: CommandTranscript[] }) {
-  if (!commands.length) {
-    return (
-      <Empty className="min-h-full border-0 text-muted-foreground">
-        <EmptyHeader>
-          <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
-          <EmptyTitle>No commands yet</EmptyTitle>
-          <EmptyDescription>Agent command output appears here as it runs.</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    )
-  }
-
-  return (
-    <ScrollArea className="h-full">
-      <div className="font-machine text-[11px] text-muted-foreground">
-        {commands.map((command) => (
-          <section key={command.id} className="border-b border-border/70 px-4 py-3 last:border-b-0">
-            <div className="flex min-w-0 items-start justify-between gap-3">
-              <p className="m-0 min-w-0 break-words text-foreground">
-                <span className="mr-2 text-primary">$</span>{command.title}
-              </p>
-              <Badge
-                variant={command.status === "completed"
-                  ? "success"
-                  : command.status === "failed" || command.status === "declined"
-                    ? "destructive"
-                    : "warning"}
-              >
-                {command.status}
-              </Badge>
-            </div>
-            {command.output ? (
-              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed">
-                {command.output}
-              </pre>
-            ) : (
-              <p className="mt-2 text-[10px] text-faint">
-                {command.status === "running" ? "Waiting for output…" : "No output recorded."}
-              </p>
-            )}
-          </section>
-        ))}
-      </div>
-    </ScrollArea>
   )
 }
 
@@ -1187,23 +1219,38 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", windowBridge }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge }: WorkspaceShellProps) {
   const {
     activateSession,
+    authorizeArtifact,
+    closeTerminal,
     connected,
     createCheckpoint,
     createAnnotation,
     createSession,
+    createTerminal,
     listModels,
     openProject,
+    pauseAll,
+    pauseSession,
     reconnect,
+    resizeTerminal,
     resolveApproval,
     replyToAnnotation,
     sendMessage,
     setRuntime,
     setAnnotationStatus,
     snapshot,
-  } = useWorkspace(rpcUrl, clientKind)
+    subscribeTerminal,
+    writeTerminal,
+  } = useWorkspace(rpcUrl, clientKind, rpcToken)
+  const terminalControls = useMemo<TerminalControls>(() => ({
+    create: createTerminal,
+    write: writeTerminal,
+    resize: resizeTerminal,
+    close: closeTerminal,
+    subscribe: subscribeTerminal,
+  }), [closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
@@ -1220,6 +1267,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setConnectionError("")
     void reconnect().catch((cause: unknown) => {
       setConnectionError(cause instanceof Error ? cause.message : "The daemon could not be reached")
+    })
+  }
+  const pauseActiveTurns = () => {
+    setWorkspaceError("")
+    void pauseAll().catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Active agents could not be paused")
     })
   }
   const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
@@ -1260,7 +1313,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} />
+        <AppBar snapshot={snapshot} connected={connected} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} onPauseAll={pauseActiveTurns} />
         {!connected ? (
           <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
             <span className="size-2 shrink-0 rounded-full bg-destructive" />
@@ -1282,8 +1335,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>
@@ -1304,7 +1357,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             className="absolute bottom-3 left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]"
           >
             <CircleStopIcon />
-            <AlertTitle>Session switch failed</AlertTitle>
+            <AlertTitle>Workspace action failed</AlertTitle>
             <AlertDescription>{workspaceError}</AlertDescription>
           </Alert>
         ) : null}

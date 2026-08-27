@@ -12,7 +12,7 @@ This repository is early. The current vertical slice includes:
 - strict TypeScript and pnpm workspaces;
 - a versioned Zod protocol with permission, runtime, machine, session, approval, thread, and
   artifact schemas;
-- a loopback-only Node daemon with health and WebSocket JSON-RPC endpoints;
+- an authenticated Node daemon with health and WebSocket JSON-RPC endpoints;
 - a shared React workspace rendered by Vite and Electron;
 - custom Electron window decoration with a sandboxed, context-isolated renderer;
 - daemon-backed approval and runtime state changes;
@@ -50,6 +50,12 @@ pnpm dev
 ```bash
 pnpm dev:desktop
 ```
+
+Remote daemon listeners require both `DOMOVOI_AUTH_TOKEN` and
+`DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. The opt-in is only for an encrypted outer transport such as
+a Tailscale tailnet or SSH tunnel; the daemon does not provide TLS itself. Set
+`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Remote preview
+documents use short-lived capabilities scoped to one artifact and annotation bridge channel.
 
 ## Verify
 

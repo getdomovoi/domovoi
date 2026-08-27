@@ -52,13 +52,16 @@ export interface AgentAdapter {
   connect(): Promise<void>
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
+  resumeThread(threadId: string): Promise<void>
   stopThread(threadId: string): Promise<void>
+  interruptTurn(threadId: string, turnId: string): Promise<void>
   startTurn(input: {
     threadId: string
     cwd: string
     prompt: string
     runtime: Runtime
   }): Promise<string>
+  steerTurn(threadId: string, turnId: string, prompt: string): Promise<void>
   resolveApproval(
     requestId: number,
     decision: ApprovalDecision,
@@ -223,6 +226,28 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
+  }
+
+  async resumeThread(threadId: string): Promise<void> {
+    const result = await this.#request("thread/resume", { threadId }) as {
+      thread?: { id?: string }
+    }
+    if (result.thread?.id !== threadId) {
+      throw new Error("Codex did not resume the requested thread")
+    }
+  }
+
+  async interruptTurn(threadId: string, turnId: string): Promise<void> {
+    await this.#request("turn/interrupt", { threadId, turnId })
+  }
+
+  async steerTurn(threadId: string, turnId: string, prompt: string): Promise<void> {
+    const result = await this.#request("turn/steer", {
+      threadId,
+      expectedTurnId: turnId,
+      input: [{ type: "text", text: prompt }],
+    }) as { turnId?: string }
+    if (result.turnId !== turnId) throw new Error("Codex steered a different turn")
   }
 
   async startTurn({

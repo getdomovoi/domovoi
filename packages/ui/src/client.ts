@@ -1,16 +1,34 @@
 import {
+  daemonAuthenticationErrorCode,
   rpcNotificationSchema,
   rpcResponseSchema,
+  artifactAuthorizeResultSchema,
+  terminalAcceptedSchema,
+  terminalClosedNotificationSchema,
+  terminalOutputNotificationSchema,
+  terminalSessionSchema,
   providerModelsSchema,
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
   type Annotation,
+  type ArtifactAccess,
   type ProviderModel,
   type RpcMethod,
   type Runtime,
+  type TerminalSession,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
+
+class DaemonRpcError extends Error {
+  readonly code: number
+
+  constructor(code: number, message: string) {
+    super(message)
+    this.name = "DaemonRpcError"
+    this.code = code
+  }
+}
 
 type PendingRequest = {
   parse: (value: unknown) => unknown
@@ -20,6 +38,7 @@ type PendingRequest = {
 
 type DomovoiClientOptions = {
   reconnectDelayMs?: number
+  authToken?: string
 }
 
 export class DomovoiClient extends EventTarget {
@@ -32,12 +51,14 @@ export class DomovoiClient extends EventTarget {
   #reconnectDelayMs: number
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined
   #shouldReconnect = false
+  #authToken: string | undefined
 
   constructor(url: string, kind: ClientKind, options: DomovoiClientOptions = {}) {
     super()
     this.url = url
     this.kind = kind
     this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000
+    this.#authToken = options.authToken
   }
 
   connect(): Promise<WorkspaceSnapshot> {
@@ -66,7 +87,11 @@ export class DomovoiClient extends EventTarget {
       socket.addEventListener(
         "open",
         () => {
-          this.request("system.hello", { client: this.kind, clientVersion: "0.0.1" }).then(
+          this.request("system.hello", {
+            client: this.kind,
+            clientVersion: "0.0.1",
+            ...(this.#authToken ? { authToken: this.#authToken } : {}),
+          }).then(
             (snapshot) => {
               if (socket !== this.#socket) return
               opening = false
@@ -179,6 +204,56 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  pauseAll(): Promise<WorkspaceSnapshot> {
+    return this.request("system.pauseAll", { client: this.kind })
+  }
+
+  pauseSession(sessionId: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.pause", { sessionId, client: this.kind })
+  }
+
+  authorizeArtifact(artifactId: string, bridgeChannel?: string): Promise<ArtifactAccess> {
+    return this.request(
+      "artifact.authorize",
+      {
+        artifactId,
+        ...(bridgeChannel ? { bridgeChannel } : {}),
+        client: this.kind,
+      },
+      (value) => artifactAuthorizeResultSchema.parse(value),
+    )
+  }
+
+  createTerminal(
+    sessionId: string,
+    dimensions: { cols: number; rows: number },
+    terminalId: string = crypto.randomUUID(),
+  ): Promise<TerminalSession> {
+    return this.request(
+      "terminal.create",
+      { terminalId, sessionId, ...dimensions, client: this.kind },
+      (value) => terminalSessionSchema.parse(value),
+    )
+  }
+
+  writeTerminal(terminalId: string, data: string): Promise<void> {
+    return this.#terminalCommand("terminal.input", { terminalId, data, client: this.kind })
+  }
+
+  resizeTerminal(terminalId: string, cols: number, rows: number): Promise<void> {
+    return this.#terminalCommand("terminal.resize", { terminalId, cols, rows, client: this.kind })
+  }
+
+  closeTerminal(terminalId: string): Promise<void> {
+    return this.#terminalCommand("terminal.close", { terminalId, client: this.kind })
+  }
+
+  #terminalCommand(method: "terminal.input" | "terminal.resize" | "terminal.close", params: unknown) {
+    return this.request(method, params, (value) => {
+      terminalAcceptedSchema.parse(value)
+    })
+  }
+
   createAnnotation(input: {
     sessionId: string
     artifactId: string
@@ -236,12 +311,28 @@ export class DomovoiClient extends EventTarget {
     }
 
     const notification = rpcNotificationSchema.safeParse(input)
-    if (notification.success && notification.data.method === "workspace.changed") {
-      const snapshot = workspaceSnapshotSchema.safeParse(notification.data.params)
-      if (snapshot.success) {
-        this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot.data }))
+    if (notification.success) {
+      if (notification.data.method === "workspace.changed") {
+        const snapshot = workspaceSnapshotSchema.safeParse(notification.data.params)
+        if (snapshot.success) {
+          this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot.data }))
+        }
+        return
       }
-      return
+      if (notification.data.method === "terminal.output") {
+        const output = terminalOutputNotificationSchema.safeParse(notification.data.params)
+        if (output.success) {
+          this.dispatchEvent(new CustomEvent("terminal-output", { detail: output.data }))
+        }
+        return
+      }
+      if (notification.data.method === "terminal.closed") {
+        const closed = terminalClosedNotificationSchema.safeParse(notification.data.params)
+        if (closed.success) {
+          this.dispatchEvent(new CustomEvent("terminal-closed", { detail: closed.data }))
+        }
+        return
+      }
     }
 
     const response = rpcResponseSchema.safeParse(input)
@@ -251,7 +342,11 @@ export class DomovoiClient extends EventTarget {
     this.#pending.delete(response.data.id)
 
     if (response.data.error) {
-      pending.reject(new Error(response.data.error.message))
+      if (response.data.error.code === daemonAuthenticationErrorCode) {
+        this.#shouldReconnect = false
+        this.#clearReconnectTimer()
+      }
+      pending.reject(new DaemonRpcError(response.data.error.code, response.data.error.message))
       return
     }
 

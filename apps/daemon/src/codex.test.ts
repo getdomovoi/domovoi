@@ -54,6 +54,24 @@ describe("codexPolicyFor", () => {
 })
 
 describe("CodexAppServerAdapter", () => {
+  it("resumes a persisted thread before another turn", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const resuming = adapter.resumeThread("thread-restored")
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "thread/resume",
+      params: { threadId: "thread-restored" },
+    })
+    transport.receive({ id: 2, result: { thread: { id: "thread-restored" } } })
+    await expect(resuming).resolves.toBeUndefined()
+    await adapter.close()
+  })
+
   it("lists visible models from the installed Codex app server", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)
@@ -177,6 +195,28 @@ describe("CodexAppServerAdapter", () => {
     })
     transport.receive({ id: 4, result: { turn: { id: "turn-1" } } })
     await expect(turning).resolves.toBe("turn-1")
+
+    const steering = adapter.steerTurn("thread-1", "turn-1", "Focus on the failing test")
+    expect(transport.sent[5]).toMatchObject({
+      id: 5,
+      method: "turn/steer",
+      params: {
+        threadId: "thread-1",
+        expectedTurnId: "turn-1",
+        input: [{ type: "text", text: "Focus on the failing test" }],
+      },
+    })
+    transport.receive({ id: 5, result: { turnId: "turn-1" } })
+    await expect(steering).resolves.toBeUndefined()
+
+    const interrupting = adapter.interruptTurn("thread-1", "turn-1")
+    expect(transport.sent[6]).toMatchObject({
+      id: 6,
+      method: "turn/interrupt",
+      params: { threadId: "thread-1", turnId: "turn-1" },
+    })
+    transport.receive({ id: 6, result: {} })
+    await expect(interrupting).resolves.toBeUndefined()
 
     transport.receive({
       method: "item/agentMessage/delta",
