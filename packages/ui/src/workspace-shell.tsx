@@ -82,7 +82,7 @@ import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
-import { previewSelectionFor } from "./preview-bridge"
+import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -698,10 +698,16 @@ function ArtifactDock({
   const annotations = annotationsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
-  const bridgeChannel = useMemo(
-    () => `preview_${crypto.randomUUID().replaceAll("-", "")}`,
-    [preview?.id],
-  )
+  const [bridgeState, setBridgeState] = useState(() => ({
+    previewId: preview?.id,
+    channel: createPreviewBridgeChannel(),
+  }))
+  let bridgeChannel = bridgeState.channel
+  if (bridgeState.previewId !== preview?.id) {
+    const nextBridgeState = { previewId: preview?.id, channel: createPreviewBridgeChannel() }
+    bridgeChannel = nextBridgeState.channel
+    setBridgeState(nextBridgeState)
+  }
   const [pickerActive, setPickerActive] = useState(false)
   const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
   const [comment, setComment] = useState("")
@@ -719,7 +725,12 @@ function ArtifactDock({
 
   useEffect(() => {
     const receiveSelection = (event: MessageEvent<unknown>) => {
-      if (!pickerActive || !preview || event.source !== previewFrameRef.current?.contentWindow) return
+      if (
+        !pickerActive
+        || !preview
+        || event.source !== previewFrameRef.current?.contentWindow
+        || event.origin !== "null"
+      ) return
       const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
       if (!nextSelection) return
       postPickerState(false)
@@ -808,7 +819,7 @@ function ArtifactDock({
                 className="min-h-0 flex-1 border-0 bg-background"
                 referrerPolicy="no-referrer"
                 sandbox="allow-scripts"
-                src={artifactUrlFor(rpcUrl, preview.id, bridgeChannel)}
+                src={artifactUrlFor(rpcUrl, preview.id, bridgeChannel, window.location.origin)}
                 title={preview.title}
                 onLoad={() => postPickerState(pickerActive)}
               />

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { previewSelectionFor } from "./preview-bridge"
+import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 
 const selection = {
   type: "domovoi.preview.selection",
@@ -11,6 +11,13 @@ const selection = {
 }
 
 describe("previewSelectionFor", () => {
+  it("creates schema-compatible channels with a UUID fallback", () => {
+    expect(createPreviewBridgeChannel(() => "123e4567-e89b-12d3-a456-426614174000")).toBe(
+      "preview_123e4567e89b12d3a456426614174000",
+    )
+    expect(createPreviewBridgeChannel(null, () => 0.5)).toMatch(/^preview_[a-z0-9]{32}$/)
+  })
+
   it("accepts a selection for the active channel and artifact", () => {
     expect(previewSelectionFor(
       selection,

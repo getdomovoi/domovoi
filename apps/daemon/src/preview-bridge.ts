@@ -69,14 +69,30 @@ export function validPreviewBridgeChannel(value: string | null): string | undefi
   return result.success ? result.data : undefined
 }
 
+export function validPreviewParentOrigin(value: string | null): string | undefined {
+  if (value === "null") return value
+  if (!value) return undefined
+  try {
+    const url = new URL(value)
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.origin !== value) {
+      return undefined
+    }
+    return url.origin
+  } catch {
+    return undefined
+  }
+}
+
 export function injectPreviewBridge(
   content: string,
   artifactId: string,
   channel: string,
+  parentOrigin: string,
 ): string {
   const script = `<script data-domovoi-preview-bridge>(function(){
 const channel=${scriptLiteral(channel)};
 const artifactId=${scriptLiteral(artifactId)};
+const parentOrigin=${scriptLiteral(parentOrigin)};
 let active=false;
 const overlay=document.createElement("div");
 overlay.setAttribute("aria-hidden","true");
@@ -104,6 +120,7 @@ function draw(element){
   Object.assign(overlay.style,{display:"block",left:rect.left+"px",top:rect.top+"px",width:rect.width+"px",height:rect.height+"px"});
 }
 function hover(event){if(active&&event.target instanceof Element&&event.target!==overlay)draw(event.target)}
+function sendParent(message){parent.postMessage(message,parentOrigin==="null"?"*":parentOrigin)}
 function select(event){
   if(!active||!(event.target instanceof Element)||event.target===overlay)return;
   event.preventDefault();
@@ -111,7 +128,7 @@ function select(event){
   const element=event.target;
   const rect=element.getBoundingClientRect();
   const text=textFor(element);
-  parent.postMessage({type:"domovoi.preview.selection",channel:channel,artifactId:artifactId,anchor:{cssSelector:selectorFor(element),...(text?{textQuote:text}:{}),bbox:{x:rect.left,y:rect.top,width:rect.width,height:rect.height}},label:element.tagName.toLowerCase()+(text?" · "+text.slice(0,80):"")},"*");
+  sendParent({type:"domovoi.preview.selection",channel:channel,artifactId:artifactId,anchor:{cssSelector:selectorFor(element),...(text?{textQuote:text}:{}),bbox:{x:rect.left,y:rect.top,width:rect.width,height:rect.height}},label:element.tagName.toLowerCase()+(text?" · "+text.slice(0,80):"")});
 }
 function setActive(next){
   active=next;
@@ -120,13 +137,13 @@ function setActive(next){
 }
 addEventListener("message",function(event){
   const message=event.data;
-  if(event.source!==parent||!message||message.type!=="domovoi.preview.picker"||message.channel!==channel||typeof message.active!=="boolean")return;
+  if(event.source!==parent||event.origin!==parentOrigin||!message||message.type!=="domovoi.preview.picker"||message.channel!==channel||typeof message.active!=="boolean")return;
   setActive(message.active);
 });
 addEventListener("mouseover",hover,true);
 addEventListener("click",select,true);
 document.documentElement.appendChild(overlay);
-parent.postMessage({type:"domovoi.preview.ready",channel:channel,artifactId:artifactId},"*");
+sendParent({type:"domovoi.preview.ready",channel:channel,artifactId:artifactId});
 })();</script>`
 
   const bodyClose = closingBodyOffset(content)

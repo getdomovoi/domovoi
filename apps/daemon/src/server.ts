@@ -23,7 +23,11 @@ import {
   type AgentEvent,
 } from "./codex.js"
 import { GitWorkspaceService, type WorkspaceService } from "./workspace.js"
-import { injectPreviewBridge, validPreviewBridgeChannel } from "./preview-bridge.js"
+import {
+  injectPreviewBridge,
+  validPreviewBridgeChannel,
+  validPreviewParentOrigin,
+} from "./preview-bridge.js"
 import { agentPromptWithAnnotations } from "./annotation-context.js"
 
 const invalidRequest = -32600
@@ -199,10 +203,12 @@ export class DomovoiDaemon {
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
     let artifactId: string
     let bridgeChannel: string | undefined
+    let parentOrigin: string | undefined
     try {
       const requestUrl = new URL(url, "http://domovoi.local")
       artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
       bridgeChannel = validPreviewBridgeChannel(requestUrl.searchParams.get("bridge"))
+      parentOrigin = validPreviewParentOrigin(requestUrl.searchParams.get("parentOrigin"))
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
@@ -233,7 +239,11 @@ export class DomovoiDaemon {
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
       })
-      response.end(bridgeChannel ? injectPreviewBridge(content, artifact.id, bridgeChannel) : content)
+      response.end(
+        bridgeChannel && parentOrigin
+          ? injectPreviewBridge(content, artifact.id, bridgeChannel, parentOrigin)
+          : content,
+      )
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))

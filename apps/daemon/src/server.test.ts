@@ -795,7 +795,7 @@ describe("DomovoiDaemon", () => {
     await expect(preview.text()).resolves.toBe("<h1>Domovoi preview</h1>")
 
     const bridgedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456`,
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178`,
     )
     const bridgedContent = await bridgedPreview.text()
     expect(bridgedContent).toContain("domovoi.preview.selection")
