@@ -207,7 +207,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
       for (const candidate of result.data ?? []) {
         const id = candidate.model ?? candidate.id
-        if (!id || !candidate.displayName || candidate.hidden) continue
+        if (!id || candidate.hidden) continue
+        const displayName = candidate.displayName?.trim() || id
         const supportedReasoningEfforts = (candidate.supportedReasoningEfforts ?? [])
           .map((option) => option.reasoningEffort)
           .filter((effort): effort is string => typeof effort === "string")
@@ -226,7 +227,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         models.push({
           provider: "codex",
           id,
-          displayName: candidate.displayName,
+          displayName,
           description: candidate.description ?? "",
           supportedReasoningEfforts,
           defaultReasoningEffort,

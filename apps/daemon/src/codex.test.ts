@@ -114,7 +114,6 @@ describe("CodexAppServerAdapter", () => {
       result: {
         data: [{
           model: "model-a",
-          displayName: "Model A",
           supportedReasoningEfforts: [
             { reasoningEffort: " low " },
             { reasoningEffort: "   " },
@@ -138,6 +137,7 @@ describe("CodexAppServerAdapter", () => {
     await expect(listing).resolves.toEqual([
       expect.objectContaining({
         id: "model-a",
+        displayName: "model-a",
         supportedReasoningEfforts: ["high", "low"],
         defaultReasoningEffort: "high",
       }),
