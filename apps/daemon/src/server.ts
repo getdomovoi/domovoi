@@ -28,6 +28,7 @@ import {
   CodexAppServerAdapter,
 } from "./codex.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
+import { OpenCodeSdkAdapter } from "./opencode.js"
 import {
   AgentProviderUnavailableError,
   AgentRegistry,
@@ -205,6 +206,7 @@ export class DomovoiDaemon {
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
         codex: options.agent ?? new CodexAppServerAdapter(),
+        opencode: new OpenCodeSdkAdapter(),
       },
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(

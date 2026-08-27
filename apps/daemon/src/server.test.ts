@@ -643,7 +643,7 @@ describe("DomovoiDaemon", () => {
         machine: {
           providers: [
             { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: true },
-            { id: "opencode", command: "opencode", status: "missing", sessionCapable: false },
+            { id: "opencode", command: "opencode", status: "missing", sessionCapable: true },
           ],
         },
       },
