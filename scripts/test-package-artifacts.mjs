@@ -4,7 +4,9 @@ import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm"
+import { pnpmInvocation } from "./package-artifact-command.mjs"
+
+const pnpm = pnpmInvocation()
 const repositoryRoot = new URL("../", import.meta.url)
 
 function packedPackage(selector) {
@@ -12,9 +14,9 @@ function packedPackage(selector) {
 
   try {
     const stdout = execFileSync(
-      pnpmCommand,
+      pnpm.command,
       ["--filter", selector, "pack", "--json", "--pack-destination", destination],
-      { cwd: repositoryRoot, encoding: "utf8", shell: process.platform === "win32" },
+      { cwd: repositoryRoot, encoding: "utf8", shell: pnpm.shell },
     )
     assert.ok(stdout.trim(), "pnpm pack returned no JSON")
 
