@@ -1,34 +1,42 @@
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { execFileSync } from "node:child_process"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm"
 const repositoryRoot = new URL("../", import.meta.url)
 
-function packageJson(path) {
-  return JSON.parse(readFileSync(new URL(`${path}/package.json`, repositoryRoot), "utf8"))
-}
+function packedPackage(selector) {
+  const destination = mkdtempSync(join(tmpdir(), "domovoi-pack-"))
 
-function packPreview(selector) {
-  const stdout = execFileSync(
-    pnpmCommand,
-    ["--filter", selector, "pack", "--dry-run", "--json"],
-    { cwd: repositoryRoot, encoding: "utf8", shell: process.platform === "win32" },
-  )
+  try {
+    const stdout = execFileSync(
+      pnpmCommand,
+      ["--filter", selector, "pack", "--json", "--pack-destination", destination],
+      { cwd: repositoryRoot, encoding: "utf8", shell: process.platform === "win32" },
+    )
+    assert.ok(stdout.trim(), "pnpm pack returned no JSON")
 
-  assert.ok(stdout.trim(), "pnpm pack returned no JSON")
-  return JSON.parse(stdout)
+    const preview = JSON.parse(stdout)
+    const manifest = JSON.parse(
+      execFileSync("tar", ["-xOf", preview.filename, "package/package.json"], {
+        encoding: "utf8",
+      }),
+    )
+    return { manifest, preview }
+  } finally {
+    rmSync(destination, { force: true, recursive: true })
+  }
 }
 
 const contracts = [
   {
     selector: "@getdomovoi/protocol",
-    path: "packages/protocol",
     requiredFiles: ["README.md", "LICENSE", "package.json", "dist/index.js", "dist/index.d.ts"],
   },
   {
     selector: "@getdomovoi/daemon",
-    path: "apps/daemon",
     requiredFiles: [
       "README.md",
       "LICENSE",
@@ -41,8 +49,7 @@ const contracts = [
 ]
 
 for (const contract of contracts) {
-  const manifest = packageJson(contract.path)
-  const preview = packPreview(contract.selector)
+  const { manifest, preview } = packedPackage(contract.selector)
   const files = new Set(preview.files.map(({ path }) => path))
 
   assert.equal(manifest.private, undefined, `${contract.selector} must be publishable`)
