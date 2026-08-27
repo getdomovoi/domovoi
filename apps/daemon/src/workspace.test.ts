@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it } from "vitest"
@@ -38,11 +38,12 @@ describe("GitWorkspaceService", () => {
 
     const service = new GitWorkspaceService(worktreeRoot)
     const repository = await service.inspect(repositoryPath)
-    expect(repository).toMatchObject({ root: repositoryPath, name: "project", branch: "main" })
+    expect(resolve(await realpath(repository.root))).toBe(resolve(await realpath(repositoryPath)))
+    expect(repository).toMatchObject({ name: "project", branch: "main" })
 
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
     expect(workspace).toMatchObject({ branch: "domovoi/session-1" })
-    expect(workspace.path.startsWith(`${worktreeRoot}/`)).toBe(true)
+    expect(relative(worktreeRoot, workspace.path)).toBe("session-1")
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
     const checkpoint = await service.checkpoint(workspace.path, "before-agent-turn")
