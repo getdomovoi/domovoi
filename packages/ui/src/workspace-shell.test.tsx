@@ -15,11 +15,21 @@ const runtime: Runtime = {
   auto: false,
 }
 
+const providers: ProviderRuntime[] = [
+  {
+    id: "codex",
+    command: "codex",
+    status: "ready",
+    sessionCapable: true,
+  },
+]
+
 describe("RuntimeControls", () => {
   it("locks every runtime input while an update is pending", () => {
     const markup = renderToStaticMarkup(
       <RuntimeControls
         runtime={runtime}
+        providers={providers}
         pending
         onChange={vi.fn()}
         onListModels={vi.fn(async () => [])}
