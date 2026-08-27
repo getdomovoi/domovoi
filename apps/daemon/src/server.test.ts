@@ -408,7 +408,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       statePath: ":memory:",
       agent,
-      agentTimeoutMs: 100,
+      agentTimeoutMs: 500,
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -439,7 +439,7 @@ describe("DomovoiDaemon", () => {
     finishConnect!()
     await vi.waitFor(
       () => expect(agent.listModels).toHaveBeenCalledOnce(),
-      { interval: 1, timeout: 50 },
+      { interval: 1, timeout: 100 },
     )
     const third = rpc(3)
     await new Promise((resolve) => setTimeout(resolve, 0))

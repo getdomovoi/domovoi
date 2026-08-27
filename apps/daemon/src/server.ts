@@ -558,7 +558,14 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, error.message)
           return
         }
-        session.runtime = runtime
+        const currentSession = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!currentSession) {
+          this.#error(socket, request.id, invalidParams, "Session no longer exists")
+          return
+        }
+        currentSession.runtime = runtime
         changed = true
       }
 
