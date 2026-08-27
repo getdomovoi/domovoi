@@ -44,9 +44,11 @@ represents the community in public spaces.
 ## Enforcement
 
 For conduct on GitHub, use the **Report content** action on the relevant issue, comment, or other
-content. GitHub sends that report privately to repository administrators. Do not open a public
-issue about a conduct incident. If a report concerns a repository administrator or occurs outside
-the repository, report it privately to [GitHub Support](https://support.github.com/contact/report-abuse).
+content. When GitHub offers **Report to repository admins**, that option sends the report privately
+to Domovoi's administrators. If that option is unavailable, the report concerns a repository
+administrator, or the conduct may violate GitHub policy, report it privately to
+[GitHub Support](https://support.github.com/contact/report-abuse). Do not open a public issue about
+a conduct incident.
 
 All complaints will be reviewed promptly and fairly. Community leaders must respect the privacy
 and security of anyone reporting an incident.

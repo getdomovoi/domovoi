@@ -6,8 +6,8 @@ body:
     attributes:
       value: |
         Thanks for helping improve Domovoi. Do not include credentials, tokens, private repository
-        content, or undisclosed vulnerabilities. Report security issues through the private link
-        below.
+        content, or undisclosed vulnerabilities. Report security issues through the [private
+        vulnerability form](https://github.com/getdomovoi/domovoi/security/advisories/new).
   - type: checkboxes
     id: checks
     attributes:
