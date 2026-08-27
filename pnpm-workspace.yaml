@@ -11,6 +11,9 @@ allowBuilds:
   esbuild: true
   node-pty: true
 
+overrides:
+  esbuild: 0.28.2
+
 catalog:
   typescript: ^5.9.2
   vite: ^7.1.3
