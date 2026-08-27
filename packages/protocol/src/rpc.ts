@@ -157,6 +157,7 @@ export const rpcMethods = {
 } as const
 
 export type RpcMethod = keyof typeof rpcMethods
+export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
 export type RpcRequest = z.infer<typeof rpcRequestSchema>
 export type RpcResponse = z.infer<typeof rpcResponseSchema>
 export type RpcNotification = z.infer<typeof rpcNotificationSchema>

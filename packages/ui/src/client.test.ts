@@ -242,4 +242,22 @@ describe("DomovoiClient", () => {
     expect((error as Error).cause).toBeInstanceOf(Error)
     client.disconnect()
   })
+
+  it("uses the registered result parser when none is supplied", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const listing = client.request("runtime.models", {
+      provider: "codex",
+      client: "desktop",
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: [] })
+
+    await expect(listing).resolves.toEqual([])
+    client.disconnect()
+  })
 })

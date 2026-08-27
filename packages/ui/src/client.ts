@@ -1,5 +1,6 @@
 import {
   rpcNotificationSchema,
+  rpcMethods,
   rpcResponseSchema,
   providerModelsSchema,
   workspaceSnapshotSchema,
@@ -8,6 +9,7 @@ import {
   type Annotation,
   type ProviderModel,
   type RpcMethod,
+  type RpcResult,
   type Runtime,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -116,21 +118,22 @@ export class DomovoiClient extends EventTarget {
     socket?.close(1000, "client closed")
   }
 
-  request(method: RpcMethod, params: unknown): Promise<WorkspaceSnapshot>
+  request<M extends RpcMethod>(method: M, params: unknown): Promise<RpcResult<M>>
   request<T>(method: RpcMethod, params: unknown, parse: (value: unknown) => T): Promise<T>
-  request<T = WorkspaceSnapshot>(
+  request<T>(
     method: RpcMethod,
     params: unknown,
-    parse: (value: unknown) => T = (value) => workspaceSnapshotSchema.parse(value) as T,
+    parse?: (value: unknown) => T,
   ): Promise<T> {
     const id = ++this.#requestId
+    const resultParser = parse ?? ((value: unknown) => rpcMethods[method].result.parse(value) as T)
     return new Promise((resolve, reject) => {
       if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Daemon connection is not open"))
         return
       }
       this.#pending.set(id, {
-        parse,
+        parse: resultParser,
         resolve: (value) => resolve(value as T),
         reject,
       })
