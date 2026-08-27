@@ -1,11 +1,12 @@
 import { createServer, type Server as HttpServer } from "node:http"
-import { createHash, randomUUID } from "node:crypto"
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto"
 import { readFile, realpath } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
   createEmptyWorkspace,
+  daemonAuthenticationErrorCode,
   demoWorkspace,
   protocolVersion,
   rpcMethods,
@@ -39,6 +40,7 @@ const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
 const internalError = -32603
+const maximumAuthenticationFailures = 3
 
 class RuntimeValidationError extends Error {}
 
@@ -100,6 +102,9 @@ export type DaemonServerOptions = {
   worktreeRoot?: string
   agentTimeoutMs?: number
   modelCacheTtlMs?: number
+  authToken?: string
+  allowRemoteTransport?: boolean
+  authTimeoutMs?: number
 }
 
 export class DomovoiDaemon {
@@ -123,11 +128,22 @@ export class DomovoiDaemon {
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
   #modelCacheTtlMs: number
+  #authToken: string | undefined
+  #authenticatedClients = new WeakSet<WebSocket>()
+  #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
+  #authenticationFailures = new WeakMap<WebSocket, number>()
+  #authTimeoutMs: number
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
+    if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
+      throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
+    }
+    if (!isLoopbackHost(this.host) && !options.authToken) {
+      throw new Error("A daemon token is required outside loopback")
+    }
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
@@ -154,6 +170,8 @@ export class DomovoiDaemon {
       options.worktreeRoot ?? join(homedir(), ".domovoi", "worktrees"),
     )
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
+    this.#authToken = options.authToken
+    this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#unsubscribeAgent = this.#agent.onEvent((event) => {
       this.#enqueueMutation(() => this.#handleAgentEvent(event))
     })
@@ -176,7 +194,7 @@ export class DomovoiDaemon {
       }
 
       if (request.method === "GET" && request.url?.startsWith("/artifacts/")) {
-        if (!this.#acceptsHost(request.headers.host)) {
+        if (!canServeArtifacts(this.host) || !this.#acceptsHost(request.headers.host)) {
           response.writeHead(404, { "content-type": "application/json" })
           response.end(JSON.stringify({ error: "not_found" }))
           return
@@ -198,9 +216,19 @@ export class DomovoiDaemon {
       verifyClient,
     })
     this.#websocket.on("connection", (socket) => {
+      if (this.#authToken) {
+        const deadline = setTimeout(() => {
+          if (!this.#authenticatedClients.has(socket)) socket.close(1008, "authentication timeout")
+        }, this.#authTimeoutMs)
+        this.#authenticationDeadlines.set(socket, deadline)
+        socket.once("close", () => clearTimeout(deadline))
+      }
       socket.on("message", (data) => {
         const raw = data.toString()
-        if (this.#isModelDiscovery(raw)) void this.#handle(socket, raw)
+        if (
+          this.#isModelDiscovery(raw)
+          && (!this.#authToken || this.#authenticatedClients.has(socket))
+        ) void this.#handle(socket, raw)
         else this.#enqueueMutation(() => this.#handle(socket, raw))
       })
     })
@@ -242,7 +270,10 @@ export class DomovoiDaemon {
     })
 
     for (const client of this.#websocket?.clients ?? []) {
-      if (client.readyState === WebSocket.OPEN) client.send(message)
+      if (
+        client.readyState === WebSocket.OPEN
+        && (!this.#authToken || this.#authenticatedClients.has(client))
+      ) client.send(message)
     }
   }
 
@@ -253,9 +284,7 @@ export class DomovoiDaemon {
   #acceptsHost(host: string | undefined): boolean {
     const address = this.address
     if (!host || !address) return false
-    const accepted = new Set([`${address.host}:${address.port}`])
-    if (address.host === "127.0.0.1") accepted.add(`localhost:${address.port}`)
-    return accepted.has(host)
+    return hostAuthorityMatches(host, address.host, address.port)
   }
 
   #enqueueMutation(task: () => Promise<void>): void {
@@ -415,6 +444,22 @@ export class DomovoiDaemon {
     if (!paramsResult.success) {
       this.#error(socket, request.id, invalidParams, "Method parameters are invalid")
       return
+    }
+
+    if (this.#authToken && !this.#authenticatedClients.has(socket)) {
+      if (method !== "system.hello") {
+        this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
+        return
+      }
+      const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
+      if (!secureTokenMatch(this.#authToken, supplied)) {
+        this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
+        return
+      }
+      this.#authenticatedClients.add(socket)
+      const deadline = this.#authenticationDeadlines.get(socket)
+      if (deadline) clearTimeout(deadline)
+      this.#authenticationDeadlines.delete(socket)
     }
 
     try {
@@ -1033,6 +1078,19 @@ export class DomovoiDaemon {
     return active.length > 0
   }
 
+  #rejectAuthentication(
+    socket: WebSocket,
+    id: string | number | null,
+    message: string,
+  ): void {
+    this.#error(socket, id, daemonAuthenticationErrorCode, message)
+    const failures = (this.#authenticationFailures.get(socket) ?? 0) + 1
+    this.#authenticationFailures.set(socket, failures)
+    if (failures >= maximumAuthenticationFailures) {
+      setTimeout(() => socket.close(1008, "authentication failed"), 0)
+    }
+  }
+
   #scheduleDeltaFlush(): void {
     if (this.#deltaFlush) clearTimeout(this.#deltaFlush)
     this.#deltaFlush = setTimeout(() => {
@@ -1093,6 +1151,40 @@ function turnIdForAgentEvent(event: AgentEvent): string | undefined {
     return turn.id
   }
   return undefined
+}
+
+function secureTokenMatch(expected: string, supplied: unknown): boolean {
+  if (typeof supplied !== "string") return false
+  const expectedBytes = Buffer.from(expected)
+  const suppliedBytes = Buffer.from(supplied)
+  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes)
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "::1" || host === "localhost"
+}
+
+export function canServeArtifacts(host: string): boolean {
+  return isLoopbackHost(host)
+}
+
+export function hostAuthorityMatches(
+  authority: string,
+  listenerHost: string,
+  listenerPort: number,
+): boolean {
+  if (/[@/?#\\\\]/.test(authority)) return false
+  let parsed: URL
+  try {
+    parsed = new URL(`http://${authority}`)
+  } catch {
+    return false
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "")
+  const authorityPort = parsed.port === "" ? 80 : Number(parsed.port)
+  if (authorityPort !== listenerPort) return false
+  if (hostname === listenerHost) return true
+  return hostname === "localhost" && isLoopbackHost(listenerHost)
 }
 
 function resolveInside(root: string, candidate: string): string | undefined {

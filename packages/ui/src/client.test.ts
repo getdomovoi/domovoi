@@ -89,6 +89,41 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("authenticates the initial daemon handshake", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      authToken: "secret-token",
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+      method: "system.hello",
+      params: { client: "web", authToken: "secret-token" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    client.disconnect()
+  })
+
+  it("does not retry a rejected daemon credential", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      authToken: "wrong-token",
+      reconnectDelayMs: 25,
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+
+    await expect(connecting).rejects.toThrow("Daemon authentication failed")
+    await vi.advanceTimersByTimeAsync(25)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
   it("rejects an in-flight request when the connection closes", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
       reconnectDelayMs: 25,

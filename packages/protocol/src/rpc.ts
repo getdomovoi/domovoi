@@ -10,6 +10,7 @@ import {
 } from "./schema.js"
 
 export const requestIdSchema = z.union([z.string(), z.number()])
+export const daemonAuthenticationErrorCode = -32001 as const
 
 export const rpcRequestSchema = z.object({
   jsonrpc: z.literal("2.0"),
@@ -40,6 +41,7 @@ export const rpcNotificationSchema = z.object({
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
   clientVersion: z.string().min(1),
+  authToken: z.string().min(1).optional(),
 })
 
 export const systemPauseAllParamsSchema = z.object({

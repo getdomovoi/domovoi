@@ -1,4 +1,5 @@
 import {
+  daemonAuthenticationErrorCode,
   rpcNotificationSchema,
   rpcMethods,
   rpcResponseSchema,
@@ -14,6 +15,16 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+class DaemonRpcError extends Error {
+  readonly code: number
+
+  constructor(code: number, message: string) {
+    super(message)
+    this.name = "DaemonRpcError"
+    this.code = code
+  }
+}
+
 type PendingRequest = {
   parse: (value: unknown) => unknown
   resolve: (value: unknown) => void
@@ -22,6 +33,7 @@ type PendingRequest = {
 
 type DomovoiClientOptions = {
   reconnectDelayMs?: number
+  authToken?: string
 }
 
 export class DomovoiClient extends EventTarget {
@@ -34,12 +46,14 @@ export class DomovoiClient extends EventTarget {
   #reconnectDelayMs: number
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined
   #shouldReconnect = false
+  #authToken: string | undefined
 
   constructor(url: string, kind: ClientKind, options: DomovoiClientOptions = {}) {
     super()
     this.url = url
     this.kind = kind
     this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000
+    this.#authToken = options.authToken
   }
 
   connect(): Promise<WorkspaceSnapshot> {
@@ -68,7 +82,11 @@ export class DomovoiClient extends EventTarget {
       socket.addEventListener(
         "open",
         () => {
-          this.request("system.hello", { client: this.kind, clientVersion: "0.0.1" }).then(
+          this.request("system.hello", {
+            client: this.kind,
+            clientVersion: "0.0.1",
+            ...(this.#authToken ? { authToken: this.#authToken } : {}),
+          }).then(
             (snapshot) => {
               if (socket !== this.#socket) return
               opening = false
@@ -262,7 +280,11 @@ export class DomovoiClient extends EventTarget {
     this.#pending.delete(response.data.id)
 
     if (response.data.error) {
-      pending.reject(new Error(response.data.error.message))
+      if (response.data.error.code === daemonAuthenticationErrorCode) {
+        this.#shouldReconnect = false
+        this.#clearReconnectTimer()
+      }
+      pending.reject(new DaemonRpcError(response.data.error.code, response.data.error.message))
       return
     }
 

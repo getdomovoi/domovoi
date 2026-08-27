@@ -11,6 +11,7 @@ import {
   demoWorkspace,
   projectOpenParamsSchema,
   providerModelSchema,
+  helloParamsSchema,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
   previewBridgePickerMessageSchema,
@@ -23,6 +24,19 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("accepts an optional daemon credential during hello", () => {
+    expect(helloParamsSchema.parse({
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "token-with-enough-entropy",
+    }).authToken).toBe("token-with-enough-entropy")
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientVersion: "0.0.1",
+      authToken: "",
+    }).success).toBe(false)
+  })
+
   it("validates anchored annotation threads", () => {
     const annotation = {
       id: "annotation-1",

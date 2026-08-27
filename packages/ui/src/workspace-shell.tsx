@@ -90,6 +90,7 @@ import { reasoningOptionsFor, selectRuntimeModel } from "./runtime"
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
+  getRpcToken(): Promise<string>
   minimize(): void
   maximize(): void
   close(): void
@@ -98,6 +99,7 @@ export type DesktopWindowBridge = {
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
   rpcUrl?: string
+  rpcToken?: string
   windowBridge?: DesktopWindowBridge
 }
 
@@ -1246,7 +1248,7 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", windowBridge }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge }: WorkspaceShellProps) {
   const {
     activateSession,
     connected,
@@ -1264,7 +1266,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setRuntime,
     setAnnotationStatus,
     snapshot,
-  } = useWorkspace(rpcUrl, clientKind)
+  } = useWorkspace(rpcUrl, clientKind, rpcToken)
   const shellRef = useRef<HTMLDivElement>(null)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
