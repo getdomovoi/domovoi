@@ -14,6 +14,8 @@ import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { terminalIdForSession } from "./terminal-id"
+import { settleTerminalWrite } from "./terminal-input"
+import { terminalQuickKeyData, terminalQuickKeys } from "./terminal-keys"
 
 export type TerminalControls = {
   create(
@@ -45,6 +47,7 @@ export function TerminalPane({
   sessionId: string | null
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const xtermRef = useRef<Terminal | null>(null)
   const terminalId = useMemo(
     () => sessionId ? terminalIdForSession(sessionId) : undefined,
     [sessionId],
@@ -80,6 +83,7 @@ export function TerminalPane({
     const fit = new FitAddon()
     terminal.loadAddon(fit)
     terminal.open(container)
+    xtermRef.current = terminal
     fit.fit()
     const unsubscribe = controls.subscribe(terminalId, {
       output: ({ data }) => terminal.write(data),
@@ -122,6 +126,7 @@ export function TerminalPane({
       observer.disconnect()
       input.dispose()
       terminal.dispose()
+      if (xtermRef.current === terminal) xtermRef.current = null
     }
   }, [connected, controls, restartKey, sessionId, terminalId])
 
@@ -142,6 +147,19 @@ export function TerminalPane({
     void controls.write(terminalId, "\x03").catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Terminal interrupt failed")
     })
+  }
+  const sendInput = (data: string) => {
+    const terminal = xtermRef.current
+    if (!terminalId || !terminal) return
+    void settleTerminalWrite(
+      controls.write(terminalId, data),
+      terminal,
+      () => xtermRef.current,
+      () => terminal.focus(),
+      (cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Terminal input failed")
+      },
+    )
   }
   const close = () => {
     if (!terminalId) return
@@ -184,6 +202,28 @@ export function TerminalPane({
         </Alert>
       ) : null}
       <div ref={containerRef} className="min-h-0 flex-1 p-3" />
+      <div
+        className="hidden shrink-0 items-center gap-2 overflow-x-auto border-t px-3 py-2 [@media(any-pointer:coarse)]:flex"
+        aria-label="Terminal quick keys"
+        role="toolbar"
+      >
+        {terminalQuickKeys.map((key) => (
+          <Button
+            key={key.ariaLabel}
+            type="button"
+            variant="outline"
+            className="h-11 min-w-11 shrink-0 touch-manipulation px-3 font-machine text-[11px]"
+            aria-label={key.ariaLabel}
+            disabled={!connected || closed || !metadata}
+            onClick={() => sendInput(terminalQuickKeyData(
+              key,
+              xtermRef.current?.modes.applicationCursorKeysMode ?? false,
+            ))}
+          >
+            {key.label}
+          </Button>
+        ))}
+      </div>
     </div>
   )
 }
