@@ -26,6 +26,14 @@ export function selectRuntimeModel(runtime: Runtime, model: ProviderModel): Runt
   }
 }
 
+export function requiresProviderHandoff(runtime: Runtime, model: ProviderModel): boolean {
+  return runtime.provider !== model.provider
+}
+
+export function providerHandoffDescription(provider: string, model: string): string {
+  return `Domovoi checkpoints this worktree and carries the thread, plan, diff, test results, and open annotations to ${provider} / ${model}. Hidden reasoning, provider caches, and private session metadata do not transfer.`
+}
+
 export function providerCanStartSession(provider: ProviderRuntime): boolean {
   return provider.sessionCapable
     && provider.status !== "auth-required"

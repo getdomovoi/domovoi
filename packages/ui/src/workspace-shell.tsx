@@ -38,6 +38,16 @@ import type {
 } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
@@ -63,6 +73,10 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
@@ -88,11 +102,13 @@ import { annotationsForActiveSession } from "./annotations"
 import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 import { latestArtifactForActiveSession } from "./artifacts"
 import {
+  providerHandoffDescription,
   preferredSessionProvider,
   providerCanStartSession,
   providerDisplayName,
   providerStatusLabel,
   reasoningOptionsFor,
+  requiresProviderHandoff,
   selectRuntimeModel,
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
@@ -824,6 +840,7 @@ function Thread({
         </div>
         <RuntimeControls
           runtime={active.runtime}
+          providers={snapshot.machine.providers}
           pending={runtimePending}
           onChange={(runtime) => void updateRuntime(runtime)}
           onListModels={onListModels}
@@ -890,36 +907,73 @@ export function activeThreadKey(snapshot: WorkspaceSnapshot): string {
 
 export function RuntimeControls({
   runtime,
+  providers,
   pending,
   onChange,
   onListModels,
 }: {
   runtime: Runtime
+  providers: readonly ProviderRuntime[]
   pending: boolean
   onChange: (runtime: Runtime) => void
   onListModels: (provider: string) => Promise<ProviderModel[]>
 }) {
-  const [models, setModels] = useState<ProviderModel[]>([])
-  const [modelsPending, setModelsPending] = useState(false)
-  const [modelsError, setModelsError] = useState("")
+  const [modelCatalogs, setModelCatalogs] = useState<Record<string, ProviderModel[]>>({})
+  const [modelsPending, setModelsPending] = useState<Record<string, boolean>>({})
+  const [modelsError, setModelsError] = useState<Record<string, string>>({})
+  const [handoffModel, setHandoffModel] = useState<ProviderModel>()
+  const models = modelCatalogs[runtime.provider] ?? []
   const selectedModel = models.find(
     (model) => model.provider === runtime.provider && model.id === runtime.model,
   )
   const reasoningOptions = reasoningOptionsFor(selectedModel)
   const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
+  const availableProviders = providers.filter(providerCanStartSession)
+
+  const loadModels = (provider: string) => {
+    if (modelCatalogs[provider] || modelsPending[provider]) return
+    setModelsPending((current) => ({ ...current, [provider]: true }))
+    setModelsError((current) => ({ ...current, [provider]: "" }))
+    void onListModels(provider).then(
+      (nextModels) => setModelCatalogs((current) => ({ ...current, [provider]: nextModels })),
+      (cause: unknown) => {
+        setModelsError((current) => ({
+          ...current,
+          [provider]: cause instanceof Error ? cause.message : "Models could not be loaded",
+        }))
+      },
+    ).finally(() => setModelsPending((current) => ({ ...current, [provider]: false })))
+  }
 
   useEffect(() => {
     let active = true
-    setModelsPending(true)
-    setModelsError("")
+    setModelsPending((current) => ({ ...current, [runtime.provider]: true }))
+    setModelsError((current) => ({ ...current, [runtime.provider]: "" }))
     void onListModels(runtime.provider).then(
-      (nextModels) => { if (active) setModels(nextModels) },
-      (cause: unknown) => {
-        if (active) setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
+      (nextModels) => {
+        if (active) setModelCatalogs((current) => ({ ...current, [runtime.provider]: nextModels }))
       },
-    ).finally(() => { if (active) setModelsPending(false) })
+      (cause: unknown) => {
+        if (active) {
+          setModelsError((current) => ({
+            ...current,
+            [runtime.provider]: cause instanceof Error ? cause.message : "Models could not be loaded",
+          }))
+        }
+      },
+    ).finally(() => {
+      if (active) setModelsPending((current) => ({ ...current, [runtime.provider]: false }))
+    })
     return () => { active = false }
   }, [onListModels, runtime.provider])
+
+  const chooseModel = (model: ProviderModel) => {
+    if (requiresProviderHandoff(runtime, model)) {
+      setHandoffModel(model)
+      return
+    }
+    onChange(selectRuntimeModel(runtime, model))
+  }
 
   const setMode = (permissionMode: string) => {
     if (permissionMode) onChange({ ...runtime, permissionMode: permissionMode as PermissionMode })
@@ -932,23 +986,45 @@ export function RuntimeControls({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>Provider and model</DropdownMenuLabel>
-          <DropdownMenuGroup>
-            {modelsPending ? <DropdownMenuItem disabled>Loading installed models</DropdownMenuItem> : null}
-            {modelsError ? <DropdownMenuItem disabled>{modelsError}</DropdownMenuItem> : null}
-            {models.map((model) => (
-              <DropdownMenuItem
-                key={`${model.provider}:${model.id}`}
-                disabled={pending}
-                onSelect={() => onChange(selectRuntimeModel(runtime, model))}
+          <DropdownMenuSeparator />
+          {availableProviders.map((provider) => {
+            const providerModels = modelCatalogs[provider.id] ?? []
+            return (
+              <DropdownMenuSub
+                key={provider.id}
+                onOpenChange={(open) => { if (open) loadModels(provider.id) }}
               >
-                {model.id === runtime.model && model.provider === runtime.provider ? <CheckIcon /> : null}
-                <span className="flex min-w-0 flex-col">
-                  <span>{model.displayName}</span>
-                  <span className="truncate font-machine text-[9px] text-faint">{model.provider} · {model.id}</span>
-                </span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
+                <DropdownMenuSubTrigger disabled={pending}>
+                  {provider.id === runtime.provider ? <CheckIcon /> : <BotIcon />}
+                  {providerDisplayName(provider.id)}
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-80 w-80 overflow-y-auto">
+                  <DropdownMenuLabel>{providerDisplayName(provider.id)} models</DropdownMenuLabel>
+                  <DropdownMenuGroup>
+                    {modelsPending[provider.id] ? <DropdownMenuItem disabled>Loading installed models</DropdownMenuItem> : null}
+                    {modelsError[provider.id] ? <DropdownMenuItem disabled className="whitespace-normal text-destructive">{modelsError[provider.id]}</DropdownMenuItem> : null}
+                    {!modelsPending[provider.id] && !modelsError[provider.id] && providerModels.length === 0
+                      ? <DropdownMenuItem disabled>No models reported</DropdownMenuItem>
+                      : null}
+                    {providerModels.map((model) => (
+                      <DropdownMenuItem
+                        key={`${model.provider}:${model.id}`}
+                        disabled={pending}
+                        onSelect={() => chooseModel(model)}
+                      >
+                        {model.id === runtime.model && model.provider === runtime.provider ? <CheckIcon /> : null}
+                        <span className="flex min-w-0 flex-col">
+                          <span className="truncate">{model.displayName}</span>
+                          <span className="truncate font-machine text-[9px] text-faint">{model.id}</span>
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )
+          })}
+          {availableProviders.length === 0 ? <DropdownMenuItem disabled>No session providers are ready</DropdownMenuItem> : null}
         </DropdownMenuContent>
       </DropdownMenu>
       <DropdownMenu>
@@ -961,6 +1037,32 @@ export function RuntimeControls({
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
       <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending} onCheckedChange={(auto) => onChange({ ...runtime, auto })} />Auto</label>
+      <AlertDialog open={handoffModel !== undefined} onOpenChange={(open) => { if (!open) setHandoffModel(undefined) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch provider here?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {handoffModel
+                ? providerHandoffDescription(
+                    providerDisplayName(handoffModel.provider),
+                    handoffModel.displayName,
+                  )
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={pending}
+              onClick={() => {
+                if (handoffModel) onChange(selectRuntimeModel(runtime, handoffModel))
+              }}
+            >
+              Switch here
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
