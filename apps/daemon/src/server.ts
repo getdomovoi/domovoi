@@ -18,6 +18,7 @@ import {
   type RpcMethod,
   type ClientKind,
   type Runtime,
+  type TerminalOwner,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
@@ -122,6 +123,7 @@ type ActiveTerminal = {
   shell: string
   cwd: string
   buffer: string
+  owner: TerminalOwner
   disposeData: () => void
   disposeExit: () => void
 }
@@ -519,9 +521,11 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          existing.process.resize(params.cols, params.rows)
-          existing.cols = params.cols
-          existing.rows = params.rows
+          if (existing.owner.clientId === params.clientId) {
+            existing.process.resize(params.cols, params.rows)
+            existing.cols = params.cols
+            existing.rows = params.rows
+          }
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -533,6 +537,7 @@ export class DomovoiDaemon {
               shell: existing.shell,
               cwd: existing.cwd,
               buffer: existing.buffer,
+              owner: existing.owner,
             }),
           })
           return
@@ -550,6 +555,7 @@ export class DomovoiDaemon {
           shell: process.process,
           cwd: session.workspacePath,
           buffer: "",
+          owner: { client: params.client, clientId: params.clientId },
           disposeData: () => {},
           disposeExit: () => {},
         }
@@ -589,8 +595,26 @@ export class DomovoiDaemon {
             shell: process.process,
             cwd: session.workspacePath,
             buffer: activeTerminal.buffer,
+            owner: activeTerminal.owner,
           }),
         })
+        return
+      }
+
+      if (method === "terminal.claim") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        terminal.owner = { client: params.client, clientId: params.clientId }
+        const ownership = rpcMethods[method].result.parse({
+          terminalId: params.terminalId,
+          owner: terminal.owner,
+        })
+        this.#broadcastNotification("terminal.ownership", ownership)
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
         return
       }
 
@@ -599,6 +623,10 @@ export class DomovoiDaemon {
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        if (terminal.owner.clientId !== params.clientId) {
+          this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
         terminal.process.write(params.data)
@@ -617,6 +645,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
+        if (terminal.owner.clientId !== params.clientId) {
+          this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
+          return
+        }
         terminal.process.resize(params.cols, params.rows)
         terminal.cols = params.cols
         terminal.rows = params.rows
@@ -630,10 +662,16 @@ export class DomovoiDaemon {
 
       if (method === "terminal.close") {
         const params = rpcMethods[method].params.parse(request.params)
-        if (!this.#closeTerminal(params.terminalId)) {
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
+        if (terminal.owner.clientId !== params.clientId) {
+          this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
+          return
+        }
+        this.#closeTerminal(params.terminalId)
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,

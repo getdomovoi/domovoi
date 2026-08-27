@@ -17,8 +17,10 @@ import {
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
   terminalCloseParamsSchema,
+  terminalClaimParamsSchema,
   terminalCreateParamsSchema,
   terminalInputParamsSchema,
+  terminalOwnershipNotificationSchema,
   terminalResizeParamsSchema,
   terminalSessionSchema,
   previewBridgePickerMessageSchema,
@@ -61,6 +63,7 @@ describe("workspace protocol", () => {
       cols: 120,
       rows: 32,
       client: "desktop",
+      clientId: "desktop-client-1",
     }).cols).toBe(120)
     expect(terminalSessionSchema.parse({
       terminalId: "terminal-1",
@@ -70,27 +73,41 @@ describe("workspace protocol", () => {
       shell: "/bin/bash",
       cwd: "/worktrees/billing",
       buffer: "ready\r\n",
+      owner: { client: "desktop", clientId: "desktop-client-1" },
     }).shell).toBe("/bin/bash")
     expect(terminalInputParamsSchema.parse({
       terminalId: "terminal-1",
       data: "pnpm test\r",
       client: "tablet",
+      clientId: "tablet-client-1",
     }).data).toBe("pnpm test\r")
     expect(terminalResizeParamsSchema.parse({
       terminalId: "terminal-1",
       cols: 80,
       rows: 24,
       client: "web",
+      clientId: "web-client-1",
     }).rows).toBe(24)
     expect(terminalCloseParamsSchema.parse({
       terminalId: "terminal-1",
       client: "phone",
+      clientId: "phone-client-1",
     }).client).toBe("phone")
+    expect(terminalClaimParamsSchema.parse({
+      terminalId: "terminal-1",
+      client: "phone",
+      clientId: "phone-client-1",
+    }).clientId).toBe("phone-client-1")
+    expect(terminalOwnershipNotificationSchema.parse({
+      terminalId: "terminal-1",
+      owner: { client: "phone", clientId: "phone-client-1" },
+    }).owner.client).toBe("phone")
     expect(terminalResizeParamsSchema.safeParse({
       terminalId: "terminal-1",
       cols: 0,
       rows: 24,
       client: "web",
+      clientId: "web-client-1",
     }).success).toBe(false)
   })
 

@@ -85,6 +85,7 @@ describe("terminal RPC", () => {
       cols: 120,
       rows: 32,
       client: "desktop",
+      clientId: "desktop-client-1",
     })
     expect(created).toMatchObject({
       result: {
@@ -93,6 +94,7 @@ describe("terminal RPC", () => {
         shell: "bash",
         cwd: "/worktrees/billing",
         buffer: "",
+        owner: { client: "desktop", clientId: "desktop-client-1" },
       },
     })
     expect(terminalService.spawn).toHaveBeenCalledWith({
@@ -116,25 +118,80 @@ describe("terminal RPC", () => {
       cols: 100,
       rows: 28,
       client: "tablet",
+      clientId: "tablet-client-1",
     })).resolves.toMatchObject({
-      result: { terminalId: "terminal-1", cols: 100, rows: 28, buffer: "ready\r\n" },
+      result: {
+        terminalId: "terminal-1",
+        cols: 120,
+        rows: 32,
+        buffer: "ready\r\n",
+        owner: { client: "desktop", clientId: "desktop-client-1" },
+      },
     })
     expect(terminalService.spawn).toHaveBeenCalledOnce()
+    expect(terminal.resize).not.toHaveBeenCalled()
 
     await expect(rpc("terminal.input", {
       terminalId: "terminal-1",
       data: "pnpm test\r",
       client: "tablet",
+      clientId: "tablet-client-1",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal is owned by another client" },
+    })
+    expect(terminal.write).not.toHaveBeenCalled()
+
+    const ownership = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    })
+    const claiming = rpc("terminal.claim", {
+      terminalId: "terminal-1",
+      client: "tablet",
+      clientId: "tablet-client-1",
+    })
+    await expect(ownership).resolves.toMatchObject({
+      method: "terminal.ownership",
+      params: {
+        terminalId: "terminal-1",
+        owner: { client: "tablet", clientId: "tablet-client-1" },
+      },
+    })
+    await expect(claiming).resolves.toMatchObject({
+      result: {
+        terminalId: "terminal-1",
+        owner: { client: "tablet", clientId: "tablet-client-1" },
+      },
+    })
+
+    await expect(rpc("terminal.close", {
+      terminalId: "terminal-1",
+      client: "desktop",
+      clientId: "desktop-client-1",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal is owned by another client" },
+    })
+    expect(terminal.kill).not.toHaveBeenCalled()
+
+    await expect(rpc("terminal.input", {
+      terminalId: "terminal-1",
+      data: "pnpm test\r",
+      client: "tablet",
+      clientId: "tablet-client-1",
     })).resolves.toMatchObject({ result: { accepted: true } })
     expect(terminal.write).toHaveBeenCalledWith("pnpm test\r")
     await rpc("terminal.resize", {
       terminalId: "terminal-1",
       cols: 80,
       rows: 24,
-      client: "web",
+      client: "tablet",
+      clientId: "tablet-client-1",
     })
     expect(terminal.resize).toHaveBeenCalledWith(80, 24)
-    await rpc("terminal.close", { terminalId: "terminal-1", client: "desktop" })
+    await rpc("terminal.close", {
+      terminalId: "terminal-1",
+      client: "tablet",
+      clientId: "tablet-client-1",
+    })
     expect(terminal.kill).toHaveBeenCalledOnce()
     socket.close()
   })

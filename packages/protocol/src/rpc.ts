@@ -60,32 +60,40 @@ export const artifactAuthorizeResultSchema = z.object({
 
 const terminalIdSchema = z.string().min(1).max(128)
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
+const terminalClientIdSchema = z.string().min(8).max(128)
+
+export const terminalOwnerSchema = z.object({
+  client: clientKindSchema,
+  clientId: terminalClientIdSchema,
+})
+
+const terminalClientIdentitySchema = terminalOwnerSchema
 
 export const terminalCreateParamsSchema = z.object({
   terminalId: terminalIdSchema,
   sessionId: z.string().min(1),
   cols: terminalDimensionSchema,
   rows: terminalDimensionSchema,
-  client: clientKindSchema,
-})
+}).extend(terminalClientIdentitySchema.shape)
 
 export const terminalInputParamsSchema = z.object({
   terminalId: terminalIdSchema,
   data: z.string().min(1).max(65_536),
-  client: clientKindSchema,
-})
+}).extend(terminalClientIdentitySchema.shape)
 
 export const terminalResizeParamsSchema = z.object({
   terminalId: terminalIdSchema,
   cols: terminalDimensionSchema,
   rows: terminalDimensionSchema,
-  client: clientKindSchema,
-})
+}).extend(terminalClientIdentitySchema.shape)
 
 export const terminalCloseParamsSchema = z.object({
   terminalId: terminalIdSchema,
-  client: clientKindSchema,
-})
+}).extend(terminalClientIdentitySchema.shape)
+
+export const terminalClaimParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+}).extend(terminalClientIdentitySchema.shape)
 
 export const terminalSessionSchema = z.object({
   terminalId: terminalIdSchema,
@@ -95,6 +103,7 @@ export const terminalSessionSchema = z.object({
   shell: z.string().min(1),
   cwd: z.string().min(1),
   buffer: z.string(),
+  owner: terminalOwnerSchema,
 })
 
 export const terminalAcceptedSchema = z.object({ accepted: z.literal(true) })
@@ -106,6 +115,10 @@ export const terminalClosedNotificationSchema = z.object({
   terminalId: terminalIdSchema,
   exitCode: z.number().int().optional(),
   signal: z.number().int().optional(),
+})
+export const terminalOwnershipNotificationSchema = z.object({
+  terminalId: terminalIdSchema,
+  owner: terminalOwnerSchema,
 })
 
 export const systemPauseAllParamsSchema = z.object({
@@ -201,6 +214,10 @@ export const rpcMethods = {
     result: artifactAuthorizeResultSchema,
   },
   "terminal.create": { params: terminalCreateParamsSchema, result: terminalSessionSchema },
+  "terminal.claim": {
+    params: terminalClaimParamsSchema,
+    result: terminalOwnershipNotificationSchema,
+  },
   "terminal.input": { params: terminalInputParamsSchema, result: terminalAcceptedSchema },
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
@@ -252,5 +269,7 @@ export type RpcResponse = z.infer<typeof rpcResponseSchema>
 export type RpcNotification = z.infer<typeof rpcNotificationSchema>
 export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>
 export type TerminalSession = z.infer<typeof terminalSessionSchema>
+export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
+export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
