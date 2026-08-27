@@ -15,5 +15,6 @@ export function vendorChunkFor(moduleId: string): string | undefined {
   if (packageName === "lucide-react") return "icons"
   if (packageName === "react-resizable-panels") return "panels"
   if (packageName === "zod") return "validation"
+  if (packageName.startsWith("@xterm/")) return "terminal"
   return "vendor"
 }

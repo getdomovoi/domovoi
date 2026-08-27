@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import {
   BotIcon,
   CheckIcon,
@@ -85,9 +85,14 @@ import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { previewSelectionFor } from "./preview-bridge"
-import { commandsForActiveSession, type CommandTranscript } from "./commands"
 import { latestArtifactForActiveSession } from "./artifacts"
 import { reasoningOptionsFor, selectRuntimeModel } from "./runtime"
+import type { TerminalControls } from "./terminal-pane"
+
+const TerminalPane = lazy(async () => {
+  const module = await import("./terminal-pane")
+  return { default: module.TerminalPane }
+})
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
@@ -747,6 +752,7 @@ function ArtifactDock({
   rpcUrl,
   authorizeArtifact,
   connected,
+  terminalControls,
   onReplyToAnnotation,
   onSetAnnotationStatus,
   onCreateAnnotation,
@@ -757,6 +763,7 @@ function ArtifactDock({
   rpcUrl: string
   authorizeArtifact: (artifactId: string, bridgeChannel?: string) => Promise<ArtifactAccess>
   connected: boolean
+  terminalControls: TerminalControls
   onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
   onSetAnnotationStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
   onCreateAnnotation: (input: {
@@ -773,7 +780,6 @@ function ArtifactDock({
     : undefined
   const diff = latestArtifactForActiveSession(snapshot, "diff")
   const annotations = annotationsForActiveSession(snapshot)
-  const commands = commandsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const bridgeChannel = useMemo(
@@ -787,6 +793,7 @@ function ArtifactDock({
   const [annotationError, setAnnotationError] = useState("")
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [previewError, setPreviewError] = useState("")
+  const [activeTab, setActiveTab] = useState<string>(defaultTab)
 
   useEffect(() => {
     let active = true
@@ -870,7 +877,7 @@ function ArtifactDock({
 
   return (
     <aside className="flex h-full min-w-0 flex-col bg-sidebar">
-      <Tabs defaultValue={defaultTab} className="h-full gap-0">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
         <div className="flex h-11 items-center border-b px-2">
           <TabsList variant="line" className="min-w-0 flex-1 justify-start overflow-x-auto">
             <TabsTrigger value="plan"><FileTextIcon />Plan</TabsTrigger>
@@ -961,7 +968,22 @@ function ArtifactDock({
           />
         </TabsContent>
         <TabsContent value="terminal" className="min-h-0 bg-code">
-          <TerminalTranscript commands={commands} />
+          <Suspense fallback={(
+            <Empty className="min-h-full border-0 text-muted-foreground">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
+                <EmptyTitle>Loading terminal</EmptyTitle>
+                <EmptyDescription>Preparing the interactive terminal renderer.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}>
+            <TerminalPane
+              connected={connected}
+              controls={terminalControls}
+              machineName={snapshot.machine.name}
+              sessionId={snapshot.activeSessionId}
+            />
+          </Suspense>
         </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
@@ -1020,54 +1042,6 @@ function ArtifactDock({
         </DialogContent>
       </Dialog>
     </aside>
-  )
-}
-
-function TerminalTranscript({ commands }: { commands: CommandTranscript[] }) {
-  if (!commands.length) {
-    return (
-      <Empty className="min-h-full border-0 text-muted-foreground">
-        <EmptyHeader>
-          <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
-          <EmptyTitle>No commands yet</EmptyTitle>
-          <EmptyDescription>Agent command output appears here as it runs.</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    )
-  }
-
-  return (
-    <ScrollArea className="h-full">
-      <div className="font-machine text-[11px] text-muted-foreground">
-        {commands.map((command) => (
-          <section key={command.id} className="border-b border-border/70 px-4 py-3 last:border-b-0">
-            <div className="flex min-w-0 items-start justify-between gap-3">
-              <p className="m-0 min-w-0 break-words text-foreground">
-                <span className="mr-2 text-primary">$</span>{command.title}
-              </p>
-              <Badge
-                variant={command.status === "completed"
-                  ? "success"
-                  : command.status === "failed" || command.status === "declined"
-                    ? "destructive"
-                    : "warning"}
-              >
-                {command.status}
-              </Badge>
-            </div>
-            {command.output ? (
-              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-relaxed">
-                {command.output}
-              </pre>
-            ) : (
-              <p className="mt-2 text-[10px] text-faint">
-                {command.status === "running" ? "Waiting for output…" : "No output recorded."}
-              </p>
-            )}
-          </section>
-        ))}
-      </div>
-    </ScrollArea>
   )
 }
 
@@ -1249,22 +1223,34 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const {
     activateSession,
     authorizeArtifact,
+    closeTerminal,
     connected,
     createCheckpoint,
     createAnnotation,
     createSession,
+    createTerminal,
     listModels,
     openProject,
     pauseAll,
     pauseSession,
     reconnect,
+    resizeTerminal,
     resolveApproval,
     replyToAnnotation,
     sendMessage,
     setRuntime,
     setAnnotationStatus,
     snapshot,
+    subscribeTerminal,
+    writeTerminal,
   } = useWorkspace(rpcUrl, clientKind, rpcToken)
+  const terminalControls = useMemo<TerminalControls>(() => ({
+    create: createTerminal,
+    write: writeTerminal,
+    resize: resizeTerminal,
+    close: closeTerminal,
+    subscribe: subscribeTerminal,
+  }), [closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
@@ -1350,7 +1336,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>

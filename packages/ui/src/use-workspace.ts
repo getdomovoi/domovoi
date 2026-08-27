@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, TerminalClosedNotification, TerminalOutputNotification, TerminalSession, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
 
@@ -156,6 +156,63 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.authorizeArtifact(artifactId, bridgeChannel)
   }, [])
 
+  const createTerminal = useCallback(async (
+    sessionId: string,
+    dimensions: { cols: number; rows: number },
+    terminalId: string,
+  ): Promise<TerminalSession> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.createTerminal(sessionId, dimensions, terminalId)
+  }, [])
+
+  const writeTerminal = useCallback(async (terminalId: string, data: string): Promise<void> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.writeTerminal(terminalId, data)
+  }, [])
+
+  const resizeTerminal = useCallback(async (
+    terminalId: string,
+    cols: number,
+    rows: number,
+  ): Promise<void> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.resizeTerminal(terminalId, cols, rows)
+  }, [])
+
+  const closeTerminal = useCallback(async (terminalId: string): Promise<void> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.closeTerminal(terminalId)
+  }, [])
+
+  const subscribeTerminal = useCallback((
+    terminalId: string,
+    handlers: {
+      output: (event: TerminalOutputNotification) => void
+      closed: (event: TerminalClosedNotification) => void
+    },
+  ): (() => void) => {
+    const client = clientRef.current
+    if (!client) return () => {}
+    const output = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalOutputNotification>).detail
+      if (detail.terminalId === terminalId) handlers.output(detail)
+    }
+    const closed = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalClosedNotification>).detail
+      if (detail.terminalId === terminalId) handlers.closed(detail)
+    }
+    client.addEventListener("terminal-output", output)
+    client.addEventListener("terminal-closed", closed)
+    return () => {
+      client.removeEventListener("terminal-output", output)
+      client.removeEventListener("terminal-closed", closed)
+    }
+  }, [])
+
   const createAnnotation = useCallback(async (input: {
     sessionId: string
     artifactId: string
@@ -196,20 +253,25 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   return {
     activateSession,
     authorizeArtifact,
+    closeTerminal,
     connected,
     createCheckpoint,
     createAnnotation,
+    createTerminal,
     createSession,
     listModels,
     openProject,
     pauseAll,
     pauseSession,
     reconnect,
+    resizeTerminal,
     replyToAnnotation,
     resolveApproval,
     sendMessage,
     setAnnotationStatus,
     setRuntime,
     snapshot,
+    subscribeTerminal,
+    writeTerminal,
   }
 }
