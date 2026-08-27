@@ -25,7 +25,7 @@ class FakeWebSocket extends EventTarget {
 
   close(): void {
     this.readyState = FakeWebSocket.CLOSED
-    this.dispatchEvent(new CloseEvent("close"))
+    this.dispatchEvent(new Event("close"))
   }
 
   open(): void {
@@ -39,7 +39,7 @@ class FakeWebSocket extends EventTarget {
 
   drop(): void {
     this.readyState = FakeWebSocket.CLOSED
-    this.dispatchEvent(new CloseEvent("close"))
+    this.dispatchEvent(new Event("close"))
   }
 }
 
