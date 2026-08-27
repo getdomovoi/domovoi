@@ -608,6 +608,49 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("publishes provider readiness discovered on the execution machine", async () => {
+    const providerProbe = {
+      inspect: vi.fn(async () => [
+        { id: "claude-code", command: "claude", status: "ready" as const, version: "2.1.247" },
+        { id: "opencode", command: "opencode", status: "missing" as const },
+      ]),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      providerProbe,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.once("error", reject)
+      socket.once("open", () => socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "workspace.get",
+        params: {},
+      })))
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+
+    expect(response).toMatchObject({
+      result: {
+        machine: {
+          providers: [
+            { id: "claude-code", command: "claude", status: "ready", version: "2.1.247" },
+            { id: "opencode", command: "opencode", status: "missing" },
+          ],
+        },
+      },
+    })
+    socket.close()
+  })
+
   it("records a project-scoped rule for standing approval", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,

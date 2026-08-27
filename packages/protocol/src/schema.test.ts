@@ -265,8 +265,11 @@ describe("workspace protocol", () => {
   it("upgrades snapshots that predate annotation state", () => {
     const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
     delete legacy.annotations
+    delete (legacy.machine as Record<string, unknown>).providers
 
-    expect(workspaceSnapshotSchema.parse(legacy).annotations).toEqual([])
+    const upgraded = workspaceSnapshotSchema.parse(legacy)
+    expect(upgraded.annotations).toEqual([])
+    expect(upgraded.machine.providers).toEqual([])
   })
 
   it("rejects annotations detached from their session artifact", () => {

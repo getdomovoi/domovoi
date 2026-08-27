@@ -40,6 +40,12 @@ describe("CliProviderProbe", () => {
       if (command === "kilo" && args[0] === "--version") {
         return { exitCode: 0, stdout: "kilo 1.2.0", stderr: "" }
       }
+      if (command === "codex" && args[0] === "--version") {
+        return { exitCode: 0, stdout: "codex-cli 0.149.0", stderr: "" }
+      }
+      if (command === "codex") {
+        return { exitCode: 1, stdout: "Not logged in", stderr: "" }
+      }
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
@@ -53,6 +59,9 @@ describe("CliProviderProbe", () => {
       command: "kilo",
       status: "unknown",
       version: "1.2.0",
+    })
+    expect(providers.find((provider) => provider.id === "codex")).toMatchObject({
+      status: "auth-required",
     })
   })
 })

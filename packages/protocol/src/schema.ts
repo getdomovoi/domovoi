@@ -66,7 +66,7 @@ export const machineSchema = z.object({
   version: z.string().min(1),
   connection: connectionKindSchema,
   reachable: z.boolean(),
-  providers: z.array(providerRuntimeSchema),
+  providers: z.array(providerRuntimeSchema).default([]),
 })
 
 export const projectSchema = z.object({

@@ -45,6 +45,7 @@ import {
   type TerminalProcess,
   type TerminalService,
 } from "./terminal.js"
+import type { ProviderProbe } from "./providers.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -118,6 +119,7 @@ export type DaemonServerOptions = {
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalService?: TerminalService
+  providerProbe?: ProviderProbe
 }
 
 type ActiveTerminal = {
@@ -162,6 +164,8 @@ export class DomovoiDaemon {
   #artifactAccessTtlSeconds = 60
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
+  #providerProbe: ProviderProbe | undefined
+  #providerRefresh: Promise<void> | undefined
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -205,6 +209,7 @@ export class DomovoiDaemon {
     this.#authToken = options.authToken
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
+    this.#providerProbe = options.providerProbe
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
@@ -273,6 +278,12 @@ export class DomovoiDaemon {
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
 
+    if (this.#providerProbe) {
+      this.#providerRefresh = this.#refreshProviderReadiness().catch((error: unknown) => {
+        console.error("Domovoi could not inspect provider runtimes", error)
+      })
+    }
+
     return this.address!
   }
 
@@ -287,6 +298,7 @@ export class DomovoiDaemon {
 
     this.#websocket = undefined
     this.#http = undefined
+    await this.#providerRefresh
     await this.#mutationQueue
     if (this.#deltaFlush) this.#flushAgentState()
     for (const unsubscribe of this.#unsubscribeAgents) unsubscribe()
@@ -311,6 +323,17 @@ export class DomovoiDaemon {
         && (!this.#authToken || this.#authenticatedClients.has(client))
       ) client.send(message)
     }
+  }
+
+  async #refreshProviderReadiness(): Promise<void> {
+    const providers = await this.#providerProbe!.inspect()
+    this.#enqueueMutation(async () => {
+      this.#snapshot.machine.providers = providers
+      this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      this.#store.save(this.#snapshot)
+      this.#broadcastSnapshot()
+    })
+    await this.#mutationQueue
   }
 
   #error(socket: WebSocket, id: string | number | null, code: number, message: string): void {

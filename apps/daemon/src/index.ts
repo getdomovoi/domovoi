@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs"
 
 import { DomovoiDaemon } from "./server.js"
+import { CliProviderProbe } from "./providers.js"
 
 const help = `Usage: domovoid [options]
 
@@ -47,6 +48,7 @@ async function main() {
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(authToken ? { authToken } : {}),
     ...(allowRemoteTransport ? { allowRemoteTransport } : {}),
+    providerProbe: new CliProviderProbe(),
   })
 
   const address = await daemon.start()

@@ -13,6 +13,10 @@ export type ProviderCommandRunner = (
   args: string[],
 ) => Promise<CommandResult>
 
+export interface ProviderProbe {
+  inspect(): Promise<ProviderRuntime[]>
+}
+
 type ProviderDefinition = {
   id: string
   command: string
@@ -39,7 +43,7 @@ const definitions: ProviderDefinition[] = [
   { id: "kilo", command: "kilo" },
 ]
 
-export class CliProviderProbe {
+export class CliProviderProbe implements ProviderProbe {
   readonly #run: ProviderCommandRunner
 
   constructor(run: ProviderCommandRunner = runProviderCommand) {
@@ -115,10 +119,10 @@ function claudeAuthStatus(result: CommandResult): ProviderRuntime["status"] {
 
 function textAuthStatus(result: CommandResult): ProviderRuntime["status"] {
   const output = `${result.stdout}\n${result.stderr}`
-  if (/\blogged in\b|\bauthenticated\b/i.test(output)) return "ready"
   if (/not logged|login required|unauthenticated|token expired/i.test(output)) {
     return "auth-required"
   }
+  if (/\blogged in\b|\bauthenticated\b/i.test(output)) return "ready"
   return "unknown"
 }
 
