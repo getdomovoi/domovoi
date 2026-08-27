@@ -35,12 +35,18 @@ import {
   validPreviewParentOrigin,
 } from "./preview-bridge.js"
 import { agentPromptWithAnnotations } from "./annotation-context.js"
+import {
+  NodePtyTerminalService,
+  type TerminalProcess,
+  type TerminalService,
+} from "./terminal.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
 const internalError = -32603
 const maximumAuthenticationFailures = 3
+const maximumTerminalBufferLength = 256 * 1_024
 
 class RuntimeValidationError extends Error {}
 
@@ -105,6 +111,19 @@ export type DaemonServerOptions = {
   authToken?: string
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
+  terminalService?: TerminalService
+}
+
+type ActiveTerminal = {
+  sessionId: string
+  process: TerminalProcess
+  cols: number
+  rows: number
+  shell: string
+  cwd: string
+  buffer: string
+  disposeData: () => void
+  disposeExit: () => void
 }
 
 export class DomovoiDaemon {
@@ -135,6 +154,8 @@ export class DomovoiDaemon {
   #authTimeoutMs: number
   #artifactSigningSecret = randomBytes(32).toString("base64url")
   #artifactAccessTtlSeconds = 60
+  #terminalService: TerminalService
+  #terminals = new Map<string, ActiveTerminal>()
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -174,6 +195,7 @@ export class DomovoiDaemon {
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
     this.#authToken = options.authToken
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
+    this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#unsubscribeAgent = this.#agent.onEvent((event) => {
       this.#enqueueMutation(() => this.#handleAgentEvent(event))
     })
@@ -244,6 +266,7 @@ export class DomovoiDaemon {
   }
 
   async stop(): Promise<void> {
+    this.#closeAllTerminals()
     for (const client of this.#websocket?.clients ?? []) client.close(1001, "daemon stopping")
 
     await new Promise<void>((resolve, reject) => {
@@ -265,11 +288,11 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
-    const message = JSON.stringify({
-      jsonrpc: "2.0",
-      method: "workspace.changed",
-      params: this.#snapshot,
-    })
+    this.#broadcastNotification("workspace.changed", this.#snapshot)
+  }
+
+  #broadcastNotification(method: string, params: unknown): void {
+    const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
     for (const client of this.#websocket?.clients ?? []) {
       if (
@@ -481,6 +504,144 @@ export class DomovoiDaemon {
 
     try {
       let changed = false
+      if (method === "terminal.create") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!session?.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        const existing = this.#terminals.get(params.terminalId)
+        if (existing) {
+          if (existing.sessionId !== session.id) {
+            this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
+            return
+          }
+          existing.process.resize(params.cols, params.rows)
+          existing.cols = params.cols
+          existing.rows = params.rows
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({
+              terminalId: params.terminalId,
+              sessionId: existing.sessionId,
+              cols: existing.cols,
+              rows: existing.rows,
+              shell: existing.shell,
+              cwd: existing.cwd,
+              buffer: existing.buffer,
+            }),
+          })
+          return
+        }
+        const process = this.#terminalService.spawn({
+          cwd: session.workspacePath,
+          cols: params.cols,
+          rows: params.rows,
+        })
+        const activeTerminal: ActiveTerminal = {
+          sessionId: session.id,
+          process,
+          cols: params.cols,
+          rows: params.rows,
+          shell: process.process,
+          cwd: session.workspacePath,
+          buffer: "",
+          disposeData: () => {},
+          disposeExit: () => {},
+        }
+        this.#terminals.set(params.terminalId, activeTerminal)
+        const dataDisposable = process.onData((data) => {
+          const active = this.#terminals.get(params.terminalId)
+          if (active?.process === process) {
+            active.buffer = `${active.buffer}${data}`.slice(-maximumTerminalBufferLength)
+          }
+          this.#broadcastNotification("terminal.output", {
+            terminalId: params.terminalId,
+            data,
+          })
+        })
+        const exitDisposable = process.onExit(({ exitCode, signal }) => {
+          const active = this.#terminals.get(params.terminalId)
+          if (!active || active.process !== process) return
+          this.#terminals.delete(params.terminalId)
+          active.disposeData()
+          active.disposeExit()
+          this.#broadcastNotification("terminal.closed", {
+            terminalId: params.terminalId,
+            exitCode,
+            ...(signal === undefined ? {} : { signal }),
+          })
+        })
+        activeTerminal.disposeData = () => dataDisposable.dispose()
+        activeTerminal.disposeExit = () => exitDisposable.dispose()
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            terminalId: params.terminalId,
+            sessionId: session.id,
+            cols: params.cols,
+            rows: params.rows,
+            shell: process.process,
+            cwd: session.workspacePath,
+            buffer: activeTerminal.buffer,
+          }),
+        })
+        return
+      }
+
+      if (method === "terminal.input") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        terminal.process.write(params.data)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ accepted: true }),
+        })
+        return
+      }
+
+      if (method === "terminal.resize") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        terminal.process.resize(params.cols, params.rows)
+        terminal.cols = params.cols
+        terminal.rows = params.rows
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ accepted: true }),
+        })
+        return
+      }
+
+      if (method === "terminal.close") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (!this.#closeTerminal(params.terminalId)) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ accepted: true }),
+        })
+        return
+      }
+
       if (method === "artifact.authorize") {
         const params = rpcMethods[method].params.parse(request.params)
         const artifact = this.#snapshot.artifacts.find(
@@ -684,6 +845,7 @@ export class DomovoiDaemon {
       if (method === "project.open") {
         const params = rpcMethods[method].params.parse(request.params)
         const repository = await this.#workspaceService.inspect(params.path)
+        this.#closeAllTerminals()
         await this.#cleanupSessions()
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         this.#snapshot.project = {
@@ -1134,6 +1296,21 @@ export class DomovoiDaemon {
     if (failures >= maximumAuthenticationFailures) {
       setTimeout(() => socket.close(1008, "authentication failed"), 0)
     }
+  }
+
+  #closeTerminal(terminalId: string): boolean {
+    const terminal = this.#terminals.get(terminalId)
+    if (!terminal) return false
+    this.#terminals.delete(terminalId)
+    terminal.disposeData()
+    terminal.disposeExit()
+    terminal.process.kill()
+    this.#broadcastNotification("terminal.closed", { terminalId })
+    return true
+  }
+
+  #closeAllTerminals(): void {
+    for (const terminalId of [...this.#terminals.keys()]) this.#closeTerminal(terminalId)
   }
 
   #scheduleDeltaFlush(): void {

@@ -16,6 +16,11 @@ import {
   helloParamsSchema,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
+  terminalCloseParamsSchema,
+  terminalCreateParamsSchema,
+  terminalInputParamsSchema,
+  terminalResizeParamsSchema,
+  terminalSessionSchema,
   previewBridgePickerMessageSchema,
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
@@ -47,6 +52,46 @@ describe("workspace protocol", () => {
       expiresAt: 1_800_000_000,
       signature: "a".repeat(43),
     }).signature).toHaveLength(43)
+  })
+
+  it("validates interactive terminal operations", () => {
+    expect(terminalCreateParamsSchema.parse({
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      client: "desktop",
+    }).cols).toBe(120)
+    expect(terminalSessionSchema.parse({
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      shell: "/bin/bash",
+      cwd: "/worktrees/billing",
+      buffer: "ready\r\n",
+    }).shell).toBe("/bin/bash")
+    expect(terminalInputParamsSchema.parse({
+      terminalId: "terminal-1",
+      data: "pnpm test\r",
+      client: "tablet",
+    }).data).toBe("pnpm test\r")
+    expect(terminalResizeParamsSchema.parse({
+      terminalId: "terminal-1",
+      cols: 80,
+      rows: 24,
+      client: "web",
+    }).rows).toBe(24)
+    expect(terminalCloseParamsSchema.parse({
+      terminalId: "terminal-1",
+      client: "phone",
+    }).client).toBe("phone")
+    expect(terminalResizeParamsSchema.safeParse({
+      terminalId: "terminal-1",
+      cols: 0,
+      rows: 24,
+      client: "web",
+    }).success).toBe(false)
   })
 
   it("accepts an optional daemon credential during hello", () => {
