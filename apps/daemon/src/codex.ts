@@ -3,6 +3,10 @@ import { createInterface } from "node:readline"
 
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
+import type { AgentAdapter, AgentEvent } from "./agents.js"
+
+export type { AgentAdapter, AgentEvent } from "./agents.js"
+
 export type JsonRpcMessage = {
   id?: number
   method?: string
@@ -28,46 +32,6 @@ export type CodexPolicy = {
         readOnlyAccess: { type: "fullAccess" }
         networkAccess: false
       }
-}
-
-export type AgentEvent =
-  | { type: "text-delta"; threadId?: string; turnId?: string; delta: string }
-  | { type: "plan-delta"; threadId?: string; turnId?: string; delta: string }
-  | { type: "command-output"; threadId?: string; turnId?: string; itemId?: string; delta: string }
-  | { type: "diff-updated"; threadId?: string; turnId?: string; diff: string }
-  | {
-      type: "approval-requested"
-      requestId: number
-      threadId?: string
-      turnId?: string
-      itemId?: string
-      command?: string
-      cwd?: string
-      reason?: string
-    }
-  | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
-  | { type: "turn-completed"; params: Record<string, unknown> }
-
-export interface AgentAdapter {
-  connect(): Promise<void>
-  listModels(): Promise<ProviderModel[]>
-  startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
-  resumeThread(threadId: string): Promise<void>
-  stopThread(threadId: string): Promise<void>
-  interruptTurn(threadId: string, turnId: string): Promise<void>
-  startTurn(input: {
-    threadId: string
-    cwd: string
-    prompt: string
-    runtime: Runtime
-  }): Promise<string>
-  steerTurn(threadId: string, turnId: string, prompt: string): Promise<void>
-  resolveApproval(
-    requestId: number,
-    decision: ApprovalDecision,
-  ): void
-  onEvent(listener: (event: AgentEvent) => void): () => void
-  close(): Promise<void>
 }
 
 type PendingRequest = {
