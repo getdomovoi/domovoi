@@ -10,6 +10,8 @@ describe("vendorChunkFor", () => {
     ["/repo/node_modules/.pnpm/lucide-react@1/node_modules/lucide-react/dist/cjs.js", "icons"],
     ["C:\\repo\\node_modules\\react-resizable-panels\\dist\\index.js", "panels"],
     ["/repo/node_modules/zod/index.js", "validation"],
+    ["/repo/node_modules/@xterm/xterm/lib/xterm.js", "terminal"],
+    ["/repo/node_modules/@xterm/addon-fit/lib/addon-fit.js", "terminal"],
   ])("maps %s to %s", (moduleId, chunk) => {
     expect(vendorChunkFor(moduleId)).toBe(chunk)
   })
