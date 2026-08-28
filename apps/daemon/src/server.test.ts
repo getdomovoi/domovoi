@@ -1398,7 +1398,7 @@ describe("DomovoiDaemon", () => {
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const workspaceService = {
-      inspect: vi.fn(async () => ({
+      inspect: vi.fn(async (_path: string, _signal?: AbortSignal) => ({
         root: "/code/domovoi",
         name: "domovoi",
         branch: "main",
@@ -1410,7 +1410,11 @@ describe("DomovoiDaemon", () => {
         baseCommit: "a".repeat(40),
       })),
       removeSessionWorkspace: vi.fn(async () => {}),
-      checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: ["src/app.ts"] })),
+      checkpoint: vi.fn(async (
+        _path: string,
+        _label: string,
+        _signal?: AbortSignal,
+      ) => ({ commit: "b".repeat(40), changedFiles: ["src/app.ts"] })),
       restore: vi.fn(async () => ({
         restoredCommit: "b".repeat(40),
         recoveryCommit: "c".repeat(40),
@@ -1476,6 +1480,20 @@ describe("DomovoiDaemon", () => {
     })
     expect(timedOut).toMatchObject({ error: { code: -32603, message: "Agent setup timed out" } })
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledOnce()
+
+    workspaceService.inspect.mockImplementationOnce(
+      (_path: string, signal?: AbortSignal) => new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+      }),
+    )
+    const inspectionTimedOut = await rpc("session.create", {
+      title: "Timeout inspection",
+      runtime,
+      client: "desktop",
+    })
+    expect(inspectionTimedOut).toMatchObject({
+      error: { code: -32603, message: "Repository inspection timed out" },
+    })
 
     const created = await rpc("session.create", {
       title: "Build persistence",
@@ -1581,6 +1599,25 @@ describe("DomovoiDaemon", () => {
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
 
+    let checkpointAborted = false
+    workspaceService.checkpoint.mockImplementationOnce(
+      (_path: string, _label: string, signal?: AbortSignal) => new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => {
+          checkpointAborted = true
+          reject(signal.reason)
+        }, { once: true })
+      }),
+    )
+    const timedOutCheckpoint = await rpc("checkpoint.create", {
+      sessionId,
+      label: "must-time-out",
+      client: "desktop",
+    })
+    expect(timedOutCheckpoint).toMatchObject({
+      error: { code: -32603, message: "Checkpoint timed out" },
+    })
+    expect(checkpointAborted).toBe(true)
+
     const checkpointed = await rpc("checkpoint.create", {
       sessionId,
       label: "after-tests",
@@ -1659,6 +1696,7 @@ describe("DomovoiDaemon", () => {
     expect(workspaceService.restore).toHaveBeenCalledWith(
       `/worktrees/${sessionId}`,
       "b".repeat(40),
+      expect.any(AbortSignal),
     )
     expect(restored).toMatchObject({
       result: {
@@ -1695,7 +1733,10 @@ describe("DomovoiDaemon", () => {
     const reopened = await reopening
     expect(reopened).toMatchObject({ result: { activeSessionId: null, sessions: [] } })
     expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
-    expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(`/worktrees/${sessionId}`)
+    expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(
+      `/worktrees/${sessionId}`,
+      expect.any(AbortSignal),
+    )
     socket.close()
   })
 
@@ -1829,6 +1870,7 @@ describe("DomovoiDaemon", () => {
     expect(workspaceService.checkpoint).toHaveBeenCalledWith(
       `/worktrees/${sessionId}`,
       "before provider handoff",
+      expect.any(AbortSignal),
     )
     expect(codex.startThread).toHaveBeenCalledWith(expect.objectContaining({
       cwd: `/worktrees/${sessionId}`,

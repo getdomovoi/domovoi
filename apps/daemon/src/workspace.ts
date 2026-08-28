@@ -30,23 +30,39 @@ export type RestoreResult = {
 }
 
 export interface WorkspaceService {
-  inspect(repositoryPath: string): Promise<RepositoryInfo>
-  createSessionWorkspace(repositoryPath: string, sessionId: string): Promise<SessionWorkspace>
-  removeSessionWorkspace(worktreePath: string): Promise<void>
-  checkpoint(worktreePath: string, label: string): Promise<Checkpoint>
-  restore(worktreePath: string, commit: string): Promise<RestoreResult>
+  inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo>
+  createSessionWorkspace(
+    repositoryPath: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace>
+  removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void>
+  checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
+  restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
 }
 
-async function git(repositoryPath: string, arguments_: string[]): Promise<string> {
+async function git(
+  repositoryPath: string,
+  arguments_: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
   const result = await execute("git", ["-C", repositoryPath, ...arguments_], {
     encoding: "utf8",
+    signal,
   })
   return result.stdout.trim()
 }
 
-async function gitDirectory(directory: string, arguments_: string[]): Promise<string> {
+async function gitDirectory(
+  directory: string,
+  arguments_: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
   const result = await execute("git", [`--git-dir=${directory}`, ...arguments_], {
     encoding: "utf8",
+    signal,
   })
   return result.stdout.trim()
 }
@@ -58,11 +74,11 @@ export class GitWorkspaceService implements WorkspaceService {
     this.worktreeRoot = resolve(worktreeRoot)
   }
 
-  async inspect(repositoryPath: string): Promise<RepositoryInfo> {
-    const root = await git(repositoryPath, ["rev-parse", "--show-toplevel"])
+  async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
+    const root = await git(repositoryPath, ["rev-parse", "--show-toplevel"], signal)
     const [branch, head] = await Promise.all([
-      git(root, ["branch", "--show-current"]),
-      git(root, ["rev-parse", "HEAD"]),
+      git(root, ["branch", "--show-current"], signal),
+      git(root, ["rev-parse", "HEAD"], signal),
     ])
     return { root, name: basename(root), branch, head }
   }
@@ -70,25 +86,26 @@ export class GitWorkspaceService implements WorkspaceService {
   async createSessionWorkspace(
     repositoryPath: string,
     sessionId: string,
+    signal?: AbortSignal,
   ): Promise<SessionWorkspace> {
     if (!safeSessionId.test(sessionId)) {
       throw new Error("Session id is not safe for a worktree")
     }
-    const repository = await this.inspect(repositoryPath)
+    const repository = await this.inspect(repositoryPath, signal)
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
-    await git(repository.root, ["worktree", "add", "-b", branch, path, repository.head])
+    await git(repository.root, ["worktree", "add", "-b", branch, path, repository.head], signal)
     return { path, branch, baseCommit: repository.head }
   }
 
-  async checkpoint(worktreePath: string, label: string): Promise<Checkpoint> {
-    await git(worktreePath, ["add", "--all"])
-    const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"])
+  async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
+    await git(worktreePath, ["add", "--all"], signal)
+    const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
     const changedFiles = names.split("\0").filter(Boolean)
     if (changedFiles.length === 0) {
-      const commit = await git(worktreePath, ["rev-parse", "HEAD"])
-      await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit])
+      const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+      await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
       return { commit, changedFiles }
     }
 
@@ -100,13 +117,13 @@ export class GitWorkspaceService implements WorkspaceService {
       "commit",
       "-m",
       `chore(domovoi): checkpoint ${label}`,
-    ])
-    const commit = await git(worktreePath, ["rev-parse", "HEAD"])
-    await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit])
+    ], signal)
+    const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     return { commit, changedFiles }
   }
 
-  async restore(worktreePath: string, commit: string): Promise<RestoreResult> {
+  async restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult> {
     if (!/^[a-f0-9]{40}$/.test(commit)) {
       throw new Error("Checkpoint commit is invalid")
     }
@@ -115,19 +132,21 @@ export class GitWorkspaceService implements WorkspaceService {
       checkpointCommit = await git(worktreePath, [
         "rev-parse",
         `refs/domovoi/checkpoints/${commit}^{commit}`,
-      ])
+      ], signal)
     } catch {
+      signal?.throwIfAborted()
       throw new Error("Commit is not a Domovoi checkpoint")
     }
     if (checkpointCommit !== commit) {
       throw new Error("Commit is not a Domovoi checkpoint")
     }
-    const recovery = await this.checkpoint(worktreePath, "before restore")
-    await git(worktreePath, ["reset", "--hard", checkpointCommit])
+    const recovery = await this.checkpoint(worktreePath, "before restore", signal)
+    await git(worktreePath, ["reset", "--hard", checkpointCommit], signal)
     return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
   }
 
-  async removeSessionWorkspace(worktreePath: string): Promise<void> {
+  async removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
     let path: string
     try {
       path = await realpath(resolve(worktreePath))
@@ -140,19 +159,19 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!pathFromRoot || pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
       throw new Error("Worktree path is outside the Domovoi worktree root")
     }
-    const repositoryRoot = await git(path, ["rev-parse", "--show-toplevel"])
+    const repositoryRoot = await git(path, ["rev-parse", "--show-toplevel"], signal)
     if (await realpath(repositoryRoot) !== path) {
       throw new Error("Worktree path does not identify a Git worktree root")
     }
-    const branch = await git(path, ["branch", "--show-current"])
+    const branch = await git(path, ["branch", "--show-current"], signal)
     const commonDirectory = await git(path, [
       "rev-parse",
       "--path-format=absolute",
       "--git-common-dir",
-    ])
-    await gitDirectory(commonDirectory, ["worktree", "remove", "--force", path])
+    ], signal)
+    await gitDirectory(commonDirectory, ["worktree", "remove", "--force", path], signal)
     if (branch.startsWith("domovoi/")) {
-      await gitDirectory(commonDirectory, ["branch", "-D", branch])
+      await gitDirectory(commonDirectory, ["branch", "-D", branch], signal)
     }
   }
 }
