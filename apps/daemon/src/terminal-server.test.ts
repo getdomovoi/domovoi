@@ -166,7 +166,7 @@ describe("terminal RPC", () => {
     await expect(secondPause).resolves.toHaveProperty("result")
     await expect(secondCreated).resolves.toHaveProperty("result.terminalId", "terminal-2")
     const secondInputResult = await secondInput
-    expect(creationOrdering).toBe("waiting")
+    expect(creationOrdering).toBe("settled")
     expect(secondInputResult).toMatchObject({ result: { accepted: true } })
     expect(terminal.write).toHaveBeenCalledWith("after-create\r")
     terminal.write.mockClear()

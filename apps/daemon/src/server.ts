@@ -51,6 +51,7 @@ import {
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
+import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -58,6 +59,14 @@ const invalidParams = -32602
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const maximumTerminalBufferLength = 256 * 1_024
+const sessionResourceMethods = new Set([
+  "annotation.create",
+  "checkpoint.create",
+  "checkpoint.restore",
+  "session.pause",
+  "session.send",
+  "session.setRuntime",
+])
 
 class RuntimeValidationError extends Error {}
 class OperationTimeoutError extends Error {}
@@ -158,8 +167,9 @@ export class DomovoiDaemon {
   #providerModelRequests = new Map<string, Promise<ProviderModel[]>>()
   #loadedAgentThreads = new Set<string>()
   #unsubscribeAgents: Array<() => void>
-  #mutationQueue = Promise.resolve()
-  #terminalQueues = new Map<string, Promise<void>>()
+  #mutations = new ResourceMutationQueue((error) => {
+    console.error("Domovoi mutation failed", error)
+  })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
   #modelCacheTtlMs: number
@@ -228,7 +238,10 @@ export class DomovoiDaemon {
     this.#skillCatalog = options.skillCatalog
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
-        this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
+        void this.#mutations.enqueue(
+          this.#resourceForAgentEvent(provider, event),
+          () => this.#handleAgentEvent(provider, event),
+        )
       }),
     )
   }
@@ -291,13 +304,9 @@ export class DomovoiDaemon {
       }
       socket.on("message", (data) => {
         const raw = data.toString()
-        const terminalRequest = this.#terminalRequest(raw)
-        if (terminalRequest) {
-          this.#enqueueTerminalRequest(
-            terminalRequest.terminalId,
-            () => this.#handle(socket, raw),
-            terminalRequest.method === "terminal.create",
-          )
+        const resource = this.#requestResource(raw)
+        if (resource) {
+          void this.#mutations.enqueue(resource, () => this.#handle(socket, raw))
         } else if (
           this.#bypassesMutationQueue(raw)
           && this.#authenticatedClients.has(socket)
@@ -332,7 +341,7 @@ export class DomovoiDaemon {
     this.#websocket = undefined
     this.#http = undefined
     await this.#providerRefresh
-    await this.#mutationQueue
+    await this.#mutations.drain()
     if (this.#deltaFlush) this.#flushAgentState()
     for (const unsubscribe of this.#unsubscribeAgents) unsubscribe()
     await Promise.all(this.#agents.adapters().map((agent) => agent.close()))
@@ -364,13 +373,12 @@ export class DomovoiDaemon {
       ...provider,
       sessionCapable: sessionProviders.has(provider.id),
     }))
-    this.#enqueueMutation(async () => {
+    await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
-      this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      workspaceSnapshotSchema.parse(this.#snapshot)
       this.#store.save(this.#snapshot)
       this.#broadcastSnapshot()
     })
-    await this.#mutationQueue
   }
 
   #error(socket: WebSocket, id: string | number | null, code: number, message: string): void {
@@ -384,49 +392,59 @@ export class DomovoiDaemon {
   }
 
   #enqueueMutation(task: () => Promise<void>): Promise<void> {
-    this.#mutationQueue = this.#mutationQueue.then(task).catch((error: unknown) => {
-      console.error("Domovoi mutation failed", error)
-    })
-    return this.#mutationQueue
+    return this.#mutations.enqueueExclusive(task)
   }
 
-  #enqueueTerminalRequest(
-    terminalId: string,
-    task: () => Promise<void>,
-    behindWorkspace: boolean,
-  ): void {
-    const previous = this.#terminalQueues.get(terminalId) ?? Promise.resolve()
-    const queued = behindWorkspace
-      ? this.#enqueueMutation(async () => {
-          await previous
-          await task()
-        })
-      : previous.then(task).catch((error: unknown) => {
-          console.error("Domovoi terminal request failed", error)
-        })
-    this.#terminalQueues.set(terminalId, queued)
-    void queued.finally(() => {
-      if (this.#terminalQueues.get(terminalId) === queued) {
-        this.#terminalQueues.delete(terminalId)
-      }
-    })
-  }
-
-  #terminalRequest(raw: string): { method: string; terminalId: string } | undefined {
+  #requestResource(raw: string): string | undefined {
     try {
       const request = JSON.parse(raw) as {
         method?: unknown
-        params?: { terminalId?: unknown }
+        params?: {
+          annotationId?: unknown
+          approvalId?: unknown
+          sessionId?: unknown
+          terminalId?: unknown
+        }
       }
+      if (typeof request.method !== "string") return undefined
       if (
-        typeof request.method !== "string"
-        || !request.method.startsWith("terminal.")
-        || typeof request.params?.terminalId !== "string"
-      ) return undefined
-      return { method: request.method, terminalId: request.params.terminalId }
+        request.method.startsWith("terminal.")
+        && typeof request.params?.terminalId === "string"
+      ) return `terminal:${request.params.terminalId}`
+      if (
+        sessionResourceMethods.has(request.method)
+        && typeof request.params?.sessionId === "string"
+      ) return `session:${request.params.sessionId}`
+      if (
+        (request.method === "annotation.reply" || request.method === "annotation.setStatus")
+        && typeof request.params?.annotationId === "string"
+      ) {
+        const annotation = this.#snapshot.annotations.find(
+          (candidate) => candidate.id === request.params!.annotationId,
+        )
+        if (annotation) return `session:${annotation.sessionId}`
+      }
+      if (request.method === "approval.resolve" && typeof request.params?.approvalId === "string") {
+        const approval = this.#snapshot.approvals.find(
+          (candidate) => candidate.id === request.params!.approvalId,
+        )
+        if (approval) return `session:${approval.sessionId}`
+      }
+      return undefined
     } catch {
       return undefined
     }
+  }
+
+  #resourceForAgentEvent(provider: string, event: AgentEvent): string {
+    const threadId = threadIdForAgentEvent(event)
+    const session = threadId
+      ? this.#snapshot.sessions.find(
+          (candidate) =>
+            candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
+        )
+      : undefined
+    return session ? `session:${session.id}` : `provider:${provider}:${threadId ?? "unscoped"}`
   }
 
   #bypassesMutationQueue(raw: string): boolean {
@@ -1431,7 +1449,7 @@ export class DomovoiDaemon {
         changed = true
       }
 
-      this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed) this.#store.save(this.#snapshot)
       this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.#snapshot })
 
@@ -1443,11 +1461,7 @@ export class DomovoiDaemon {
   }
 
   async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
-    let threadId: string | undefined
-    if ("threadId" in event) threadId = event.threadId
-    else if ("params" in event && typeof event.params.threadId === "string") {
-      threadId = event.params.threadId
-    }
+    const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
     const session = this.#snapshot.sessions.find(
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
@@ -1725,7 +1739,7 @@ export class DomovoiDaemon {
       this.#deltaFlush = undefined
     }
     try {
-      this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      workspaceSnapshotSchema.parse(this.#snapshot)
       this.#store.save(this.#snapshot)
       this.#broadcastSnapshot()
     } catch (error) {
@@ -1759,7 +1773,7 @@ export class DomovoiDaemon {
       createdAt: session.updatedAt,
     })
     try {
-      this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      workspaceSnapshotSchema.parse(this.#snapshot)
       this.#store.save(this.#snapshot)
       this.#broadcastSnapshot()
     } finally {
@@ -1811,6 +1825,14 @@ export class DomovoiDaemon {
     }
     if (errors.length) throw new AggregateError(errors, "Domovoi could not clean up all sessions")
   }
+}
+
+function threadIdForAgentEvent(event: AgentEvent): string | undefined {
+  if ("threadId" in event) return event.threadId
+  if ("params" in event && typeof event.params.threadId === "string") {
+    return event.params.threadId
+  }
+  return undefined
 }
 
 function turnIdForAgentEvent(event: AgentEvent): string | undefined {
