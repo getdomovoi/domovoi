@@ -19,6 +19,7 @@ import {
   type RpcParams,
   type RpcResult,
   type Runtime,
+  type SkillDocument,
   type SkillSummary,
   type TerminalSession,
   type TerminalOwnershipNotification,
@@ -320,6 +321,10 @@ export class DomovoiClient extends EventTarget {
 
   listSkills(): Promise<SkillSummary[]> {
     return this.request("skill.list", {})
+  }
+
+  readSkill(id: string): Promise<SkillDocument> {
+    return this.request("skill.read", { id })
   }
 
   #scheduleReconnect(): void {

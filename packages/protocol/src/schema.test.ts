@@ -31,10 +31,36 @@ import {
   sessionPauseParamsSchema,
   sessionSendParamsSchema,
   skillSummarySchema,
+  skillDocumentSchema,
   workspaceSnapshotSchema,
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("bounds skill documents returned by discovered ID", () => {
+    expect(skillDocumentSchema.parse({
+      skill: {
+        id: "skill-4d6f4d6f4d6f",
+        name: "repo-audit",
+        description: "Audit a repository and render a ranked report.",
+        path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+        scope: "user",
+        source: "agents",
+      },
+      content: "---\nname: repo-audit\n---\n",
+    }).content).toContain("repo-audit")
+    expect(skillDocumentSchema.safeParse({
+      skill: {
+        id: "skill-4d6f4d6f4d6f",
+        name: "repo-audit",
+        description: "Audit repositories.",
+        path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+        scope: "user",
+        source: "agents",
+      },
+      content: "x".repeat(128 * 1_024 + 1),
+    }).success).toBe(false)
+  })
+
   it("validates skill provenance without claiming execution trust", () => {
     expect(skillSummarySchema.parse({
       id: "skill-4d6f4d6f4d6f",

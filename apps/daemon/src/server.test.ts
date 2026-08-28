@@ -619,6 +619,17 @@ describe("DomovoiDaemon", () => {
         scope: "user" as const,
         source: "agents" as const,
       }]),
+      read: vi.fn(async (id: string) => ({
+        skill: {
+          id,
+          name: "repo-audit",
+          description: "Audit a repository and render a ranked report.",
+          path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+          scope: "user" as const,
+          source: "agents" as const,
+        },
+        content: "---\nname: repo-audit\n---\n",
+      })),
     } satisfies SkillCatalog
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -647,6 +658,22 @@ describe("DomovoiDaemon", () => {
       })],
     })
     expect(skillCatalog.list).toHaveBeenCalledOnce()
+    const documentResponse = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skill.read",
+      params: { id: "skill-4d6f4d6f4d6f" },
+    }))
+    await expect(documentResponse).resolves.toMatchObject({
+      result: {
+        skill: { name: "repo-audit" },
+        content: expect.stringContaining("name: repo-audit"),
+      },
+    })
+    expect(skillCatalog.read).toHaveBeenCalledWith("skill-4d6f4d6f4d6f")
     socket.close()
   })
 
