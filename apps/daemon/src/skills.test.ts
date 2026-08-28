@@ -1,6 +1,6 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve, sep } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -92,20 +92,22 @@ describe("FileSkillCatalog", () => {
 
     expect(skills).toHaveLength(1)
     expect(skills[0]).toMatchObject({ name: "plan-preview", scope: "user" })
-    expect(skills[0]!.path).toBe(join(userRoot, "plan-preview", "SKILL.md"))
+    expect(skills[0]!.path).toBe(join(await realpath(userRoot), "plan-preview", "SKILL.md"))
   })
 })
 
 describe("skillRoots", () => {
   it("covers shared and provider skill directories without deciding trust", () => {
-    expect(skillRoots("/home/dev", "/repo")).toEqual(expect.arrayContaining([
-      { path: "/home/dev/.domovoi/skills", scope: "user", source: "domovoi" },
-      { path: "/home/dev/.agents/skills", scope: "user", source: "agents" },
-      { path: "/home/dev/.claude/skills", scope: "user", source: "claude" },
-      { path: "/home/dev/.codex/skills", scope: "user", source: "codex" },
-      { path: "/home/dev/.kilo/skills", scope: "user", source: "kilo" },
-      { path: "/repo/.agents/skills", scope: "project", source: "agents" },
-      { path: "/repo/.kilo/skills", scope: "project", source: "kilo" },
+    const home = resolve(sep, "home", "dev")
+    const project = resolve(sep, "repo")
+    expect(skillRoots(home, project)).toEqual(expect.arrayContaining([
+      { path: join(home, ".domovoi", "skills"), scope: "user", source: "domovoi" },
+      { path: join(home, ".agents", "skills"), scope: "user", source: "agents" },
+      { path: join(home, ".claude", "skills"), scope: "user", source: "claude" },
+      { path: join(home, ".codex", "skills"), scope: "user", source: "codex" },
+      { path: join(home, ".kilo", "skills"), scope: "user", source: "kilo" },
+      { path: join(project, ".agents", "skills"), scope: "project", source: "agents" },
+      { path: join(project, ".kilo", "skills"), scope: "project", source: "kilo" },
     ]))
   })
 })
