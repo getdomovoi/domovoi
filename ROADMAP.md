@@ -51,7 +51,7 @@ access.
 - [x] Restrict persisted state permissions
   - Create the Domovoi state directory as `0700` and database plus sidecars as `0600` on POSIX.
   - Repair permissive existing files on startup.
-- [ ] Make RPC timeouts cancel or quarantine underlying work
+- [x] Make RPC timeouts cancel or quarantine underlying work
   - A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the
     serialized request has failed.
 - [ ] Split the daemon-wide mutation queue
@@ -62,7 +62,7 @@ access.
   - Persist and broadcast deltas instead of the complete growing snapshot for every token.
   - Add compaction, pagination, or retention limits for long sessions.
 - [ ] Drain queued events before persistence shutdown
-- [ ] Add subprocess deadlines and cancellation to Git operations
+- [x] Add subprocess deadlines and cancellation to Git operations
 - [ ] Recover Codex cleanly after its subprocess exits
 - [ ] Add browser RPC response deadlines and cancellation
 - [ ] Return stable public RPC errors while keeping internal exception detail in redacted logs
