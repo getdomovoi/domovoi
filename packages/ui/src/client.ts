@@ -19,6 +19,7 @@ import {
   type RpcParams,
   type RpcResult,
   type Runtime,
+  type SkillSummary,
   type TerminalSession,
   type TerminalOwnershipNotification,
   type WorkspaceSnapshot,
@@ -315,6 +316,10 @@ export class DomovoiClient extends EventTarget {
 
   listModels(provider: string): Promise<ProviderModel[]> {
     return this.request("runtime.models", { provider, client: this.kind })
+  }
+
+  listSkills(): Promise<SkillSummary[]> {
+    return this.request("skill.list", {})
   }
 
   #scheduleReconnect(): void {
