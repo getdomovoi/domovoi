@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
@@ -16,6 +16,7 @@ export interface WorkspaceStore {
 
 export type WorkspaceStoreOptions = {
   legacySnapshots?: WorkspaceSnapshot[]
+  manageDirectoryPermissions?: boolean
 }
 
 function legacyFingerprint(snapshot: WorkspaceSnapshot): string {
@@ -28,7 +29,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true })
+    if (path !== ":memory:") prepareStatePath(path, options.manageDirectoryPermissions === true)
     this.#database = new DatabaseSync(path)
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
@@ -50,8 +51,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
           workspaceSnapshotSchema.parse(snapshot),
         ),
-      )
+    )
     if (!existing || isLegacySeed) this.save(initial)
+    this.#restrictFilePermissions()
   }
 
   load(): WorkspaceSnapshot {
@@ -73,9 +75,30 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           updated_at = excluded.updated_at
       `)
       .run(JSON.stringify(validated), new Date().toISOString())
+    this.#restrictFilePermissions()
   }
 
   close(): void {
     this.#database.close()
   }
+
+  #restrictFilePermissions(): void {
+    if (this.path === ":memory:" || process.platform === "win32") return
+    for (const path of [this.path, `${this.path}-wal`, `${this.path}-shm`]) {
+      if (existsSync(path)) chmodSync(path, 0o600)
+    }
+  }
+}
+
+function prepareStatePath(path: string, manageDirectoryPermissions: boolean): void {
+  const directory = dirname(path)
+  const directoryExists = existsSync(directory)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  if (process.platform !== "win32" && (manageDirectoryPermissions || !directoryExists)) {
+    chmodSync(directory, 0o700)
+  }
+
+  const handle = openSync(path, "a", 0o600)
+  closeSync(handle)
+  if (process.platform !== "win32") chmodSync(path, 0o600)
 }
