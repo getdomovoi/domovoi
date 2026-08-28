@@ -80,6 +80,11 @@ type PendingApproval = {
   permissionId: string
 }
 
+type PendingSessionLoad = {
+  cwd: string
+  cancelled: boolean
+}
+
 export function openCodeAgentFor(runtime: Runtime): string {
   if (runtime.permissionMode === "plan") return "plan"
   if (runtime.permissionMode === "build" && runtime.auto) return "domovoi-auto"
@@ -93,6 +98,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined
   #connection: Promise<void> | undefined
   #sessions = new Map<string, Session>()
+  #pendingSessionLoads = new Map<string, PendingSessionLoad>()
   #directories = new Map<string, DirectoryStream>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
@@ -187,16 +193,24 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<void> {
     if (this.#sessions.has(threadId)) return
-    const client = await this.#client()
-    const session = unwrap(await client.session.get({
-      path: { id: threadId },
-      query: { directory: cwd },
-      throwOnError: true,
-    }), `${this.#identity.providerName} session resume`)
-    if (session.id !== threadId) {
-      throw new Error(`${this.#identity.providerName} did not resume the requested session`)
+    const pending = { cwd, cancelled: false }
+    this.#pendingSessionLoads.set(threadId, pending)
+    try {
+      const client = await this.#client()
+      const session = unwrap(await client.session.get({
+        path: { id: threadId },
+        query: { directory: cwd },
+        throwOnError: true,
+      }), `${this.#identity.providerName} session resume`)
+      if (session.id !== threadId) {
+        throw new Error(`${this.#identity.providerName} did not resume the requested session`)
+      }
+      await this.#loadSession(threadId, cwd, runtime, pending)
+    } finally {
+      if (this.#pendingSessionLoads.get(threadId) === pending) {
+        this.#pendingSessionLoads.delete(threadId)
+      }
     }
-    await this.#loadSession(threadId, cwd, runtime)
   }
 
   async startTurn({ threadId, prompt, runtime }: {
@@ -239,21 +253,24 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     const session = this.#sessions.get(threadId)
-    if (!session) return
+    const pending = this.#pendingSessionLoads.get(threadId)
+    if (!session && !pending) return
+    if (pending) pending.cancelled = true
+    const cwd = session?.cwd ?? pending!.cwd
     const client = await this.#client()
-    if (session.activeTurnId) {
+    if (session?.activeTurnId) {
       unwrap(await client.session.abort({
         path: { id: threadId },
-        query: { directory: session.cwd },
+        query: { directory: cwd },
         throwOnError: true,
       }), `${this.#identity.providerName} session interruption`)
     }
     unwrap(await client.session.delete({
       path: { id: threadId },
-      query: { directory: session.cwd },
+      query: { directory: cwd },
       throwOnError: true,
     }), `${this.#identity.providerName} session deletion`)
-    this.#unloadSession(session)
+    if (session) this.#unloadSession(session)
   }
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
@@ -296,7 +313,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     return this.#runtime!.client
   }
 
-  async #loadSession(threadId: string, cwd: string, runtime: Runtime): Promise<void> {
+  async #loadSession(
+    threadId: string,
+    cwd: string,
+    runtime: Runtime,
+    pending?: PendingSessionLoad,
+  ): Promise<void> {
     const session: Session = {
       threadId,
       cwd,
@@ -306,6 +328,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     const existing = this.#directories.get(cwd)
     if (existing) {
+      if (pending?.cancelled) {
+        throw new Error(`${this.#identity.providerName} session stopped while resuming`)
+      }
       this.#sessions.set(threadId, session)
       existing.threadIds.add(threadId)
       return
@@ -316,6 +341,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       query: { directory: cwd },
       signal: controller.signal,
     })
+    if (pending?.cancelled) {
+      controller.abort()
+      throw new Error(`${this.#identity.providerName} session stopped while resuming`)
+    }
     this.#directories.set(cwd, { controller, threadIds: new Set([threadId]) })
     this.#sessions.set(threadId, session)
     void this.#consume(cwd, events.stream).catch((error: unknown) => {
