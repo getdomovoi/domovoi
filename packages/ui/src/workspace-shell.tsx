@@ -16,6 +16,7 @@ import {
   PanelRightCloseIcon,
   SearchIcon,
   SendIcon,
+  SettingsIcon,
   SquareIcon,
   TerminalSquareIcon,
   XIcon,
@@ -32,6 +33,7 @@ import type {
   ProviderRuntime,
   Runtime,
   SessionSummary,
+  SkillSummary,
   WorkspaceSnapshot,
   PreviewBridgePickerMessage,
   PreviewBridgeSelectionMessage,
@@ -101,6 +103,7 @@ import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 import { latestArtifactForActiveSession } from "./artifacts"
+import { SkillBrowser } from "./skill-browser"
 import {
   providerHandoffDescription,
   preferredSessionProvider,
@@ -187,8 +190,8 @@ export function AppBar({
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
-        <Separator orientation="vertical" className="mx-1 h-5" />
-        <Button variant="ghost" size="sm" disabled={!snapshot} onClick={onOpenProject}>
+        <Separator orientation="vertical" className="mx-1 hidden h-5 sm:block" />
+        <Button variant="ghost" size="sm" className="hidden sm:flex" disabled={!snapshot} onClick={onOpenProject}>
           {snapshot?.project?.name ?? "Open project"}
           {snapshot?.project ? (
             <span className="font-machine text-[10px] text-faint">{snapshot.project.branch}</span>
@@ -197,7 +200,7 @@ export function AppBar({
         </Button>
         <Badge variant="machine">
           <span className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
-          {snapshot?.machine.name ?? "daemon"}
+          <span className="hidden sm:inline">{snapshot?.machine.name ?? "daemon"}</span>
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
@@ -209,7 +212,7 @@ export function AppBar({
           onClick={onPauseAll}
         >
           <CircleStopIcon data-icon="inline-start" />
-          Pause all
+          <span className="hidden sm:inline">Pause all</span>
         </Button>
         {snapshot?.approvals.length ? (
           <Badge variant="warning">{snapshot.approvals.length} approval</Badge>
@@ -262,11 +265,13 @@ function SessionsSidebar({
   onCollapse,
   onActivate,
   onNewSession,
+  onOpenSkills,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
+  onOpenSkills: () => void
 }) {
   const groups = useMemo(
     () => [
@@ -326,6 +331,14 @@ function SessionsSidebar({
         <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">DF</span>
         <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">phetzy</span><span className="block font-machine text-[9px] text-faint">1 machine · local</span></span>
         <LaptopIcon className="size-3.5 text-muted-foreground" />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-xs" aria-label="Open skills settings" onClick={onOpenSkills}>
+              <SettingsIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Skills</TooltipContent>
+        </Tooltip>
       </div>
     </aside>
   )
@@ -1527,16 +1540,20 @@ function SidebarRail({
   snapshot,
   onActivate,
   onExpand,
+  onOpenSkills,
 }: {
   snapshot: WorkspaceSnapshot
   onActivate: (sessionId: string) => void
   onExpand: () => void
+  onOpenSkills: () => void
 }) {
   return (
     <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
       <Separator />
       {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={session.title} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title}</TooltipContent></Tooltip>)}
+      <span className="flex-1" />
+      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Open skills settings" onClick={onOpenSkills}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">Skills</TooltipContent></Tooltip>
     </aside>
   )
 }
@@ -1564,6 +1581,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createSession,
     createTerminal,
     listModels,
+    listSkills,
     openProject,
     pauseAll,
     pauseSession,
@@ -1594,6 +1612,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const [workspaceError, setWorkspaceError] = useState("")
   const [connectionError, setConnectionError] = useState("")
+  const [surface, setSurface] = useState<"workspace" | "skills">("workspace")
+  const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsError, setSkillsError] = useState("")
+  const [skillsRefresh, setSkillsRefresh] = useState(0)
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
@@ -1636,6 +1659,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [connected])
 
   useEffect(() => {
+    if (surface !== "skills") return
+    if (!connected) {
+      setSkillsLoading(false)
+      setSkillsError("Reconnect to the execution machine to refresh its skill directories.")
+      return
+    }
+    let active = true
+    setSkillsLoading(true)
+    setSkillsError("")
+    void listSkills().then(
+      (discovered) => {
+        if (active) setSkills(discovered)
+      },
+      (cause: unknown) => {
+        if (active) setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
+      },
+    ).finally(() => {
+      if (active) setSkillsLoading(false)
+    })
+    return () => { active = false }
+  }, [connected, listSkills, skillsRefresh, surface])
+
+  useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
     const observer = new ResizeObserver(([entry]) => {
@@ -1659,9 +1705,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
           </div>
         ) : null}
-        {snapshot ? (
+        {snapshot && surface === "skills" ? (
+          <SkillBrowser
+            skills={skills}
+            loading={skillsLoading}
+            error={skillsError}
+            onBack={() => setSurface("workspace")}
+            onRetry={() => setSkillsRefresh((current) => current + 1)}
+          />
+        ) : snapshot ? (
           <div className="flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} /> : null}
+            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenSkills={() => setSurface("skills")} /> : null}
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
@@ -1671,7 +1725,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} /></ResizablePanel><ResizableHandle /></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
