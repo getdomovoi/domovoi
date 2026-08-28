@@ -136,6 +136,7 @@ export type WorkspaceShellProps = {
   rpcUrl?: string
   rpcToken?: string
   windowBridge?: DesktopWindowBridge
+  onChangeCredential?: () => void
 }
 
 const statusClass: Record<SessionSummary["state"], string> = {
@@ -1624,7 +1625,7 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge, onChangeCredential }: WorkspaceShellProps) {
   const {
     activateSession,
     authorizeArtifact,
@@ -1759,6 +1760,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <span className="size-2 shrink-0 rounded-full bg-destructive" />
             <span>{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
             <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
+            {onChangeCredential ? <Button variant="outline" size="sm" onClick={onChangeCredential}>Change credential</Button> : null}
             <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
           </div>
         ) : null}
