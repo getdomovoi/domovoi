@@ -35,6 +35,7 @@ describe("terminal RPC", () => {
     const terminalService = {
       spawn: vi.fn(() => terminal),
     } satisfies TerminalService
+    let releaseInterrupt: (() => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => []),
@@ -43,13 +44,20 @@ describe("terminal RPC", () => {
       stopThread: vi.fn(async () => {}),
       startTurn: vi.fn(async () => "unused"),
       steerTurn: vi.fn(async () => {}),
-      interruptTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(() => new Promise<void>((resolve) => {
+        releaseInterrupt = resolve
+      })),
       resolveApproval: vi.fn(),
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const snapshot = structuredClone(demoWorkspace)
-    snapshot.sessions[0]!.workspacePath = "/worktrees/billing"
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/billing"
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-billing"
+    session.activeTurnId = "turn-billing"
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
@@ -105,6 +113,64 @@ describe("terminal RPC", () => {
       rows: 32,
     })
 
+    const pausing = rpc("session.pause", {
+      sessionId: "session-billing",
+      client: "desktop",
+    })
+    await vi.waitFor(() => expect(agent.interruptTurn).toHaveBeenCalledOnce())
+    const terminalInput = rpc("terminal.input", {
+      terminalId: "terminal-1",
+      data: "responsive\r",
+      client: "desktop",
+      clientId: "desktop-client-1",
+    })
+    const responsiveness = await Promise.race([
+      terminalInput.then(() => "responsive" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+    ])
+    releaseInterrupt!()
+    await Promise.all([pausing, terminalInput])
+    expect(responsiveness).toBe("responsive")
+    expect(terminal.write).toHaveBeenCalledWith("responsive\r")
+    terminal.write.mockClear()
+
+    await rpc("session.send", {
+      sessionId: "session-billing",
+      prompt: "Start another turn",
+      client: "desktop",
+    })
+    const secondPause = rpc("session.pause", {
+      sessionId: "session-billing",
+      client: "desktop",
+    })
+    await vi.waitFor(() => expect(agent.interruptTurn).toHaveBeenCalledTimes(2))
+    const secondCreated = rpc("terminal.create", {
+      terminalId: "terminal-2",
+      sessionId: "session-billing",
+      cols: 100,
+      rows: 28,
+      client: "desktop",
+      clientId: "desktop-client-1",
+    })
+    const secondInput = rpc("terminal.input", {
+      terminalId: "terminal-2",
+      data: "after-create\r",
+      client: "desktop",
+      clientId: "desktop-client-1",
+    })
+    const creationOrdering = await Promise.race([
+      secondInput.then(() => "settled" as const),
+      new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 100)),
+    ])
+    releaseInterrupt!()
+    await expect(secondPause).resolves.toHaveProperty("result")
+    await expect(secondCreated).resolves.toHaveProperty("result.terminalId", "terminal-2")
+    const secondInputResult = await secondInput
+    expect(creationOrdering).toBe("waiting")
+    expect(secondInputResult).toMatchObject({ result: { accepted: true } })
+    expect(terminal.write).toHaveBeenCalledWith("after-create\r")
+    terminal.write.mockClear()
+
     const output = new Promise<Record<string, unknown>>((resolve) => {
       socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
     })
@@ -130,7 +196,7 @@ describe("terminal RPC", () => {
         owner: { client: "desktop", clientId: "desktop-client-1" },
       },
     })
-    expect(terminalService.spawn).toHaveBeenCalledOnce()
+    expect(terminalService.spawn).toHaveBeenCalledTimes(2)
     expect(terminal.resize).not.toHaveBeenCalled()
 
     await expect(rpc("terminal.input", {
