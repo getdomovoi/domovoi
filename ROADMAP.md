@@ -54,7 +54,7 @@ access.
 - [x] Make RPC timeouts cancel or quarantine underlying work
   - A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the
     serialized request has failed.
-- [ ] Split the daemon-wide mutation queue
+- [x] Split the daemon-wide mutation queue
   - Keep ordering per session and resource.
   - Terminal input, unrelated sessions, and independent machines must not block behind slow Git or
     provider work.
