@@ -51,9 +51,10 @@ pnpm dev
 pnpm dev:desktop
 ```
 
-Remote daemon listeners require both `DOMOVOI_AUTH_TOKEN` and
-`DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. The opt-in is only for an encrypted outer transport such as
-a Tailscale tailnet or SSH tunnel; the daemon does not provide TLS itself. Set
+Every daemon requires authentication. Standalone `domovoid` creates a user-private credential at
+`~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require
+`DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. The opt-in is only for an encrypted outer transport such as a
+Tailscale tailnet or SSH tunnel; the daemon does not provide TLS itself. Set
 `DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Remote preview
 documents use short-lived capabilities scoped to one artifact and annotation bridge channel.
 
