@@ -1780,6 +1780,10 @@ describe("DomovoiDaemon", () => {
         turnId: "provider-turn-after-timeout",
         delta: "must not be recorded",
       })
+      listener({
+        type: "text-delta",
+        delta: "unscoped event must not be recorded",
+      })
     }
     const quarantined = await rpc("workspace.get", {})
     expect(quarantined).toMatchObject({
@@ -1803,6 +1807,11 @@ describe("DomovoiDaemon", () => {
       thread: Array<{ body?: string }>
     }).thread).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ body: "must not be recorded" }),
+    ]))
+    expect((quarantined.result as {
+      thread: Array<{ body?: string }>
+    }).thread).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ body: "unscoped event must not be recorded" }),
     ]))
 
     const steeringCreated = await rpc("session.create", {

@@ -1400,6 +1400,7 @@ export class DomovoiDaemon {
     else if ("params" in event && typeof event.params.threadId === "string") {
       threadId = event.params.threadId
     }
+    if (!threadId) return
     const session = this.#snapshot.sessions.find(
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
@@ -1912,7 +1913,7 @@ async function withLateCleanup<T>(
     if (error instanceof OperationTimeoutError) {
       void promise.then(async (value) => {
         try {
-          await cleanup(value)
+          await withTimeout(cleanup(value), timeoutMs, "Late provider cleanup timed out")
         } catch (cleanupError) {
           console.error(cleanupErrorMessage, cleanupError)
         }
