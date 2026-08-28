@@ -159,6 +159,7 @@ export class DomovoiDaemon {
   #loadedAgentThreads = new Set<string>()
   #unsubscribeAgents: Array<() => void>
   #mutationQueue = Promise.resolve()
+  #terminalQueues = new Map<string, Promise<void>>()
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
   #modelCacheTtlMs: number
@@ -290,8 +291,15 @@ export class DomovoiDaemon {
       }
       socket.on("message", (data) => {
         const raw = data.toString()
-        if (
-          this.#isConcurrentRead(raw)
+        const terminalRequest = this.#terminalRequest(raw)
+        if (terminalRequest) {
+          this.#enqueueTerminalRequest(
+            terminalRequest.terminalId,
+            () => this.#handle(socket, raw),
+            terminalRequest.method === "terminal.create",
+          )
+        } else if (
+          this.#bypassesMutationQueue(raw)
           && this.#authenticatedClients.has(socket)
         ) void this.#handle(socket, raw)
         else this.#enqueueMutation(() => this.#handle(socket, raw))
@@ -375,13 +383,53 @@ export class DomovoiDaemon {
     return hostAuthorityMatches(host, address.host, address.port)
   }
 
-  #enqueueMutation(task: () => Promise<void>): void {
+  #enqueueMutation(task: () => Promise<void>): Promise<void> {
     this.#mutationQueue = this.#mutationQueue.then(task).catch((error: unknown) => {
       console.error("Domovoi mutation failed", error)
     })
+    return this.#mutationQueue
   }
 
-  #isConcurrentRead(raw: string): boolean {
+  #enqueueTerminalRequest(
+    terminalId: string,
+    task: () => Promise<void>,
+    behindWorkspace: boolean,
+  ): void {
+    const previous = this.#terminalQueues.get(terminalId) ?? Promise.resolve()
+    const queued = behindWorkspace
+      ? this.#enqueueMutation(async () => {
+          await previous
+          await task()
+        })
+      : previous.then(task).catch((error: unknown) => {
+          console.error("Domovoi terminal request failed", error)
+        })
+    this.#terminalQueues.set(terminalId, queued)
+    void queued.finally(() => {
+      if (this.#terminalQueues.get(terminalId) === queued) {
+        this.#terminalQueues.delete(terminalId)
+      }
+    })
+  }
+
+  #terminalRequest(raw: string): { method: string; terminalId: string } | undefined {
+    try {
+      const request = JSON.parse(raw) as {
+        method?: unknown
+        params?: { terminalId?: unknown }
+      }
+      if (
+        typeof request.method !== "string"
+        || !request.method.startsWith("terminal.")
+        || typeof request.params?.terminalId !== "string"
+      ) return undefined
+      return { method: request.method, terminalId: request.params.terminalId }
+    } catch {
+      return undefined
+    }
+  }
+
+  #bypassesMutationQueue(raw: string): boolean {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
