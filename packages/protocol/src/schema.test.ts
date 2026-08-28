@@ -30,10 +30,34 @@ import {
   sessionCreateParamsSchema,
   sessionPauseParamsSchema,
   sessionSendParamsSchema,
+  skillSummarySchema,
   workspaceSnapshotSchema,
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("validates skill provenance without claiming execution trust", () => {
+    expect(skillSummarySchema.parse({
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository and render a ranked report.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user",
+      source: "agents",
+    })).toMatchObject({
+      name: "repo-audit",
+      scope: "user",
+      source: "agents",
+    })
+    expect(skillSummarySchema.safeParse({
+      id: "skill-4d6f4d6f4d6f",
+      name: "Repo Audit",
+      description: "Audit repositories.",
+      path: "relative/SKILL.md",
+      scope: "user",
+      source: "agents",
+    }).success).toBe(false)
+  })
+
   it("validates scoped artifact access capabilities", () => {
     expect(artifactAuthorizeParamsSchema.parse({
       artifactId: "preview-1",
