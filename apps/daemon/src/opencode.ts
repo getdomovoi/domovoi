@@ -50,6 +50,11 @@ export type OpenCodeFactory = () => Promise<{
   server: { close(): void }
 }>
 
+export type OpenCodeAdapterIdentity = {
+  providerId: string
+  providerName: string
+}
+
 type Session = {
   threadId: string
   cwd: string
@@ -79,6 +84,7 @@ export function openCodeAgentFor(runtime: Runtime): string {
 export class OpenCodeSdkAdapter implements AgentAdapter {
   readonly #factory: OpenCodeFactory
   readonly #id: () => string
+  readonly #identity: OpenCodeAdapterIdentity
   #runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined
   #connection: Promise<void> | undefined
   #sessions = new Map<string, Session>()
@@ -87,9 +93,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #pendingApprovals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
 
-  constructor(factory: OpenCodeFactory = defaultOpenCodeFactory, id: () => string = randomUUID) {
+  constructor(
+    factory: OpenCodeFactory = defaultOpenCodeFactory,
+    id: () => string = randomUUID,
+    identity: OpenCodeAdapterIdentity = { providerId: "opencode", providerName: "OpenCode" },
+  ) {
     this.#factory = factory
     this.#id = id
+    this.#identity = identity
   }
 
   async connect(): Promise<void> {
@@ -110,8 +121,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       client.config.get({ throwOnError: true }),
       client.config.providers({ throwOnError: true }),
     ])
-    const configured = unwrap(config, "OpenCode config")
-    const providerCatalog = unwrap(catalog, "OpenCode provider catalog")
+    const configured = unwrap(config, `${this.#identity.providerName} config`)
+    const providerCatalog = unwrap(catalog, `${this.#identity.providerName} provider catalog`)
     const models = providerCatalog.providers
       .flatMap((provider) => Object.values(provider.models).map((model) => ({ provider, model })))
       .filter(({ model }) => model.status !== "deprecated")
@@ -130,10 +141,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const id = `${provider.id}/${model.id}`
       const reasoning = model.capabilities?.reasoning === true ? "medium" : "none"
       return {
-        provider: "opencode",
+        provider: this.#identity.providerId,
         id,
         displayName: `${provider.name} / ${model.name}`,
-        description: `OpenCode model from ${provider.name}`,
+        description: `${this.#identity.providerName} model from ${provider.name}`,
         supportedReasoningEfforts: [reasoning],
         defaultReasoningEffort: reasoning,
         isDefault: id === defaultModel,
@@ -147,7 +158,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       query: { directory: cwd },
       body: { title: "Domovoi session" },
       throwOnError: true,
-    }), "OpenCode session creation")
+    }), `${this.#identity.providerName} session creation`)
     try {
       await this.#loadSession(created.id, cwd, runtime)
     } catch (error) {
@@ -158,7 +169,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           throwOnError: true,
         })
       } catch (cleanupError) {
-        console.error("Domovoi could not remove a failed OpenCode session", cleanupError)
+        console.error(`Domovoi could not remove a failed ${this.#identity.providerName} session`, cleanupError)
       }
       throw error
     }
@@ -176,8 +187,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       path: { id: threadId },
       query: { directory: cwd },
       throwOnError: true,
-    }), "OpenCode session resume")
-    if (session.id !== threadId) throw new Error("OpenCode did not resume the requested session")
+    }), `${this.#identity.providerName} session resume`)
+    if (session.id !== threadId) {
+      throw new Error(`${this.#identity.providerName} did not resume the requested session`)
+    }
     await this.#loadSession(threadId, cwd, runtime)
   }
 
@@ -202,7 +215,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   async steerTurn(threadId: string, turnId: string, prompt: string): Promise<void> {
     const session = this.#requireSession(threadId)
-    if (session.activeTurnId !== turnId) throw new Error("OpenCode turn is no longer active")
+    if (session.activeTurnId !== turnId) {
+      throw new Error(`${this.#identity.providerName} turn is no longer active`)
+    }
     await this.#sendPrompt(session, this.#id(), prompt, session.runtime)
   }
 
@@ -214,7 +229,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       path: { id: threadId },
       query: { directory: session.cwd },
       throwOnError: true,
-    }), "OpenCode turn interruption")
+    }), `${this.#identity.providerName} turn interruption`)
   }
 
   async stopThread(threadId: string): Promise<void> {
@@ -226,13 +241,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         path: { id: threadId },
         query: { directory: session.cwd },
         throwOnError: true,
-      }), "OpenCode session interruption")
+      }), `${this.#identity.providerName} session interruption`)
     }
     unwrap(await client.session.delete({
       path: { id: threadId },
       query: { directory: session.cwd },
       throwOnError: true,
-    }), "OpenCode session deletion")
+    }), `${this.#identity.providerName} session deletion`)
     this.#unloadSession(session)
   }
 
@@ -251,9 +266,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         query: { directory: pending.cwd },
         body: { response },
         throwOnError: true,
-      }), "OpenCode permission response")
+      }), `${this.#identity.providerName} permission response`)
     }).catch((error: unknown) => {
-      console.error("Domovoi could not resolve an OpenCode permission", error)
+      console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
     })
   }
 
@@ -302,7 +317,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (controller.signal.aborted) return
       for (const candidate of this.#sessions.values()) {
         if (candidate.cwd !== cwd || !candidate.activeTurnId) continue
-        this.#complete(candidate, "failed", error instanceof Error ? error.message : "OpenCode event stream failed")
+        this.#complete(
+          candidate,
+          "failed",
+          error instanceof Error ? error.message : `${this.#identity.providerName} event stream failed`,
+        )
       }
     })
   }
@@ -335,7 +354,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         parts: [{ type: "text", text: prompt }],
       },
       throwOnError: true,
-    }), "OpenCode prompt")
+    }), `${this.#identity.providerName} prompt`)
   }
 
   async #consume(cwd: string, stream: AsyncIterable<OpenCodeEvent>): Promise<void> {
@@ -378,7 +397,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         ? metadata.command
         : typeof properties.title === "string"
           ? properties.title
-          : typeof properties.type === "string" ? properties.type : "OpenCode tool"
+          : typeof properties.type === "string"
+            ? properties.type
+            : `${this.#identity.providerName} tool`
       this.#pendingApprovals.set(requestId, { threadId: sessionId, cwd, permissionId })
       this.#emit({
         type: "approval-requested",
@@ -394,7 +415,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
-      this.#complete(session, "failed", errorMessage(error))
+      this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
       return
     }
     if (event.type === "session.idle") this.#complete(session, "completed")
@@ -473,7 +494,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   #requireSession(threadId: string): Session {
     const session = this.#sessions.get(threadId)
-    if (!session) throw new Error(`OpenCode session ${threadId} is not loaded`)
+    if (!session) {
+      throw new Error(`${this.#identity.providerName} session ${threadId} is not loaded`)
+    }
     return session
   }
 
@@ -503,11 +526,11 @@ function filePath(input: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-function errorMessage(error: Record<string, unknown> | undefined): string {
+function errorMessage(error: Record<string, unknown> | undefined, providerName: string): string {
   const data = asRecord(error?.data)
   if (typeof data?.message === "string") return data.message
   if (typeof error?.message === "string") return error.message
-  return "OpenCode session failed"
+  return `${providerName} session failed`
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
