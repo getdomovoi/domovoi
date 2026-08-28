@@ -18,7 +18,7 @@ import {
   signArtifactAccess,
 } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
-import { SqliteWorkspaceStore } from "./store.js"
+import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import type { SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 
@@ -606,6 +606,59 @@ describe("DomovoiDaemon", () => {
     })
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "workspace.get", params: {} }))
     await expect(afterLateApproval).resolves.toMatchObject({ result: { approvals: [] } })
+    socket.close()
+  })
+
+  it("stops a quarantined provider thread when persistence fails", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-persistence"
+    session.activeTurnId = "turn-persistence"
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(() => { throw new Error("State persistence failed") }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(() => new Promise<void>(() => {})),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, store, agent, agentTimeoutMs: 10 })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.pause",
+      params: { sessionId: session.id, client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      error: { code: -32603, message: "State persistence failed" },
+    })
+    expect(agent.stopThread).toHaveBeenCalledWith("thread-persistence")
     socket.close()
   })
 

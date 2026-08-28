@@ -1710,17 +1710,20 @@ export class DomovoiDaemon {
       detail: "The detached provider thread can no longer publish events into this session.",
       createdAt: session.updatedAt,
     })
-    this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
-    this.#store.save(this.#snapshot)
-    this.#broadcastSnapshot()
     try {
-      await withTimeout(
-        this.#agents.require(provider).stopThread(threadId),
-        this.#agentTimeoutMs,
-        "Provider quarantine cleanup timed out",
-      )
-    } catch (error) {
-      console.error("Domovoi could not stop a quarantined provider thread", error)
+      this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+      this.#store.save(this.#snapshot)
+      this.#broadcastSnapshot()
+    } finally {
+      try {
+        await withTimeout(
+          this.#agents.require(provider).stopThread(threadId),
+          this.#agentTimeoutMs,
+          "Provider quarantine cleanup timed out",
+        )
+      } catch (error) {
+        console.error("Domovoi could not stop a quarantined provider thread", error)
+      }
     }
   }
 
