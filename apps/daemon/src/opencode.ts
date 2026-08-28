@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto"
 
-import { createOpencode, type Config } from "@opencode-ai/sdk"
+import {
+  createOpencodeClient,
+  createOpencodeServer,
+  type Config,
+} from "@opencode-ai/sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -580,11 +585,13 @@ const domovoiOpenCodeConfig: Config = {
 }
 
 const defaultOpenCodeFactory: OpenCodeFactory = async () => {
-  const runtime = await createOpencode({
-    hostname: "127.0.0.1",
-    port: 0,
-    timeout: 10_000,
+  const runtime = await createAuthenticatedEmbeddedRuntime({
+    passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
+    usernameEnvironment: "OPENCODE_SERVER_USERNAME",
+    username: "opencode",
     config: domovoiOpenCodeConfig,
+    startServer: createOpencodeServer,
+    createClient: createOpencodeClient,
   })
   return {
     client: runtime.client as unknown as OpenCodeClient,
