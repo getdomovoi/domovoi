@@ -41,9 +41,9 @@ The repository already proves this local vertical slice:
 Priority: `P0`. Finish before asking users to trust Domovoi with real repositories or remote
 access.
 
-- [ ] Require authentication for every daemon, including loopback listeners
+- [x] Require authentication for every daemon, including loopback listeners
   - Generate a high-entropy credential when none is supplied.
-  - Store and transmit it through an OS-private channel.
+  - Persist standalone credentials in a user-private file and keep browser handoff session-only.
   - Prove unauthenticated RPC and terminal requests are rejected.
 - [ ] Protect embedded OpenCode and Kilo provider servers
   - Use provider-supported authentication or OS-protected IPC.
