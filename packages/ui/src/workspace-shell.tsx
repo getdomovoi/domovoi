@@ -34,6 +34,7 @@ import type {
   Runtime,
   SessionSummary,
   SkillSummary,
+  ThreadItem,
   WorkspaceSnapshot,
   PreviewBridgePickerMessage,
   PreviewBridgeSelectionMessage,
@@ -49,6 +50,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
@@ -711,6 +713,44 @@ function LauncherDialog({
   )
 }
 
+export function CheckpointThreadItem({
+  item,
+  disabled,
+  onRestore,
+}: {
+  item: Extract<ThreadItem, { kind: "checkpoint" }>
+  disabled: boolean
+  onRestore: (checkpointId: string) => void
+}) {
+  return (
+    <div className="flex items-center gap-1 self-center rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-[9px] text-faint">
+      <span>Checkpoint · {item.label}</span>
+      {item.commit ? (
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-[9px]">
+              Restore worktree
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Restore this checkpoint?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Domovoi checkpoints the current worktree first, then restores {item.label}. The
+                current state remains available as a recovery checkpoint.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => onRestore(item.id)}>Restore worktree</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
+    </div>
+  )
+}
+
 function Thread({
   snapshot,
   connected,
@@ -720,6 +760,7 @@ function Thread({
   onNewSession,
   onSend,
   onCheckpoint,
+  onRestoreCheckpoint,
   onPauseSession,
 }: {
   snapshot: WorkspaceSnapshot
@@ -734,6 +775,7 @@ function Thread({
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
+  onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   onPauseSession: (sessionId: string) => Promise<void>
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
@@ -794,6 +836,19 @@ function Thread({
       await onCheckpoint(active.id)
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be created")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const restoreCheckpoint = async (checkpointId: string) => {
+    if (pending) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onRestoreCheckpoint(active.id, checkpointId)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
     } finally {
       setPending(false)
     }
@@ -863,7 +918,7 @@ function Thread({
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
           {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
             if (item.kind === "checkpoint") {
-              return <div key={item.id} className="self-center rounded-full border bg-card px-3 py-1 font-machine text-[9px] text-faint">Checkpoint · {item.label}</div>
+              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
               return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3 text-[13px] leading-relaxed">{item.body}</div>
@@ -1587,6 +1642,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     pauseSession,
     readSkill,
     reconnect,
+    restoreCheckpoint,
     resizeTerminal,
     resolveApproval,
     replyToAnnotation,
@@ -1728,7 +1784,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
