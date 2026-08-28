@@ -1596,6 +1596,7 @@ export class DomovoiDaemon {
       ),
     ))
     const createdAt = new Date().toISOString()
+    const quarantined: Array<{ sessionId: string; reason: string }> = []
     for (const [index, result] of results.entries()) {
       const sessionId = active[index]!.id
       const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
@@ -1615,7 +1616,7 @@ export class DomovoiDaemon {
           createdAt,
         })
       } else if (result.reason instanceof OperationTimeoutError) {
-        await this.#quarantineProviderThread(session.id, result.reason.message)
+        quarantined.push({ sessionId: session.id, reason: result.reason.message })
       } else {
         this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
@@ -1627,6 +1628,9 @@ export class DomovoiDaemon {
         })
       }
     }
+    await Promise.all(quarantined.map(({ sessionId, reason }) =>
+      this.#quarantineProviderThread(sessionId, reason),
+    ))
     return active.length > 0
   }
 
