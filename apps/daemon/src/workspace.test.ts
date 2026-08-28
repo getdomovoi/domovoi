@@ -77,6 +77,16 @@ describe("GitWorkspaceService", () => {
       (await readFile(join(workspace.path, "temporary.txt"), "utf8")).replaceAll("\r\n", "\n"),
     ).toBe("recover me\n")
 
+    await writeFile(join(workspace.path, "README.md"), "must not commit\n")
+    const headBeforeAbort = await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])
+    await expect(service.checkpoint(
+      workspace.path,
+      "aborted",
+      AbortSignal.abort(new Error("request timed out")),
+    )).rejects.toThrow()
+    const headAfterAbort = await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])
+    expect(headAfterAbort.stdout).toBe(headBeforeAbort.stdout)
+
     await service.removeSessionWorkspace(workspace.path)
     await expect(readFile(join(workspace.path, "README.md"), "utf8")).rejects.toThrow()
     const worktrees = await execute("git", ["-C", repositoryPath, "worktree", "list", "--porcelain"])

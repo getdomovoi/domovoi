@@ -60,6 +60,7 @@ const maximumAuthenticationFailures = 3
 const maximumTerminalBufferLength = 256 * 1_024
 
 class RuntimeValidationError extends Error {}
+class OperationTimeoutError extends Error {}
 
 export function appendPlanDelta(
   artifacts: Artifact[],
@@ -1010,8 +1011,12 @@ export class DomovoiDaemon {
           const previousAgent = this.#agents.require(previousRuntime.provider)
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
           try {
-            checkpoint = await withTimeout(
-              this.#workspaceService.checkpoint(currentSession.workspacePath, "before provider handoff"),
+            checkpoint = await withAbortTimeout(
+              (signal) => this.#workspaceService.checkpoint(
+                currentSession.workspacePath!,
+                "before provider handoff",
+                signal,
+              ),
               this.#agentTimeoutMs,
               "Provider handoff checkpoint timed out",
             )
@@ -1063,7 +1068,11 @@ export class DomovoiDaemon {
 
       if (method === "project.open") {
         const params = rpcMethods[method].params.parse(request.params)
-        const repository = await this.#workspaceService.inspect(params.path)
+        const repository = await withAbortTimeout(
+          (signal) => this.#workspaceService.inspect(params.path, signal),
+          this.#agentTimeoutMs,
+          "Repository inspection timed out",
+        )
         this.#closeAllTerminals()
         await this.#cleanupSessions()
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
@@ -1108,8 +1117,13 @@ export class DomovoiDaemon {
           return
         }
         try {
-          await this.#workspaceService.inspect(project.path)
-        } catch {
+          await withAbortTimeout(
+            (signal) => this.#workspaceService.inspect(project.path, signal),
+            this.#agentTimeoutMs,
+            "Repository inspection timed out",
+          )
+        } catch (error) {
+          if (error instanceof OperationTimeoutError) throw error
           this.#error(
             socket,
             request.id,
@@ -1127,9 +1141,14 @@ export class DomovoiDaemon {
           return
         }
         const sessionId = `session-${randomUUID()}`
-        const workspace = await this.#workspaceService.createSessionWorkspace(
-          project.path,
-          sessionId,
+        const workspace = await withAbortTimeout(
+          (signal) => this.#workspaceService.createSessionWorkspace(
+            project.path,
+            sessionId,
+            signal,
+          ),
+          this.#agentTimeoutMs,
+          "Session workspace creation timed out",
         )
         let providerThreadId: string
         try {
@@ -1141,7 +1160,11 @@ export class DomovoiDaemon {
           )
         } catch (error) {
           try {
-            await this.#workspaceService.removeSessionWorkspace(workspace.path)
+            await withAbortTimeout(
+              (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
+              this.#agentTimeoutMs,
+              "Session workspace cleanup timed out",
+            )
           } catch (cleanupError) {
             console.error("Domovoi could not remove a failed session worktree", cleanupError)
           }
@@ -1248,8 +1271,8 @@ export class DomovoiDaemon {
           return
         }
         const label = params.label ?? "manual"
-        const checkpoint = await withTimeout(
-          this.#workspaceService.checkpoint(session.workspacePath, label),
+        const checkpoint = await withAbortTimeout(
+          (signal) => this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
           this.#agentTimeoutMs,
           "Checkpoint timed out",
         )
@@ -1298,8 +1321,12 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Checkpoint cannot be restored")
           return
         }
-        const restored = await withTimeout(
-          this.#workspaceService.restore(session.workspacePath, item.commit),
+        const restored = await withAbortTimeout(
+          (signal) => this.#workspaceService.restore(
+            session.workspacePath!,
+            item.commit!,
+            signal,
+          ),
           this.#agentTimeoutMs,
           "Checkpoint restore timed out",
         )
@@ -1644,7 +1671,14 @@ export class DomovoiDaemon {
       }
       if (session.workspacePath) {
         try {
-          await this.#workspaceService.removeSessionWorkspace(session.workspacePath)
+          await withAbortTimeout(
+            (signal) => this.#workspaceService.removeSessionWorkspace(
+              session.workspacePath!,
+              signal,
+            ),
+            this.#agentTimeoutMs,
+            "Session workspace cleanup timed out",
+          )
         } catch (error) {
           errors.push(error)
           console.error("Domovoi could not remove a session worktree", error)
@@ -1779,8 +1813,34 @@ async function resolveInsideReal(root: string, candidate: string): Promise<strin
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const timer = setTimeout(() => rejectPromise(new Error(message)), timeoutMs)
+    const timer = setTimeout(() => rejectPromise(new OperationTimeoutError(message)), timeoutMs)
     promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolvePromise(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        rejectPromise(error)
+      },
+    )
+  })
+}
+
+function withAbortTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  const controller = new AbortController()
+  const operationPromise = operation(controller.signal)
+  return new Promise((resolvePromise, rejectPromise) => {
+    const timeoutError = new OperationTimeoutError(message)
+    const timer = setTimeout(() => {
+      controller.abort(timeoutError)
+      rejectPromise(timeoutError)
+    }, timeoutMs)
+    operationPromise.then(
       (value) => {
         clearTimeout(timer)
         resolvePromise(value)
