@@ -19,6 +19,7 @@ import {
 } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import type { SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 
 const running: DomovoiDaemon[] = []
@@ -605,6 +606,47 @@ describe("DomovoiDaemon", () => {
         message: "Open a valid Git repository with project.open before creating a session",
       },
     })
+    socket.close()
+  })
+
+  it("lists daemon-discovered skills with their provenance", async () => {
+    const skillCatalog = {
+      list: vi.fn(async () => [{
+        id: "skill-4d6f4d6f4d6f",
+        name: "repo-audit",
+        description: "Audit a repository and render a ranked report.",
+        path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+        scope: "user" as const,
+        source: "agents" as const,
+      }]),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.once("error", reject)
+      socket.once("open", () => socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "skill.list",
+        params: {},
+      })))
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+
+    expect(response).toMatchObject({
+      result: [expect.objectContaining({
+        name: "repo-audit",
+        scope: "user",
+        source: "agents",
+      })],
+    })
+    expect(skillCatalog.list).toHaveBeenCalledOnce()
     socket.close()
   })
 
