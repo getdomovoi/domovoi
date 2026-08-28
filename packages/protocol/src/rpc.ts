@@ -1,11 +1,15 @@
 import { z } from "zod"
 
 import {
+  annotationSchema,
   annotationAnchorSchema,
+  artifactSchema,
   approvalDecisionSchema,
   clientKindSchema,
   providerModelsSchema,
   runtimeSchema,
+  sessionSummarySchema,
+  threadItemSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
@@ -38,6 +42,30 @@ export const rpcNotificationSchema = z.object({
   jsonrpc: z.literal("2.0"),
   method: z.string().min(1),
   params: z.unknown().optional(),
+})
+
+export const workspaceDeltaSchema = z.object({
+  session: sessionSummarySchema,
+  thread: z.array(threadItemSchema).max(16),
+  artifacts: z.array(artifactSchema).max(16),
+  annotations: z.array(annotationSchema).max(64),
+  removedArtifactIds: z.array(z.string().min(1)).max(16),
+}).superRefine((delta, context) => {
+  for (const [field, entities] of [
+    ["thread", delta.thread],
+    ["artifacts", delta.artifacts],
+    ["annotations", delta.annotations],
+  ] as const) {
+    entities.forEach((entity, index) => {
+      if (entity.sessionId !== delta.session.id) {
+        context.addIssue({
+          code: "custom",
+          path: [field, index, "sessionId"],
+          message: "Workspace delta entities must belong to its session",
+        })
+      }
+    })
+  }
 })
 
 export const helloParamsSchema = z.object({
@@ -289,3 +317,4 @@ export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
 export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
+export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
