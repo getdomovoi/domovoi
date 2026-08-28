@@ -25,6 +25,12 @@ import type { WorkspaceService } from "./workspace.js"
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 
+function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
+  return new WebSocket(url, {
+    headers: { authorization: `Bearer ${daemon.authToken}` },
+  })
+}
+
 const codexModels = () => [{
   provider: "codex" as const,
   id: "gpt-5.6-sol",
@@ -167,18 +173,19 @@ describe("DomovoiDaemon", () => {
     expect(hostAuthorityMatches("127.0.0.1:47831#fragment", "127.0.0.1", 47831)).toBe(false)
   })
 
-  it("refuses an unauthenticated non-loopback listener", () => {
+  it("requires protected transport for non-loopback listeners", () => {
     expect(() => new DomovoiDaemon({
       host: "0.0.0.0",
       port: 0,
       statePath: ":memory:",
     })).toThrow("Non-loopback listeners require explicit protected-transport opt-in")
-    expect(() => new DomovoiDaemon({
+    const daemon = new DomovoiDaemon({
       host: "0.0.0.0",
       port: 0,
       statePath: ":memory:",
       allowRemoteTransport: true,
-    })).toThrow("A daemon token is required outside loopback")
+    })
+    expect(daemon.authToken).toMatch(/^[A-Za-z0-9_-]{43}$/)
   })
 
   it("serves remote previews only with a signed capability", async () => {
@@ -392,6 +399,56 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("generates authentication for loopback daemons", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    running.push(daemon)
+    expect(daemon.authToken).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    const address = await daemon.start()
+
+    const request = async (authToken?: string) => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+      const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        socket.once("error", reject)
+        socket.once("open", () => socket.send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "system.hello",
+          params: {
+            client: "desktop",
+            clientVersion: "0.0.1",
+            ...(authToken ? { authToken } : {}),
+          },
+        })))
+        socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+      })
+      socket.close()
+      return response
+    }
+
+    await expect(request()).resolves.toMatchObject({
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+    await expect(request(daemon.authToken)).resolves.toMatchObject({
+      result: { machine: { id: expect.any(String) } },
+    })
+    const headerSocket = authenticatedSocket(
+      daemon,
+      `ws://${address.host}:${address.port}/rpc`,
+    )
+    const headerResponse = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      headerSocket.once("error", reject)
+      headerSocket.once("open", () => headerSocket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "workspace.get",
+        params: {},
+      })))
+      headerSocket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    expect(headerResponse).toMatchObject({ result: { machine: { id: expect.any(String) } } })
+    headerSocket.close()
+  })
+
   it("closes sockets that never authenticate", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -449,7 +506,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -551,7 +608,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
 
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
@@ -638,7 +695,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
       socket.once("open", () => socket.send(JSON.stringify({
@@ -692,7 +749,7 @@ describe("DomovoiDaemon", () => {
     running.push(daemon)
     const address = await daemon.start()
     await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
       socket.once("open", () => socket.send(JSON.stringify({
@@ -727,7 +784,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -781,7 +838,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -828,7 +885,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -934,7 +991,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -992,7 +1049,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -1053,7 +1110,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", agent })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -1107,7 +1164,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", () => resolve())
       socket.once("error", reject)
@@ -1196,7 +1253,10 @@ describe("DomovoiDaemon", () => {
     })
     running.push(first)
     const firstAddress = await first.start()
-    const firstSocket = new WebSocket(`ws://${firstAddress.host}:${firstAddress.port}/rpc`)
+    const firstSocket = authenticatedSocket(
+      first,
+      `ws://${firstAddress.host}:${firstAddress.port}/rpc`,
+    )
     await new Promise<void>((resolve, reject) => {
       firstSocket.once("open", resolve)
       firstSocket.once("error", reject)
@@ -1244,7 +1304,10 @@ describe("DomovoiDaemon", () => {
     const second = new DomovoiDaemon({ port: 0, statePath, agent: resumedAgent })
     running.push(second)
     const secondAddress = await second.start()
-    const secondSocket = new WebSocket(`ws://${secondAddress.host}:${secondAddress.port}/rpc`)
+    const secondSocket = authenticatedSocket(
+      second,
+      `ws://${secondAddress.host}:${secondAddress.port}/rpc`,
+    )
     const restored = await new Promise<Record<string, unknown>>((resolve, reject) => {
       secondSocket.once("error", reject)
       secondSocket.once("open", () => {
@@ -1363,7 +1426,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -1684,7 +1747,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -1851,7 +1914,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
