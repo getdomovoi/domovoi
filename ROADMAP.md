@@ -45,10 +45,10 @@ access.
   - Generate a high-entropy credential when none is supplied.
   - Persist standalone credentials in a user-private file and keep browser handoff session-only.
   - Prove unauthenticated RPC and terminal requests are rejected.
-- [ ] Protect embedded OpenCode and Kilo provider servers
+- [x] Protect embedded OpenCode and Kilo provider servers
   - Use provider-supported authentication or OS-protected IPC.
   - Prove direct unauthenticated requests cannot bypass Domovoi approvals.
-- [ ] Restrict persisted state permissions
+- [x] Restrict persisted state permissions
   - Create the Domovoi state directory as `0700` and database plus sidecars as `0600` on POSIX.
   - Repair permissive existing files on startup.
 - [ ] Make RPC timeouts cancel or quarantine underlying work
