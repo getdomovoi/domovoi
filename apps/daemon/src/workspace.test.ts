@@ -73,9 +73,9 @@ describe("GitWorkspaceService", () => {
     expect(
       (await readFile(join(workspace.path, "README.md"), "utf8")).replaceAll("\r\n", "\n"),
     ).toBe("after checkpoint\n")
-    await expect(readFile(join(workspace.path, "temporary.txt"), "utf8")).resolves.toBe(
-      "recover me\n",
-    )
+    expect(
+      (await readFile(join(workspace.path, "temporary.txt"), "utf8")).replaceAll("\r\n", "\n"),
+    ).toBe("recover me\n")
 
     await service.removeSessionWorkspace(workspace.path)
     await expect(readFile(join(workspace.path, "README.md"), "utf8")).rejects.toThrow()
