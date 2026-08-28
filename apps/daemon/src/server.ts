@@ -197,10 +197,14 @@ export class DomovoiDaemon {
       reachable: true,
       providers: [],
     })
+    const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
     this.#store = options.store ?? new SqliteWorkspaceStore(
-      options.statePath ?? join(homedir(), ".domovoi", "state.sqlite"),
+      statePath,
       initialSnapshot,
-      { legacySnapshots: [demoWorkspace] },
+      {
+        legacySnapshots: [demoWorkspace],
+        manageDirectoryPermissions: options.statePath === undefined,
+      },
     )
     this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
