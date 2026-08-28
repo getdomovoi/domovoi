@@ -1,5 +1,6 @@
 import type { Config } from "@kilocode/sdk"
 
+import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 import type { OpenCodeClient, OpenCodeFactory } from "./opencode.js"
 
 const domovoiKiloConfig: Config = {
@@ -36,12 +37,14 @@ const domovoiKiloConfig: Config = {
 
 export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
   const sdkPackage = "@kilocode/sdk"
-  const { createKilo } = await import(sdkPackage)
-  const runtime = await createKilo({
-    hostname: "127.0.0.1",
-    port: 0,
-    timeout: 10_000,
+  const { createKiloClient, createKiloServer } = await import(sdkPackage)
+  const runtime = await createAuthenticatedEmbeddedRuntime({
+    passwordEnvironment: "KILO_SERVER_PASSWORD",
+    usernameEnvironment: "KILO_SERVER_USERNAME",
+    username: "kilo",
     config: domovoiKiloConfig,
+    startServer: createKiloServer,
+    createClient: createKiloClient,
   })
   return {
     client: runtime.client as unknown as OpenCodeClient,
