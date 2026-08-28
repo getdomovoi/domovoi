@@ -357,6 +357,28 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("attributes checkpoint restores to the current client", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const restoring = client.restoreCheckpoint("session-billing", "checkpoint-1")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "checkpoint.restore",
+      params: {
+        sessionId: "session-billing",
+        checkpointId: "checkpoint-1",
+        client: "tablet",
+      },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(restoring).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
   it("lists provider models without parsing them as workspace state", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()

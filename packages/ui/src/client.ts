@@ -218,6 +218,14 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  restoreCheckpoint(sessionId: string, checkpointId: string): Promise<WorkspaceSnapshot> {
+    return this.request("checkpoint.restore", {
+      sessionId,
+      checkpointId,
+      client: this.kind,
+    })
+  }
+
   pauseAll(): Promise<WorkspaceSnapshot> {
     return this.request("system.pauseAll", { client: this.kind })
   }

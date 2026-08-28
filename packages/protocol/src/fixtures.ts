@@ -116,6 +116,7 @@ export const demoWorkspace: WorkspaceSnapshot = {
       sessionId: "session-billing",
       kind: "checkpoint",
       label: "ckpt_7f21 · before provider handoff · 12:41",
+      commit: "7".repeat(40),
       createdAt: "2026-08-25T21:41:00.000Z",
     },
     {
