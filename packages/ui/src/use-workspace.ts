@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
 
@@ -169,6 +169,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.listModels(provider)
   }, [])
 
+  const listSkills = useCallback(async (): Promise<SkillSummary[]> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.listSkills()
+  }, [])
+
   const authorizeArtifact = useCallback(async (
     artifactId: string,
     bridgeChannel?: string,
@@ -297,6 +303,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     createAnnotation,
     createTerminal,
     createSession,
+    listSkills,
     listModels,
     openProject,
     pauseAll,
