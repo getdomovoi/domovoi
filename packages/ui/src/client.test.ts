@@ -390,6 +390,38 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("lists daemon skills without parsing them as workspace state", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const listing = client.listSkills()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.list",
+      params: {},
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: [{
+        id: "skill-4d6f4d6f4d6f",
+        name: "repo-audit",
+        description: "Audit a repository and render a ranked report.",
+        path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+        scope: "user",
+        source: "agents",
+      }],
+    })
+
+    await expect(listing).resolves.toEqual([
+      expect.objectContaining({ name: "repo-audit", source: "agents" }),
+    ])
+    client.disconnect()
+  })
+
   it("preserves the parser failure for an invalid RPC result", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()

@@ -50,6 +50,7 @@ import {
   type TerminalService,
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
+import { FileSkillCatalog, skillRoots, type SkillCatalog } from "./skills.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -124,6 +125,7 @@ export type DaemonServerOptions = {
   authTimeoutMs?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
+  skillCatalog?: SkillCatalog
 }
 
 type ActiveTerminal = {
@@ -170,6 +172,7 @@ export class DomovoiDaemon {
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
   #providerRefresh: Promise<void> | undefined
+  #skillCatalog: SkillCatalog | undefined
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -219,6 +222,7 @@ export class DomovoiDaemon {
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
+    this.#skillCatalog = options.skillCatalog
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
@@ -275,7 +279,7 @@ export class DomovoiDaemon {
       socket.on("message", (data) => {
         const raw = data.toString()
         if (
-          this.#isModelDiscovery(raw)
+          this.#isConcurrentRead(raw)
           && (!this.#authToken || this.#authenticatedClients.has(socket))
         ) void this.#handle(socket, raw)
         else this.#enqueueMutation(() => this.#handle(socket, raw))
@@ -365,10 +369,10 @@ export class DomovoiDaemon {
     })
   }
 
-  #isModelDiscovery(raw: string): boolean {
+  #isConcurrentRead(raw: string): boolean {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
-      return request.method === "runtime.models"
+      return request.method === "runtime.models" || request.method === "skill.list"
     } catch {
       return false
     }
@@ -775,6 +779,18 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(models),
+        })
+        return
+      }
+
+      if (method === "skill.list") {
+        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
+          skillRoots(homedir(), this.#snapshot.project?.path),
+        )
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(await catalog.list()),
         })
         return
       }
