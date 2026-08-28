@@ -24,11 +24,17 @@ export type Checkpoint = {
   changedFiles: string[]
 }
 
+export type RestoreResult = {
+  restoredCommit: string
+  recoveryCommit: string
+}
+
 export interface WorkspaceService {
   inspect(repositoryPath: string): Promise<RepositoryInfo>
   createSessionWorkspace(repositoryPath: string, sessionId: string): Promise<SessionWorkspace>
   removeSessionWorkspace(worktreePath: string): Promise<void>
   checkpoint(worktreePath: string, label: string): Promise<Checkpoint>
+  restore(worktreePath: string, commit: string): Promise<RestoreResult>
 }
 
 async function git(repositoryPath: string, arguments_: string[]): Promise<string> {
@@ -81,7 +87,9 @@ export class GitWorkspaceService implements WorkspaceService {
     const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"])
     const changedFiles = names.split("\0").filter(Boolean)
     if (changedFiles.length === 0) {
-      return { commit: await git(worktreePath, ["rev-parse", "HEAD"]), changedFiles }
+      const commit = await git(worktreePath, ["rev-parse", "HEAD"])
+      await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit])
+      return { commit, changedFiles }
     }
 
     await git(worktreePath, [
@@ -93,10 +101,30 @@ export class GitWorkspaceService implements WorkspaceService {
       "-m",
       `chore(domovoi): checkpoint ${label}`,
     ])
-    return {
-      commit: await git(worktreePath, ["rev-parse", "HEAD"]),
-      changedFiles,
+    const commit = await git(worktreePath, ["rev-parse", "HEAD"])
+    await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit])
+    return { commit, changedFiles }
+  }
+
+  async restore(worktreePath: string, commit: string): Promise<RestoreResult> {
+    if (!/^[a-f0-9]{40}$/.test(commit)) {
+      throw new Error("Checkpoint commit is invalid")
     }
+    let checkpointCommit: string
+    try {
+      checkpointCommit = await git(worktreePath, [
+        "rev-parse",
+        `refs/domovoi/checkpoints/${commit}^{commit}`,
+      ])
+    } catch {
+      throw new Error("Commit is not a Domovoi checkpoint")
+    }
+    if (checkpointCommit !== commit) {
+      throw new Error("Commit is not a Domovoi checkpoint")
+    }
+    const recovery = await this.checkpoint(worktreePath, "before restore")
+    await git(worktreePath, ["reset", "--hard", checkpointCommit])
+    return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
   }
 
   async removeSessionWorkspace(worktreePath: string): Promise<void> {

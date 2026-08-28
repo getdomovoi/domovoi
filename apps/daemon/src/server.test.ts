@@ -1348,6 +1348,10 @@ describe("DomovoiDaemon", () => {
       })),
       removeSessionWorkspace: vi.fn(async () => {}),
       checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: ["src/app.ts"] })),
+      restore: vi.fn(async () => ({
+        restoredCommit: "b".repeat(40),
+        recoveryCommit: "c".repeat(40),
+      })),
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -1522,9 +1526,24 @@ describe("DomovoiDaemon", () => {
     expect(checkpointed).toMatchObject({
       result: {
         thread: expect.arrayContaining([
-          expect.objectContaining({ kind: "checkpoint", label: expect.stringContaining("after-tests") }),
+          expect.objectContaining({
+            kind: "checkpoint",
+            label: expect.stringContaining("after-tests"),
+            commit: "b".repeat(40),
+          }),
         ]),
       },
+    })
+    const checkpointId = (checkpointed.result as {
+      thread: Array<{ id: string; kind: string }>
+    }).thread.find((item) => item.kind === "checkpoint")!.id
+    const activeRestore = await rpc("checkpoint.restore", {
+      sessionId,
+      checkpointId,
+      client: "desktop",
+    })
+    expect(activeRestore).toMatchObject({
+      error: { code: -32602, message: "Stop the active turn before restoring a checkpoint" },
     })
 
     const unsupportedRuntime = await rpc("session.setRuntime", {
@@ -1559,6 +1578,36 @@ describe("DomovoiDaemon", () => {
       })
     }
     await rpc("workspace.get", {})
+
+    const unknownRestore = await rpc("checkpoint.restore", {
+      sessionId,
+      checkpointId: "checkpoint-missing",
+      client: "desktop",
+    })
+    expect(unknownRestore).toMatchObject({
+      error: { code: -32602, message: "Checkpoint cannot be restored" },
+    })
+
+    const restored = await rpc("checkpoint.restore", {
+      sessionId,
+      checkpointId,
+      client: "desktop",
+    })
+    expect(workspaceService.restore).toHaveBeenCalledWith(
+      `/worktrees/${sessionId}`,
+      "b".repeat(40),
+    )
+    expect(restored).toMatchObject({
+      result: {
+        thread: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "system",
+            body: "Worktree restored",
+            detail: expect.stringContaining("Recovery checkpoint cccccccc"),
+          }),
+        ]),
+      },
+    })
 
     let resolveLateTurn: ((turnId: string) => void) | undefined
     agent.startTurn.mockImplementationOnce(
@@ -1622,6 +1671,10 @@ describe("DomovoiDaemon", () => {
       })),
       removeSessionWorkspace: vi.fn(async () => {}),
       checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+      restore: vi.fn(async () => ({
+        restoredCommit: "b".repeat(40),
+        recoveryCommit: "c".repeat(40),
+      })),
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -1785,6 +1838,10 @@ describe("DomovoiDaemon", () => {
       })),
       removeSessionWorkspace: vi.fn(async () => {}),
       checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+      restore: vi.fn(async () => ({
+        restoredCommit: "b".repeat(40),
+        recoveryCommit: "c".repeat(40),
+      })),
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
