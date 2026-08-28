@@ -561,8 +561,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({ id: "session-onboarding", state: "idle" }),
           expect.objectContaining({
             id: "session-audit",
-            state: "active",
-            activeTurnId: "turn-audit",
+            state: "failed",
           }),
         ]),
         thread: expect.arrayContaining([
@@ -574,8 +573,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             sessionId: "session-audit",
             kind: "system",
-            body: "Pause failed for tablet.",
-            detail: "Agent interrupt timed out",
+            body: "Provider thread quarantined after Agent interrupt timed out.",
           }),
         ]),
       },
@@ -583,6 +581,13 @@ describe("DomovoiDaemon", () => {
     expect(agent.interruptTurn).toHaveBeenCalledTimes(3)
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-onboarding", "turn-onboarding")
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-audit", "turn-audit")
+    expect(agent.stopThread).toHaveBeenCalledWith("thread-audit")
+    const globalSnapshot = (await globalResponse).result as {
+      sessions: Array<{ id: string; providerThreadId?: string }>
+    }
+    const auditSession = globalSnapshot.sessions.find((session) => session.id === "session-audit")
+    expect(auditSession).toBeDefined()
+    expect(auditSession).not.toHaveProperty("providerThreadId")
 
     for (const listener of agentListeners) {
       listener({
@@ -1379,11 +1384,14 @@ describe("DomovoiDaemon", () => {
 
   it("orchestrates a local project, Codex turn, approval, and checkpoint", async () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
+    let resolveTimedOutThread: ((threadId: string) => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn()
-        .mockImplementationOnce(() => new Promise<string>(() => {}))
+        .mockImplementationOnce(() => new Promise<string>((resolve) => {
+          resolveTimedOutThread = resolve
+        }))
         .mockResolvedValue("provider-thread-1"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
@@ -1480,6 +1488,10 @@ describe("DomovoiDaemon", () => {
     })
     expect(timedOut).toMatchObject({ error: { code: -32603, message: "Agent setup timed out" } })
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledOnce()
+    resolveTimedOutThread!("provider-thread-after-timeout")
+    await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith(
+      "provider-thread-after-timeout",
+    ))
 
     workspaceService.inspect.mockImplementationOnce(
       (_path: string, signal?: AbortSignal) => new Promise((_, reject) => {
@@ -1721,7 +1733,7 @@ describe("DomovoiDaemon", () => {
     })
     await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledTimes(2))
     const reopening = rpc("project.open", { path: "/code/domovoi", client: "desktop" })
-    expect(agent.stopThread).not.toHaveBeenCalled()
+    expect(agent.stopThread).not.toHaveBeenCalledWith("provider-thread-1")
     resolveLateTurn!("late-turn")
     await expect(lateTurn).resolves.toMatchObject({
       result: {
@@ -1737,6 +1749,105 @@ describe("DomovoiDaemon", () => {
       `/worktrees/${sessionId}`,
       expect.any(AbortSignal),
     )
+
+    const quarantineCreated = await rpc("session.create", {
+      title: "Quarantine timed-out turn",
+      runtime,
+      client: "desktop",
+    })
+    const quarantineSessionId = (quarantineCreated.result as {
+      activeSessionId: string
+    }).activeSessionId
+    agent.stopThread.mockClear()
+    let resolveTimedOutTurn: ((turnId: string) => void) | undefined
+    agent.startTurn.mockImplementationOnce(() => new Promise<string>((resolve) => {
+      resolveTimedOutTurn = resolve
+    }))
+    const turnTimedOut = await rpc("session.send", {
+      sessionId: quarantineSessionId,
+      prompt: "This turn must be quarantined",
+      client: "desktop",
+    })
+    expect(turnTimedOut).toMatchObject({
+      error: { code: -32603, message: "Agent turn timed out" },
+    })
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    resolveTimedOutTurn!("provider-turn-after-timeout")
+    for (const listener of agentListeners) {
+      listener({
+        type: "text-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-after-timeout",
+        delta: "must not be recorded",
+      })
+    }
+    const quarantined = await rpc("workspace.get", {})
+    expect(quarantined).toMatchObject({
+      result: {
+        sessions: [expect.objectContaining({
+          id: quarantineSessionId,
+          state: "failed",
+        })],
+        thread: expect.arrayContaining([expect.objectContaining({
+          sessionId: quarantineSessionId,
+          kind: "system",
+          body: "Provider thread quarantined after Agent turn timed out.",
+        })]),
+      },
+    })
+    expect((quarantined.result as {
+      sessions: Array<{ providerThreadId?: string }>
+      thread: Array<{ body?: string }>
+    }).sessions[0]).not.toHaveProperty("providerThreadId")
+    expect((quarantined.result as {
+      thread: Array<{ body?: string }>
+    }).thread).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ body: "must not be recorded" }),
+    ]))
+
+    const steeringCreated = await rpc("session.create", {
+      title: "Quarantine timed-out steering",
+      runtime,
+      client: "desktop",
+    })
+    const steeringSessionId = (steeringCreated.result as {
+      activeSessionId: string
+    }).activeSessionId
+    await rpc("session.send", {
+      sessionId: steeringSessionId,
+      prompt: "Begin an active turn",
+      client: "desktop",
+    })
+    agent.stopThread.mockClear()
+    agent.steerTurn.mockImplementationOnce(() => new Promise<void>(() => {}))
+    const steeringTimedOut = await rpc("session.send", {
+      sessionId: steeringSessionId,
+      prompt: "This steering request must be quarantined",
+      client: "desktop",
+    })
+    expect(steeringTimedOut).toMatchObject({
+      error: { code: -32603, message: "Agent steering timed out" },
+    })
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    const steeringQuarantined = await rpc("workspace.get", {})
+    expect(steeringQuarantined).toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: steeringSessionId,
+          state: "failed",
+        })]),
+        thread: expect.arrayContaining([expect.objectContaining({
+          sessionId: steeringSessionId,
+          kind: "system",
+          body: "Provider thread quarantined after Agent steering timed out.",
+        })]),
+      },
+    })
+    const steeringSession = (steeringQuarantined.result as {
+      sessions: Array<{ id: string; providerThreadId?: string }>
+    }).sessions.find((session) => session.id === steeringSessionId)
+    expect(steeringSession).toBeDefined()
+    expect(steeringSession).not.toHaveProperty("providerThreadId")
     socket.close()
   })
 

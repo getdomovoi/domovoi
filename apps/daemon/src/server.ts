@@ -1003,10 +1003,16 @@ export class DomovoiDaemon {
           const previousRuntime = currentSession.runtime
           const previousThreadId = currentSession.providerThreadId
           const nextAgent = await this.#ensureAgentConnected(runtime.provider)
-          const nextThreadId = await withTimeout(
-            nextAgent.startThread({ cwd: currentSession.workspacePath, runtime }),
+          const pendingThread = nextAgent.startThread({
+            cwd: currentSession.workspacePath,
+            runtime,
+          })
+          const nextThreadId = await withLateCleanup(
+            pendingThread,
             this.#agentTimeoutMs,
             "Provider handoff timed out",
+            (threadId) => nextAgent.stopThread(threadId),
+            "Domovoi could not stop a late provider handoff thread",
           )
           const previousAgent = this.#agents.require(previousRuntime.provider)
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
@@ -1153,10 +1159,13 @@ export class DomovoiDaemon {
         let providerThreadId: string
         try {
           const agent = this.#agents.require(runtime.provider)
-          providerThreadId = await withTimeout(
-            agent.startThread({ cwd: workspace.path, runtime }),
+          const pendingThread = agent.startThread({ cwd: workspace.path, runtime })
+          providerThreadId = await withLateCleanup(
+            pendingThread,
             this.#agentTimeoutMs,
             "Agent setup timed out",
+            (threadId) => agent.stopThread(threadId),
+            "Domovoi could not stop a late session thread",
           )
         } catch (error) {
           try {
@@ -1209,15 +1218,22 @@ export class DomovoiDaemon {
         const agent = await this.#ensureAgentConnected(session.runtime.provider)
         const loadedThread = providerThreadKey(session.runtime.provider, session.providerThreadId)
         if (!this.#loadedAgentThreads.has(loadedThread)) {
-          await withTimeout(
-            agent.resumeThread({
-              threadId: session.providerThreadId,
-              cwd: session.workspacePath,
-              runtime: session.runtime,
-            }),
-            this.#agentTimeoutMs,
-            "Agent thread resume timed out",
-          )
+          try {
+            await withTimeout(
+              agent.resumeThread({
+                threadId: session.providerThreadId,
+                cwd: session.workspacePath,
+                runtime: session.runtime,
+              }),
+              this.#agentTimeoutMs,
+              "Agent thread resume timed out",
+            )
+          } catch (error) {
+            if (error instanceof OperationTimeoutError) {
+              await this.#quarantineProviderThread(session.id, error.message)
+            }
+            throw error
+          }
           this.#loadedAgentThreads.add(loadedThread)
         }
         const prompt = agentPromptWithAnnotations(
@@ -1225,22 +1241,31 @@ export class DomovoiDaemon {
           session.id,
           agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
         )
-        const turnId = session.activeTurnId ?? await withTimeout(
-          agent.startTurn({
-            threadId: session.providerThreadId,
-            cwd: session.workspacePath,
-            prompt,
-            runtime: session.runtime,
-          }),
-          this.#agentTimeoutMs,
-          "Agent turn timed out",
-        )
-        if (session.activeTurnId) {
-          await withTimeout(
-            agent.steerTurn(session.providerThreadId, session.activeTurnId, prompt),
-            this.#agentTimeoutMs,
-            "Agent steering timed out",
-          )
+        let turnId = session.activeTurnId
+        try {
+          if (turnId) {
+            await withTimeout(
+              agent.steerTurn(session.providerThreadId, turnId, prompt),
+              this.#agentTimeoutMs,
+              "Agent steering timed out",
+            )
+          } else {
+            turnId = await withTimeout(
+              agent.startTurn({
+                threadId: session.providerThreadId,
+                cwd: session.workspacePath,
+                prompt,
+                runtime: session.runtime,
+              }),
+              this.#agentTimeoutMs,
+              "Agent turn timed out",
+            )
+          }
+        } catch (error) {
+          if (error instanceof OperationTimeoutError) {
+            await this.#quarantineProviderThread(session.id, error.message)
+          }
+          throw error
         }
         const currentSession = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
@@ -1571,8 +1596,10 @@ export class DomovoiDaemon {
       ),
     ))
     const createdAt = new Date().toISOString()
-    results.forEach((result, index) => {
-      const session = active[index]!
+    for (const [index, result] of results.entries()) {
+      const sessionId = active[index]!.id
+      const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+      if (!session) continue
       session.updatedAt = createdAt
       if (result.status === "fulfilled") {
         session.state = "idle"
@@ -1587,6 +1614,8 @@ export class DomovoiDaemon {
           body: `Paused by ${client}.`,
           createdAt,
         })
+      } else if (result.reason instanceof OperationTimeoutError) {
+        await this.#quarantineProviderThread(session.id, result.reason.message)
       } else {
         this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
@@ -1597,7 +1626,7 @@ export class DomovoiDaemon {
           createdAt,
         })
       }
-    })
+    }
     return active.length > 0
   }
 
@@ -1648,6 +1677,45 @@ export class DomovoiDaemon {
       this.#broadcastSnapshot()
     } catch (error) {
       console.error("Domovoi could not persist agent state", error)
+    }
+  }
+
+  async #quarantineProviderThread(
+    sessionId: string,
+    reason: string,
+  ): Promise<void> {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session) return
+    const threadId = session.providerThreadId
+    if (!threadId) return
+    const provider = session.runtime.provider
+    delete session.providerThreadId
+    delete session.activeTurnId
+    session.state = "failed"
+    session.updatedAt = new Date().toISOString()
+    this.#loadedAgentThreads.delete(providerThreadKey(provider, threadId))
+    this.#snapshot.approvals = this.#snapshot.approvals.filter(
+      (approval) => approval.sessionId !== session.id,
+    )
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system",
+      body: `Provider thread quarantined after ${reason}.`,
+      detail: "The detached provider thread can no longer publish events into this session.",
+      createdAt: session.updatedAt,
+    })
+    this.#snapshot = workspaceSnapshotSchema.parse(this.#snapshot)
+    this.#store.save(this.#snapshot)
+    this.#broadcastSnapshot()
+    try {
+      await withTimeout(
+        this.#agents.require(provider).stopThread(threadId),
+        this.#agentTimeoutMs,
+        "Provider quarantine cleanup timed out",
+      )
+    } catch (error) {
+      console.error("Domovoi could not stop a quarantined provider thread", error)
     }
   }
 
@@ -1825,6 +1893,29 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
       },
     )
   })
+}
+
+async function withLateCleanup<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  cleanup: (value: T) => Promise<void>,
+  cleanupErrorMessage: string,
+): Promise<T> {
+  try {
+    return await withTimeout(promise, timeoutMs, message)
+  } catch (error) {
+    if (error instanceof OperationTimeoutError) {
+      void promise.then(async (value) => {
+        try {
+          await cleanup(value)
+        } catch (cleanupError) {
+          console.error(cleanupErrorMessage, cleanupError)
+        }
+      }, () => undefined)
+    }
+    throw error
+  }
 }
 
 function withAbortTimeout<T>(
