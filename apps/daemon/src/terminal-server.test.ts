@@ -58,7 +58,9 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs"
 const { DomovoiDaemon } = await import("./dist/server.js")
 
 const daemon = new DomovoiDaemon({ statePath: ":memory:" })
+assert.match(daemon.authToken, /^[A-Za-z0-9_-]{43}$/)
 await daemon.stop()
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
@@ -25,6 +26,7 @@ const help = runCli("--help")
 assert.equal(help.status, 0, help.error?.message || help.stderr)
 assert.match(help.stdout, /^Usage: domovoid/m)
 assert.match(help.stdout, /DOMOVOI_AUTH_TOKEN/)
+assert.match(help.stdout, /DOMOVOI_CREDENTIAL_PATH/)
 assert.match(runCli("-h").stdout, /^Usage: domovoid/m)
 
 const unknown = runCli("--unknown")

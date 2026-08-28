@@ -23,13 +23,18 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | --- | --- |
 | `DOMOVOI_HOST` | Listener host |
 | `DOMOVOI_PORT` | Listener port |
-| `DOMOVOI_AUTH_TOKEN` | Bearer token required by health, RPC, and artifact requests |
+| `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
+| `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
-Remote listeners require both `DOMOVOI_AUTH_TOKEN` and `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. Use an
-encrypted outer transport such as a Tailscale tailnet or SSH tunnel. The daemon does not provide
-TLS itself.
+Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
+reuses a high-entropy credential at `~/.domovoi/daemon.token` with user-only permissions. Remote
+listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. Use an encrypted outer transport such
+as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
+
+The bearer token protects RPC access. Health checks remain public and preview documents use their
+own short-lived signed capabilities.
 
 ## Programmatic use
 
