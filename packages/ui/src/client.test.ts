@@ -422,6 +422,42 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("reads skill source by discovered ID", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const document = client.readSkill("skill-4d6f4d6f4d6f")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.read",
+      params: { id: "skill-4d6f4d6f4d6f" },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        skill: {
+          id: "skill-4d6f4d6f4d6f",
+          name: "repo-audit",
+          description: "Audit a repository and render a ranked report.",
+          path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+          scope: "user",
+          source: "agents",
+        },
+        content: "---\nname: repo-audit\n---\n",
+      },
+    })
+
+    await expect(document).resolves.toMatchObject({
+      skill: { name: "repo-audit" },
+      content: expect.stringContaining("name: repo-audit"),
+    })
+    client.disconnect()
+  })
+
   it("preserves the parser failure for an invalid RPC result", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()
