@@ -64,13 +64,15 @@ describe("GitWorkspaceService", () => {
     const restored = await service.restore(workspace.path, checkpoint.commit)
     expect(restored).toMatchObject({ restoredCommit: checkpoint.commit })
     expect(restored.recoveryCommit).toMatch(/^[a-f0-9]{40}$/)
-    await expect(readFile(join(workspace.path, "README.md"), "utf8")).resolves.toBe("after\n")
+    expect(
+      (await readFile(join(workspace.path, "README.md"), "utf8")).replaceAll("\r\n", "\n"),
+    ).toBe("after\n")
     await expect(readFile(join(workspace.path, "temporary.txt"), "utf8")).rejects.toThrow()
 
     await service.restore(workspace.path, restored.recoveryCommit)
-    await expect(readFile(join(workspace.path, "README.md"), "utf8")).resolves.toBe(
-      "after checkpoint\n",
-    )
+    expect(
+      (await readFile(join(workspace.path, "README.md"), "utf8")).replaceAll("\r\n", "\n"),
+    ).toBe("after checkpoint\n")
     await expect(readFile(join(workspace.path, "temporary.txt"), "utf8")).resolves.toBe(
       "recover me\n",
     )
