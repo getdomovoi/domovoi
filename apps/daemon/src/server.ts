@@ -1030,6 +1030,7 @@ export class DomovoiDaemon {
             sessionId: currentSession.id,
             kind: "checkpoint",
             label: `${checkpoint.commit.slice(0, 8)} · before provider handoff`,
+            commit: checkpoint.commit,
             createdAt,
           })
           const openAnnotationCount = this.#snapshot.annotations.filter(
@@ -1255,7 +1256,66 @@ export class DomovoiDaemon {
           sessionId: currentSession.id,
           kind: "checkpoint",
           label: `${checkpoint.commit.slice(0, 8)} · ${label}`,
+          commit: checkpoint.commit,
           createdAt: currentSession.updatedAt,
+        })
+        changed = true
+      }
+
+      if (method === "checkpoint.restore") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (!session?.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        if (session.activeTurnId) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Stop the active turn before restoring a checkpoint",
+          )
+          return
+        }
+        const item = this.#snapshot.thread.find(
+          (candidate) => candidate.id === params.checkpointId
+            && candidate.sessionId === session.id
+            && candidate.kind === "checkpoint",
+        )
+        if (!item || item.kind !== "checkpoint" || !item.commit) {
+          this.#error(socket, request.id, invalidParams, "Checkpoint cannot be restored")
+          return
+        }
+        const restored = await withTimeout(
+          this.#workspaceService.restore(session.workspacePath, item.commit),
+          this.#agentTimeoutMs,
+          "Checkpoint restore timed out",
+        )
+        const currentSession = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!currentSession) {
+          this.#error(socket, request.id, invalidParams, "Session no longer exists")
+          return
+        }
+        const createdAt = new Date().toISOString()
+        currentSession.updatedAt = createdAt
+        this.#snapshot.thread.push({
+          id: `checkpoint-${randomUUID()}`,
+          sessionId: currentSession.id,
+          kind: "checkpoint",
+          label: `${restored.recoveryCommit.slice(0, 8)} · before restore`,
+          commit: restored.recoveryCommit,
+          createdAt,
+        })
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: currentSession.id,
+          kind: "system",
+          body: "Worktree restored",
+          detail: `Restored ${restored.restoredCommit.slice(0, 8)} from ${params.client}. Recovery checkpoint ${restored.recoveryCommit.slice(0, 8)} preserved the previous state.`,
+          createdAt,
         })
         changed = true
       }

@@ -9,6 +9,7 @@ import {
   artifactAuthorizeResultSchema,
   approvalResolveParamsSchema,
   checkpointCreateParamsSchema,
+  checkpointRestoreParamsSchema,
   createEmptyWorkspace,
   demoWorkspace,
   projectOpenParamsSchema,
@@ -432,5 +433,10 @@ describe("workspace protocol", () => {
       label: "before-turn",
       client: "desktop",
     }).label).toBe("before-turn")
+    expect(checkpointRestoreParamsSchema.parse({
+      sessionId: "session-1",
+      checkpointId: "checkpoint-1",
+      client: "desktop",
+    }).checkpointId).toBe("checkpoint-1")
   })
 })
