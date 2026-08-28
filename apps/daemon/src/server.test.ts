@@ -662,6 +662,99 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("orders one session without blocking an unrelated session", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const first = snapshot.sessions[0]!
+    const second = snapshot.sessions[1]!
+    for (const [session, threadId] of [
+      [first, "thread-first"],
+      [second, "thread-second"],
+    ] as const) {
+      session.state = "idle"
+      session.runtime.provider = "codex"
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = threadId
+      delete session.activeTurnId
+    }
+    let releaseFirstTurn: ((turnId: string) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(({ threadId }: { threadId: string }) => threadId === "thread-first"
+        ? new Promise<string>((resolve) => { releaseFirstTurn = resolve })
+        : Promise.resolve("turn-second")),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    const firstTurn = rpc("session.send", {
+      sessionId: first.id,
+      prompt: "Block this session",
+      client: "desktop",
+    })
+    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-first",
+    })))
+    const queuedSameSession = rpc("session.send", {
+      sessionId: first.id,
+      prompt: "Run second in this session",
+      client: "desktop",
+    })
+    const unrelated = rpc("session.send", {
+      sessionId: second.id,
+      prompt: "Run independently",
+      client: "desktop",
+    })
+    const responsiveness = await Promise.race([
+      unrelated.then(() => "responsive" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+    ])
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    releaseFirstTurn!("turn-first")
+    await Promise.all([firstTurn, queuedSameSession, unrelated])
+
+    expect(responsiveness).toBe("responsive")
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      "thread-first",
+      "turn-first",
+      expect.stringContaining("Run second in this session"),
+    )
+    socket.close()
+  })
+
   it("serves an empty initial workspace over JSON-RPC", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     running.push(daemon)
