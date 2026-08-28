@@ -41,7 +41,8 @@ describe("FileSkillCatalog", () => {
       { path: projectRoot, scope: "project", source: "kilo" },
     ])
 
-    await expect(catalog.list()).resolves.toEqual([
+    const discovered = await catalog.list()
+    expect(discovered).toEqual([
       expect.objectContaining({
         id: expect.stringMatching(/^skill-[a-f0-9]{12}$/),
         name: "release-notes",
@@ -57,6 +58,12 @@ describe("FileSkillCatalog", () => {
         source: "agents",
       }),
     ])
+    const repoAudit = discovered.find((entry) => entry.name === "repo-audit")!
+    await expect(catalog.read(repoAudit.id)).resolves.toMatchObject({
+      skill: repoAudit,
+      content: expect.stringContaining("# Instructions"),
+    })
+    await expect(catalog.read("skill-000000000000")).rejects.toThrow("Skill not found")
   })
 
   it("skips malformed and oversized skill files without failing discovery", async () => {

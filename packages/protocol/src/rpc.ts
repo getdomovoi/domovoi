@@ -9,7 +9,7 @@ import {
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
-import { skillSummariesSchema } from "./skills.js"
+import { skillDocumentSchema, skillIdSchema, skillSummariesSchema } from "./skills.js"
 
 export const requestIdSchema = z.union([z.string(), z.number()])
 export const daemonAuthenticationErrorCode = -32001 as const
@@ -228,6 +228,10 @@ export const rpcMethods = {
   },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
   "skill.list": { params: z.object({}), result: skillSummariesSchema },
+  "skill.read": {
+    params: z.object({ id: skillIdSchema }),
+    result: skillDocumentSchema,
+  },
   "runtime.models": {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
