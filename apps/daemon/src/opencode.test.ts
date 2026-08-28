@@ -279,6 +279,37 @@ describe("OpenCodeSdkAdapter", () => {
     }))
     await adapter.close()
   })
+
+  it("does not load a session after it is stopped during resume", async () => {
+    const { client, factory } = harness()
+    let resolveSession: ((result: { data: { id: string } }) => void) | undefined
+    client.session.get.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSession = resolve
+    }))
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-after-stop")
+    const resuming = adapter.resumeThread({
+      threadId: "open-session",
+      cwd: "/worktree",
+      runtime: runtime("build"),
+    })
+    await vi.waitFor(() => expect(client.session.get).toHaveBeenCalledOnce())
+
+    await adapter.stopThread("open-session")
+    resolveSession!({ data: { id: "open-session" } })
+
+    await expect(resuming).rejects.toThrow("OpenCode session stopped while resuming")
+    expect(client.session.delete).toHaveBeenCalledWith(expect.objectContaining({
+      path: { id: "open-session" },
+      query: { directory: "/worktree" },
+    }))
+    await expect(adapter.startTurn({
+      threadId: "open-session",
+      cwd: "/worktree",
+      prompt: "Must not run",
+      runtime: runtime("build"),
+    })).rejects.toThrow("OpenCode session open-session is not loaded")
+    await adapter.close()
+  })
 })
 
 describe("KiloSdkAdapter", () => {
