@@ -1,11 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
-import type { ProviderRuntime, Runtime } from "@getdomovoi/protocol"
+import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AppBar, ProviderReadinessList, RuntimeControls } from "./workspace-shell"
+import { activeThreadKey, AppBar, CheckpointThreadItem, ProviderReadinessList, RuntimeControls } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -100,5 +100,27 @@ describe("activeThreadKey", () => {
     second.activeSessionId = "session-audit"
 
     expect(activeThreadKey(first)).not.toBe(activeThreadKey(second))
+  })
+})
+
+describe("CheckpointThreadItem", () => {
+  it("offers restore only for restorable checkpoints", () => {
+    const item: Extract<ThreadItem, { kind: "checkpoint" }> = {
+      id: "checkpoint-1",
+      sessionId: "session-billing",
+      kind: "checkpoint",
+      label: "bbbbbbbb · after tests",
+      commit: "b".repeat(40),
+      createdAt: "2026-08-28T06:00:00.000Z",
+    }
+    const restorable = renderToStaticMarkup(
+      <CheckpointThreadItem item={item} disabled={false} onRestore={vi.fn()} />,
+    )
+    const legacy = renderToStaticMarkup(
+      <CheckpointThreadItem item={{ ...item, commit: undefined }} disabled={false} onRestore={vi.fn()} />,
+    )
+
+    expect(restorable).toContain("Restore worktree")
+    expect(legacy).not.toContain("Restore worktree")
   })
 })

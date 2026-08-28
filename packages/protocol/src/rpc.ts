@@ -187,6 +187,12 @@ export const checkpointCreateParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const checkpointRestoreParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  checkpointId: z.string().min(1),
+  client: clientKindSchema,
+})
+
 export const annotationCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
   artifactId: z.string().min(1),
@@ -263,6 +269,10 @@ export const rpcMethods = {
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {
     params: checkpointCreateParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+  "checkpoint.restore": {
+    params: checkpointRestoreParamsSchema,
     result: workspaceSnapshotSchema,
   },
 } as const

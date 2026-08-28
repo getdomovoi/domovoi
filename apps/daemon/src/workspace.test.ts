@@ -59,6 +59,24 @@ describe("GitWorkspaceService", () => {
     ])
     expect(branchContents.stdout).toBe("after\n")
 
+    await writeFile(join(workspace.path, "README.md"), "after checkpoint\n")
+    await writeFile(join(workspace.path, "temporary.txt"), "recover me\n")
+    const restored = await service.restore(workspace.path, checkpoint.commit)
+    expect(restored).toMatchObject({ restoredCommit: checkpoint.commit })
+    expect(restored.recoveryCommit).toMatch(/^[a-f0-9]{40}$/)
+    expect(
+      (await readFile(join(workspace.path, "README.md"), "utf8")).replaceAll("\r\n", "\n"),
+    ).toBe("after\n")
+    await expect(readFile(join(workspace.path, "temporary.txt"), "utf8")).rejects.toThrow()
+
+    await service.restore(workspace.path, restored.recoveryCommit)
+    expect(
+      (await readFile(join(workspace.path, "README.md"), "utf8")).replaceAll("\r\n", "\n"),
+    ).toBe("after checkpoint\n")
+    expect(
+      (await readFile(join(workspace.path, "temporary.txt"), "utf8")).replaceAll("\r\n", "\n"),
+    ).toBe("recover me\n")
+
     await service.removeSessionWorkspace(workspace.path)
     await expect(readFile(join(workspace.path, "README.md"), "utf8")).rejects.toThrow()
     const worktrees = await execute("git", ["-C", repositoryPath, "worktree", "list", "--porcelain"])
@@ -75,6 +93,35 @@ describe("GitWorkspaceService", () => {
 
     await expect(service.createSessionWorkspace(scratch, "../escape")).rejects.toThrow(
       "Session id is not safe for a worktree",
+    )
+  })
+
+  it("rejects commits that are not Domovoi checkpoints", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
+
+    await expect(service.restore(workspace.path, workspace.baseCommit)).rejects.toThrow(
+      "Commit is not a Domovoi checkpoint",
+    )
+    await expect(service.restore(workspace.path, "not-a-commit")).rejects.toThrow(
+      "Checkpoint commit is invalid",
     )
   })
 })

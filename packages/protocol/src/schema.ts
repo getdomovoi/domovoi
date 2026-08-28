@@ -127,6 +127,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     sessionId: z.string().min(1),
     kind: z.literal("checkpoint"),
     label: z.string(),
+    commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
     createdAt: z.string().datetime(),
   }),
   z.object({
