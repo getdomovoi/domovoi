@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { SkillSummary } from "@getdomovoi/protocol"
 
-import { SkillBrowser } from "./skill-browser"
+import { SkillBrowser, SkillSourceContent } from "./skill-browser"
 import { filterSkills, groupSkills } from "./skill-browser-model"
 
 const skills: SkillSummary[] = [
@@ -46,6 +46,7 @@ describe("skill browser", () => {
         loading={false}
         error=""
         onBack={vi.fn()}
+        onReadSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -56,5 +57,21 @@ describe("skill browser", () => {
     expect(markup).toContain("/home/dev/.agents/skills/design-studio/SKILL.md")
     expect(markup).not.toContain("trusted")
     expect(markup).not.toContain("capabilities")
+    expect(markup).toContain("View SKILL.md")
+  })
+
+  it("renders bounded source returned by the daemon", () => {
+    const markup = renderToStaticMarkup(
+      <SkillSourceContent
+        skill={skills[0]!}
+        content="---\nname: design-studio\n---\n"
+        loading={false}
+        error=""
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain("name: design-studio")
+    expect(markup).toContain("execution machine")
   })
 })

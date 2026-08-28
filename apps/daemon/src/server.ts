@@ -50,7 +50,7 @@ import {
   type TerminalService,
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
-import { FileSkillCatalog, skillRoots, type SkillCatalog } from "./skills.js"
+import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -372,7 +372,9 @@ export class DomovoiDaemon {
   #isConcurrentRead(raw: string): boolean {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
-      return request.method === "runtime.models" || request.method === "skill.list"
+      return request.method === "runtime.models"
+        || request.method === "skill.list"
+        || request.method === "skill.read"
     } catch {
       return false
     }
@@ -792,6 +794,24 @@ export class DomovoiDaemon {
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
         })
+        return
+      }
+
+      if (method === "skill.read") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
+          skillRoots(homedir(), this.#snapshot.project?.path),
+        )
+        try {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await catalog.read(params.id)),
+          })
+        } catch (error) {
+          if (!(error instanceof SkillNotFoundError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+        }
         return
       }
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
 
-import type { SkillSummary } from "@getdomovoi/protocol"
+import type { SkillDocument, SkillSummary } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
@@ -14,27 +14,77 @@ import {
   CardTitle,
 } from "./components/ui/card"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./components/ui/dialog"
 import { Input } from "./components/ui/input"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { cn } from "./lib/utils"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
 
+export function SkillSourceContent({
+  skill,
+  content,
+  loading,
+  error,
+  onRetry,
+}: {
+  skill: SkillSummary
+  content: string
+  loading: boolean
+  error: string
+  onRetry: () => void
+}) {
+  if (loading) {
+    return <div role="status" className="flex min-h-64 items-center justify-center text-sm text-muted-foreground">Reading SKILL.md from the execution machine.</div>
+  }
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <FileTextIcon />
+        <AlertTitle>SKILL.md could not be read</AlertTitle>
+        <AlertDescription className="flex items-center justify-between gap-3">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={onRetry}>Try again</Button>
+        </AlertDescription>
+      </Alert>
+    )
+  }
+  return (
+    <div className="flex min-h-0 flex-col gap-2">
+      <p className="m-0 font-machine text-[9.5px] text-faint">{skill.path} · execution machine</p>
+      <pre className="max-h-[62vh] overflow-auto rounded-lg bg-code p-4 font-machine text-[10.5px] leading-relaxed whitespace-pre-wrap text-foreground">{content}</pre>
+    </div>
+  )
+}
+
 export function SkillBrowser({
   skills,
   loading,
   error,
   onBack,
+  onReadSkill,
   onRetry,
 }: {
   skills: readonly SkillSummary[]
   loading: boolean
   error: string
   onBack: () => void
+  onReadSkill: (id: string) => Promise<SkillDocument>
   onRetry: () => void
 }) {
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState(() => skills[0]?.id ?? "")
+  const [sourceSkill, setSourceSkill] = useState<SkillSummary>()
+  const [sourceContent, setSourceContent] = useState("")
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceError, setSourceError] = useState("")
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const selected = skills.find((skill) => skill.id === selectedId) ?? filtered[0] ?? skills[0]
@@ -42,6 +92,17 @@ export function SkillBrowser({
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
   }, [selectedId, skills])
+
+  const readSource = (skill: SkillSummary) => {
+    setSourceSkill(skill)
+    setSourceContent("")
+    setSourceError("")
+    setSourceLoading(true)
+    void onReadSkill(skill.id).then(
+      (document) => setSourceContent(document.content),
+      (cause: unknown) => setSourceError(cause instanceof Error ? cause.message : "SKILL.md could not be read"),
+    ).finally(() => setSourceLoading(false))
+  }
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -155,10 +216,32 @@ export function SkillBrowser({
                 <AlertTitle>Read-only discovery</AlertTitle>
                 <AlertDescription>Domovoi reports where this skill was found. Installation, enablement, capability review, and fleet distribution are not changed here.</AlertDescription>
               </Alert>
+              <Button variant="outline" className="mt-4" onClick={() => readSource(selected)}>
+                <FileTextIcon data-icon="inline-start" />
+                View SKILL.md
+              </Button>
             </section>
           ) : null}
         </main>
       </ScrollArea>
+      <Dialog open={sourceSkill !== undefined} onOpenChange={(open) => { if (!open) setSourceSkill(undefined) }}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{sourceSkill?.name ?? "Skill"} / SKILL.md</DialogTitle>
+            <DialogDescription>Read-only source returned by the daemon that discovered this skill.</DialogDescription>
+          </DialogHeader>
+          {sourceSkill ? (
+            <SkillSourceContent
+              skill={sourceSkill}
+              content={sourceContent}
+              loading={sourceLoading}
+              error={sourceError}
+              onRetry={() => readSource(sourceSkill)}
+            />
+          ) : null}
+          <DialogFooter><Button variant="outline" onClick={() => setSourceSkill(undefined)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

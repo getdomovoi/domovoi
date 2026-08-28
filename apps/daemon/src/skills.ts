@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto"
-import { readdir, readFile, realpath, stat } from "node:fs/promises"
+import { open, readdir, readFile, realpath, stat } from "node:fs/promises"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import { parse } from "yaml"
 
 import {
   skillSummarySchema,
+  skillDocumentSchema,
+  type SkillDocument,
   type SkillScope,
   type SkillSource,
   type SkillSummary,
@@ -23,6 +25,14 @@ export type SkillRoot = {
 
 export interface SkillCatalog {
   list(): Promise<SkillSummary[]>
+  read(id: string): Promise<SkillDocument>
+}
+
+export class SkillNotFoundError extends Error {
+  constructor() {
+    super("Skill not found")
+    this.name = "SkillNotFoundError"
+  }
 }
 
 export class FileSkillCatalog implements SkillCatalog {
@@ -57,6 +67,29 @@ export class FileSkillCatalog implements SkillCatalog {
     return skills.sort((left, right) =>
       left.name.localeCompare(right.name) || left.path.localeCompare(right.path),
     )
+  }
+
+  async read(id: string): Promise<SkillDocument> {
+    const skill = (await this.list()).find((candidate) => candidate.id === id)
+    if (!skill) throw new SkillNotFoundError()
+    let handle
+    try {
+      handle = await open(skill.path, "r")
+      const canonicalPath = await realpath(skill.path)
+      if (skillId(canonicalPath) !== id) throw new SkillNotFoundError()
+      const file = await handle.stat()
+      if (!file.isFile() || file.size > maxSkillFileBytes) throw new SkillNotFoundError()
+      return skillDocumentSchema.parse({
+        skill,
+        content: await handle.readFile("utf8"),
+      })
+    } catch (error) {
+      if (error instanceof SkillNotFoundError) throw error
+      if (error && typeof error === "object" && "code" in error) throw new SkillNotFoundError()
+      throw error
+    } finally {
+      await handle?.close()
+    }
   }
 }
 
@@ -149,7 +182,7 @@ async function readSkill(path: string, root: SkillRoot): Promise<SkillSummary | 
       return undefined
     }
     const candidate = {
-      id: `skill-${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 12)}`,
+      id: skillId(canonicalPath),
       name: record.name,
       description: record.description,
       path: resolve(path),
@@ -161,6 +194,10 @@ async function readSkill(path: string, root: SkillRoot): Promise<SkillSummary | 
   } catch {
     return undefined
   }
+}
+
+function skillId(canonicalPath: string): string {
+  return `skill-${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 12)}`
 }
 
 function escapesRoot(root: string, path: string): boolean {

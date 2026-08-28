@@ -1585,6 +1585,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     openProject,
     pauseAll,
     pauseSession,
+    readSkill,
     reconnect,
     resizeTerminal,
     resolveApproval,
@@ -1711,6 +1712,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             loading={skillsLoading}
             error={skillsError}
             onBack={() => setSurface("workspace")}
+            onReadSkill={readSkill}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
         ) : snapshot ? (
