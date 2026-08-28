@@ -77,6 +77,7 @@ pnpm build
 
 Open product decisions are tracked in
 [`design/design_handoff_domovoi/OPEN-QUESTIONS.md`](design/design_handoff_domovoi/OPEN-QUESTIONS.md).
+The ranked delivery plan is tracked in [`ROADMAP.md`](ROADMAP.md).
 
 ## Licensing
 
