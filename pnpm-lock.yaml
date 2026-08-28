@@ -34,6 +34,9 @@ importers:
       '@getdomovoi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@kilocode/sdk':
+        specifier: 7.4.23
+        version: 7.4.23
       '@opencode-ai/sdk':
         specifier: ^1.18.23
         version: 1.18.23
@@ -674,6 +677,9 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@kilocode/sdk@7.4.23':
+    resolution: {integrity: sha512-ETuqrBBpbeOy2qJyGZPOO1mP+2fBH7PcKMFTLgd9vzH3xg5E+qjLAAbST/oIVHzPfzPK80THAbSijq9bU4hqjg==}
 
   '@modelcontextprotocol/sdk@1.30.0':
     resolution: {integrity: sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==}
@@ -3774,6 +3780,10 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@kilocode/sdk@7.4.23':
+    dependencies:
+      cross-spawn: 7.0.6
 
   '@modelcontextprotocol/sdk@1.30.0(zod@3.25.76)':
     dependencies:

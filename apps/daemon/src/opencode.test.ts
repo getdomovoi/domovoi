@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
+import { KiloSdkAdapter } from "./kilo.js"
 import {
   OpenCodeSdkAdapter,
   openCodeAgentFor,
@@ -274,6 +275,52 @@ describe("OpenCodeSdkAdapter", () => {
           type: "fileChange",
           changes: [{ path: "src/app.ts" }],
         }),
+      }),
+    }))
+    await adapter.close()
+  })
+})
+
+describe("KiloSdkAdapter", () => {
+  it("discovers Kilo models without starting an inference turn", async () => {
+    const { client, factory, server } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+
+    await expect(adapter.listModels()).resolves.toEqual([{
+      provider: "kilo",
+      id: "anthropic/sonnet",
+      displayName: "Anthropic / Claude Sonnet",
+      description: "Kilo model from Anthropic",
+      supportedReasoningEfforts: ["medium"],
+      defaultReasoningEffort: "medium",
+      isDefault: true,
+    }])
+    expect(client.session.create).not.toHaveBeenCalled()
+    await adapter.close()
+    expect(server.close).toHaveBeenCalledOnce()
+  })
+
+  it("starts a Kilo session with Domovoi runtime controls", async () => {
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory, () => "turn-1")
+    const kiloRuntime = { ...runtime("build"), provider: "kilo" }
+
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: kiloRuntime })
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Use repo-audit",
+      runtime: kiloRuntime,
+    })
+
+    expect(client.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
+      path: { id: "open-session" },
+      query: { directory: "/worktree" },
+      body: expect.objectContaining({
+        messageID: "turn-1",
+        agent: "build",
+        model: { providerID: "anthropic", modelID: "sonnet" },
+        parts: [{ type: "text", text: "Use repo-audit" }],
       }),
     }))
     await adapter.close()
