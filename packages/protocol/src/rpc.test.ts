@@ -284,6 +284,19 @@ describe("session fork RPC", () => {
       client: "desktop",
     })).toMatchObject({ requestId: "fork-request-1" })
   })
+
+  it.each(["", "x".repeat(129), "fork/request", " fork-request"])(
+    "rejects malformed fork request ID %j",
+    (requestId) => {
+      expect(rpcMethods["session.fork"].params.safeParse({
+        sessionId: "session-source",
+        checkpointId: "checkpoint-source",
+        requestId,
+        runtime: demoWorkspace.sessions[0]!.runtime,
+        client: "desktop",
+      }).success).toBe(false)
+    },
+  )
 })
 
 describe("session evidence", () => {

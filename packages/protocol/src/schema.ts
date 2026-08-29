@@ -100,6 +100,7 @@ export const sessionForkOriginSchema = z.object({
   checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
   requestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
   client: clientKindSchema,
+  requestedRuntime: runtimeSchema,
 })
 
 export const sessionSummarySchema = z.object({
@@ -286,6 +287,7 @@ export const workspaceSnapshotSchema = z.object({
   thread: z.array(threadItemSchema),
   artifacts: z.array(artifactSchema),
   annotations: z.array(annotationSchema).default([]),
+  historyTruncated: z.boolean().optional(),
 }).superRefine((snapshot, context) => {
   const aggregates = [
     ["sessions", snapshot.sessions],
@@ -371,11 +373,17 @@ export const workspaceSnapshotSchema = z.object({
         })
       }
       const checkpoint = snapshot.thread.find((item) => item.id === origin.checkpointId)
-      if (
-        checkpoint?.kind !== "checkpoint"
+      if (checkpoint && (
+        checkpoint.kind !== "checkpoint"
         || checkpoint.sessionId !== origin.sourceSessionId
         || checkpoint.commit !== origin.checkpointCommit
-      ) {
+      )) {
+        context.addIssue({
+          code: "custom",
+          message: "Fork checkpoint must belong to the source session",
+          path: ["sessions", index, "forkedFrom", "checkpointId"],
+        })
+      } else if (!checkpoint && !snapshot.historyTruncated) {
         context.addIssue({
           code: "custom",
           message: "Fork checkpoint must belong to the source session",
