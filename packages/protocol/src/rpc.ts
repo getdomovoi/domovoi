@@ -666,6 +666,14 @@ export const sessionCreateParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const sessionForkParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  checkpointId: z.string().min(1),
+  requestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
+  runtime: runtimeSchema,
+  client: clientKindSchema,
+})
+
 export const sessionActivateParamsSchema = z.object({
   sessionId: z.string().min(1),
   client: clientKindSchema,
@@ -781,6 +789,7 @@ export const rpcMethods = {
   "session.pause": { params: sessionPauseParamsSchema, result: workspaceSnapshotSchema },
   "session.archive": { params: sessionArchiveParamsSchema, result: workspaceSnapshotSchema },
   "session.create": { params: sessionCreateParamsSchema, result: workspaceSnapshotSchema },
+  "session.fork": { params: sessionForkParamsSchema, result: workspaceSnapshotSchema },
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {
     params: checkpointCreateParamsSchema,

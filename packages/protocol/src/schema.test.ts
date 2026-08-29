@@ -34,6 +34,7 @@ import {
   sessionActivateParamsSchema,
   sessionArchiveParamsSchema,
   sessionCreateParamsSchema,
+  sessionForkParamsSchema,
   sessionPauseParamsSchema,
   sessionSendParamsSchema,
   skillSummarySchema,
@@ -43,6 +44,49 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("validates fork provenance and unique idempotency keys", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const source = snapshot.sessions[0]!
+    const checkpoint = snapshot.thread.find((item) =>
+      item.sessionId === source.id && item.kind === "checkpoint"
+    )!
+    if (checkpoint.kind !== "checkpoint" || !checkpoint.commit) throw new Error("fixture checkpoint missing")
+    const fork = {
+      ...source,
+      id: "session-fork",
+      title: "Forked session",
+      providerThreadId: "provider-thread-fork",
+      workspacePath: "/worktrees/session-fork",
+      baseCommit: checkpoint.commit,
+      forkedFrom: {
+        sourceSessionId: source.id,
+        checkpointId: checkpoint.id,
+        checkpointCommit: checkpoint.commit,
+        requestId: "fork-request-1",
+        client: "desktop" as const,
+      },
+    }
+    snapshot.sessions.push(fork)
+    expect(workspaceSnapshotSchema.parse(snapshot).sessions.at(-1)?.forkedFrom).toEqual(fork.forkedFrom)
+
+    const unknownSource = structuredClone(snapshot)
+    unknownSource.sessions.at(-1)!.forkedFrom!.sourceSessionId = "session-missing"
+    expect(workspaceSnapshotSchema.safeParse(unknownSource).success).toBe(false)
+
+    const wrongCheckpointOwner = structuredClone(snapshot)
+    wrongCheckpointOwner.sessions.at(-1)!.forkedFrom!.sourceSessionId = snapshot.sessions[1]!.id
+    expect(workspaceSnapshotSchema.safeParse(wrongCheckpointOwner).success).toBe(false)
+
+    const duplicateRequest = structuredClone(snapshot)
+    duplicateRequest.sessions.push({
+      ...fork,
+      id: "session-fork-duplicate",
+      workspacePath: "/worktrees/session-fork-duplicate",
+      providerThreadId: "provider-thread-fork-duplicate",
+    })
+    expect(workspaceSnapshotSchema.safeParse(duplicateRequest).success).toBe(false)
+  })
+
   it("models durable session archive lifecycle and requests", () => {
     expect(sessionArchiveParamsSchema.parse({
       sessionId: "session-billing",
@@ -648,6 +692,13 @@ describe("workspace protocol", () => {
       runtime: demoWorkspace.sessions[0]!.runtime,
       client: "desktop",
     }).title).toBe("Add persistence")
+    expect(sessionForkParamsSchema.parse({
+      sessionId: "session-1",
+      checkpointId: "checkpoint-1",
+      requestId: "fork-request-1",
+      runtime: demoWorkspace.sessions[0]!.runtime,
+      client: "desktop",
+    })).toMatchObject({ checkpointId: "checkpoint-1", requestId: "fork-request-1" })
     expect(sessionActivateParamsSchema.parse({
       sessionId: "session-1",
       client: "desktop",
