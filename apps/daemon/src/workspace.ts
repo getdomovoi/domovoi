@@ -268,9 +268,18 @@ export class GitWorkspaceService implements WorkspaceService {
 
   async evidence(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence> {
     const [baseCommit, status, numstat, diff] = await Promise.all([
-      git(worktreePath, ["rev-parse", "HEAD"], signal),
-      git(worktreePath, ["status", "--porcelain=v2", "-z", "--untracked-files=all"], signal),
+      git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
       git(worktreePath, [
+        "-c",
+        "core.fsmonitor=false",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+      ], signal),
+      git(worktreePath, [
+        "-c",
+        "core.fsmonitor=false",
         "diff",
         "HEAD",
         "--numstat",
@@ -281,7 +290,16 @@ export class GitWorkspaceService implements WorkspaceService {
       ], signal),
       boundedGit(
         worktreePath,
-        ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "HEAD", "--"],
+        [
+          "-c",
+          "core.fsmonitor=false",
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "HEAD",
+          "--",
+        ],
         maximumEvidenceDiffBytes,
         signal,
       ),
