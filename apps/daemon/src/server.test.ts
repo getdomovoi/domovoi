@@ -4012,4 +4012,85 @@ describe("DomovoiDaemon", () => {
     expect(store.snapshot.sessions[0]).not.toHaveProperty("workspacePath")
     expect(agent.stopThread).toHaveBeenCalledTimes(2)
   })
+
+  it("ignores provider events after archive intent survives cleanup failure", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "thread-billing"
+    session.activeTurnId = "turn-billing"
+    snapshot.approvals = [{
+      ...snapshot.approvals[0]!,
+      id: "approval-billing",
+      sessionId: session.id,
+      providerRequestId: 11,
+    }]
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(() => { throw new Error("provider denial failed") }),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(async () => {}), checkpoint: vi.fn(), restore: vi.fn(),
+    } satisfies WorkspaceService
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, workspaceService })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await expect(rpc("session.archive", { sessionId: session.id, client: "desktop" }))
+      .resolves.toMatchObject({ error: { code: -32603 } })
+    const before = (await rpc("workspace.get", {})).result
+    expect(before).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({ id: session.id, state: "archiving" }),
+      ]),
+    })
+    listener!({
+      type: "text-delta",
+      threadId: "thread-billing",
+      turnId: "turn-billing",
+      delta: "must not enter archived history",
+    })
+    const after = (await rpc("workspace.get", {})).result
+
+    expect(after).toEqual(before)
+    socket.close()
+  })
 })
