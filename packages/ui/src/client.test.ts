@@ -848,4 +848,22 @@ describe("DomovoiClient", () => {
     await expect(stopping).resolves.toEqual(demoWorkspace)
     client.disconnect()
   })
+
+  it("attributes session archive to the shared client kind", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const archiving = client.archiveSession("session-billing")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.archive",
+      params: { sessionId: "session-billing", client: "web" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(archiving).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
 })

@@ -6,6 +6,7 @@ import {
   auditQueryPageSchema,
   auditQueryParamsSchema,
   demoWorkspace,
+  rpcMethods,
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -101,6 +102,14 @@ describe("audit RPC contracts", () => {
 })
 
 describe("JSON-RPC envelopes", () => {
+  it("registers archive as a typed session mutation", () => {
+    expect(rpcMethods["session.archive"].params.parse({
+      sessionId: "session-billing",
+      client: "desktop",
+    })).toEqual({ sessionId: "session-billing", client: "desktop" })
+    expect(rpcMethods["session.archive"].result.parse(demoWorkspace)).toEqual(demoWorkspace)
+  })
+
   it("accepts valid requests, notifications, and exclusive responses", () => {
     expect(rpcRequestSchema.parse({
       jsonrpc: "2.0",
