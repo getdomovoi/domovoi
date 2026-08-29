@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AppBar, CheckpointThreadItem, ProviderReadinessList, RuntimeControls } from "./workspace-shell"
+import { activeThreadKey, AppBar, checkpointBlockedReason, CheckpointThreadItem, ProviderReadinessList, RuntimeControls, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -122,5 +122,43 @@ describe("CheckpointThreadItem", () => {
 
     expect(restorable).toContain("Restore worktree")
     expect(legacy).not.toContain("Restore worktree")
+  })
+})
+
+describe("checkpointBlockedReason", () => {
+  it("explains why manual checkpoints are unavailable during an active turn", () => {
+    expect(checkpointBlockedReason("turn-active")).toBe(
+      "Stop the active turn before creating a checkpoint",
+    )
+    expect(checkpointBlockedReason(undefined)).toBeUndefined()
+  })
+})
+
+describe("Thread", () => {
+  it("disables manual checkpoint creation while the active turn owns the worktree", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.activeTurnId = "turn-active"
+    const markup = renderToStaticMarkup(
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn(async () => {})}
+        onSetRuntime={vi.fn(async () => {})}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn(async () => {})}
+        onRestoreCheckpoint={vi.fn(async () => {})}
+        onPauseSession={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toMatch(
+      /<button(?=[^>]*disabled="")(?=[^>]*title="Stop the active turn before creating a checkpoint")[^>]*>Checkpoint<\/button>/,
+    )
+    expect(markup).toContain(
+      '<span role="status" class="font-machine text-[9px] text-faint">Stop the active turn before creating a checkpoint</span>',
+    )
   })
 })
