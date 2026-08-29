@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  auditEntrySchema,
+  auditExportResultSchema,
+  auditQueryPageSchema,
+  auditQueryParamsSchema,
   demoWorkspace,
   rpcNotificationSchema,
   rpcRequestSchema,
@@ -9,6 +13,91 @@ import {
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
 } from "./index.js"
+
+describe("audit RPC contracts", () => {
+  const entry = {
+    id: "audit-1",
+    occurredAt: "2026-08-29T12:00:00.000Z",
+    actor: { kind: "client", client: "desktop", clientId: "desktop-owner" },
+    action: "terminal.input",
+    outcome: "succeeded",
+    sessionId: "session-1",
+    target: "terminal-1",
+    detail: "command accepted",
+  } as const
+
+  it("bounds searchable audit filters and page cursors", () => {
+    expect(auditQueryParamsSchema.parse({ query: "terminal", limit: 25 })).toEqual({
+      query: "terminal",
+      limit: 25,
+    })
+    expect(auditQueryParamsSchema.safeParse({ query: "x".repeat(513) }).success).toBe(false)
+    expect(auditEntrySchema.parse(entry)).toEqual(entry)
+    expect(auditEntrySchema.parse({
+      ...entry,
+      actor: { kind: "provider", provider: "codex", providerThreadId: "thread-1" },
+      outcome: "started",
+    }).actor.kind).toBe("provider")
+    expect(auditEntrySchema.parse({
+      ...entry,
+      actor: { kind: "daemon", component: "shutdown" },
+      outcome: "cancelled",
+    }).actor.kind).toBe("daemon")
+    expect(auditQueryPageSchema.parse({
+      entries: [entry],
+      hasMore: true,
+      nextCursor: entry.id,
+    }).nextCursor).toBe(entry.id)
+    expect(auditQueryPageSchema.safeParse({
+      entries: [entry],
+      hasMore: true,
+      nextCursor: "wrong",
+    }).success).toBe(false)
+    expect(auditQueryPageSchema.safeParse({
+      entries: [],
+      hasMore: true,
+    }).success).toBe(false)
+  })
+
+  it("defines a bounded portable JSONL export", () => {
+    const content = `${JSON.stringify(entry)}\n`
+    expect(auditExportResultSchema.parse({
+      format: "jsonl",
+      exportedAt: "2026-08-29T12:01:00.000Z",
+      entryCount: 1,
+      content,
+      hasMore: false,
+    }).content).toBe(content)
+    expect(auditExportResultSchema.safeParse({
+      format: "jsonl",
+      exportedAt: "2026-08-29T12:01:00.000Z",
+      entryCount: 0,
+      content: "x".repeat(2_000_001),
+      hasMore: false,
+    }).success).toBe(false)
+    expect(auditExportResultSchema.safeParse({
+      format: "jsonl",
+      exportedAt: "2026-08-29T12:01:00.000Z",
+      entryCount: 2,
+      content,
+      hasMore: false,
+    }).success).toBe(false)
+    expect(auditExportResultSchema.safeParse({
+      format: "jsonl",
+      exportedAt: "2026-08-29T12:01:00.000Z",
+      entryCount: 1,
+      content: "not-json\n",
+      hasMore: false,
+    }).success).toBe(false)
+    expect(auditExportResultSchema.safeParse({
+      format: "jsonl",
+      exportedAt: "2026-08-29T12:01:00.000Z",
+      entryCount: 1,
+      content: `${JSON.stringify({ id: "not-an-audit-entry" })}\n`,
+      hasMore: false,
+    }).success).toBe(false)
+  })
+})
 
 describe("JSON-RPC envelopes", () => {
   it("accepts valid requests, notifications, and exclusive responses", () => {
