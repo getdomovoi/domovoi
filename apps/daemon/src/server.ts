@@ -7,6 +7,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import {
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
+  daemonShuttingDownErrorCode,
   demoWorkspace,
   maximumSessionHistoryPageItems,
   maximumWorkspaceDeltaChunkLength,
@@ -232,6 +233,9 @@ export class DomovoiDaemon {
   #providerProbe: ProviderProbe | undefined
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
+  #stopping = false
+  #stopped = false
+  #stopPromise: Promise<void> | undefined
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -285,6 +289,7 @@ export class DomovoiDaemon {
     this.#skillCatalog = options.skillCatalog
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
+        if (this.#stopping || this.#stopped) return
         void this.#mutations.enqueue(
           this.#resourceForAgentEvent(provider, event),
           () => this.#handleAgentEvent(provider, event),
@@ -304,6 +309,7 @@ export class DomovoiDaemon {
   }
 
   async start(): Promise<{ host: string; port: number }> {
+    if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
 
     this.#http = createServer((request, response) => {
@@ -328,7 +334,7 @@ export class DomovoiDaemon {
     })
 
     const verifyClient: VerifyClientCallbackSync = ({ origin }) =>
-      !origin || this.allowedOrigins.has(origin)
+      !this.#stopping && !this.#stopped && (!origin || this.allowedOrigins.has(origin))
 
     this.#websocket = new WebSocketServer({
       server: this.#http,
@@ -351,6 +357,18 @@ export class DomovoiDaemon {
       }
       socket.on("message", (data) => {
         const raw = data.toString()
+        if (this.#stopping || this.#stopped) {
+          let id: string | number | null = null
+          try {
+            const request = JSON.parse(raw) as { id?: unknown }
+            if (typeof request.id === "string" || typeof request.id === "number") id = request.id
+            else return
+          } catch {
+            // The daemon is already shutting down; a stable unavailable response is sufficient.
+          }
+          this.#error(socket, id, daemonShuttingDownErrorCode, "Daemon is shutting down")
+          return
+        }
         const resource = this.#requestResource(raw)
         if (resource) {
           void this.#mutations.enqueue(resource, () => this.#handle(socket, raw))
@@ -376,23 +394,51 @@ export class DomovoiDaemon {
     return this.address!
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.#stopPromise) return this.#stopPromise
+    this.#stopping = true
+    for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
+    const stopping = this.#finishStop()
+    this.#stopPromise = stopping
+    return stopping
+  }
+
+  async #finishStop(): Promise<void> {
+    const failures: unknown[] = []
+    try {
+      await this.#providerRefresh
+      await this.#mutations.drain()
+      if (this.#deltaFlush) this.#saveAgentState(false)
+    } catch (error) {
+      failures.push(error)
+    }
     this.#closeAllTerminals()
     for (const client of this.#websocket?.clients ?? []) client.close(1001, "daemon stopping")
 
-    await new Promise<void>((resolve, reject) => {
-      if (!this.#http) return resolve()
-      this.#http.close((error) => (error ? reject(error) : resolve()))
-    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (!this.#http) return resolve()
+        this.#http.close((error) => (error ? reject(error) : resolve()))
+      })
+    } catch (error) {
+      failures.push(error)
+    }
 
     this.#websocket = undefined
     this.#http = undefined
-    await this.#providerRefresh
-    await this.#mutations.drain()
-    if (this.#deltaFlush) this.#flushAgentState(false)
-    for (const unsubscribe of this.#unsubscribeAgents) unsubscribe()
-    await Promise.all(this.#agents.adapters().map((agent) => agent.close()))
-    this.#store.close()
+    const providerClosures = await Promise.allSettled(
+      this.#agents.adapters().map((agent) => agent.close()),
+    )
+    failures.push(...providerClosures.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []
+    ))
+    try {
+      this.#store.close()
+    } catch (error) {
+      failures.push(error)
+    }
+    this.#stopped = true
+    if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")
   }
 
   #send(socket: WebSocket, payload: unknown): void {
@@ -1847,17 +1893,21 @@ export class DomovoiDaemon {
   }
 
   #flushAgentState(broadcast = true): void {
+    try {
+      this.#saveAgentState(broadcast)
+    } catch (error) {
+      console.error("Domovoi could not persist agent state", error)
+    }
+  }
+
+  #saveAgentState(broadcast = true): void {
     if (this.#deltaFlush) {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
     }
-    try {
-      workspaceSnapshotSchema.parse(this.#snapshot)
-      this.#store.save(this.#snapshot)
-      if (broadcast) this.#broadcastSnapshot()
-    } catch (error) {
-      console.error("Domovoi could not persist agent state", error)
-    }
+    workspaceSnapshotSchema.parse(this.#snapshot)
+    this.#store.save(this.#snapshot)
+    if (broadcast) this.#broadcastSnapshot()
   }
 
   async #quarantineProviderThread(
