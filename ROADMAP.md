@@ -96,7 +96,7 @@ workflow without becoming a code editor.
 - [x] Add a complete session history with filters for messages, tools, approvals, handoffs,
   checkpoints, annotations, and tests
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
-- [ ] Add session archive and deliberate cleanup without deleting the source repository
+- [x] Add session archive and deliberate cleanup without deleting the source repository
 - [ ] Add explicit fork-with-model beside switch-here behavior
 
 ### Providers and credentials
