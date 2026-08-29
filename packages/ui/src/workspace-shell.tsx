@@ -870,7 +870,7 @@ export function Thread({
   }
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
-  const archiveReadOnly = active.state === "archiving" || active.state === "archived"
+  const archiveReadOnly = sessionIsArchiveReadOnly(active)
 
   const submitPrompt = async () => {
     const nextPrompt = prompt.trim()
@@ -1057,6 +1057,12 @@ export function Thread({
 
 export function activeThreadKey(snapshot: WorkspaceSnapshot): string {
   return snapshot.activeSessionId ?? "no-active-session"
+}
+
+export function sessionIsArchiveReadOnly(
+  session: WorkspaceSnapshot["sessions"][number] | undefined,
+): boolean {
+  return session?.state === "archiving" || session?.state === "archived"
 }
 
 export function RuntimeControls({
@@ -1361,7 +1367,7 @@ export function HistoryPanel({
   )
 }
 
-function ArtifactDock({
+export function ArtifactDock({
   snapshot,
   onCollapse,
   defaultTab,
@@ -1403,6 +1409,9 @@ function ArtifactDock({
     : undefined
   const annotations = annotationsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
+  const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
+    (session) => session.id === snapshot.activeSessionId,
+  ))
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const [bridgeState, setBridgeState] = useState(() => ({
     previewId: preview?.id,
@@ -1455,7 +1464,8 @@ function ArtifactDock({
   useEffect(() => {
     const receiveSelection = (event: MessageEvent<unknown>) => {
       if (
-        !pickerActive
+        archiveReadOnly
+        || !pickerActive
         || !preview
         || event.source !== previewFrameRef.current?.contentWindow
         || event.origin !== "null"
@@ -1470,16 +1480,17 @@ function ArtifactDock({
     }
     window.addEventListener("message", receiveSelection)
     return () => window.removeEventListener("message", receiveSelection)
-  }, [bridgeChannel, pickerActive, preview?.id])
+  }, [archiveReadOnly, bridgeChannel, pickerActive, preview?.id])
 
   useEffect(() => {
     setPickerActive(false)
     setSelection(null)
     setComment("")
     setAnnotationError("")
-  }, [preview?.id])
+  }, [archiveReadOnly, preview?.id])
 
   const togglePicker = () => {
+    if (archiveReadOnly) return
     const active = !pickerActive
     setPickerActive(active)
     setAnnotationError("")
@@ -1489,7 +1500,7 @@ function ArtifactDock({
   const saveAnnotation = async () => {
     const body = comment.trim()
     const sessionId = snapshot.activeSessionId
-    if (!body || !selection || !sessionId || annotationPending) return
+    if (archiveReadOnly || !body || !selection || !sessionId || annotationPending) return
     setAnnotationPending(true)
     setAnnotationError("")
     try {
@@ -1532,15 +1543,17 @@ function ArtifactDock({
               <div className="flex h-10 items-center justify-between border-b px-3">
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant={pickerActive ? "secondary" : "outline"}
-                    size="xs"
-                    aria-pressed={pickerActive}
-                    onClick={togglePicker}
-                  >
-                    <MessageSquarePlusIcon />
-                    {pickerActive ? "Select element" : "Annotate"}
-                  </Button>
+                  {!archiveReadOnly ? (
+                    <Button
+                      variant={pickerActive ? "secondary" : "outline"}
+                      size="xs"
+                      aria-pressed={pickerActive}
+                      onClick={togglePicker}
+                    >
+                      <MessageSquarePlusIcon />
+                      {pickerActive ? "Select element" : "Annotate"}
+                    </Button>
+                  ) : null}
                   <Badge variant="success">Live</Badge>
                 </div>
               </div>
@@ -1601,6 +1614,7 @@ function ArtifactDock({
         <TabsContent value="comments" className="min-h-0">
           <AnnotationComments
             annotations={annotations}
+            readOnly={archiveReadOnly}
             onReply={onReplyToAnnotation}
             onSetStatus={onSetAnnotationStatus}
           />
@@ -1633,7 +1647,7 @@ function ArtifactDock({
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
       <Dialog
-        open={selection !== null}
+        open={!archiveReadOnly && selection !== null}
         onOpenChange={(open) => {
           if (open || annotationPending) return
           setSelection(null)
@@ -1690,12 +1704,14 @@ function ArtifactDock({
   )
 }
 
-function AnnotationComments({
+export function AnnotationComments({
   annotations,
+  readOnly,
   onReply,
   onSetStatus,
 }: {
   annotations: Annotation[]
+  readOnly: boolean
   onReply: (annotationId: string, body: string) => Promise<void>
   onSetStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
 }) {
@@ -1772,7 +1788,7 @@ function AnnotationComments({
                     </div>
                   ))}
                 </CardContent>
-                <CardFooter className="flex-col items-stretch gap-2">
+                {!readOnly ? <CardFooter className="flex-col items-stretch gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       variant="outline"
@@ -1817,7 +1833,7 @@ function AnnotationComments({
                       </Button>
                     </FieldGroup>
                   ) : null}
-                </CardFooter>
+                </CardFooter> : null}
               </Card>
             )
           })}
