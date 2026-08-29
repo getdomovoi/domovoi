@@ -14,6 +14,7 @@ import { skillDocumentSchema, skillIdSchema, skillSummariesSchema } from "./skil
 
 export const requestIdSchema = z.union([z.string(), z.number()])
 export const daemonAuthenticationErrorCode = -32001 as const
+export const daemonShuttingDownErrorCode = -32002 as const
 
 export const rpcRequestSchema = z.object({
   jsonrpc: z.literal("2.0"),

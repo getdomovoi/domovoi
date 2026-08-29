@@ -11,6 +11,7 @@ import {
   checkpointCreateParamsSchema,
   checkpointRestoreParamsSchema,
   createEmptyWorkspace,
+  daemonShuttingDownErrorCode,
   demoWorkspace,
   projectOpenParamsSchema,
   providerModelSchema,
@@ -41,6 +42,10 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("reserves a stable daemon shutdown error code", () => {
+    expect(daemonShuttingDownErrorCode).toBe(-32002)
+  })
+
   it("bounds cursor-based session history pages", () => {
     const session = demoWorkspace.sessions[0]!
     const item = demoWorkspace.thread.find((candidate) => candidate.sessionId === session.id)!
