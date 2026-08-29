@@ -174,6 +174,35 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("requests older session history by cursor", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const session = demoWorkspace.sessions[0]!
+    const item = demoWorkspace.thread.find((candidate) => candidate.sessionId === session.id)!
+
+    const loading = client.loadSessionHistory(session.id, item.id, 25)
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.history",
+      params: { sessionId: session.id, before: item.id, limit: 25 },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessionId: session.id,
+        items: [item],
+        hasMore: false,
+      },
+    })
+
+    await expect(loading).resolves.toMatchObject({ items: [item], hasMore: false })
+    client.disconnect()
+  })
+
   it("streams interactive terminal events and input", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
       clientId: "desktop-client-1",
