@@ -1,24 +1,60 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
+
 import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
 import {
   CodexAppServerAdapter,
+  StdioCodexTransport,
   codexPolicyFor,
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
 
+class FakeChild extends EventEmitter {
+  readonly stdin = new PassThrough()
+  readonly stdout = new PassThrough()
+  readonly stderr = new PassThrough()
+  exitCode: number | null = null
+  signalCode: NodeJS.Signals | null = null
+  ignoreSignals = false
+  readonly signals: NodeJS.Signals[] = []
+
+  kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
+    this.signals.push(signal)
+    if (this.ignoreSignals) return true
+    queueMicrotask(() => {
+      this.signalCode = signal
+      this.emit("exit", null, signal)
+      this.emit("close", null, signal)
+    })
+    return true
+  }
+}
+
 class FakeTransport implements CodexTransport {
   readonly sent: JsonRpcMessage[] = []
+  closeCount = 0
+  closeGate: Promise<void> | undefined
+  throwOnMethod: string | undefined
   #listener: ((message: JsonRpcMessage) => void) | undefined
+  #errorListener: ((error: Error) => void) | undefined
+  #staleListener: ((message: JsonRpcMessage) => void) | undefined
+  #staleErrorListener: ((error: Error) => void) | undefined
 
   send(message: JsonRpcMessage): void {
+    if (this.throwOnMethod && message.method === this.throwOnMethod) {
+      throw new Error(`Failed to send ${message.method}`)
+    }
     this.sent.push(message)
   }
 
   onMessage(listener: (message: JsonRpcMessage) => void): () => void {
     this.#listener = listener
+    this.#staleListener = listener
     return () => {
       this.#listener = undefined
     }
@@ -28,7 +64,28 @@ class FakeTransport implements CodexTransport {
     this.#listener?.(message)
   }
 
-  async close(): Promise<void> {}
+  receiveStale(message: JsonRpcMessage): void {
+    this.#staleListener?.(message)
+  }
+
+  onError(listener: (error: Error) => void): () => void {
+    this.#errorListener = listener
+    this.#staleErrorListener = listener
+    return () => { this.#errorListener = undefined }
+  }
+
+  fail(error: Error): void {
+    this.#errorListener?.(error)
+  }
+
+  failStale(error: Error): void {
+    this.#staleErrorListener?.(error)
+  }
+
+  async close(): Promise<void> {
+    this.closeCount += 1
+    await this.closeGate
+  }
 }
 
 const runtime = (permissionMode: Runtime["permissionMode"], auto: boolean): Runtime => ({
@@ -53,7 +110,241 @@ describe("codexPolicyFor", () => {
   })
 })
 
+describe("StdioCodexTransport", () => {
+  it("drains child stderr to prevent pipe backpressure", () => {
+    const child = new FakeChild()
+
+    new StdioCodexTransport(() => child as unknown as ChildProcessWithoutNullStreams)
+
+    expect(child.stderr.readableFlowing).toBe(true)
+  })
+
+  it("reports an unexpected child exit once", () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.emit("exit", 1, null)
+    child.emit("error", new Error("late process error"))
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Codex app-server exited with code 1",
+    }))
+  })
+
+  it("does not report an intentional child exit", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    await transport.close()
+
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it("escalates a stuck close and resolves after the grace period", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeChild()
+      child.ignoreSignals = true
+      const transport = new StdioCodexTransport(
+        () => child as unknown as ChildProcessWithoutNullStreams,
+        25,
+      )
+
+      const closing = transport.close()
+      expect(child.signals).toEqual(["SIGTERM"])
+      await vi.advanceTimersByTimeAsync(25)
+
+      await expect(closing).resolves.toBeUndefined()
+      expect(child.signals).toEqual(["SIGTERM", "SIGKILL"])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe("CodexAppServerAdapter", () => {
+  it("rejects in-flight work and reconnects after transport loss", async () => {
+    const first = new FakeTransport()
+    const second = new FakeTransport()
+    const transports = [first, second]
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transports.shift()!)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    first.receive({ id: 1, result: {} })
+    await connecting
+
+    const interrupted = adapter.startTurn({
+      threadId: "thread-recover",
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build", false),
+    })
+    first.fail(new Error("Codex app-server exited with code 1"))
+
+    await expect(interrupted).rejects.toThrow("Codex app-server exited with code 1")
+    expect(event).toHaveBeenCalledWith({
+      type: "provider-disconnected",
+      reason: "Codex app-server exited with code 1",
+    })
+
+    const reconnecting = adapter.connect()
+    expect(second.sent[0]).toMatchObject({ id: 3, method: "initialize" })
+    second.receive({ id: 3, result: {} })
+    await reconnecting
+    const resuming = adapter.resumeThread({
+      threadId: "thread-recover",
+      cwd: "/worktree",
+      runtime: runtime("build", false),
+    })
+    expect(second.sent.at(-1)).toMatchObject({
+      id: 4,
+      method: "thread/resume",
+      params: { threadId: "thread-recover" },
+    })
+    second.receive({ id: 4, result: { thread: { id: "thread-recover" } } })
+    await resuming
+
+    event.mockClear()
+    first.receiveStale({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-recover", turnId: "turn-old", delta: "stale" },
+    })
+    first.failStale(new Error("late stale failure"))
+    expect(event).not.toHaveBeenCalled()
+
+    await adapter.close()
+  })
+
+  it("shares initialization across concurrent connect calls", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+
+    const first = adapter.connect()
+    const second = adapter.connect()
+    let secondSettled = false
+    void second.finally(() => { secondSettled = true })
+    await Promise.resolve()
+
+    expect(transport.sent.filter((message) => message.method === "initialize")).toHaveLength(1)
+    expect(secondSettled).toBe(false)
+    transport.receive({ id: 1, result: {} })
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    await adapter.close()
+  })
+
+  it("rejects every pending request and reports transport loss once", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const listing = adapter.listModels()
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
+    const failure = new Error("Codex transport failed")
+    transport.fail(failure)
+    transport.fail(failure)
+
+    await expect(listing).rejects.toThrow("Codex transport failed")
+    await expect(starting).rejects.toThrow("Codex transport failed")
+    expect(event).toHaveBeenCalledTimes(1)
+    expect(event).toHaveBeenCalledWith({
+      type: "provider-disconnected",
+      reason: "Codex transport failed",
+    })
+    expect(transport.closeCount).toBe(1)
+  })
+
+  it("cleans up a failed initialization and permits another connect", async () => {
+    const first = new FakeTransport()
+    const second = new FakeTransport()
+    const transports = [first, second]
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transports.shift()!)
+    adapter.onEvent(event)
+
+    const failedConnect = adapter.connect()
+    first.receive({ id: 1, error: { message: "Unsupported protocol" } })
+    await expect(failedConnect).rejects.toThrow("Unsupported protocol")
+    expect(first.closeCount).toBe(1)
+    expect(event).not.toHaveBeenCalled()
+
+    const reconnecting = adapter.connect()
+    expect(second.sent[0]).toMatchObject({ id: 2, method: "initialize" })
+    second.receive({ id: 2, result: {} })
+    await expect(reconnecting).resolves.toBeUndefined()
+    await adapter.close()
+  })
+
+  it("cleans up when the initialized notification cannot be sent", async () => {
+    const first = new FakeTransport()
+    first.throwOnMethod = "initialized"
+    const second = new FakeTransport()
+    const transports = [first, second]
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transports.shift()!)
+    adapter.onEvent(event)
+
+    const failedConnect = adapter.connect()
+    first.receive({ id: 1, result: {} })
+    await expect(failedConnect).rejects.toThrow("Failed to send initialized")
+    expect(first.closeCount).toBe(1)
+    expect(event).not.toHaveBeenCalled()
+
+    const reconnecting = adapter.connect()
+    second.receive({ id: 2, result: {} })
+    await expect(reconnecting).resolves.toBeUndefined()
+    await adapter.close()
+  })
+
+  it("detaches and rejects initialization before waiting for close", async () => {
+    const transport = new FakeTransport()
+    let releaseClose!: () => void
+    transport.closeGate = new Promise<void>((resolve) => { releaseClose = resolve })
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+
+    const connecting = adapter.connect()
+    const closing = adapter.close()
+
+    await expect(connecting).rejects.toThrow("Codex adapter closed")
+    expect(event).not.toHaveBeenCalled()
+    transport.failStale(new Error("late failure while closing"))
+    expect(event).not.toHaveBeenCalled()
+    releaseClose()
+    await expect(closing).resolves.toBeUndefined()
+  })
+
+  it("does not report intentional close as transport loss", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const pending = adapter.listModels()
+    await adapter.close()
+
+    await expect(pending).rejects.toThrow("Codex adapter closed")
+    expect(event).not.toHaveBeenCalled()
+    expect(transport.closeCount).toBe(1)
+  })
+
   it("resumes a persisted thread before another turn", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)

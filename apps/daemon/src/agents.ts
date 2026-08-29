@@ -1,6 +1,7 @@
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 export type AgentEvent =
+  | { type: "provider-disconnected"; reason: string }
   | { type: "text-delta"; threadId?: string; turnId?: string; delta: string }
   | { type: "plan-delta"; threadId?: string; turnId?: string; delta: string }
   | { type: "command-output"; threadId?: string; turnId?: string; itemId?: string; delta: string }
