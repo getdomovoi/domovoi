@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient } from "./client"
+import { DomovoiClient, DomovoiRpcTimeoutError } from "./client"
 
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
@@ -334,6 +334,186 @@ describe("DomovoiClient", () => {
     socket.drop()
 
     await expect(request).rejects.toThrow("Daemon connection closed")
+    client.disconnect()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("bounds web RPC requests with a stable timeout error", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      requestTimeoutMs: 50,
+    })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const request = client.activateSession("session-audit")
+    const error = request.catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(50)
+
+    await expect(error).resolves.toMatchObject({
+      name: "DomovoiRpcTimeoutError",
+      method: "session.activate",
+      timeoutMs: 50,
+    })
+    await expect(error).resolves.toBeInstanceOf(DomovoiRpcTimeoutError)
+    client.disconnect()
+  })
+
+  it("rejects deadlines above the browser timer maximum", async () => {
+    const oversizedTimeoutMs = 2_147_483_648
+
+    expect(() => new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      requestTimeoutMs: oversizedTimeoutMs,
+    })).toThrow(RangeError)
+
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    expect(() => client.request(
+      "session.activate",
+      { sessionId: "session-audit", client: "web" },
+      { timeoutMs: oversizedTimeoutMs },
+    )).toThrow(RangeError)
+    client.disconnect()
+  })
+
+  it("allows multi-step RPC work until the 120-second default deadline", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const request = client.sendMessage("session-billing", "Run the full verification.")
+    const result = request.catch((cause: unknown) => cause)
+    let settled = false
+    void result.then(() => {
+      settled = true
+    })
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(90_000)
+
+    await expect(result).resolves.toMatchObject({
+      name: "DomovoiRpcTimeoutError",
+      method: "session.send",
+      timeoutMs: 120_000,
+    })
+    client.disconnect()
+  })
+
+  it("ignores a late response without affecting a newer desktop request", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      requestTimeoutMs: 100,
+    })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const expired = client.activateSession("session-audit")
+    const expiration = expired.catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(100)
+    await expect(expiration).resolves.toBeInstanceOf(DomovoiRpcTimeoutError)
+
+    const current = client.activateSession("session-billing")
+    let currentSettled = false
+    void current.then(() => {
+      currentSettled = true
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await Promise.resolve()
+    expect(currentSettled).toBe(false)
+
+    const currentWorkspace = structuredClone(demoWorkspace)
+    currentWorkspace.activeSessionId = "session-billing"
+    socket.receive({ jsonrpc: "2.0", id: 3, result: currentWorkspace })
+
+    await expect(current).resolves.toEqual(currentWorkspace)
+    client.disconnect()
+  })
+
+  it("cancels a request through AbortSignal and clears its deadline", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      requestTimeoutMs: 5_000,
+    })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+    const controller = new AbortController()
+
+    const request = client.request(
+      "session.activate",
+      { sessionId: "session-audit", client: "desktop" },
+      { signal: controller.signal },
+    )
+    const cancellation = request.catch((cause: unknown) => cause)
+    controller.abort()
+
+    await expect(cancellation).resolves.toMatchObject({ name: "AbortError" })
+    expect(vi.getTimerCount()).toBe(0)
+
+    const current = client.activateSession("session-billing")
+    let currentSettled = false
+    void current.then(() => {
+      currentSettled = true
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await Promise.resolve()
+    expect(currentSettled).toBe(false)
+    socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })
+    await expect(current).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
+  it("clears a request deadline after a successful response", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      requestTimeoutMs: 5_000,
+    })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const request = client.activateSession("session-audit")
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+
+    await expect(request).resolves.toEqual(demoWorkspace)
+    expect(vi.getTimerCount()).toBe(0)
+    client.disconnect()
+  })
+
+  it("clears a request deadline after a daemon rejection", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      requestTimeoutMs: 5_000,
+    })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const request = client.activateSession("missing-session")
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { code: -32602, message: "Unknown session" },
+    })
+
+    await expect(request).rejects.toThrow("Unknown session")
+    expect(vi.getTimerCount()).toBe(0)
     client.disconnect()
   })
 
