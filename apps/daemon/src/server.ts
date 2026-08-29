@@ -102,6 +102,12 @@ function buildAutoViolation(runtime: Runtime, agent: AgentAdapter): string | und
   return `${providerName} does not support enforceable Build auto`
 }
 
+function sessionIsArchiveReadOnly(
+  session: WorkspaceSnapshot["sessions"][number] | undefined,
+): boolean {
+  return session?.state === "archiving" || session?.state === "archived"
+}
+
 export function appendPlanDelta(
   artifacts: Artifact[],
   annotations: Annotation[],
@@ -1228,7 +1234,9 @@ export class DomovoiDaemon {
       if (method === "system.pauseAll") {
         const params = rpcMethods[method].params.parse(request.params)
         changed = await this.#pauseSessions(this.#snapshot.sessions.filter(
-          (session) => session.providerThreadId && session.activeTurnId,
+          (session) => !sessionIsArchiveReadOnly(session)
+            && session.providerThreadId
+            && session.activeTurnId,
         ), params.client)
       }
 
@@ -1237,6 +1245,10 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
           return
         }
         changed = await this.#pauseSessions(
@@ -1258,6 +1270,13 @@ export class DomovoiDaemon {
 
       if (method === "annotation.create") {
         const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         const artifact = this.#snapshot.artifacts.find(
           (candidate) =>
             candidate.id === params.artifactId && candidate.sessionId === params.sessionId,
@@ -1292,6 +1311,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Annotation does not exist")
           return
         }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === annotation.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         const createdAt = new Date().toISOString()
         annotation.thread.push({
           id: `annotation-reply-${randomUUID()}`,
@@ -1312,6 +1338,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Annotation does not exist")
           return
         }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === annotation.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         const changedAt = new Date().toISOString()
         annotation.status = params.status
         annotation.statusChangedBy = params.client
@@ -1329,6 +1362,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === approval.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         if (approval.risk === "hard-gate" && params.decision === "always-project") {
           this.#error(
             socket,
@@ -1338,9 +1378,6 @@ export class DomovoiDaemon {
           )
           return
         }
-        const session = this.#snapshot.sessions.find(
-          (candidate) => candidate.id === approval.sessionId,
-        )
         if (approval.providerRequestId !== undefined && session) {
           this.#agents.require(session.runtime.provider)
             .resolveApproval(approval.providerRequestId, params.decision)
@@ -1389,7 +1426,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (session.state === "archiving" || session.state === "archived") {
+        if (sessionIsArchiveReadOnly(session)) {
           this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
           return
         }
@@ -2230,7 +2267,7 @@ export class DomovoiDaemon {
         detail: "Domovoi will preserve history and a final checkpoint, then stop active resources and remove only the isolated worktree.",
         createdAt: requestedAt,
       })
-      this.#saveAgentState(false)
+      this.#saveAgentState()
     }
 
     this.#closeSessionTerminals(sessionId)
@@ -2238,12 +2275,19 @@ export class DomovoiDaemon {
     const approvals = this.#snapshot.approvals.filter(
       (approval) => approval.sessionId === sessionId,
     )
+    const unresolvedApprovalIds = new Set<string>()
     for (const approval of approvals) {
-      if (approval.providerRequestId !== undefined) {
-        await this.#agents.require(session.runtime.provider).resolveApproval(
-          approval.providerRequestId,
-          "deny",
-        )
+      try {
+        if (approval.providerRequestId !== undefined) {
+          await this.#agents.require(session.runtime.provider).resolveApproval(
+            approval.providerRequestId,
+            "deny",
+          )
+        }
+      } catch (error) {
+        unresolvedApprovalIds.add(approval.id)
+        this.#reportError(`Domovoi could not deny archive approval ${approval.id}`, error)
+        continue
       }
       this.#snapshot.thread.push({
         id: `receipt-${approval.id}-${Date.now()}`,
@@ -2264,16 +2308,23 @@ export class DomovoiDaemon {
 
     if (session.activeTurnId && session.providerThreadId) {
       await this.#loadProviderThreadForArchive(session)
-      await withTimeout(
-        this.#agents.require(session.runtime.provider).interruptTurn(
-          session.providerThreadId,
-          session.activeTurnId,
-        ),
-        this.#agentTimeoutMs,
-        "Archive turn interrupt timed out",
-      )
-      delete session.activeTurnId
-      this.#saveAgentState(false)
+      try {
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).interruptTurn(
+            session.providerThreadId,
+            session.activeTurnId,
+          ),
+          this.#agentTimeoutMs,
+          "Archive turn interrupt timed out",
+        )
+        delete session.activeTurnId
+        this.#saveAgentState(false)
+      } catch (error) {
+        this.#reportError(
+          `Domovoi could not interrupt active turn for archive ${session.id}; stopping provider`,
+          error,
+        )
+      }
     }
 
     if (session.providerThreadId) {
@@ -2287,6 +2338,26 @@ export class DomovoiDaemon {
       this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
       delete session.providerThreadId
       delete session.activeTurnId
+      this.#saveAgentState(false)
+    }
+
+    if (!session.providerThreadId && unresolvedApprovalIds.size > 0) {
+      for (const approval of approvals.filter(({ id }) => unresolvedApprovalIds.has(id))) {
+        this.#snapshot.thread.push({
+          id: `receipt-${approval.id}-${Date.now()}`,
+          sessionId,
+          kind: "receipt",
+          decision: "deny",
+          operation: approval.operation,
+          checkpoint: approval.checkpoint,
+          client: client ?? "cli",
+          explanation: "Session archived after provider cleanup",
+          createdAt: new Date().toISOString(),
+        })
+      }
+      this.#snapshot.approvals = this.#snapshot.approvals.filter(
+        ({ id }) => !unresolvedApprovalIds.has(id),
+      )
       this.#saveAgentState(false)
     }
 
