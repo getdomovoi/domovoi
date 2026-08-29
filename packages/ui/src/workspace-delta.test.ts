@@ -5,74 +5,64 @@ import { demoWorkspace, type WorkspaceDelta } from "@getdomovoi/protocol"
 import { applyWorkspaceDelta } from "./workspace-delta.js"
 
 describe("applyWorkspaceDelta", () => {
-  it("upserts streamed entities without duplicating them", () => {
+  it("appends streamed chunks without duplicating entities", () => {
     const snapshot = structuredClone(demoWorkspace)
-    const session = { ...snapshot.sessions[0]!, state: "active" as const }
-    const assistant = {
-      id: "assistant-turn-1",
+    const session = snapshot.sessions[0]!
+    const first: WorkspaceDelta = {
       sessionId: session.id,
-      kind: "assistant" as const,
-      body: "First chunk",
-      createdAt: session.updatedAt,
-    }
-    const delta: WorkspaceDelta = {
-      session,
-      thread: [assistant],
-      artifacts: [],
-      annotations: [],
-      removedArtifactIds: [],
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "assistant.append",
+        id: "assistant-turn-1",
+        delta: "First chunk",
+        createdAt: session.updatedAt,
+      }],
     }
 
-    const first = applyWorkspaceDelta(snapshot, delta)
-    const second = applyWorkspaceDelta(first, {
-      ...delta,
-      thread: [{ ...assistant, body: "First chunk and second chunk" }],
+    const updated = applyWorkspaceDelta(applyWorkspaceDelta(snapshot, first), {
+      ...first,
+      operations: [{
+        kind: "assistant.append",
+        id: "assistant-turn-1",
+        delta: " and second chunk",
+        createdAt: session.updatedAt,
+      }],
     })
 
-    expect(second.sessions.find((candidate) => candidate.id === session.id)?.state).toBe("active")
-    expect(second.thread.filter((item) => item.id === "assistant-turn-1")).toEqual([
+    expect(updated.thread.filter((item) => item.id === "assistant-turn-1")).toEqual([
       expect.objectContaining({ body: "First chunk and second chunk" }),
     ])
   })
 
-  it("removes superseded artifacts and ignores stale sessions", () => {
+  it("creates and appends plan artifacts while ignoring stale sessions", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
-    snapshot.artifacts.push({
-      id: "plan-old-turn",
+    const delta: WorkspaceDelta = {
       sessionId: session.id,
-      title: "Working plan",
-      type: "plan",
-      revision: 1,
-      content: "Old",
-    })
-    const updated = applyWorkspaceDelta(snapshot, {
-      session,
-      thread: [],
-      artifacts: [{
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "plan.append",
         id: `plan-${session.id}`,
-        sessionId: session.id,
-        title: "Working plan",
-        type: "plan",
-        revision: 2,
-        content: "Current",
+        delta: "1. Inspect.\n",
+        revision: 1,
       }],
-      annotations: [],
-      removedArtifactIds: ["plan-old-turn"],
+    }
+    const updated = applyWorkspaceDelta(applyWorkspaceDelta(snapshot, delta), {
+      ...delta,
+      operations: [{
+        kind: "plan.append",
+        id: `plan-${session.id}`,
+        delta: "2. Verify.",
+        revision: 2,
+      }],
     })
-    expect(updated.artifacts.map((artifact) => artifact.id)).not.toContain("plan-old-turn")
     expect(updated.artifacts).toContainEqual(expect.objectContaining({
       id: `plan-${session.id}`,
-      content: "Current",
+      content: "1. Inspect.\n2. Verify.",
+      revision: 2,
     }))
 
-    const stale = applyWorkspaceDelta(updated, {
-      session: { ...session, id: "removed-session" },
-      thread: [],
-      artifacts: [],
-      annotations: [],
-      removedArtifactIds: [],
-    })
+    const stale = applyWorkspaceDelta(updated, { ...delta, sessionId: "removed-session" })
     expect(stale).toBe(updated)
   })
 })

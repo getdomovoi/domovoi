@@ -1,15 +1,11 @@
 import { z } from "zod"
 
 import {
-  annotationSchema,
   annotationAnchorSchema,
-  artifactSchema,
   approvalDecisionSchema,
   clientKindSchema,
   providerModelsSchema,
   runtimeSchema,
-  sessionSummarySchema,
-  threadItemSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
@@ -44,28 +40,37 @@ export const rpcNotificationSchema = z.object({
   params: z.unknown().optional(),
 })
 
+export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
+export const maximumWorkspaceDeltaOperations = 16
+
+const streamedIdSchema = z.string().min(1).max(512)
+const streamedChunkSchema = z.string().min(1).max(maximumWorkspaceDeltaChunkLength)
+
+export const workspaceDeltaOperationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("assistant.append"),
+    id: streamedIdSchema,
+    delta: streamedChunkSchema,
+    createdAt: z.string().datetime(),
+  }),
+  z.object({
+    kind: z.literal("tool-output.append"),
+    id: streamedIdSchema,
+    delta: streamedChunkSchema,
+    createdAt: z.string().datetime(),
+  }),
+  z.object({
+    kind: z.literal("plan.append"),
+    id: streamedIdSchema,
+    delta: streamedChunkSchema,
+    revision: z.number().int().positive(),
+  }),
+])
+
 export const workspaceDeltaSchema = z.object({
-  session: sessionSummarySchema,
-  thread: z.array(threadItemSchema).max(16),
-  artifacts: z.array(artifactSchema).max(16),
-  annotations: z.array(annotationSchema).max(64),
-  removedArtifactIds: z.array(z.string().min(1)).max(16),
-}).superRefine((delta, context) => {
-  for (const [field, entities] of [
-    ["thread", delta.thread],
-    ["artifacts", delta.artifacts],
-    ["annotations", delta.annotations],
-  ] as const) {
-    entities.forEach((entity, index) => {
-      if (entity.sessionId !== delta.session.id) {
-        context.addIssue({
-          code: "custom",
-          path: [field, index, "sessionId"],
-          message: "Workspace delta entities must belong to its session",
-        })
-      }
-    })
-  }
+  sessionId: streamedIdSchema,
+  updatedAt: z.string().datetime(),
+  operations: z.array(workspaceDeltaOperationSchema).min(1).max(maximumWorkspaceDeltaOperations),
 })
 
 export const helloParamsSchema = z.object({

@@ -16,6 +16,7 @@ import {
   providerModelSchema,
   providerRuntimeSchema,
   helloParamsSchema,
+  maximumWorkspaceDeltaChunkLength,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
   terminalCloseParamsSchema,
@@ -41,30 +42,24 @@ describe("workspace protocol", () => {
   it("validates bounded session workspace deltas", () => {
     const session = demoWorkspace.sessions[0]!
     expect(workspaceDeltaSchema.parse({
-      session,
-      thread: [{
+      sessionId: session.id,
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "assistant.append",
         id: "assistant-turn-1",
-        sessionId: session.id,
-        kind: "assistant",
-        body: "A compact streamed update.",
+        delta: "A compact streamed update.",
         createdAt: session.updatedAt,
       }],
-      artifacts: [],
-      annotations: [],
-      removedArtifactIds: [],
-    }).session.id).toBe(session.id)
+    }).sessionId).toBe(session.id)
     expect(workspaceDeltaSchema.safeParse({
-      session,
-      thread: [{
+      sessionId: session.id,
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "assistant.append",
         id: "assistant-turn-1",
-        sessionId: "session-other",
-        kind: "assistant",
-        body: "Wrong aggregate.",
+        delta: "x".repeat(maximumWorkspaceDeltaChunkLength + 1),
         createdAt: session.updatedAt,
       }],
-      artifacts: [],
-      annotations: [],
-      removedArtifactIds: [],
     }).success).toBe(false)
   })
 

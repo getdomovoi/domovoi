@@ -8,9 +8,12 @@ import {
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   demoWorkspace,
+  maximumWorkspaceDeltaChunkLength,
+  maximumWorkspaceDeltaOperations,
   protocolVersion,
   rpcMethods,
   rpcRequestSchema,
+  workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type Annotation,
   type Artifact,
@@ -20,6 +23,7 @@ import {
   type Runtime,
   type TerminalOwner,
   type WorkspaceSnapshot,
+  type WorkspaceDelta,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
@@ -116,6 +120,14 @@ export function appendPlanDelta(
     }
   }
   return artifact
+}
+
+export function workspaceDeltaChunks(value: string): string[] {
+  const chunks: string[] = []
+  for (let offset = 0; offset < value.length; offset += maximumWorkspaceDeltaChunkLength) {
+    chunks.push(value.slice(offset, offset + maximumWorkspaceDeltaChunkLength))
+  }
+  return chunks
 }
 
 export type DaemonServerOptions = {
@@ -342,7 +354,7 @@ export class DomovoiDaemon {
     this.#http = undefined
     await this.#providerRefresh
     await this.#mutations.drain()
-    if (this.#deltaFlush) this.#flushAgentState()
+    if (this.#deltaFlush) this.#flushAgentState(false)
     for (const unsubscribe of this.#unsubscribeAgents) unsubscribe()
     await Promise.all(this.#agents.adapters().map((agent) => agent.close()))
     this.#store.close()
@@ -1470,6 +1482,12 @@ export class DomovoiDaemon {
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
     const createdAt = new Date().toISOString()
+    const delta: WorkspaceDelta = {
+      sessionId: session.id,
+      updatedAt: createdAt,
+      operations: [],
+    }
+    let requiresFullSnapshot = false
 
     if (event.type === "text-delta") {
       const itemId = `assistant-message-${event.turnId ?? session.id}`
@@ -1477,38 +1495,66 @@ export class DomovoiDaemon {
         (item) => item.id === itemId && item.kind === "assistant",
       )
       if (existing?.kind === "assistant") existing.body += event.delta
-      else this.#snapshot.thread.push({
+      else {
+        this.#snapshot.thread.push({
+          id: itemId,
+          sessionId: session.id,
+          kind: "assistant",
+          body: event.delta,
+          createdAt,
+        })
+      }
+      delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
+        kind: "assistant.append" as const,
         id: itemId,
-        sessionId: session.id,
-        kind: "assistant",
-        body: event.delta,
+        delta: chunk,
         createdAt,
-      })
+      })))
     }
 
     if (event.type === "plan-delta") {
-      appendPlanDelta(
+      const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
+        artifact.sessionId === session.id && artifact.type === "plan"
+      ).map((artifact) => artifact.id))
+      const artifact = appendPlanDelta(
         this.#snapshot.artifacts,
         this.#snapshot.annotations,
         session.id,
         event.delta,
       )
+      requiresFullSnapshot = [...previousPlanIds].some((id) => id !== artifact.id)
+      if (!requiresFullSnapshot) {
+        delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
+          kind: "plan.append" as const,
+          id: artifact.id,
+          delta: chunk,
+          revision: artifact.revision,
+        })))
+      }
     }
 
     if (event.type === "command-output") {
       const itemId = `tool-${event.itemId ?? event.turnId ?? randomUUID()}`
       const existing = this.#snapshot.thread.find((item) => item.id === itemId)
       if (existing?.kind === "tool") existing.output = `${existing.output ?? ""}${event.delta}`
-      else this.#snapshot.thread.push({
+      else {
+        this.#snapshot.thread.push({
+          id: itemId,
+          sessionId: session.id,
+          kind: "tool",
+          tool: "command",
+          status: "running",
+          title: "Command output",
+          output: event.delta,
+          createdAt,
+        })
+      }
+      delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
+        kind: "tool-output.append" as const,
         id: itemId,
-        sessionId: session.id,
-        kind: "tool",
-        tool: "command",
-        status: "running",
-        title: "Command output",
-        output: event.delta,
+        delta: chunk,
         createdAt,
-      })
+      })))
     }
 
     if (event.type === "diff-updated") {
@@ -1640,6 +1686,15 @@ export class DomovoiDaemon {
       event.type === "plan-delta" ||
       event.type === "command-output"
     ) {
+      if (requiresFullSnapshot) this.#broadcastSnapshot()
+      else {
+        for (let offset = 0; offset < delta.operations.length; offset += maximumWorkspaceDeltaOperations) {
+          this.#broadcastNotification("workspace.delta", workspaceDeltaSchema.parse({
+            ...delta,
+            operations: delta.operations.slice(offset, offset + maximumWorkspaceDeltaOperations),
+          }))
+        }
+      }
       this.#scheduleDeltaFlush()
     } else {
       this.#flushAgentState()
@@ -1729,11 +1784,11 @@ export class DomovoiDaemon {
     if (this.#deltaFlush) clearTimeout(this.#deltaFlush)
     this.#deltaFlush = setTimeout(() => {
       this.#deltaFlush = undefined
-      this.#flushAgentState()
+      this.#flushAgentState(false)
     }, 32)
   }
 
-  #flushAgentState(): void {
+  #flushAgentState(broadcast = true): void {
     if (this.#deltaFlush) {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
@@ -1741,7 +1796,7 @@ export class DomovoiDaemon {
     try {
       workspaceSnapshotSchema.parse(this.#snapshot)
       this.#store.save(this.#snapshot)
-      this.#broadcastSnapshot()
+      if (broadcast) this.#broadcastSnapshot()
     } catch (error) {
       console.error("Domovoi could not persist agent state", error)
     }

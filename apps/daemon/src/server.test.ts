@@ -6,7 +6,11 @@ import { join } from "node:path"
 import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, type ProviderModel } from "@getdomovoi/protocol"
+import {
+  demoWorkspace,
+  maximumWorkspaceDeltaChunkLength,
+  type ProviderModel,
+} from "@getdomovoi/protocol"
 
 import {
   appendPlanDelta,
@@ -16,6 +20,7 @@ import {
   DomovoiDaemon,
   hostAuthorityMatches,
   signArtifactAccess,
+  workspaceDeltaChunks,
 } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
@@ -47,6 +52,16 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("bounds streamed workspace delta chunks without losing content", () => {
+    const input = "x".repeat((maximumWorkspaceDeltaChunkLength * 2) + 1)
+
+    const chunks = workspaceDeltaChunks(input)
+
+    expect(chunks).toHaveLength(3)
+    expect(chunks.every((chunk) => chunk.length <= maximumWorkspaceDeltaChunkLength)).toBe(true)
+    expect(chunks.join("")).toBe(input)
+  })
+
   it("migrates turn-scoped plan artifacts into one session plan", () => {
     const artifacts = [
       {
@@ -1589,6 +1604,11 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    const notifications: Array<{ method?: string; params?: unknown }> = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { method?: string; params?: unknown }
+      if (message.method) notifications.push(message)
+    })
     let requestId = 0
     const rpc = (method: string, params: Record<string, unknown>) => {
       const id = ++requestId
@@ -1696,6 +1716,7 @@ describe("DomovoiDaemon", () => {
       "Focus on the failing test first",
     )
 
+    notifications.length = 0
     for (const listener of agentListeners) {
       listener({
         type: "text-delta",
@@ -1721,6 +1742,25 @@ describe("DomovoiDaemon", () => {
         turnId: "provider-turn-1",
         delta: "\n3. Verify the next turn.",
       })
+    }
+    await vi.waitFor(() => expect(notifications.filter(
+      (notification) => notification.method === "workspace.delta",
+    )).toHaveLength(4))
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(notifications).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "workspace.changed" }),
+    ]))
+    expect(notifications.find((notification) => notification.method === "workspace.delta"))
+      .toMatchObject({
+        params: {
+          sessionId,
+          operations: [expect.objectContaining({
+            kind: "assistant.append",
+            delta: "Tests are green.",
+          })],
+        },
+      })
+    for (const listener of agentListeners) {
       listener({
         type: "approval-requested",
         requestId: 71,
