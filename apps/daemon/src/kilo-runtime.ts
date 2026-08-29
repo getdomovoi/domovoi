@@ -3,7 +3,7 @@ import type { Config } from "@kilocode/sdk"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 import type { OpenCodeClient, OpenCodeFactory } from "./opencode.js"
 
-const domovoiKiloConfig: Config = {
+export const domovoiKiloConfig: Config = {
   autoupdate: false,
   agent: {
     plan: {
@@ -19,6 +19,7 @@ const domovoiKiloConfig: Config = {
         edit: "ask",
         bash: "ask",
         webfetch: "ask",
+        doom_loop: "ask",
         external_directory: "ask",
       },
     },
@@ -26,10 +27,11 @@ const domovoiKiloConfig: Config = {
       mode: "primary",
       description: "Domovoi automatic build mode",
       permission: {
-        edit: "allow",
-        bash: "allow",
-        webfetch: "allow",
-        external_directory: "allow",
+        edit: "ask",
+        bash: "ask",
+        webfetch: "ask",
+        doom_loop: "ask",
+        external_directory: "ask",
       },
     },
   },

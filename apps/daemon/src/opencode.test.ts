@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest"
 import type { Runtime } from "@getdomovoi/protocol"
 
 import { KiloSdkAdapter } from "./kilo.js"
+import { domovoiKiloConfig } from "./kilo-runtime.js"
 import {
   OpenCodeSdkAdapter,
+  domovoiOpenCodeConfig,
   openCodeAgentFor,
   type OpenCodeClient,
   type OpenCodeEvent,
@@ -100,6 +102,26 @@ describe("openCodeAgentFor", () => {
 })
 
 describe("OpenCodeSdkAdapter", () => {
+  it("declares pre-execution Build-auto enforcement", () => {
+    const { factory } = harness()
+    expect(new OpenCodeSdkAdapter(factory).permissionCapabilities).toEqual({
+      buildAuto: "pre-execution",
+    })
+  })
+
+  it.each([
+    ["OpenCode", domovoiOpenCodeConfig],
+    ["Kilo", domovoiKiloConfig],
+  ])("keeps every %s Build-auto permission behind provider approval", (_name, config) => {
+    expect(config.agent?.["domovoi-auto"]?.permission).toMatchObject({
+      edit: "ask",
+      bash: "ask",
+      webfetch: "ask",
+      doom_loop: "ask",
+      external_directory: "ask",
+    })
+  })
+
   it("discovers configured models without starting a model turn", async () => {
     const { client, factory, server } = harness()
     const adapter = new OpenCodeSdkAdapter(factory)
