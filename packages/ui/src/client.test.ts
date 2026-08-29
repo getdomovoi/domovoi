@@ -222,6 +222,48 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("requests and validates refreshed session evidence", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const session = demoWorkspace.sessions[0]!
+
+    const loading = client.loadSessionEvidence(session.id)
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.evidence",
+      params: { sessionId: session.id },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessionId: session.id,
+        refreshedAt: "2026-08-29T12:00:00.000Z",
+        workspace: {
+          baseCommit: "a".repeat(40),
+          diff: "",
+          diffTruncated: false,
+          totalChangedFiles: 0,
+          files: [],
+          filesTruncated: false,
+        },
+        tests: {
+          passed: 0,
+          failed: 0,
+          totalRuns: 0,
+          runs: [],
+          runsTruncated: false,
+        },
+      },
+    })
+
+    await expect(loading).resolves.toMatchObject({ sessionId: session.id })
+    client.disconnect()
+  })
+
   it("streams interactive terminal events and input", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
       clientId: "desktop-client-1",

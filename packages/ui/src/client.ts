@@ -20,6 +20,7 @@ import {
   type RpcParams,
   type RpcResult,
   type Runtime,
+  type SessionEvidence,
   type SessionHistoryPage,
   type SkillDocument,
   type SkillSummary,
@@ -315,6 +316,10 @@ export class DomovoiClient extends EventTarget {
 
   pauseSession(sessionId: string): Promise<WorkspaceSnapshot> {
     return this.request("session.pause", { sessionId, client: this.kind })
+  }
+
+  loadSessionEvidence(sessionId: string): Promise<SessionEvidence> {
+    return this.request("session.evidence", { sessionId })
   }
 
   loadSessionHistory(
