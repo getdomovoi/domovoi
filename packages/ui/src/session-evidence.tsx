@@ -49,7 +49,9 @@ function FileEvidenceRow({ file }: { file: ChangedFileEvidence }) {
       </div>
       <div className="flex items-start gap-1 font-machine text-[9px]">
         {file.binary || file.additions === null || file.deletions === null ? (
-          <span className="text-faint">{file.status === "untracked" ? "not in diff" : "binary"}</span>
+          <span className="text-faint">
+            {file.binary ? "binary" : file.status === "untracked" ? "not in diff" : "no line counts"}
+          </span>
         ) : (
           <>
             <span className="text-success">+{file.additions}</span>
