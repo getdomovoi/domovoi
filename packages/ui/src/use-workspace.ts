@@ -154,16 +154,13 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   }, [updateSnapshotFrom])
 
   const forkSession = useCallback(async (
-    sessionId: string,
-    checkpointId: string,
-    runtime: Runtime,
-    requestId: string,
+    input: Omit<RpcParams<"session.fork">, "client">,
   ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     updateSnapshotFrom(
       client,
-      await client.forkSession(sessionId, checkpointId, runtime, requestId),
+      await client.forkSession(input),
     )
   }, [updateSnapshotFrom])
 
