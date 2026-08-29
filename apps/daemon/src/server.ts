@@ -67,6 +67,7 @@ import {
   redactErrorDetail,
 } from "./rpc-errors.js"
 import { permissionDecisionFor } from "./permission-policy.js"
+import { testEvidence } from "./test-evidence.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -79,6 +80,7 @@ const sessionResourceMethods = new Set([
   "checkpoint.create",
   "checkpoint.restore",
   "session.pause",
+  "session.evidence",
   "session.history",
   "session.send",
   "session.setRuntime",
@@ -1175,6 +1177,43 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(page),
+        })
+        return
+      }
+
+      if (method === "session.evidence") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (!session.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        if (!this.#workspaceService.evidence) {
+          this.#error(socket, request.id, invalidParams, "Session evidence is unavailable")
+          return
+        }
+        const workspace = await withAbortTimeout(
+          (signal) => this.#workspaceService.evidence!(session.workspacePath!, signal),
+          this.#agentTimeoutMs,
+          "Session evidence timed out",
+        )
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            sessionId: session.id,
+            refreshedAt: new Date().toISOString(),
+            workspace,
+            tests: testEvidence(this.#snapshot.thread.filter(
+              (item) => item.sessionId === session.id,
+            )),
+          }),
         })
         return
       }
