@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
 
 import { DomovoiDaemon } from "./server.js"
 import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
+import { parseDaemonEnvironment } from "./config.js"
 
 const help = `Usage: domovoid [options]
 
@@ -41,27 +41,22 @@ async function main() {
     return
   }
 
-  const host = process.env.DOMOVOI_HOST ?? "127.0.0.1"
-  const port = Number.parseInt(process.env.DOMOVOI_PORT ?? "47831", 10)
-  const allowedOrigins = process.env.DOMOVOI_ALLOWED_ORIGINS?.split(",").map((origin) => origin.trim())
-  const credentialPath = process.env.DOMOVOI_CREDENTIAL_PATH
-    ?? join(homedir(), ".domovoi", "daemon.token")
-  const authToken = process.env.DOMOVOI_AUTH_TOKEN
-    ?? await loadOrCreateDaemonToken(credentialPath)
-  const allowRemoteTransport = process.env.DOMOVOI_ALLOW_REMOTE_TRANSPORT === "1"
+  const config = parseDaemonEnvironment(process.env, homedir())
+  const authToken = config.authToken
+    ?? await loadOrCreateDaemonToken(config.credentialPath)
   const daemon = new DomovoiDaemon({
-    host,
-    port,
-    ...(allowedOrigins ? { allowedOrigins } : {}),
+    host: config.host,
+    port: config.port,
+    ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
     authToken,
-    ...(allowRemoteTransport ? { allowRemoteTransport } : {}),
+    ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
     providerProbe: new CliProviderProbe(),
   })
 
   const address = await daemon.start()
   process.stdout.write(`domovoid listening on ws://${address.host}:${address.port}/rpc\n`)
-  if (!process.env.DOMOVOI_AUTH_TOKEN) {
-    process.stdout.write(`domovoid credential stored at ${credentialPath}\n`)
+  if (!config.authToken) {
+    process.stdout.write(`domovoid credential stored at ${config.credentialPath}\n`)
   }
 
   const shutdown = async () => {
