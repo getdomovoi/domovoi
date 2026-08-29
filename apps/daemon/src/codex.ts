@@ -61,11 +61,20 @@ export class StdioCodexTransport implements CodexTransport {
   #child: ChildProcessWithoutNullStreams
   #messageListeners = new Set<(message: JsonRpcMessage) => void>()
   #errorListeners = new Set<(error: Error) => void>()
+  #closing = false
+  #closed = false
+  #failed = false
+  #closePromise: Promise<void> | undefined
+  #shutdownGraceMs: number
 
-  constructor() {
-    this.#child = spawn("codex", ["app-server", "--listen", "stdio://"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    })
+  constructor(childFactory: () => ChildProcessWithoutNullStreams = () => spawn(
+    "codex",
+    ["app-server", "--listen", "stdio://"],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  ), shutdownGraceMs = 2_000) {
+    this.#child = childFactory()
+    this.#shutdownGraceMs = shutdownGraceMs
+    this.#child.stderr.resume()
     const lines = createInterface({ input: this.#child.stdout })
     lines.on("line", (line) => {
       try {
@@ -76,10 +85,29 @@ export class StdioCodexTransport implements CodexTransport {
       }
     })
     this.#child.on("error", (error) => this.#emitError(error))
+    this.#child.stdin.on("error", (error) => this.#emitError(error))
+    this.#child.stdout.on("error", (error) => this.#emitError(error))
+    this.#child.stderr.on("error", (error) => this.#emitError(error))
+    this.#child.once("exit", (code, signal) => {
+      if (this.#closing) return
+      const reason = code !== null
+        ? `Codex app-server exited with code ${code}`
+        : `Codex app-server exited from signal ${signal ?? "unknown"}`
+      this.#emitError(new Error(reason))
+    })
+    this.#child.once("close", () => {
+      this.#closed = true
+    })
   }
 
   send(message: JsonRpcMessage): void {
-    this.#child.stdin.write(`${JSON.stringify(message)}\n`)
+    try {
+      this.#child.stdin.write(`${JSON.stringify(message)}\n`)
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error))
+      this.#emitError(failure)
+      throw failure
+    }
   }
 
   onMessage(listener: (message: JsonRpcMessage) => void): () => void {
@@ -93,13 +121,38 @@ export class StdioCodexTransport implements CodexTransport {
   }
 
   async close(): Promise<void> {
-    if (this.#child.exitCode !== null) return
-    const exited = new Promise<void>((resolve) => this.#child.once("exit", () => resolve()))
-    this.#child.kill("SIGTERM")
-    await exited
+    if (this.#closePromise) return this.#closePromise
+    this.#closing = true
+    if (this.#closed || this.#child.exitCode !== null || this.#child.signalCode !== null) return
+    this.#closePromise = new Promise<void>((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.#child.off("close", finish)
+        resolve()
+      }
+      const timer = setTimeout(() => {
+        if (
+          !this.#closed
+          && this.#child.exitCode === null
+          && this.#child.signalCode === null
+        ) {
+          this.#child.kill("SIGKILL")
+        }
+        finish()
+      }, this.#shutdownGraceMs)
+      timer.unref()
+      this.#child.once("close", finish)
+      this.#child.kill("SIGTERM")
+    })
+    await this.#closePromise
   }
 
   #emitError(error: Error): void {
+    if (this.#closing || this.#failed) return
+    this.#failed = true
     for (const listener of this.#errorListeners) listener(error)
   }
 }
@@ -112,20 +165,22 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #eventListeners = new Set<(event: AgentEvent) => void>()
   #unsubscribeMessage: (() => void) | undefined
   #unsubscribeError: (() => void) | undefined
+  #connectPromise: Promise<void> | undefined
 
   constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
     this.#transportFactory = transportFactory
   }
 
   async connect(): Promise<void> {
+    if (this.#connectPromise) return this.#connectPromise
     if (this.#transport) return
-    this.#transport = this.#transportFactory()
-    this.#unsubscribeMessage = this.#transport.onMessage((message) => this.#receive(message))
-    this.#unsubscribeError = this.#transport.onError?.((error) => this.#fail(error))
-    await this.#request("initialize", {
-      clientInfo: { name: "domovoi", title: "Domovoi", version: "0.0.1" },
-    })
-    this.#transport.send({ method: "initialized", params: {} })
+    const connecting = this.#openTransport()
+    this.#connectPromise = connecting
+    try {
+      await connecting
+    } finally {
+      if (this.#connectPromise === connecting) this.#connectPromise = undefined
+    }
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
@@ -279,20 +334,69 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async close(): Promise<void> {
-    this.#unsubscribeMessage?.()
-    this.#unsubscribeError?.()
-    await this.#transport?.close()
-    this.#transport = undefined
-    this.#fail(new Error("Codex adapter closed"))
+    const transport = this.#transport
+    if (transport) this.#detachTransport(transport)
+    this.#rejectPending(new Error("Codex adapter closed"))
+    await transport?.close()
   }
 
   #request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (!this.#transport) return Promise.reject(new Error("Codex adapter is not connected"))
+    const transport = this.#transport
+    if (!transport) return Promise.reject(new Error("Codex adapter is not connected"))
     const id = ++this.#nextId
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject })
-      this.#transport!.send({ id, method, params })
+      try {
+        transport.send({ id, method, params })
+      } catch (error) {
+        this.#pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
     })
+  }
+
+  async #openTransport(): Promise<void> {
+    const transport = this.#transportFactory()
+    this.#transport = transport
+    this.#unsubscribeMessage = transport.onMessage((message) => {
+      if (this.#transport === transport) this.#receive(message)
+    })
+    this.#unsubscribeError = transport.onError?.((error) => {
+      this.#handleTransportFailure(transport, error)
+    })
+    try {
+      await this.#request("initialize", {
+        clientInfo: { name: "domovoi", title: "Domovoi", version: "0.0.1" },
+      })
+      if (this.#transport !== transport) {
+        throw new Error("Codex transport disconnected during initialization")
+      }
+      transport.send({ method: "initialized", params: {} })
+    } catch (error) {
+      if (this.#transport === transport) {
+        this.#detachTransport(transport)
+        this.#rejectPending(error instanceof Error ? error : new Error(String(error)))
+        await transport.close().catch(() => undefined)
+      }
+      throw error
+    }
+  }
+
+  #handleTransportFailure(transport: CodexTransport, error: Error): void {
+    if (this.#transport !== transport) return
+    this.#detachTransport(transport)
+    this.#rejectPending(error)
+    this.#emit({ type: "provider-disconnected", reason: error.message })
+    void transport.close().catch(() => undefined)
+  }
+
+  #detachTransport(transport: CodexTransport): void {
+    if (this.#transport !== transport) return
+    this.#unsubscribeMessage?.()
+    this.#unsubscribeError?.()
+    this.#unsubscribeMessage = undefined
+    this.#unsubscribeError = undefined
+    this.#transport = undefined
   }
 
   #receive(message: JsonRpcMessage): void {
@@ -354,7 +458,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (const listener of this.#eventListeners) listener(event)
   }
 
-  #fail(error: Error): void {
+  #rejectPending(error: Error): void {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
