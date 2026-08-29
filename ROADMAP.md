@@ -93,7 +93,7 @@ workflow without becoming a code editor.
 - [x] Create and restore checkpoints with a recovery checkpoint
 - [x] Change providers/models through a documented checkpointed handoff
 - [x] Prevent manual checkpoint creation while an agent is mutating the worktree
-- [ ] Add a complete session history with filters for messages, tools, approvals, handoffs,
+- [x] Add a complete session history with filters for messages, tools, approvals, handoffs,
   checkpoints, annotations, and tests
 - [ ] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [ ] Add session archive and deliberate cleanup without deleting the source repository
@@ -119,7 +119,7 @@ workflow without becoming a code editor.
 - [x] Ask, Plan, Build manual, and Build auto controls
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
-- [ ] Enforce hard gates that Build auto cannot bypass
+- [x] Enforce hard gates that Build auto cannot bypass
 - [ ] Add a searchable audit log with redaction and export
 - [ ] Add command-level secret redaction before persistence or display
 - [ ] Add a global emergency stop that cancels all active tools and providers, not only UI state
