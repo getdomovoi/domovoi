@@ -158,7 +158,7 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): Workspa
 }
 
 export function isTestCommandTitle(title: string): boolean {
-  const command = title.trim().toLocaleLowerCase()
+  const command = title.trim().toLowerCase()
   const testScript = "test(?:[:.-][\\w.-]+)?(?:\\s|$)"
   return new RegExp(
     `^(?:(?:npm|yarn|bun)\\s+(?:run\\s+)?${testScript}`
@@ -244,9 +244,11 @@ export function sessionHistoryEntries(
       })
     }
   }
-  return entries.sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
-  )
+  return entries.sort((left, right) => {
+    if (left.createdAt !== right.createdAt) return left.createdAt < right.createdAt ? -1 : 1
+    if (left.id === right.id) return 0
+    return left.id < right.id ? -1 : 1
+  })
 }
 
 function sessionHistorySearchText(entry: SessionHistoryEntry): string {
@@ -267,10 +269,10 @@ export function sessionHistoryPage(
   params: RpcParams<"session.history">,
 ): SessionHistoryPage | undefined {
   const categories = params.categories ? new Set(params.categories) : undefined
-  const query = params.query?.toLocaleLowerCase()
+  const query = params.query?.toLowerCase()
   const history = sessionHistoryEntries(snapshot, params.sessionId).filter((entry) =>
     (!categories || categories.has(entry.category))
-    && (!query || sessionHistorySearchText(entry).toLocaleLowerCase().includes(query))
+    && (!query || sessionHistorySearchText(entry).toLowerCase().includes(query))
   )
   const end = params.before
     ? history.findIndex((item) => item.id === params.before)
