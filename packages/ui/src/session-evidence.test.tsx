@@ -12,7 +12,7 @@ const evidence: SessionEvidence = {
     baseCommit: "a".repeat(40),
     diff: "diff --git a/src/app.ts b/src/app.ts\n+changed\n",
     diffTruncated: true,
-    totalChangedFiles: 3,
+    totalChangedFiles: 4,
     files: [
       {
         path: "public/logo.png",
@@ -30,6 +30,15 @@ const evidence: SessionEvidence = {
         unstaged: true,
         additions: 3,
         deletions: 1,
+        binary: false,
+      },
+      {
+        path: "src/conflict.ts",
+        status: "conflicted",
+        staged: false,
+        unstaged: true,
+        additions: null,
+        deletions: null,
         binary: false,
       },
     ],
@@ -64,14 +73,15 @@ describe("SessionEvidenceContent", () => {
       />,
     )
 
-    expect(markup).toContain("3 changed files")
+    expect(markup).toContain("4 changed files")
     expect(markup).toContain("public/logo.png")
     expect(markup).toContain("untracked")
     expect(markup).toContain("binary")
     expect(markup).toContain("staged + unstaged")
     expect(markup).toContain("+3")
     expect(markup).toContain("−1")
-    expect(markup).toContain("Only the first 2 changed files are shown")
+    expect(markup).toContain("no line counts")
+    expect(markup).toContain("Only the first 3 changed files are shown")
     expect(markup).toContain("Diff output was truncated")
     expect(markup).toContain("Observed test runs")
     expect(markup).toContain("1 passed")
