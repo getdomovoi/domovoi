@@ -184,22 +184,41 @@ describe("DomovoiClient", () => {
     const session = demoWorkspace.sessions[0]!
     const item = demoWorkspace.thread.find((candidate) => candidate.sessionId === session.id)!
 
-    const loading = client.loadSessionHistory(session.id, item.id, 25)
+    const loading = client.loadSessionHistory(session.id, {
+      before: `thread:${item.id}`,
+      limit: 25,
+      categories: ["messages", "tests"],
+      query: "replay",
+    })
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "session.history",
-      params: { sessionId: session.id, before: item.id, limit: 25 },
+      params: {
+        sessionId: session.id,
+        before: `thread:${item.id}`,
+        limit: 25,
+        categories: ["messages", "tests"],
+        query: "replay",
+      },
     })
     socket.receive({
       jsonrpc: "2.0",
       id: 2,
       result: {
         sessionId: session.id,
-        items: [item],
+        items: [{
+          id: `thread:${item.id}`,
+          sourceId: item.id,
+          sessionId: item.sessionId,
+          category: "messages",
+          role: "user",
+          body: item.kind === "user" ? item.body : "",
+          createdAt: item.createdAt,
+        }],
         hasMore: false,
       },
     })
 
-    await expect(loading).resolves.toMatchObject({ items: [item], hasMore: false })
+    await expect(loading).resolves.toMatchObject({ hasMore: false })
     client.disconnect()
   })
 

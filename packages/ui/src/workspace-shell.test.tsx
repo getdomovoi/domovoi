@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AppBar, checkpointBlockedReason, CheckpointThreadItem, ProviderReadinessList, RuntimeControls, Thread } from "./workspace-shell"
+import { activeThreadKey, AppBar, checkpointBlockedReason, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -122,6 +122,25 @@ describe("CheckpointThreadItem", () => {
 
     expect(restorable).toContain("Restore worktree")
     expect(legacy).not.toContain("Restore worktree")
+  })
+})
+
+describe("HistoryPanel", () => {
+  it("exposes search and every semantic category", () => {
+    const markup = renderToStaticMarkup(
+      <HistoryPanel sessionId="session-billing" connected={false} onLoad={vi.fn()} />,
+    )
+
+    expect(markup).toContain('aria-label="Search session history"')
+    for (const label of [
+      "Messages",
+      "Tools",
+      "Approvals",
+      "Handoffs",
+      "Checkpoints",
+      "Annotations",
+      "Tests",
+    ]) expect(markup).toContain(`>${label}</button>`)
   })
 })
 
