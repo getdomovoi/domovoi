@@ -20,6 +20,7 @@ import {
   type RpcParams,
   type RpcResult,
   type Runtime,
+  type SessionHistoryPage,
   type SkillDocument,
   type SkillSummary,
   type TerminalSession,
@@ -233,6 +234,18 @@ export class DomovoiClient extends EventTarget {
 
   pauseSession(sessionId: string): Promise<WorkspaceSnapshot> {
     return this.request("session.pause", { sessionId, client: this.kind })
+  }
+
+  loadSessionHistory(
+    sessionId: string,
+    before?: string,
+    limit = 50,
+  ): Promise<SessionHistoryPage> {
+    return this.request("session.history", {
+      sessionId,
+      ...(before ? { before } : {}),
+      limit,
+    })
   }
 
   authorizeArtifact(artifactId: string, bridgeChannel?: string): Promise<ArtifactAccess> {
