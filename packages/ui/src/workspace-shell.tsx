@@ -752,7 +752,11 @@ export function CheckpointThreadItem({
   )
 }
 
-function Thread({
+export function checkpointBlockedReason(activeTurnId: string | undefined): string | undefined {
+  return activeTurnId ? "Stop the active turn before creating a checkpoint" : undefined
+}
+
+export function Thread({
   snapshot,
   connected,
   onResolve,
@@ -814,6 +818,8 @@ function Thread({
     )
   }
 
+  const checkpointReason = checkpointBlockedReason(active.activeTurnId)
+
   const submitPrompt = async () => {
     const nextPrompt = prompt.trim()
     if (!nextPrompt || pending) return
@@ -830,7 +836,7 @@ function Thread({
   }
 
   const createCheckpoint = async () => {
-    if (pending) return
+    if (pending || checkpointReason) return
     setPending(true)
     setSendError("")
     try {
@@ -959,7 +965,8 @@ function Thread({
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Badge variant="machine">{snapshot.machine.name}</Badge>
-              <Button variant="ghost" size="sm" disabled={pending} onClick={() => void createCheckpoint()}>Checkpoint</Button>
+              <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
+              {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
             </div>
             <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
