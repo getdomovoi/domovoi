@@ -162,7 +162,7 @@ describe("Thread", () => {
     expect(markup).toContain("Archive session")
     expect(archiveSessionDescription).toContain("final checkpoint")
     expect(archiveSessionDescription).toContain("provider and terminal")
-    expect(archiveSessionDescription).toContain("source repository remains untouched")
+    expect(archiveSessionDescription).toContain("source checkout's branch, HEAD, status, and files remain unchanged")
   })
 
   it("renders archived sessions read-only with history still visible", () => {
