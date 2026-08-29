@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import {
+  ArchiveIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -157,6 +158,8 @@ const statusClass: Record<SessionSummary["state"], string> = {
   idle: "bg-faint",
   done: "bg-faint",
   failed: "bg-destructive",
+  archiving: "bg-warning",
+  archived: "bg-faint",
 }
 
 const defaultRuntime: Runtime = {
@@ -293,6 +296,7 @@ function SessionsSidebar({
       { label: "Active", states: ["active"] },
       { label: "Waiting", states: ["waiting"] },
       { label: "Idle", states: ["idle", "done", "failed"] },
+      { label: "Archived", states: ["archiving", "archived"] },
     ],
     [],
   )
@@ -768,6 +772,39 @@ export function checkpointBlockedReason(activeTurnId: string | undefined): strin
   return activeTurnId ? "Stop the active turn before creating a checkpoint" : undefined
 }
 
+export const archiveSessionDescription = "Domovoi creates a final checkpoint, stops provider and terminal resources, and removes the isolated session worktree. Durable history, checkpoint refs, artifact and annotation records, audit refs, and the archive branch are retained. The source checkout's branch, HEAD, status, and files remain unchanged."
+
+export function ArchiveSessionAction({
+  disabled,
+  onArchive,
+}: {
+  disabled: boolean
+  onArchive: () => void
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" disabled={disabled}>
+          <ArchiveIcon data-icon="inline-start" />
+          Archive session
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Archive this session?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {archiveSessionDescription}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onArchive}>Archive session</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 export function Thread({
   snapshot,
   connected,
@@ -779,6 +816,7 @@ export function Thread({
   onCheckpoint,
   onRestoreCheckpoint,
   onPauseSession,
+  onArchiveSession,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -794,6 +832,7 @@ export function Thread({
   onCheckpoint: (sessionId: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   onPauseSession: (sessionId: string) => Promise<void>
+  onArchiveSession: (sessionId: string) => Promise<void>
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -831,6 +870,7 @@ export function Thread({
   }
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
+  const archiveReadOnly = active.state === "archiving" || active.state === "archived"
 
   const submitPrompt = async () => {
     const nextPrompt = prompt.trim()
@@ -886,6 +926,19 @@ export function Thread({
     }
   }
 
+  const archiveSession = async () => {
+    if (pending || archiveReadOnly) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onArchiveSession(active.id)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The session could not be archived")
+    } finally {
+      setPending(false)
+    }
+  }
+
   const updateRuntime = async (runtime: Runtime) => {
     if (runtimePending) return
     setRuntimePending(true)
@@ -925,19 +978,19 @@ export function Thread({
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
           </div>
         </div>
-        <RuntimeControls
+        {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : <RuntimeControls
           runtime={active.runtime}
           providers={snapshot.machine.providers}
           pending={runtimePending}
           onChange={(runtime) => void updateRuntime(runtime)}
           onListModels={onListModels}
-        />
+        />}
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
           {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
             if (item.kind === "checkpoint") {
-              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
+              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
               return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3 text-[13px] leading-relaxed">{item.body}</div>
@@ -953,10 +1006,22 @@ export function Thread({
             }
             return <div key={item.id} className="flex max-w-2xl gap-3 text-[13px] leading-relaxed"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><p className="m-0">{item.body}</p></div>
           })}
-          {approval ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
-      <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
+      {archiveReadOnly ? (
+        <div className="px-5 py-3">
+          <Alert className="mx-auto max-w-[620px]">
+            <ArchiveIcon />
+            <AlertTitle>{active.state === "archived" ? "Archived" : "Archiving session"}</AlertTitle>
+            <AlertDescription>
+              {active.state === "archived"
+                ? "This session is read-only. Its history, checkpoints, artifacts, and annotations remain available."
+                : "Cleanup will resume safely if the daemon restarts."}
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         <div className="mx-auto flex max-w-[620px] flex-col gap-2 rounded-xl border bg-card p-3">
@@ -980,11 +1045,12 @@ export function Thread({
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
               {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
+              <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
             <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
-      </div>
+      </div>}
     </main>
   )
 }
@@ -1805,6 +1871,7 @@ function DockRail({ onExpand }: { onExpand: () => void }) {
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge, onChangeCredential }: WorkspaceShellProps) {
   const {
     activateSession,
+    archiveSession,
     authorizeArtifact,
     claimTerminal,
     closeTerminal,
@@ -1965,7 +2032,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
