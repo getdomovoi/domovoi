@@ -134,6 +134,54 @@ describe("GitWorkspaceService", () => {
     await expect(service.removeSessionWorkspace(workspace.path)).resolves.toBeUndefined()
   })
 
+  it("forks an idempotent isolated worktree from a durable checkpoint", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-fork-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "source\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const source = await service.createSessionWorkspace(repositoryPath, "session-source")
+    await writeFile(join(source.path, "README.md"), "checkpoint state\n")
+    const checkpoint = await service.checkpoint(source.path, "fork point")
+    await writeFile(join(source.path, "README.md"), "source continues\n")
+    const sourceBefore = await Promise.all([
+      execute("git", ["-C", source.path, "rev-parse", "HEAD"]),
+      execute("git", ["-C", source.path, "branch", "--show-current"]),
+      execute("git", ["-C", source.path, "status", "--porcelain"]),
+      readFile(join(source.path, "README.md"), "utf8"),
+    ])
+
+    const fork = await service.createSessionWorkspaceFromCheckpoint(source.path, checkpoint.commit, "session-fork-request")
+    const retry = await service.createSessionWorkspaceFromCheckpoint(source.path, checkpoint.commit, "session-fork-request")
+
+    expect(retry).toEqual(fork)
+    expect(fork).toMatchObject({ branch: "domovoi/session-fork-request", baseCommit: checkpoint.commit })
+    await expect(readFile(join(fork.path, "README.md"), "utf8")).resolves.toBe("checkpoint state\n")
+    const sourceAfter = await Promise.all([
+      execute("git", ["-C", source.path, "rev-parse", "HEAD"]),
+      execute("git", ["-C", source.path, "branch", "--show-current"]),
+      execute("git", ["-C", source.path, "status", "--porcelain"]),
+      readFile(join(source.path, "README.md"), "utf8"),
+    ])
+    expect(sourceAfter.map((value) => typeof value === "string" ? value : value.stdout)).toEqual(
+      sourceBefore.map((value) => typeof value === "string" ? value : value.stdout),
+    )
+
+    await execute("git", ["-C", repositoryPath, "worktree", "remove", "--force", fork.path])
+    const reattached = await service.createSessionWorkspaceFromCheckpoint(
+      source.path,
+      checkpoint.commit,
+      "session-fork-request",
+    )
+    expect(reattached).toEqual(fork)
+    await expect(readFile(join(reattached.path, "README.md"), "utf8")).resolves.toBe("checkpoint state\n")
+  })
+
   it("rejects session identifiers that could escape the worktree root", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
     scratchDirectories.push(scratch)
