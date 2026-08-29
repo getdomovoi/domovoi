@@ -12,35 +12,59 @@ import {
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
 import { skillDocumentSchema, skillIdSchema, skillSummariesSchema } from "./skills.js"
 
-export const requestIdSchema = z.union([z.string(), z.number()])
+export const requestIdSchema = z.union([
+  z.string().min(1).max(512),
+  z.number().int().safe(),
+])
 export const daemonAuthenticationErrorCode = -32001 as const
 export const daemonShuttingDownErrorCode = -32002 as const
+
+const rpcMethodNameSchema = z.string().min(1).refine(
+  (method) => method.trim() === method,
+  "Method names cannot start or end with whitespace",
+)
+const rpcParamsSchema = z.union([
+  z.record(z.string(), z.json()),
+  z.array(z.json()),
+])
 
 export const rpcRequestSchema = z.object({
   jsonrpc: z.literal("2.0"),
   id: requestIdSchema,
-  method: z.string().min(1),
-  params: z.unknown().optional(),
-})
+  method: rpcMethodNameSchema,
+  params: rpcParamsSchema.optional(),
+}).strict()
 
-export const rpcResponseSchema = z.object({
+const rpcErrorSchema = z.object({
+  code: z.number().int().safe(),
+  message: z.string(),
+  data: z.json().optional(),
+}).strict()
+
+const rpcSuccessResponseSchema = z.object({
   jsonrpc: z.literal("2.0"),
   id: requestIdSchema,
-  result: z.unknown().optional(),
-  error: z
-    .object({
-      code: z.number().int(),
-      message: z.string(),
-      data: z.unknown().optional(),
-    })
-    .optional(),
-})
+  result: z.json(),
+  error: z.never().optional(),
+}).strict()
+
+const rpcErrorResponseSchema = z.object({
+  jsonrpc: z.literal("2.0"),
+  id: requestIdSchema.nullable(),
+  result: z.never().optional(),
+  error: rpcErrorSchema,
+}).strict()
+
+export const rpcResponseSchema = z.union([
+  rpcSuccessResponseSchema,
+  rpcErrorResponseSchema,
+])
 
 export const rpcNotificationSchema = z.object({
   jsonrpc: z.literal("2.0"),
-  method: z.string().min(1),
-  params: z.unknown().optional(),
-})
+  method: rpcMethodNameSchema,
+  params: rpcParamsSchema.optional(),
+}).strict()
 
 export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
 export const maximumWorkspaceDeltaOperations = 16
@@ -88,7 +112,16 @@ export const sessionHistoryPageSchema = z.object({
   hasMore: z.boolean(),
   nextCursor: streamedIdSchema.optional(),
 }).superRefine((page, context) => {
+  const itemIds = new Set<string>()
   page.items.forEach((item, index) => {
+    if (itemIds.has(item.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["items", index, "id"],
+        message: "History item IDs must be unique within a page",
+      })
+    }
+    itemIds.add(item.id)
     if (item.sessionId !== page.sessionId) {
       context.addIssue({
         code: "custom",
@@ -102,6 +135,24 @@ export const sessionHistoryPageSchema = z.object({
       code: "custom",
       path: ["nextCursor"],
       message: "A continuation cursor is required when more history is available",
+    })
+  }
+  if (
+    page.hasMore
+    && page.nextCursor !== undefined
+    && page.nextCursor !== page.items[0]?.id
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "The continuation cursor must reference the first history item",
+    })
+  }
+  if (!page.hasMore && page.nextCursor !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "A continuation cursor is not allowed when history is complete",
     })
   }
 })
