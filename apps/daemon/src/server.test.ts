@@ -19,7 +19,9 @@ import {
   frameAncestorsFor,
   DomovoiDaemon,
   hostAuthorityMatches,
+  sessionHistoryPage,
   signArtifactAccess,
+  workspaceSnapshotForClient,
   workspaceDeltaChunks,
 } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
@@ -52,6 +54,148 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("bounds client snapshots without deleting durable session history", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.thread = Array.from({ length: 105 }, (_, index) => ({
+      id: `message-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `Message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+    }))
+
+    const clientSnapshot = workspaceSnapshotForClient(snapshot)
+
+    expect(clientSnapshot.thread).toHaveLength(100)
+    expect(clientSnapshot.thread[0]?.id).toBe("message-5")
+    expect(snapshot.thread).toHaveLength(105)
+  })
+
+  it("pages backward through complete session history", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.thread = Array.from({ length: 205 }, (_, index) => ({
+      id: `message-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `Message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+    }))
+
+    const newest = sessionHistoryPage(snapshot, { sessionId: session.id, limit: 100 })
+    const middle = sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      before: newest?.nextCursor,
+      limit: 100,
+    })
+    const oldest = sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      before: middle?.nextCursor,
+      limit: 100,
+    })
+
+    expect(newest?.items.map((item) => item.id)).toEqual([
+      "message-105",
+      ...Array.from({ length: 99 }, (_, index) => `message-${index + 106}`),
+    ])
+    expect(middle?.items[0]?.id).toBe("message-5")
+    expect(oldest).toMatchObject({
+      items: Array.from({ length: 5 }, (_, index) => expect.objectContaining({
+        id: `message-${index}`,
+      })),
+      hasMore: false,
+    })
+    expect(sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      before: "missing",
+      limit: 50,
+    })).toBeUndefined()
+  })
+
+  it("serves bounded snapshots with older history available by cursor", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.thread = Array.from({ length: 105 }, (_, index) => ({
+      id: `message-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `Message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+    }))
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "history-token",
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    const hello = await rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      authToken: "history-token",
+    })
+    expect((hello.result as { thread: unknown[] }).thread).toHaveLength(100)
+
+    const newest = await rpc("session.history", { sessionId: session.id, limit: 100 })
+    expect(newest.result).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ id: "message-5" })]),
+      hasMore: true,
+      nextCursor: "message-5",
+    })
+    const oldest = await rpc("session.history", {
+      sessionId: session.id,
+      before: "message-5",
+      limit: 100,
+    })
+    expect((oldest.result as { items: unknown[] }).items).toHaveLength(5)
+    expect(oldest.result).toMatchObject({ hasMore: false })
+    await expect(rpc("session.history", {
+      sessionId: session.id,
+      before: "missing",
+      limit: 50,
+    })).resolves.toMatchObject({ error: { code: -32602 } })
+    await new Promise<void>((resolve) => {
+      socket.once("close", () => resolve())
+      socket.close()
+    })
+  })
+
   it("bounds streamed workspace delta chunks without losing content", () => {
     const input = "x".repeat((maximumWorkspaceDeltaChunkLength * 2) + 1)
 
