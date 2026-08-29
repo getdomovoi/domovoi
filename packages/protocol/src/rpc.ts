@@ -72,6 +72,11 @@ export const maximumSessionHistoryQueryLength = 256
 export const maximumAuditQueryPageItems = 100
 export const maximumAuditExportItems = 500
 export const maximumAuditExportLength = 2_000_000
+export const maximumSessionEvidenceDiffLength = 256 * 1_024
+export const maximumSessionEvidenceFiles = 200
+export const maximumSessionEvidenceRuns = 50
+export const maximumSessionEvidenceCommandLength = 4_096
+export const maximumSessionEvidenceOutputLength = 4_096
 
 const streamedIdSchema = z.string().min(1).max(512)
 const historyEntryIdSchema = z.string().min(1).max(1_024)
@@ -398,6 +403,125 @@ function auditExportLines(content: string, context: z.RefinementCtx): string[] {
   }
   return content.slice(0, -1).split("\n")
 }
+export const changedFileEvidenceSchema = z.object({
+  path: z.string().min(1).max(4_096),
+  previousPath: z.string().min(1).max(4_096).optional(),
+  status: z.enum([
+    "added",
+    "modified",
+    "deleted",
+    "renamed",
+    "copied",
+    "untracked",
+    "conflicted",
+  ]),
+  staged: z.boolean(),
+  unstaged: z.boolean(),
+  additions: z.number().int().nonnegative().nullable(),
+  deletions: z.number().int().nonnegative().nullable(),
+  binary: z.boolean(),
+}).strict().superRefine((file, context) => {
+  if (file.previousPath !== undefined && file.status !== "renamed" && file.status !== "copied") {
+    context.addIssue({
+      code: "custom",
+      path: ["previousPath"],
+      message: "Only renamed or copied files may include a previous path",
+    })
+  }
+  if (file.binary && (file.additions !== null || file.deletions !== null)) {
+    context.addIssue({
+      code: "custom",
+      path: ["binary"],
+      message: "Binary files cannot report line counts",
+    })
+  }
+})
+
+export const workspaceEvidenceSchema = z.object({
+  baseCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  diff: z.string().max(maximumSessionEvidenceDiffLength),
+  diffTruncated: z.boolean(),
+  totalChangedFiles: z.number().int().nonnegative(),
+  files: z.array(changedFileEvidenceSchema).max(maximumSessionEvidenceFiles),
+  filesTruncated: z.boolean(),
+}).strict().superRefine((workspace, context) => {
+  const paths = new Set<string>()
+  workspace.files.forEach((file, index) => {
+    if (paths.has(file.path)) {
+      context.addIssue({
+        code: "custom",
+        path: ["files", index, "path"],
+        message: "Changed-file paths must be unique",
+      })
+    }
+    paths.add(file.path)
+  })
+  const expected = workspace.files.length
+  if (
+    (!workspace.filesTruncated && workspace.totalChangedFiles !== expected)
+    || (workspace.filesTruncated && workspace.totalChangedFiles <= expected)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["totalChangedFiles"],
+      message: "Changed-file total must describe the bounded file list",
+    })
+  }
+})
+
+export const testRunEvidenceSchema = z.object({
+  id: streamedIdSchema,
+  command: z.string().min(1).max(maximumSessionEvidenceCommandLength),
+  commandTruncated: z.boolean(),
+  status: z.enum(["passed", "failed"]),
+  output: z.string().max(maximumSessionEvidenceOutputLength).optional(),
+  outputTruncated: z.boolean(),
+  createdAt: z.string().datetime(),
+}).strict()
+
+export const testEvidenceSchema = z.object({
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  totalRuns: z.number().int().nonnegative(),
+  runs: z.array(testRunEvidenceSchema).max(maximumSessionEvidenceRuns),
+  runsTruncated: z.boolean(),
+}).strict().superRefine((tests, context) => {
+  if (tests.passed + tests.failed !== tests.totalRuns) {
+    context.addIssue({
+      code: "custom",
+      path: ["totalRuns"],
+      message: "Command-run totals must equal passed and failed runs",
+    })
+  }
+  if (
+    (!tests.runsTruncated && tests.totalRuns !== tests.runs.length)
+    || (tests.runsTruncated && tests.totalRuns <= tests.runs.length)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["runs"],
+      message: "Command-run total must describe the bounded run list",
+    })
+  }
+  if (!tests.runsTruncated) {
+    const passed = tests.runs.filter((run) => run.status === "passed").length
+    const failed = tests.runs.length - passed
+    if (passed !== tests.passed || failed !== tests.failed) {
+      context.addIssue({
+        code: "custom",
+        path: ["runs"],
+        message: "Command-run statuses must match aggregate counts",
+      })
+    }
+  }
+})
+
+export const sessionEvidenceSchema = z.object({
+  sessionId: streamedIdSchema,
+  refreshedAt: z.string().datetime(),
+  workspace: workspaceEvidenceSchema,
+  tests: testEvidenceSchema,
+}).strict()
 
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
@@ -534,6 +658,10 @@ export const sessionPauseParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const sessionEvidenceParamsSchema = z.object({
+  sessionId: streamedIdSchema,
+})
+
 export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
   prompt: z.string().trim().min(1),
@@ -592,6 +720,7 @@ export const rpcMethods = {
     result: workspaceSnapshotSchema,
   },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
@@ -662,3 +791,6 @@ export type AuditQueryParams = z.infer<typeof auditQueryParamsSchema>
 export type AuditQueryPage = z.infer<typeof auditQueryPageSchema>
 export type AuditExportParams = z.infer<typeof auditExportParamsSchema>
 export type AuditExportResult = z.infer<typeof auditExportResultSchema>
+export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
+export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
+export type TestRunEvidence = z.infer<typeof testRunEvidenceSchema>

@@ -9,6 +9,7 @@ import {
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
+  sessionEvidenceSchema,
   sessionHistoryCategorySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
@@ -261,5 +262,70 @@ describe("session history filters", () => {
       sessionId: "session-billing",
       ...filters,
     }).success).toBe(false)
+  })
+})
+
+describe("session evidence", () => {
+  const evidence = {
+    sessionId: "session-billing",
+    refreshedAt: "2026-08-29T12:00:00.000Z",
+    workspace: {
+      baseCommit: "a".repeat(40),
+      diff: "diff --git a/src/app.ts b/src/app.ts\n",
+      diffTruncated: false,
+      totalChangedFiles: 2,
+      files: [
+        {
+          path: "src/app.ts",
+          status: "modified" as const,
+          staged: false,
+          unstaged: true,
+          additions: 3,
+          deletions: 1,
+          binary: false,
+        },
+        {
+          path: "public/logo.png",
+          status: "untracked" as const,
+          staged: false,
+          unstaged: true,
+          additions: null,
+          deletions: null,
+          binary: true,
+        },
+      ],
+      filesTruncated: false,
+    },
+    tests: {
+      passed: 1,
+      failed: 1,
+      totalRuns: 2,
+      runs: [
+        {
+          id: "tool-test",
+          command: "pnpm test",
+          commandTruncated: false,
+          status: "passed" as const,
+          output: "42 tests passed",
+          outputTruncated: false,
+          createdAt: "2026-08-29T11:59:00.000Z",
+        },
+      ],
+      runsTruncated: true,
+    },
+  }
+
+  it("accepts bounded Git and observed command-run evidence", () => {
+    expect(sessionEvidenceSchema.parse(evidence)).toEqual(evidence)
+  })
+
+  it.each([
+    { workspace: { ...evidence.workspace, totalChangedFiles: 1 } },
+    { workspace: { ...evidence.workspace, files: [...evidence.workspace.files, evidence.workspace.files[0]] } },
+    { tests: { ...evidence.tests, totalRuns: 0 } },
+    { tests: { ...evidence.tests, passed: 2 } },
+    { tests: { ...evidence.tests, failed: 2 } },
+  ])("rejects inconsistent evidence aggregates %#", (override) => {
+    expect(sessionEvidenceSchema.safeParse({ ...evidence, ...override }).success).toBe(false)
   })
 })
