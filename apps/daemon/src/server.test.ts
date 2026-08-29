@@ -524,7 +524,7 @@ describe("DomovoiDaemon", () => {
     await expect(models).resolves.toMatchObject({
       error: {
         code: -32603,
-        message: "Agent provider codex disconnected during setup",
+        message: "Internal daemon error",
       },
     })
     expect(agent.connect).toHaveBeenCalledOnce()
@@ -1344,7 +1344,7 @@ describe("DomovoiDaemon", () => {
     }))
 
     await expect(response).resolves.toMatchObject({
-      error: { code: -32603, message: "State persistence failed" },
+      error: { code: -32603, message: "Internal daemon error" },
     })
     expect(agent.stopThread).toHaveBeenCalledWith("thread-persistence")
     socket.close()
@@ -1502,6 +1502,64 @@ describe("DomovoiDaemon", () => {
         message: "Open a valid Git repository with project.open before creating a session",
       },
     })
+    socket.close()
+  })
+
+  it("returns stable internal errors and logs only redacted diagnostics", async () => {
+    const errorEntries: Array<{ context: string; detail: string }> = []
+    const workspaceService = {
+      inspect: vi.fn(async () => {
+        throw new Error(
+          "Provider unavailable; Authorization: Bearer rpc-secret-token; password=worktree-secret",
+        )
+      }),
+      createSessionWorkspace: vi.fn(async () => {
+        throw new Error("unused")
+      }),
+      removeSessionWorkspace: vi.fn(async () => {}),
+      checkpoint: vi.fn(async () => {
+        throw new Error("unused")
+      }),
+      restore: vi.fn(async () => {
+        throw new Error("unused")
+      }),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      workspaceService,
+      errorSink: (entry) => errorEntries.push(entry),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 41,
+      method: "project.open",
+      params: { path: "/code/private", client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 41,
+      error: { code: -32603, message: "Internal daemon error" },
+    })
+    expect(errorEntries).toHaveLength(1)
+    expect(errorEntries[0]).toMatchObject({
+      context: "RPC project.open failed",
+      detail: expect.stringContaining("Provider unavailable"),
+    })
+    expect(errorEntries[0]!.detail).toContain("[REDACTED]")
+    expect(errorEntries[0]!.detail).not.toContain("rpc-secret-token")
+    expect(errorEntries[0]!.detail).not.toContain("worktree-secret")
     socket.close()
   })
 
@@ -2218,6 +2276,7 @@ describe("DomovoiDaemon", () => {
 
   it("orchestrates a local project, Codex turn, approval, and checkpoint", async () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
+    const errorEntries: Array<{ context: string; detail: string }> = []
     let resolveTimedOutThread: ((threadId: string) => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}),
@@ -2284,6 +2343,7 @@ describe("DomovoiDaemon", () => {
       workspaceService,
       agentTimeoutMs: 100,
       modelCacheTtlMs: 0,
+      errorSink: (entry) => errorEntries.push(entry),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -2341,6 +2401,12 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(timedOut).toMatchObject({ error: { code: -32603, message: "Agent setup timed out" } })
+    expect(errorEntries).toEqual([
+      expect.objectContaining({
+        context: "RPC session.create timed out",
+        detail: expect.stringContaining("OperationTimeoutError: Agent setup timed out"),
+      }),
+    ])
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledOnce()
     resolveTimedOutThread!("provider-thread-after-timeout")
     await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith(
