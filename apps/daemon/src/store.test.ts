@@ -15,6 +15,28 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("keeps audit receipts across workspace-store reopen", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const first = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    first.auditLog.append({
+      id: "audit-persisted",
+      occurredAt: "2026-08-29T12:00:00.000Z",
+      actor: { kind: "client", client: "desktop" },
+      action: "session.send",
+      outcome: "succeeded",
+      sessionId: demoWorkspace.sessions[0]!.id,
+    })
+    first.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.auditLog.query({ limit: 10 }).entries).toEqual([
+      expect.objectContaining({ id: "audit-persisted", action: "session.send" }),
+    ])
+    reopened.close()
+  })
+
   it("restores daemon-owned workspace state after reopening", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
