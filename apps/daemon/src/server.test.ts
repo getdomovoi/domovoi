@@ -57,6 +57,320 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("returns real Git and recorded test-run evidence without persisting it", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/session-evidence"
+    snapshot.thread = snapshot.thread.filter((item) => item.sessionId !== session.id)
+    snapshot.thread.push({
+      id: "tool-test-evidence",
+      sessionId: session.id,
+      kind: "tool",
+      tool: "command",
+      status: "completed",
+      title: "pnpm test",
+      output: "42 tests passed",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+    const save = vi.fn()
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      evidence: vi.fn(async () => ({
+        baseCommit: "a".repeat(40),
+        diff: "diff --git a/src/app.ts b/src/app.ts\n",
+        diffTruncated: false,
+        totalChangedFiles: 1,
+        files: [{
+          path: "src/app.ts",
+          status: "modified" as const,
+          staged: false,
+          unstaged: true,
+          additions: 3,
+          deletions: 1,
+          binary: false,
+        }],
+        filesTruncated: false,
+      })),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "evidence-token",
+      store: { load: () => structuredClone(snapshot), save, close: vi.fn() },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
+        if (message.id === 1) resolve(message)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.evidence",
+      params: { sessionId: session.id },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      result: {
+        sessionId: session.id,
+        workspace: {
+          baseCommit: "a".repeat(40),
+          totalChangedFiles: 1,
+          files: [expect.objectContaining({ path: "src/app.ts", additions: 3, deletions: 1 })],
+        },
+        tests: {
+          passed: 1,
+          failed: 0,
+          totalRuns: 1,
+          runs: [expect.objectContaining({
+            id: "tool-test-evidence",
+            command: "pnpm test",
+            commandTruncated: false,
+          })],
+        },
+      },
+    })
+    expect(workspaceService.evidence).toHaveBeenCalledWith(
+      session.workspacePath,
+      expect.any(AbortSignal),
+    )
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    {
+      name: "missing session",
+      sessionId: "missing-session",
+      workspacePath: "/worktrees/session-evidence",
+      evidence: vi.fn(),
+      message: "Session does not exist",
+    },
+    {
+      name: "session without worktree",
+      sessionId: demoWorkspace.sessions[0]!.id,
+      workspacePath: undefined,
+      evidence: vi.fn(),
+      message: "Session has no worktree",
+    },
+    {
+      name: "workspace service without evidence",
+      sessionId: demoWorkspace.sessions[0]!.id,
+      workspacePath: "/worktrees/session-evidence",
+      evidence: undefined,
+      message: "Session evidence is unavailable",
+    },
+  ])("rejects $name with stable invalid params", async ({
+    sessionId,
+    workspacePath,
+    evidence,
+    message,
+  }) => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    if (workspacePath) session.workspacePath = workspacePath
+    else delete session.workspacePath
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      ...(evidence ? { evidence } : {}),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "evidence-invalid-token",
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const next = JSON.parse(data.toString()) as Record<string, unknown>
+        if (next.id === 1) resolve(next)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.evidence",
+      params: { sessionId },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: { code: -32602, message },
+    })
+    if (evidence) expect(evidence).not.toHaveBeenCalled()
+  })
+
+  it("serializes evidence refresh with the same session resource", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/session-evidence"
+    let releaseEvidence: ((value: Awaited<ReturnType<NonNullable<WorkspaceService["evidence"]>>>) => void) | undefined
+    const evidence = vi.fn(() => new Promise<Awaited<ReturnType<NonNullable<WorkspaceService["evidence"]>>>>(
+      (resolve) => { releaseEvidence = resolve },
+    ))
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      evidence,
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "evidence-queue-token",
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const responses: number[] = []
+    const responseFor = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        responses.push(id)
+        resolve(message)
+      }
+      socket.on("message", receive)
+    })
+    const refreshed = responseFor(1)
+    const paused = responseFor(2)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.evidence",
+      params: { sessionId: session.id },
+    }))
+    await vi.waitFor(() => expect(evidence).toHaveBeenCalledOnce())
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session.pause",
+      params: { sessionId: session.id, client: "desktop" },
+    }))
+    await Promise.resolve()
+    expect(responses).toEqual([])
+
+    releaseEvidence!({
+      baseCommit: "a".repeat(40),
+      diff: "",
+      diffTruncated: false,
+      totalChangedFiles: 0,
+      files: [],
+      filesTruncated: false,
+    })
+
+    await expect(refreshed).resolves.toMatchObject({ id: 1, result: { sessionId: session.id } })
+    await expect(paused).resolves.toMatchObject({ id: 2, result: { activeSessionId: session.id } })
+    expect(responses).toEqual([1, 2])
+  })
+
+  it("aborts timed-out evidence without accepting a late result", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/session-evidence"
+    let observedSignal: AbortSignal | undefined
+    let releaseEvidence: ((value: Awaited<ReturnType<NonNullable<WorkspaceService["evidence"]>>>) => void) | undefined
+    const evidence = vi.fn((_path: string, signal?: AbortSignal) => {
+      observedSignal = signal
+      return new Promise<Awaited<ReturnType<NonNullable<WorkspaceService["evidence"]>>>>(
+        (resolve) => { releaseEvidence = resolve },
+      )
+    })
+    const save = vi.fn()
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      evidence,
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "evidence-timeout-token",
+      agentTimeoutMs: 10,
+      errorSink: vi.fn(),
+      store: { load: () => structuredClone(snapshot), save, close: vi.fn() },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const messages: Array<Record<string, unknown>> = []
+    socket.on("message", (data) => {
+      messages.push(JSON.parse(data.toString()) as Record<string, unknown>)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+        if (message.id !== 1) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.evidence",
+      params: { sessionId: session.id },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: { code: -32603, message: "Session evidence timed out" },
+    })
+    expect(observedSignal?.aborted).toBe(true)
+    releaseEvidence!({
+      baseCommit: "a".repeat(40),
+      diff: "late",
+      diffTruncated: false,
+      totalChangedFiles: 0,
+      files: [],
+      filesTruncated: false,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(messages.filter((message) => message.id === 1)).toHaveLength(1)
+    expect(save).not.toHaveBeenCalled()
+  })
+
   it("drains queued events once and rejects late shutdown events", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
