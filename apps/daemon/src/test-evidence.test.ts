@@ -1,4 +1,4 @@
-import type { ThreadItem } from "@getdomovoi/protocol"
+import { maximumSessionEvidenceCommandLength, type ThreadItem } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import { testEvidence } from "./test-evidence.js"
@@ -8,7 +8,7 @@ function tool(
   title: string,
   status: "running" | "completed" | "failed" | "declined",
   output?: string,
-): ThreadItem {
+): Extract<ThreadItem, { kind: "tool" }> {
   return {
     id,
     sessionId: "session-1",
@@ -85,5 +85,24 @@ describe("testEvidence", () => {
     expect(evidence.runs.every((run) => run.output?.length === 4_096)).toBe(true)
     expect(evidence.runs.every((run) => run.outputTruncated)).toBe(true)
     expect(evidence.runs.at(-1)?.output).toContain("-54")
+  })
+
+  it("bounds projected commands without changing the recorded tool item", () => {
+    const exact = `pnpm test ${"x".repeat(maximumSessionEvidenceCommandLength - 10)}`
+    const oversized = `${exact}overflow`
+    const exactItem = tool("exact", exact, "completed")
+    const oversizedItem = tool("oversized", oversized, "failed")
+
+    const evidence = testEvidence([exactItem, oversizedItem])
+
+    expect(evidence.runs[0]).toMatchObject({
+      command: exact,
+      commandTruncated: false,
+    })
+    expect(evidence.runs[1]).toMatchObject({
+      command: oversized.slice(0, maximumSessionEvidenceCommandLength),
+      commandTruncated: true,
+    })
+    expect(oversizedItem.title).toBe(oversized)
   })
 })

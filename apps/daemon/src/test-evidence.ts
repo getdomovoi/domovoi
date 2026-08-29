@@ -1,8 +1,12 @@
-import type { ThreadItem } from "@getdomovoi/protocol"
+import {
+  maximumSessionEvidenceCommandLength,
+  type ThreadItem,
+} from "@getdomovoi/protocol"
 
 export type TestRunEvidence = {
   id: string
   command: string
+  commandTruncated: boolean
   status: "passed" | "failed"
   output?: string
   outputTruncated: boolean
@@ -31,9 +35,11 @@ export function testEvidence(items: readonly ThreadItem[]): TestEvidence {
       || !testCommand.test(item.title)
     ) return []
     const outputTruncated = (item.output?.length ?? 0) > maximumTestEvidenceOutputCharacters
+    const commandTruncated = item.title.length > maximumSessionEvidenceCommandLength
     return [{
       id: item.id,
-      command: item.title,
+      command: item.title.slice(0, maximumSessionEvidenceCommandLength),
+      commandTruncated,
       status: item.status === "completed" ? "passed" : "failed",
       ...(item.output === undefined
         ? {}
