@@ -9,6 +9,7 @@ import {
   terminalOwnershipNotificationSchema,
   terminalOutputNotificationSchema,
   terminalSessionSchema,
+  workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type ClientKind,
   type ApprovalDecision,
@@ -368,6 +369,13 @@ export class DomovoiClient extends EventTarget {
         const snapshot = workspaceSnapshotSchema.safeParse(notification.data.params)
         if (snapshot.success) {
           this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot.data }))
+        }
+        return
+      }
+      if (notification.data.method === "workspace.delta") {
+        const delta = workspaceDeltaSchema.safeParse(notification.data.params)
+        if (delta.success) {
+          this.dispatchEvent(new CustomEvent("workspace-delta", { detail: delta.data }))
         }
         return
       }

@@ -16,6 +16,7 @@ import {
   providerModelSchema,
   providerRuntimeSchema,
   helloParamsSchema,
+  maximumWorkspaceDeltaChunkLength,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
   terminalCloseParamsSchema,
@@ -34,9 +35,34 @@ import {
   skillSummarySchema,
   skillDocumentSchema,
   workspaceSnapshotSchema,
+  workspaceDeltaSchema,
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("validates bounded session workspace deltas", () => {
+    const session = demoWorkspace.sessions[0]!
+    expect(workspaceDeltaSchema.parse({
+      sessionId: session.id,
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "assistant.append",
+        id: "assistant-turn-1",
+        delta: "A compact streamed update.",
+        createdAt: session.updatedAt,
+      }],
+    }).sessionId).toBe(session.id)
+    expect(workspaceDeltaSchema.safeParse({
+      sessionId: session.id,
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "assistant.append",
+        id: "assistant-turn-1",
+        delta: "x".repeat(maximumWorkspaceDeltaChunkLength + 1),
+        createdAt: session.updatedAt,
+      }],
+    }).success).toBe(false)
+  })
+
   it("bounds skill documents returned by discovered ID", () => {
     expect(skillDocumentSchema.parse({
       skill: {

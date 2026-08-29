@@ -40,6 +40,39 @@ export const rpcNotificationSchema = z.object({
   params: z.unknown().optional(),
 })
 
+export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
+export const maximumWorkspaceDeltaOperations = 16
+
+const streamedIdSchema = z.string().min(1).max(512)
+const streamedChunkSchema = z.string().min(1).max(maximumWorkspaceDeltaChunkLength)
+
+export const workspaceDeltaOperationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("assistant.append"),
+    id: streamedIdSchema,
+    delta: streamedChunkSchema,
+    createdAt: z.string().datetime(),
+  }),
+  z.object({
+    kind: z.literal("tool-output.append"),
+    id: streamedIdSchema,
+    delta: streamedChunkSchema,
+    createdAt: z.string().datetime(),
+  }),
+  z.object({
+    kind: z.literal("plan.append"),
+    id: streamedIdSchema,
+    delta: streamedChunkSchema,
+    revision: z.number().int().positive(),
+  }),
+])
+
+export const workspaceDeltaSchema = z.object({
+  sessionId: streamedIdSchema,
+  updatedAt: z.string().datetime(),
+  operations: z.array(workspaceDeltaOperationSchema).min(1).max(maximumWorkspaceDeltaOperations),
+})
+
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
   clientVersion: z.string().min(1),
@@ -289,3 +322,4 @@ export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
 export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
+export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
