@@ -16,6 +16,8 @@ import {
   providerModelSchema,
   providerRuntimeSchema,
   helloParamsSchema,
+  sessionHistoryPageSchema,
+  sessionHistoryParamsSchema,
   maximumWorkspaceDeltaChunkLength,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
@@ -39,6 +41,27 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("bounds cursor-based session history pages", () => {
+    const session = demoWorkspace.sessions[0]!
+    const item = demoWorkspace.thread.find((candidate) => candidate.sessionId === session.id)!
+
+    expect(sessionHistoryParamsSchema.parse({
+      sessionId: session.id,
+      before: item.id,
+      limit: 50,
+    })).toEqual({ sessionId: session.id, before: item.id, limit: 50 })
+    expect(sessionHistoryParamsSchema.safeParse({
+      sessionId: session.id,
+      limit: 101,
+    }).success).toBe(false)
+    expect(sessionHistoryPageSchema.parse({
+      sessionId: session.id,
+      items: [item],
+      hasMore: true,
+      nextCursor: item.id,
+    }).nextCursor).toBe(item.id)
+  })
+
   it("validates bounded session workspace deltas", () => {
     const session = demoWorkspace.sessions[0]!
     expect(workspaceDeltaSchema.parse({
