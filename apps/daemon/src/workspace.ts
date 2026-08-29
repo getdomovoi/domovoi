@@ -116,7 +116,11 @@ async function boundedGit(
         output.push(captured)
         capturedBytes += captured.length
       }
-      if (chunk.length > remaining) truncated = true
+      if (chunk.length > remaining && !truncated) {
+        truncated = true
+        child.stdout.destroy()
+        child.kill()
+      }
     })
     child.stderr.on("data", (chunk: Buffer) => {
       const captured = errors.reduce((total, value) => total + value.length, 0)
@@ -136,7 +140,7 @@ async function boundedGit(
         reject(signal.reason)
         return
       }
-      if (code !== 0) {
+      if (code !== 0 && !truncated) {
         reject(new Error(Buffer.concat(errors).toString("utf8").trim() || `git exited with ${code}`))
         return
       }
