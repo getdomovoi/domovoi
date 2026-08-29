@@ -6,6 +6,7 @@ import {
   clientKindSchema,
   providerModelsSchema,
   runtimeSchema,
+  threadItemSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
@@ -42,6 +43,7 @@ export const rpcNotificationSchema = z.object({
 
 export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
 export const maximumWorkspaceDeltaOperations = 16
+export const maximumSessionHistoryPageItems = 100
 
 const streamedIdSchema = z.string().min(1).max(512)
 const streamedChunkSchema = z.string().min(1).max(maximumWorkspaceDeltaChunkLength)
@@ -71,6 +73,36 @@ export const workspaceDeltaSchema = z.object({
   sessionId: streamedIdSchema,
   updatedAt: z.string().datetime(),
   operations: z.array(workspaceDeltaOperationSchema).min(1).max(maximumWorkspaceDeltaOperations),
+})
+
+export const sessionHistoryParamsSchema = z.object({
+  sessionId: streamedIdSchema,
+  before: streamedIdSchema.optional(),
+  limit: z.number().int().min(1).max(maximumSessionHistoryPageItems).default(50),
+})
+
+export const sessionHistoryPageSchema = z.object({
+  sessionId: streamedIdSchema,
+  items: z.array(threadItemSchema).max(maximumSessionHistoryPageItems),
+  hasMore: z.boolean(),
+  nextCursor: streamedIdSchema.optional(),
+}).superRefine((page, context) => {
+  page.items.forEach((item, index) => {
+    if (item.sessionId !== page.sessionId) {
+      context.addIssue({
+        code: "custom",
+        path: ["items", index, "sessionId"],
+        message: "History items must belong to the requested session",
+      })
+    }
+  })
+  if (page.hasMore && !page.nextCursor) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "A continuation cursor is required when more history is available",
+    })
+  }
 })
 
 export const helloParamsSchema = z.object({
@@ -266,6 +298,7 @@ export const rpcMethods = {
     result: workspaceSnapshotSchema,
   },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
   "skill.list": { params: z.object({}), result: skillSummariesSchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
@@ -323,3 +356,4 @@ export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificati
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
 export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
 export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
+export type SessionHistoryPage = z.infer<typeof sessionHistoryPageSchema>
