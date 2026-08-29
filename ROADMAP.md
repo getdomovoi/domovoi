@@ -92,7 +92,7 @@ workflow without becoming a code editor.
 - [x] Send, steer, stop, persist, and resume agent turns
 - [x] Create and restore checkpoints with a recovery checkpoint
 - [x] Change providers/models through a documented checkpointed handoff
-- [ ] Prevent manual checkpoint creation while an agent is mutating the worktree
+- [x] Prevent manual checkpoint creation while an agent is mutating the worktree
 - [ ] Add a complete session history with filters for messages, tools, approvals, handoffs,
   checkpoints, annotations, and tests
 - [ ] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
