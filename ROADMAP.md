@@ -95,7 +95,7 @@ workflow without becoming a code editor.
 - [x] Prevent manual checkpoint creation while an agent is mutating the worktree
 - [x] Add a complete session history with filters for messages, tools, approvals, handoffs,
   checkpoints, annotations, and tests
-- [ ] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
+- [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [ ] Add session archive and deliberate cleanup without deleting the source repository
 - [ ] Add explicit fork-with-model beside switch-here behavior
 
