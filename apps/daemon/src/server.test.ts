@@ -2553,47 +2553,19 @@ describe("DomovoiDaemon", () => {
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
 
-    let checkpointAborted = false
-    workspaceService.checkpoint.mockImplementationOnce(
-      (_path: string, _label: string, signal?: AbortSignal) => new Promise((_, reject) => {
-        signal?.addEventListener("abort", () => {
-          checkpointAborted = true
-          reject(signal.reason)
-        }, { once: true })
-      }),
-    )
-    const timedOutCheckpoint = await rpc("checkpoint.create", {
+    const activeCheckpoint = await rpc("checkpoint.create", {
       sessionId,
-      label: "must-time-out",
+      label: "while-agent-is-running",
       client: "desktop",
     })
-    expect(timedOutCheckpoint).toMatchObject({
-      error: { code: -32603, message: "Checkpoint timed out" },
+    expect(activeCheckpoint).toMatchObject({
+      error: { code: -32602, message: "Stop the active turn before creating a checkpoint" },
     })
-    expect(checkpointAborted).toBe(true)
+    expect(workspaceService.checkpoint).not.toHaveBeenCalled()
 
-    const checkpointed = await rpc("checkpoint.create", {
-      sessionId,
-      label: "after-tests",
-      client: "desktop",
-    })
-    expect(checkpointed).toMatchObject({
-      result: {
-        thread: expect.arrayContaining([
-          expect.objectContaining({
-            kind: "checkpoint",
-            label: expect.stringContaining("after-tests"),
-            commit: "b".repeat(40),
-          }),
-        ]),
-      },
-    })
-    const checkpointId = (checkpointed.result as {
-      thread: Array<{ id: string; kind: string }>
-    }).thread.find((item) => item.kind === "checkpoint")!.id
     const activeRestore = await rpc("checkpoint.restore", {
       sessionId,
-      checkpointId,
+      checkpointId: "checkpoint-active-turn",
       client: "desktop",
     })
     expect(activeRestore).toMatchObject({
@@ -2632,6 +2604,45 @@ describe("DomovoiDaemon", () => {
       })
     }
     await rpc("workspace.get", {})
+
+    let checkpointAborted = false
+    workspaceService.checkpoint.mockImplementationOnce(
+      (_path: string, _label: string, signal?: AbortSignal) => new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => {
+          checkpointAborted = true
+          reject(signal.reason)
+        }, { once: true })
+      }),
+    )
+    const timedOutCheckpoint = await rpc("checkpoint.create", {
+      sessionId,
+      label: "must-time-out",
+      client: "desktop",
+    })
+    expect(timedOutCheckpoint).toMatchObject({
+      error: { code: -32603, message: "Checkpoint timed out" },
+    })
+    expect(checkpointAborted).toBe(true)
+
+    const checkpointed = await rpc("checkpoint.create", {
+      sessionId,
+      label: "after-tests",
+      client: "desktop",
+    })
+    expect(checkpointed).toMatchObject({
+      result: {
+        thread: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "checkpoint",
+            label: expect.stringContaining("after-tests"),
+            commit: "b".repeat(40),
+          }),
+        ]),
+      },
+    })
+    const checkpointId = (checkpointed.result as {
+      thread: Array<{ id: string; kind: string }>
+    }).thread.find((item) => item.kind === "checkpoint")!.id
 
     const unknownRestore = await rpc("checkpoint.restore", {
       sessionId,
