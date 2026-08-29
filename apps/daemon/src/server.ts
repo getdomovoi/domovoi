@@ -2389,7 +2389,9 @@ export class DomovoiDaemon {
         )
         session.archiveCheckpoint = prior?.kind === "checkpoint"
           ? prior.commit
-          : session.baseCommit
+          : session.baseCommit && /^[a-f0-9]{40}$/.test(session.baseCommit)
+            ? session.baseCommit
+            : undefined
       }
       if (!session.archiveCheckpoint) throw new Error("Session archive has no durable checkpoint")
       this.#saveAgentState(false)

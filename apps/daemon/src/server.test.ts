@@ -4146,6 +4146,53 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("rejects an invalid base commit as an archive checkpoint fallback", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "archiving"
+    session.archiveRequestedAt = "2026-08-29T12:00:00.000Z"
+    session.baseCommit = "not-a-commit"
+    delete session.workspacePath
+    delete session.providerThreadId
+    delete session.activeTurnId
+    snapshot.thread = snapshot.thread.filter(
+      (item) => item.sessionId !== session.id || item.kind !== "checkpoint",
+    )
+    snapshot.approvals = snapshot.approvals.filter(
+      (approval) => approval.sessionId !== session.id,
+    )
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const errors: Array<{ context: string; detail: string }> = []
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: { codex: agent },
+      errorSink: (entry) => errors.push(entry),
+    })
+    running.push(daemon)
+
+    await expect(daemon.start()).resolves.toEqual(expect.objectContaining({
+      port: expect.any(Number),
+    }))
+    expect(store.snapshot.sessions[0]).toMatchObject({ state: "archiving" })
+    expect(store.snapshot.sessions[0]).not.toHaveProperty("archiveCheckpoint")
+    expect(errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ detail: expect.stringContaining("no durable checkpoint") }),
+    ]))
+  })
+
   it("broadcasts archiving intent before provider cleanup completes", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
