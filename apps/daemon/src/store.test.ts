@@ -1,9 +1,10 @@
 import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import { createEmptyWorkspace, demoWorkspace } from "@getdomovoi/protocol"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SqliteWorkspaceStore } from "./store.js"
 
@@ -66,6 +67,103 @@ describe("SqliteWorkspaceStore", () => {
 
     expect(upgraded.load()).toEqual(empty)
     upgraded.close()
+  })
+
+  it("repairs a legacy project machine reference once without clearing project state", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    legacy.machine.id = "machine-current"
+    legacy.project!.machineId = "machine-retired"
+    legacy.sessions[0]!.title = "Preserve this session"
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
+    database.close()
+
+    const first = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(legacy.machine))
+    const repaired = first.load()
+    expect(repaired.project).toEqual({ ...legacy.project, machineId: "machine-current" })
+    expect(repaired.sessions).toEqual(legacy.sessions)
+    expect(repaired.approvals).toEqual(legacy.approvals)
+    expect(repaired.approvalRules).toEqual(legacy.approvalRules)
+    expect(repaired.artifacts).toEqual(legacy.artifacts)
+    expect(repaired.annotations).toEqual(legacy.annotations)
+    expect(repaired.thread.slice(0, legacy.thread.length)).toEqual(legacy.thread)
+    expect(repaired.thread.filter((item) =>
+      item.kind === "system" && item.body === "Stored project machine reference repaired"
+    )).toEqual([
+      expect.objectContaining({ sessionId: legacy.activeSessionId }),
+    ])
+    first.close()
+
+    const second = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(legacy.machine))
+    expect(second.load().thread.filter((item) =>
+      item.kind === "system" && item.body === "Stored project machine reference repaired"
+    )).toHaveLength(1)
+    second.close()
+  })
+
+  it("ties a machine-reference repair receipt to the first session without an active session", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    legacy.machine.id = "machine-current"
+    legacy.project!.machineId = "machine-retired"
+    legacy.activeSessionId = null
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
+    database.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(legacy.machine))
+    expect(reopened.load().thread).toContainEqual(expect.objectContaining({
+      kind: "system",
+      body: "Stored project machine reference repaired",
+      sessionId: legacy.sessions[0]!.id,
+    }))
+    reopened.close()
+  })
+
+  it("returns a repaired live snapshot when migration persistence is busy", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const legacy = structuredClone(demoWorkspace)
+    legacy.machine.id = "machine-current"
+    legacy.project!.machineId = "machine-retired"
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
+    database.close()
+    const persist = vi.spyOn(store, "save").mockImplementation(() => {
+      throw new Error("SQLITE_BUSY: database is locked")
+    })
+
+    expect(store.load()).toMatchObject({
+      machine: { id: "machine-current" },
+      project: { machineId: "machine-current" },
+    })
+    expect(persist).toHaveBeenCalledOnce()
+    persist.mockRestore()
+    store.close()
+  })
+
+  it("still rejects malformed live state before migration persistence", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run("{}")
+    database.close()
+
+    expect(() => store.load()).toThrow()
+    store.close()
   })
 
   it.skipIf(process.platform === "win32")("repairs private state and sidecar permissions", async () => {

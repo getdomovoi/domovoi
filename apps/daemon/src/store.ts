@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -23,6 +24,52 @@ function legacyFingerprint(snapshot: WorkspaceSnapshot): string {
   return JSON.stringify({ ...snapshot, annotations: [] })
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function migrateStoredWorkspace(value: unknown): {
+  snapshot: WorkspaceSnapshot
+  repaired: boolean
+} {
+  if (!isRecord(value) || !isRecord(value.machine) || !isRecord(value.project)) {
+    return { snapshot: workspaceSnapshotSchema.parse(value), repaired: false }
+  }
+  const machineId = value.machine.id
+  const storedMachineId = value.project.machineId
+  if (
+    typeof machineId !== "string"
+    || machineId.length === 0
+    || typeof storedMachineId !== "string"
+    || storedMachineId === machineId
+  ) return { snapshot: workspaceSnapshotSchema.parse(value), repaired: false }
+
+  const migrated = structuredClone(value)
+  const project = migrated.project as Record<string, unknown>
+  project.machineId = machineId
+  const projectId = project.id
+  const sessions = Array.isArray(migrated.sessions) ? migrated.sessions : []
+  const validSessions = sessions.filter((session): session is Record<string, unknown> =>
+    isRecord(session)
+    && typeof session.id === "string"
+    && session.id.length > 0
+    && session.projectId === projectId
+  )
+  const activeSession = validSessions.find((session) => session.id === migrated.activeSessionId)
+  const receiptSession = activeSession ?? validSessions[0]
+  if (receiptSession && Array.isArray(migrated.thread)) {
+    migrated.thread.push({
+      id: `system-machine-reference-${randomUUID()}`,
+      sessionId: receiptSession.id,
+      kind: "system",
+      body: "Stored project machine reference repaired",
+      detail: `Updated project.machineId from ${storedMachineId} to ${machineId} while preserving project state.`,
+      createdAt: new Date().toISOString(),
+    })
+  }
+  return { snapshot: workspaceSnapshotSchema.parse(migrated), repaired: true }
+}
+
 export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly path: string
   #database: DatabaseSync
@@ -43,16 +90,19 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
-    const existingSnapshot = existing
-      ? workspaceSnapshotSchema.parse(JSON.parse(existing.snapshot))
+    const migratedExisting = existing
+      ? migrateStoredWorkspace(JSON.parse(existing.snapshot))
       : undefined
+    const existingSnapshot = migratedExisting?.snapshot
     const isLegacySeed = existingSnapshot?.annotations.length === 0 &&
       options.legacySnapshots?.some(
         (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
           workspaceSnapshotSchema.parse(snapshot),
         ),
     )
-    if (!existing || isLegacySeed) this.save(initial)
+    if (!existing) this.save(initial)
+    else if (migratedExisting?.repaired) this.save(migratedExisting.snapshot)
+    else if (isLegacySeed) this.save(initial)
     this.#restrictFilePermissions()
   }
 
@@ -61,7 +111,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
     if (!row) throw new Error("Workspace state is not initialized")
-    return workspaceSnapshotSchema.parse(JSON.parse(row.snapshot))
+    const migrated = migrateStoredWorkspace(JSON.parse(row.snapshot))
+    if (migrated.repaired) {
+      try {
+        this.save(migrated.snapshot)
+      } catch {
+        return migrated.snapshot
+      }
+    }
+    return migrated.snapshot
   }
 
   save(snapshot: WorkspaceSnapshot): void {

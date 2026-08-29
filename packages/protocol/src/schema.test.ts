@@ -400,6 +400,98 @@ describe("workspace protocol", () => {
     expect(workspaceSnapshotSchema.safeParse(crossed).success).toBe(false)
   })
 
+  it.each([
+    ["project machine", "project.machineId", (snapshot: typeof demoWorkspace) => {
+      snapshot.project!.machineId = "machine-missing"
+    }],
+    ["session project", "sessions.0.projectId", (snapshot: typeof demoWorkspace) => {
+      snapshot.sessions[0]!.projectId = "project-missing"
+    }],
+    ["active session", "activeSessionId", (snapshot: typeof demoWorkspace) => {
+      snapshot.activeSessionId = "session-missing"
+    }],
+    ["approval session", "approvals.0.sessionId", (snapshot: typeof demoWorkspace) => {
+      snapshot.approvals[0]!.sessionId = "session-missing"
+    }],
+    ["approval rule project", "approvalRules.0.projectId", (snapshot: typeof demoWorkspace) => {
+      snapshot.approvalRules.push({
+        id: "rule-build",
+        projectId: "project-missing",
+        operation: "command",
+        command: "pnpm test",
+        createdBy: "desktop",
+        createdAt: "2026-08-25T21:52:00.000Z",
+      })
+    }],
+    ["thread session", "thread.0.sessionId", (snapshot: typeof demoWorkspace) => {
+      snapshot.thread[0]!.sessionId = "session-missing"
+    }],
+    ["artifact session", "artifacts.2.sessionId", (snapshot: typeof demoWorkspace) => {
+      snapshot.artifacts.push({
+        id: "artifact-orphan",
+        sessionId: "session-missing",
+        title: "Orphaned preview",
+        type: "preview",
+        revision: 1,
+      })
+    }],
+    ["annotation session", "annotations.0.sessionId", (snapshot: typeof demoWorkspace) => {
+      snapshot.artifacts[0]!.sessionId = "session-missing"
+      snapshot.annotations[0]!.sessionId = "session-missing"
+    }],
+  ] as const)("rejects a missing %s aggregate reference", (_label, expectedPath, mutate) => {
+    const snapshot = structuredClone(demoWorkspace)
+    mutate(snapshot)
+
+    const result = workspaceSnapshotSchema.safeParse(snapshot)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join("."))).toContain(expectedPath)
+    }
+  })
+
+  it.each([
+    ["session", "sessions.3.id", (snapshot: typeof demoWorkspace) => {
+      snapshot.sessions.push(structuredClone(snapshot.sessions[0]!))
+    }],
+    ["approval", "approvals.1.id", (snapshot: typeof demoWorkspace) => {
+      snapshot.approvals.push(structuredClone(snapshot.approvals[0]!))
+    }],
+    ["approval rule", "approvalRules.1.id", (snapshot: typeof demoWorkspace) => {
+      const rule = {
+        id: "rule-build",
+        projectId: snapshot.project!.id,
+        operation: "command",
+        command: "pnpm test",
+        createdBy: "desktop" as const,
+        createdAt: "2026-08-25T21:52:00.000Z",
+      }
+      snapshot.approvalRules.push(rule, structuredClone(rule))
+    }],
+    ["thread item", "thread.4.id", (snapshot: typeof demoWorkspace) => {
+      snapshot.thread.push(structuredClone(snapshot.thread[0]!))
+    }],
+    ["artifact", "artifacts.2.id", (snapshot: typeof demoWorkspace) => {
+      snapshot.artifacts.push(structuredClone(snapshot.artifacts[0]!))
+    }],
+    ["annotation", "annotations.2.id", (snapshot: typeof demoWorkspace) => {
+      snapshot.annotations.push(structuredClone(snapshot.annotations[0]!))
+    }],
+    ["annotation reply", "annotations.0.thread.1.id", (snapshot: typeof demoWorkspace) => {
+      const reply = snapshot.annotations[0]!.thread[0]!
+      snapshot.annotations[0]!.thread.push(structuredClone(reply))
+    }],
+  ] as const)("rejects a duplicate %s ID", (_label, expectedPath, mutate) => {
+    const snapshot = structuredClone(demoWorkspace)
+    mutate(snapshot)
+
+    const result = workspaceSnapshotSchema.safeParse(snapshot)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join("."))).toContain(expectedPath)
+    }
+  })
+
   it("represents a machine before a project is opened", () => {
     const empty = createEmptyWorkspace(demoWorkspace.machine)
 
