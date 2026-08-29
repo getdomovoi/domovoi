@@ -68,26 +68,46 @@ describe("workspace protocol", () => {
       state: "archived",
       archiveCheckpoint: "a".repeat(40),
     })
-    expect(workspaceSnapshotSchema.safeParse({
-      ...archiving,
-      sessions: [{ ...archiving.sessions[0], archiveRequestedAt: undefined }],
-    }).success).toBe(false)
-    expect(workspaceSnapshotSchema.safeParse({
-      ...archived,
-      sessions: [{ ...archived.sessions[0], archivedAt: undefined }],
-    }).success).toBe(false)
-    expect(workspaceSnapshotSchema.safeParse({
-      ...archived,
-      sessions: [{ ...archived.sessions[0], workspacePath: "/worktrees/stale" }],
-    }).success).toBe(false)
-    expect(workspaceSnapshotSchema.safeParse({
-      ...archived,
-      sessions: [{
-        ...archived.sessions[0],
+    const expectArchiveIssue = (
+      snapshot: typeof archived,
+      replacement: (typeof archived.sessions)[number],
+      field: string,
+    ) => {
+      const parsed = workspaceSnapshotSchema.safeParse({
+        ...snapshot,
+        sessions: snapshot.sessions.map((session) =>
+          session.id === replacement.id ? replacement : session
+        ),
+      })
+      expect(parsed.success).toBe(false)
+      if (!parsed.success) expect(parsed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ["sessions", 0, field] }),
+      ]))
+    }
+    expectArchiveIssue(
+      archiving,
+      { ...archiving.sessions[0]!, archiveRequestedAt: undefined },
+      "archiveRequestedAt",
+    )
+    expectArchiveIssue(
+      archived,
+      { ...archived.sessions[0]!, archivedAt: undefined },
+      "archivedAt",
+    )
+    expectArchiveIssue(
+      archived,
+      { ...archived.sessions[0]!, workspacePath: "/worktrees/stale" },
+      "workspacePath",
+    )
+    expectArchiveIssue(
+      archived,
+      {
+        ...archived.sessions[0]!,
         state: "idle",
         archiveRequestedAt: "2026-08-29T12:00:00.000Z",
-      }],
-    }).success).toBe(false)
+      },
+      "state",
+    )
   })
 
   it("reserves a stable daemon shutdown error code", () => {
