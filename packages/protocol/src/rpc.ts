@@ -69,6 +69,9 @@ export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
 export const maximumWorkspaceDeltaOperations = 16
 export const maximumSessionHistoryPageItems = 100
 export const maximumSessionHistoryQueryLength = 256
+export const maximumAuditQueryPageItems = 100
+export const maximumAuditExportItems = 500
+export const maximumAuditExportLength = 2_000_000
 
 const streamedIdSchema = z.string().min(1).max(512)
 const historyEntryIdSchema = z.string().min(1).max(1_024)
@@ -239,6 +242,162 @@ export const sessionHistoryPageSchema = z.object({
     })
   }
 })
+
+const auditTextSchema = z.string().trim().min(1).max(512)
+export const auditOutcomeSchema = z.enum([
+  "started",
+  "succeeded",
+  "failed",
+  "denied",
+  "cancelled",
+])
+const auditActorReferenceSchema = z.string().trim().min(1).max(128)
+export const auditActorSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("client"),
+    client: clientKindSchema,
+    clientId: auditActorReferenceSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("provider"),
+    provider: auditActorReferenceSchema,
+    providerThreadId: auditActorReferenceSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("daemon"),
+    component: auditActorReferenceSchema.optional(),
+  }).strict(),
+])
+export const auditEntrySchema = z.object({
+  id: streamedIdSchema,
+  occurredAt: z.string().datetime(),
+  actor: auditActorSchema,
+  action: auditTextSchema,
+  outcome: auditOutcomeSchema,
+  sessionId: streamedIdSchema.optional(),
+  target: auditTextSchema.optional(),
+  detail: z.string().max(4_096).optional(),
+}).strict()
+
+const auditQueryFiltersSchema = z.object({
+  query: auditTextSchema.optional(),
+  action: auditTextSchema.optional(),
+  actor: auditTextSchema.optional(),
+  outcome: auditOutcomeSchema.optional(),
+  sessionId: streamedIdSchema.optional(),
+  before: streamedIdSchema.optional(),
+})
+
+export const auditQueryParamsSchema = auditQueryFiltersSchema.extend({
+  limit: z.number().int().min(1).max(maximumAuditQueryPageItems).default(50),
+})
+
+export const auditExportParamsSchema = auditQueryFiltersSchema.extend({
+  format: z.literal("jsonl").default("jsonl"),
+  limit: z.number().int().min(1).max(maximumAuditExportItems).default(maximumAuditExportItems),
+})
+
+function validateAuditCursorPage(
+  page: {
+    entries: Array<{ id: string }>
+    hasMore: boolean
+    nextCursor?: string | undefined
+  },
+  context: z.RefinementCtx,
+): void {
+  if (page.hasMore && page.entries.length === 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["entries"],
+      message: "A non-empty audit page is required when more entries are available",
+    })
+  } else if (page.hasMore && page.nextCursor !== page.entries.at(-1)?.id) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "The continuation cursor must reference the last returned audit entry",
+    })
+  }
+  if (!page.hasMore && page.nextCursor !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "A continuation cursor is not allowed when the audit page is complete",
+    })
+  }
+}
+
+export const auditQueryPageSchema = z.object({
+  entries: z.array(auditEntrySchema).max(maximumAuditQueryPageItems),
+  hasMore: z.boolean(),
+  nextCursor: streamedIdSchema.optional(),
+}).superRefine(validateAuditCursorPage)
+
+export const auditExportResultSchema = z.object({
+  format: z.literal("jsonl"),
+  exportedAt: z.string().datetime(),
+  entryCount: z.number().int().min(0).max(maximumAuditExportItems),
+  content: z.string().max(maximumAuditExportLength),
+  hasMore: z.boolean(),
+  nextCursor: streamedIdSchema.optional(),
+}).superRefine((result, context) => {
+  const lines = auditExportLines(result.content, context)
+  if (lines.length !== result.entryCount) {
+    context.addIssue({
+      code: "custom",
+      path: ["entryCount"],
+      message: "Audit export entry count must match its JSONL content",
+    })
+  }
+  lines.forEach((line, index) => {
+    let value: unknown
+    try {
+      value = JSON.parse(line)
+    } catch {
+      context.addIssue({
+        code: "custom",
+        path: ["content", index],
+        message: "Audit export content must contain valid JSONL",
+      })
+      return
+    }
+    const parsed = auditEntrySchema.safeParse(value)
+    if (!parsed.success) {
+      context.addIssue({
+        code: "custom",
+        path: ["content", index],
+        message: "Audit export lines must match the audit entry schema",
+      })
+    }
+  })
+  if (result.hasMore && !result.nextCursor) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "A continuation cursor is required when more audit entries are exportable",
+    })
+  }
+  if (!result.hasMore && result.nextCursor !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["nextCursor"],
+      message: "A continuation cursor is not allowed when the audit export is complete",
+    })
+  }
+})
+
+function auditExportLines(content: string, context: z.RefinementCtx): string[] {
+  if (content.length === 0) return []
+  if (!content.endsWith("\n")) {
+    context.addIssue({
+      code: "custom",
+      path: ["content"],
+      message: "Audit JSONL exports must end with a newline",
+    })
+    return content.split("\n")
+  }
+  return content.slice(0, -1).split("\n")
+}
 
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
@@ -434,6 +593,8 @@ export const rpcMethods = {
   },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
+  "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
+  "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
   "skill.list": { params: z.object({}), result: skillSummariesSchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
@@ -494,3 +655,10 @@ export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
 export type SessionHistoryCategory = z.infer<typeof sessionHistoryCategorySchema>
 export type SessionHistoryEntry = z.infer<typeof sessionHistoryEntrySchema>
 export type SessionHistoryPage = z.infer<typeof sessionHistoryPageSchema>
+export type AuditOutcome = z.infer<typeof auditOutcomeSchema>
+export type AuditActor = z.infer<typeof auditActorSchema>
+export type AuditEntry = z.infer<typeof auditEntrySchema>
+export type AuditQueryParams = z.infer<typeof auditQueryParamsSchema>
+export type AuditQueryPage = z.infer<typeof auditQueryPageSchema>
+export type AuditExportParams = z.infer<typeof auditExportParamsSchema>
+export type AuditExportResult = z.infer<typeof auditExportResultSchema>
