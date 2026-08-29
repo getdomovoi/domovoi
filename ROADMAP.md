@@ -68,10 +68,10 @@ access.
     coverage.
 - [x] Add subprocess deadlines and cancellation to Git operations
 - [x] Recover Codex cleanly after its subprocess exits
-- [ ] Add browser RPC response deadlines and cancellation
-- [ ] Return stable public RPC errors while keeping internal exception detail in redacted logs
-- [ ] Validate daemon environment configuration at runtime
-- [ ] Tighten protocol aggregate references and JSON-RPC response invariants
+- [x] Add browser RPC response deadlines and cancellation
+- [x] Return stable public RPC errors while keeping internal exception detail in redacted logs
+- [x] Validate daemon environment configuration at runtime
+- [x] Tighten protocol aggregate references and JSON-RPC response invariants
 
 Completion proof:
 
