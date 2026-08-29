@@ -58,9 +58,10 @@ access.
   - Keep ordering per session and resource.
   - Terminal input, unrelated sessions, and independent machines must not block behind slow Git or
     provider work.
-- [ ] Bound streamed workspace updates
-  - Persist and broadcast deltas instead of the complete growing snapshot for every token.
-  - Add compaction, pagination, or retention limits for long sessions.
+- [x] Bound streamed workspace updates
+  - Broadcast bounded typed deltas and debounce canonical persistence instead of sending the
+    complete growing snapshot for every token.
+  - Keep complete durable history while paging older items behind a bounded recent window.
 - [ ] Drain queued events before persistence shutdown
 - [x] Add subprocess deadlines and cancellation to Git operations
 - [ ] Recover Codex cleanly after its subprocess exits
