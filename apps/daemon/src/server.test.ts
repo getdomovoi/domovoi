@@ -3869,4 +3869,147 @@ describe("DomovoiDaemon", () => {
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
     socket.close()
   })
+
+  it("archives a session idempotently and retries partial cleanup after restart", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "thread-billing"
+    session.activeTurnId = "turn-billing"
+    snapshot.sessions[1]!.workspacePath = "/worktrees/session-onboarding"
+    snapshot.approvals = [
+      { ...snapshot.approvals[0]!, id: "approval-billing", sessionId: session.id, providerRequestId: 11 },
+      { ...snapshot.approvals[0]!, id: "approval-other", sessionId: snapshot.sessions[1]!.id, providerRequestId: 12 },
+    ]
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(async () => {}),
+      checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const terminalProcesses = new Map<string, { kill: ReturnType<typeof vi.fn> }>()
+    const terminalService = {
+      spawn: vi.fn(({ cwd }: { cwd: string }) => {
+        const process = {
+          process: "/bin/sh", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+          onData: vi.fn(() => ({ dispose: vi.fn() })),
+          onExit: vi.fn(() => ({ dispose: vi.fn() })),
+        }
+        terminalProcesses.set(cwd, process)
+        return process
+      }),
+    }
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, workspaceService, terminalService })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    const otherSession = store.snapshot.sessions[1]!
+    await rpc("terminal.create", { terminalId: "billing-terminal", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "billing-client" })
+    await rpc("terminal.create", { terminalId: "other-terminal", sessionId: otherSession.id, cols: 80, rows: 24, client: "desktop", clientId: "other-client" })
+
+    const archived = await rpc("session.archive", { sessionId: session.id, client: "desktop" })
+    expect(archived).toMatchObject({ result: { sessions: expect.arrayContaining([
+      expect.objectContaining({ id: session.id, state: "archived", archiveCheckpoint: "d".repeat(40) }),
+    ]) } })
+    expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
+    expect(agent.stopThread).toHaveBeenCalledWith("thread-billing")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(11, "deny")
+    expect(store.snapshot.approvals).toEqual([expect.objectContaining({ id: "approval-other" })])
+    expect(terminalProcesses.get(session.workspacePath!)?.kill).toHaveBeenCalledOnce()
+    expect(terminalProcesses.get(otherSession.workspacePath!)?.kill).not.toHaveBeenCalled()
+    expect(workspaceService.checkpoint).toHaveBeenCalledWith(session.workspacePath, "before session archive", expect.any(AbortSignal))
+    expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith(session.workspacePath, expect.any(AbortSignal))
+    const durable = {
+      thread: store.snapshot.thread.filter((item) => item.sessionId === session.id).length,
+      artifacts: store.snapshot.artifacts.filter((item) => item.sessionId === session.id).length,
+      annotations: store.snapshot.annotations.filter((item) => item.sessionId === session.id).length,
+    }
+    await rpc("session.archive", { sessionId: session.id, client: "web" })
+    expect(agent.stopThread).toHaveBeenCalledOnce()
+    expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
+    expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledOnce()
+    expect(store.snapshot.thread.filter((item) => item.sessionId === session.id)).toHaveLength(durable.thread)
+    expect(store.snapshot.artifacts.filter((item) => item.sessionId === session.id)).toHaveLength(durable.artifacts)
+    expect(store.snapshot.annotations.filter((item) => item.sessionId === session.id)).toHaveLength(durable.annotations)
+    for (const [method, params] of [
+      ["session.send", { sessionId: session.id, prompt: "resume", client: "web" }],
+      ["checkpoint.create", { sessionId: session.id, client: "web" }],
+      ["terminal.create", { terminalId: "archived-terminal", sessionId: session.id, cols: 80, rows: 24, client: "web", clientId: "archived-client" }],
+    ] as const) await expect(rpc(method, params)).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("session.activate", { sessionId: session.id, client: "web" })).resolves.toMatchObject({
+      result: { activeSessionId: session.id },
+    })
+    await expect(rpc("session.history", { sessionId: session.id, limit: 50 })).resolves.toHaveProperty("result")
+    socket.close()
+
+    await daemon.stop()
+    running.splice(running.indexOf(daemon), 1)
+    store.snapshot.sessions[0]!.state = "archiving"
+    store.snapshot.sessions[0]!.workspacePath = session.workspacePath
+    store.snapshot.sessions[0]!.providerThreadId = "thread-recovery"
+    delete store.snapshot.sessions[0]!.archiveCheckpoint
+    delete store.snapshot.sessions[0]!.archivedAt
+    workspaceService.archiveSessionWorkspace.mockRejectedValueOnce(new Error("busy worktree"))
+    agent.resumeThread.mockClear()
+    const errors: Array<{ context: string; detail: string }> = []
+    const failedRecovery = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, workspaceService, errorSink: (entry) => errors.push(entry) })
+    running.push(failedRecovery)
+    await expect(failedRecovery.start()).resolves.toEqual(expect.objectContaining({ port: expect.any(Number) }))
+    expect(store.snapshot.sessions[0]).toMatchObject({ state: "archiving", workspacePath: session.workspacePath })
+    expect(store.snapshot.sessions[0]).not.toHaveProperty("providerThreadId")
+    expect(agent.resumeThread).toHaveBeenCalledWith({
+      threadId: "thread-recovery",
+      cwd: session.workspacePath,
+      runtime: store.snapshot.sessions[0]!.runtime,
+    })
+    expect(agent.resumeThread.mock.invocationCallOrder[0]).toBeLessThan(
+      agent.stopThread.mock.invocationCallOrder.at(-1)!,
+    )
+    expect(errors).toEqual(expect.arrayContaining([expect.objectContaining({
+      detail: expect.stringContaining("busy worktree"),
+    })]))
+    await failedRecovery.stop()
+    running.splice(running.indexOf(failedRecovery), 1)
+    const recovered = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, workspaceService })
+    running.push(recovered)
+    await recovered.start()
+    expect(store.snapshot.sessions[0]).toMatchObject({ state: "archived", archiveCheckpoint: "d".repeat(40) })
+    expect(store.snapshot.sessions[0]).not.toHaveProperty("workspacePath")
+    expect(agent.stopThread).toHaveBeenCalledTimes(2)
+  })
 })

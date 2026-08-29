@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AppBar, checkpointBlockedReason, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, Thread } from "./workspace-shell"
+import { activeThreadKey, AppBar, archiveSessionDescription, ArchiveSessionAction, checkpointBlockedReason, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -154,6 +154,45 @@ describe("checkpointBlockedReason", () => {
 })
 
 describe("Thread", () => {
+  it("offers a signed archive confirmation describing retained history and cleanup", () => {
+    const markup = renderToStaticMarkup(
+      <ArchiveSessionAction disabled={false} onArchive={vi.fn()} />,
+    )
+
+    expect(markup).toContain("Archive session")
+    expect(archiveSessionDescription).toContain("final checkpoint")
+    expect(archiveSessionDescription).toContain("provider and terminal")
+    expect(archiveSessionDescription).toContain("source repository remains untouched")
+  })
+
+  it("renders archived sessions read-only with history still visible", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.state = "archived"
+    active.archivedAt = "2026-08-29T12:00:00.000Z"
+    delete active.workspacePath
+    delete active.providerThreadId
+    const markup = renderToStaticMarkup(
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn(async () => {})}
+        onSetRuntime={vi.fn(async () => {})}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn(async () => {})}
+        onRestoreCheckpoint={vi.fn(async () => {})}
+        onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain("Archived")
+    expect(markup).toContain("The Stripe retries are double-charging")
+    expect(markup).not.toContain('aria-label="Message"')
+  })
+
   it("disables manual checkpoint creation while the active turn owns the worktree", () => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
@@ -170,6 +209,7 @@ describe("Thread", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
       />,
     )
 

@@ -16,6 +16,44 @@ afterEach(async () => {
 })
 
 describe("GitWorkspaceService", () => {
+  it("archives only the session worktree while retaining its branch and source repository", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-archive-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "source\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-archive")
+    await writeFile(join(workspace.path, "README.md"), "archived work\n")
+    const checkpoint = await service.checkpoint(workspace.path, "before archive")
+    const sourceBefore = await Promise.all([
+      execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"]),
+      execute("git", ["-C", repositoryPath, "branch", "--show-current"]),
+      execute("git", ["-C", repositoryPath, "status", "--porcelain"]),
+      readFile(join(repositoryPath, "README.md"), "utf8"),
+    ])
+
+    await service.archiveSessionWorkspace(workspace.path)
+    await service.archiveSessionWorkspace(workspace.path)
+
+    await expect(readFile(join(workspace.path, "README.md"), "utf8")).rejects.toThrow()
+    expect((await execute("git", ["-C", repositoryPath, "branch", "--list", workspace.branch])).stdout).toContain(workspace.branch)
+    expect((await execute("git", ["-C", repositoryPath, "rev-parse", `refs/domovoi/checkpoints/${checkpoint.commit}`])).stdout.trim()).toBe(checkpoint.commit)
+    const sourceAfter = await Promise.all([
+      execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"]),
+      execute("git", ["-C", repositoryPath, "branch", "--show-current"]),
+      execute("git", ["-C", repositoryPath, "status", "--porcelain"]),
+      readFile(join(repositoryPath, "README.md"), "utf8"),
+    ])
+    expect(sourceAfter.map((value) => typeof value === "string" ? value : value.stdout)).toEqual(
+      sourceBefore.map((value) => typeof value === "string" ? value : value.stdout),
+    )
+  })
+
   it("creates an isolated session worktree and checkpoint", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
     scratchDirectories.push(scratch)
