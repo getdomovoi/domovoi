@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, RpcParams, Runtime, SessionHistoryPage, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
 import { applyWorkspaceDelta } from "./workspace-delta"
@@ -192,6 +192,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.loadSessionHistory(sessionId, options)
   }, [])
 
+  const loadSessionEvidence = useCallback(async (sessionId: string): Promise<SessionEvidence> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.loadSessionEvidence(sessionId)
+  }, [])
+
   const listModels = useCallback(async (provider: string): Promise<ProviderModel[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -340,6 +346,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     createSession,
     listSkills,
     loadSessionHistory,
+    loadSessionEvidence,
     listModels,
     openProject,
     pauseAll,
