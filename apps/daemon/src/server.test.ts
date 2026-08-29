@@ -1864,9 +1864,13 @@ describe("DomovoiDaemon", () => {
   })
 
   it("records a project-scoped rule for standing approval", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.risk = "normal"
+    snapshot.approvals[0]!.operation = "Run the test suite"
+    snapshot.approvals[0]!.command = "pnpm test"
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -1899,8 +1903,8 @@ describe("DomovoiDaemon", () => {
         approvalRules: [
           expect.objectContaining({
             projectId: "project-acme-api",
-            operation: "Apply a production database migration",
-            command: "pnpm prisma migrate deploy",
+            operation: "Run the test suite",
+            command: "pnpm test",
             createdBy: "desktop",
           }),
         ],
@@ -3360,6 +3364,195 @@ describe("DomovoiDaemon", () => {
       `http://${address.host}:${address.port}/artifacts/${encodeURIComponent("../preview")}`,
     )
     expect(escaped.status).toBe(404)
+    socket.close()
+  })
+
+  it("rejects Build-auto before a turn when the provider cannot enforce it", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: true,
+    }
+    session.state = "idle"
+    session.workspacePath = "/worktrees/build-auto"
+    session.providerThreadId = "thread-build-auto"
+    delete session.activeTurnId
+    const agent = {
+      permissionCapabilities: { buildAuto: "unsupported" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-build-auto"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => snapshot,
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      agents: { codex: agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.send",
+      params: { sessionId: session.id, prompt: "Proceed", client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "Codex does not support enforceable Build auto",
+      },
+    })
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
+  it("auto-allows bounded work but keeps hard gates explicit", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: true,
+    }
+    session.state = "idle"
+    session.workspacePath = "/worktrees/build-auto"
+    session.providerThreadId = "thread-build-auto"
+    delete session.activeTurnId
+    snapshot.approvalRules.push({
+      id: "rule-publish",
+      projectId: snapshot.project!.id,
+      operation: "Publish package",
+      command: "pnpm publish",
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    })
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-build-auto"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Prepare the release",
+      client: "desktop",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 11,
+      threadId: session.providerThreadId,
+      turnId: "turn-build-auto",
+      command: "pnpm test",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 12,
+      threadId: session.providerThreadId,
+      turnId: "turn-build-auto",
+      command: "pnpm publish",
+    })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).toHaveBeenCalledWith(11, "allow-once")
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
+    expect(current).toMatchObject({
+      result: {
+        approvals: expect.arrayContaining([expect.objectContaining({
+          providerRequestId: 12,
+          command: "pnpm publish",
+          risk: "hard-gate",
+        })]),
+      },
+    })
+    const approvalId = (current.result as {
+      approvals: Array<{ id: string; providerRequestId?: number }>
+    }).approvals.find((approval) => approval.providerRequestId === 12)!.id
+    const rejectedRule = await rpc("approval.resolve", {
+      approvalId,
+      decision: "always-project",
+      client: "desktop",
+    })
+    expect(rejectedRule).toMatchObject({
+      error: {
+        code: -32602,
+        message: "Hard-gate approvals cannot create standing rules",
+      },
+    })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
     socket.close()
   })
 })

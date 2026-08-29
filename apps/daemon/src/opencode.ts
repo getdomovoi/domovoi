@@ -92,6 +92,7 @@ export function openCodeAgentFor(runtime: Runtime): string {
 }
 
 export class OpenCodeSdkAdapter implements AgentAdapter {
+  readonly permissionCapabilities = { buildAuto: "pre-execution" } as const
   readonly #factory: OpenCodeFactory
   readonly #id: () => string
   readonly #identity: OpenCodeAdapterIdentity
@@ -581,7 +582,7 @@ function ensureSuccess(result: OpenCodeResult<unknown>, action: string): void {
   if (result.error !== undefined) throw new Error(`${action} failed`)
 }
 
-const domovoiOpenCodeConfig: Config = {
+export const domovoiOpenCodeConfig: Config = {
   autoupdate: false,
   agent: {
     plan: {
@@ -597,6 +598,7 @@ const domovoiOpenCodeConfig: Config = {
         edit: "ask",
         bash: "ask",
         webfetch: "ask",
+        doom_loop: "ask",
         external_directory: "ask",
       },
     },
@@ -604,10 +606,11 @@ const domovoiOpenCodeConfig: Config = {
       mode: "primary",
       description: "Domovoi automatic build mode",
       permission: {
-        edit: "allow",
-        bash: "allow",
-        webfetch: "allow",
-        external_directory: "allow",
+        edit: "ask",
+        bash: "ask",
+        webfetch: "ask",
+        doom_loop: "ask",
+        external_directory: "ask",
       },
     },
   },

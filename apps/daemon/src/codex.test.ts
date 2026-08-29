@@ -171,6 +171,14 @@ describe("StdioCodexTransport", () => {
   })
 })
 
+describe("CodexAppServerAdapter permissions", () => {
+  it("rejects Build-auto because Codex cannot expose every tool before execution", () => {
+    expect(new CodexAppServerAdapter(() => new FakeTransport()).permissionCapabilities).toEqual({
+      buildAuto: "unsupported",
+    })
+  })
+})
+
 describe("CodexAppServerAdapter", () => {
   it("rejects in-flight work and reconnects after transport loss", async () => {
     const first = new FakeTransport()

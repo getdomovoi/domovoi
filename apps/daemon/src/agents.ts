@@ -19,7 +19,12 @@ export type AgentEvent =
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
   | { type: "turn-completed"; params: Record<string, unknown> }
 
+export type AgentPermissionCapabilities = Readonly<{
+  buildAuto: "pre-execution" | "unsupported"
+}>
+
 export interface AgentAdapter {
+  readonly permissionCapabilities?: AgentPermissionCapabilities
   connect(): Promise<void>
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
