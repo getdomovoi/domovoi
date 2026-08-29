@@ -362,6 +362,7 @@ export class DomovoiDaemon {
           try {
             const request = JSON.parse(raw) as { id?: unknown }
             if (typeof request.id === "string" || typeof request.id === "number") id = request.id
+            else return
           } catch {
             // The daemon is already shutting down; a stable unavailable response is sufficient.
           }

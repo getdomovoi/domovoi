@@ -138,15 +138,33 @@ describe("DomovoiDaemon", () => {
     })
 
     const stopping = daemon.stop()
-    const response = new Promise<Record<string, unknown>>((resolve) => {
-      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    const messages: Array<Record<string, unknown>> = []
+    socket.on("message", (data) => {
+      messages.push(JSON.parse(data.toString()) as Record<string, unknown>)
     })
+    const responseFor = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+    })
+    const response = responseFor(1)
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "workspace.get", params: {} }))
 
     await expect(response).resolves.toMatchObject({
       id: 1,
       error: { code: -32002, message: "Daemon is shutting down" },
     })
+    const barrier = responseFor(2)
+    socket.send(JSON.stringify({ jsonrpc: "2.0", method: "workspace.get", params: {} }))
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "workspace.get", params: {} }))
+    await barrier
+    expect(messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: null }),
+    ]))
     resolveInspection!([])
     await stopping
   })
