@@ -319,13 +319,12 @@ export class DomovoiClient extends EventTarget {
 
   loadSessionHistory(
     sessionId: string,
-    before?: string,
-    limit = 50,
+    options: Omit<RpcParams<"session.history">, "sessionId"> = { limit: 50 },
   ): Promise<SessionHistoryPage> {
     return this.request("session.history", {
       sessionId,
-      ...(before ? { before } : {}),
-      limit,
+      ...options,
+      limit: options.limit ?? 50,
     })
   }
 
