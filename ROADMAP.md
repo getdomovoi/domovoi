@@ -62,7 +62,10 @@ access.
   - Broadcast bounded typed deltas and debounce canonical persistence instead of sending the
     complete growing snapshot for every token.
   - Keep complete durable history while paging older items behind a bounded recent window.
-- [ ] Drain queued events before persistence shutdown
+- [x] Drain queued events before persistence shutdown
+  - Reject new RPC and provider events after shutdown starts while draining already-queued work.
+  - Persist the final canonical state before provider and SQLite cleanup, with restart recovery
+    coverage.
 - [x] Add subprocess deadlines and cancellation to Git operations
 - [ ] Recover Codex cleanly after its subprocess exits
 - [ ] Add browser RPC response deadlines and cancellation
