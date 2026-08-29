@@ -1517,6 +1517,15 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session has no worktree")
           return
         }
+        if (session.activeTurnId) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Stop the active turn before creating a checkpoint",
+          )
+          return
+        }
         const label = params.label ?? "manual"
         const checkpoint = await withAbortTimeout(
           (signal) => this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
