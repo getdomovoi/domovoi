@@ -486,6 +486,17 @@ export const testEvidenceSchema = z.object({
   runs: z.array(testRunEvidenceSchema).max(maximumSessionEvidenceRuns),
   runsTruncated: z.boolean(),
 }).strict().superRefine((tests, context) => {
+  const runIds = new Set<string>()
+  tests.runs.forEach((run, index) => {
+    if (runIds.has(run.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["runs", index, "id"],
+        message: "Observed command-run IDs must be unique",
+      })
+    }
+    runIds.add(run.id)
+  })
   if (tests.passed + tests.failed !== tests.totalRuns) {
     context.addIssue({
       code: "custom",
@@ -503,10 +514,17 @@ export const testEvidenceSchema = z.object({
       message: "Command-run total must describe the bounded run list",
     })
   }
+  const visiblePassed = tests.runs.filter((run) => run.status === "passed").length
+  const visibleFailed = tests.runs.length - visiblePassed
+  if (visiblePassed > tests.passed || visibleFailed > tests.failed) {
+    context.addIssue({
+      code: "custom",
+      path: ["runs"],
+      message: "Visible command-run statuses cannot exceed aggregate counts",
+    })
+  }
   if (!tests.runsTruncated) {
-    const passed = tests.runs.filter((run) => run.status === "passed").length
-    const failed = tests.runs.length - passed
-    if (passed !== tests.passed || failed !== tests.failed) {
+    if (visiblePassed !== tests.passed || visibleFailed !== tests.failed) {
       context.addIssue({
         code: "custom",
         path: ["runs"],
