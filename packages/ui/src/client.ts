@@ -38,16 +38,53 @@ class DaemonRpcError extends Error {
   }
 }
 
+export class DomovoiRpcTimeoutError extends Error {
+  readonly method: RpcMethod
+  readonly timeoutMs: number
+
+  constructor(method: RpcMethod, timeoutMs: number) {
+    super(`Daemon RPC request ${method} timed out after ${timeoutMs}ms`)
+    this.name = "DomovoiRpcTimeoutError"
+    this.method = method
+    this.timeoutMs = timeoutMs
+  }
+}
+
+export type DomovoiRequestOptions = {
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
 type PendingRequest = {
   parse: (value: unknown) => unknown
   resolve: (value: unknown) => void
   reject: (error: Error) => void
+  cleanup: () => void
 }
 
 type DomovoiClientOptions = {
   reconnectDelayMs?: number
+  requestTimeoutMs?: number
   authToken?: string
   clientId?: string
+}
+
+const defaultRequestTimeoutMs = 120_000
+const maximumRequestTimeoutMs = 2_147_483_647
+
+function requestTimeout(value: number | undefined, fallback: number): number {
+  const timeoutMs = value ?? fallback
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > maximumRequestTimeoutMs) {
+    throw new RangeError(
+      `RPC request timeout must be between 1 and ${maximumRequestTimeoutMs} milliseconds`,
+    )
+  }
+  return timeoutMs
+}
+
+function requestAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  return new DOMException("Daemon RPC request aborted", "AbortError")
 }
 
 export class DomovoiClient extends EventTarget {
@@ -62,6 +99,7 @@ export class DomovoiClient extends EventTarget {
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined
   #shouldReconnect = false
   #authToken: string | undefined
+  #requestTimeoutMs: number
 
   constructor(url: string, kind: ClientKind, options: DomovoiClientOptions = {}) {
     super()
@@ -69,6 +107,7 @@ export class DomovoiClient extends EventTarget {
     this.kind = kind
     this.clientId = options.clientId ?? crypto.randomUUID()
     this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000
+    this.#requestTimeoutMs = requestTimeout(options.requestTimeoutMs, defaultRequestTimeoutMs)
     this.#authToken = options.authToken
   }
 
@@ -152,30 +191,72 @@ export class DomovoiClient extends EventTarget {
     socket?.close(1000, "client closed")
   }
 
-  request<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>>
+  request<M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<M>>
   request<M extends RpcMethod, T>(
     method: M,
     params: RpcParams<M>,
     parse: (value: unknown) => T,
+    options?: DomovoiRequestOptions,
   ): Promise<T>
   request<M extends RpcMethod, T>(
     method: M,
     params: RpcParams<M>,
-    parse?: (value: unknown) => T,
+    parseOrOptions?: ((value: unknown) => T) | DomovoiRequestOptions,
+    requestOptions: DomovoiRequestOptions = {},
   ): Promise<T> {
     const id = ++this.#requestId
+    const parse = typeof parseOrOptions === "function" ? parseOrOptions : undefined
+    const options = typeof parseOrOptions === "function" ? requestOptions : (parseOrOptions ?? {})
     const resultParser = parse ?? ((value: unknown) => rpcMethods[method].result.parse(value) as T)
+    const timeoutMs = requestTimeout(options.timeoutMs, this.#requestTimeoutMs)
     return new Promise((resolve, reject) => {
       if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Daemon connection is not open"))
         return
       }
-      this.#pending.set(id, {
+      if (options.signal?.aborted) {
+        reject(requestAbortError(options.signal))
+        return
+      }
+
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const onAbort = () => {
+        const pending = this.#pending.get(id)
+        if (!pending) return
+        this.#pending.delete(id)
+        pending.cleanup()
+        pending.reject(requestAbortError(options.signal!))
+      }
+      const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer)
+        options.signal?.removeEventListener("abort", onAbort)
+      }
+      const pending: PendingRequest = {
         parse: resultParser,
         resolve: (value) => resolve(value as T),
         reject,
-      })
-      this.#socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+        cleanup,
+      }
+      this.#pending.set(id, pending)
+      timer = setTimeout(() => {
+        if (this.#pending.get(id) !== pending) return
+        this.#pending.delete(id)
+        pending.cleanup()
+        pending.reject(new DomovoiRpcTimeoutError(method, timeoutMs))
+      }, timeoutMs)
+      options.signal?.addEventListener("abort", onAbort, { once: true })
+
+      try {
+        this.#socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      } catch (cause) {
+        if (this.#pending.get(id) === pending) this.#pending.delete(id)
+        pending.cleanup()
+        pending.reject(cause instanceof Error ? cause : new Error("Daemon RPC request failed"))
+      }
     })
   }
 
@@ -364,8 +445,12 @@ export class DomovoiClient extends EventTarget {
   }
 
   #rejectPending(error: Error): void {
-    for (const pending of this.#pending.values()) pending.reject(error)
+    const pendingRequests = [...this.#pending.values()]
     this.#pending.clear()
+    for (const pending of pendingRequests) {
+      pending.cleanup()
+      pending.reject(error)
+    }
   }
 
   #receive(raw: string): void {
@@ -420,6 +505,7 @@ export class DomovoiClient extends EventTarget {
     const pending = this.#pending.get(response.data.id)
     if (!pending) return
     this.#pending.delete(response.data.id)
+    pending.cleanup()
 
     if (response.data.error) {
       if (response.data.error.code === daemonAuthenticationErrorCode) {
