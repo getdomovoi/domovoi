@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -122,6 +122,21 @@ describe("CheckpointThreadItem", () => {
 
     expect(restorable).toContain("Restore worktree")
     expect(legacy).not.toContain("Restore worktree")
+  })
+
+  it("keeps an open confirmation inert when the session becomes archived", () => {
+    const onRestore = vi.fn()
+    const action = CheckpointRestoreAction({
+      checkpointId: "checkpoint-1",
+      disabled: true,
+      onRestore,
+    })
+
+    expect(action.props.disabled).toBe(true)
+    action.props.onClick()
+    expect(onRestore).not.toHaveBeenCalled()
+    expect(checkpointRestoreBlocked(false, true)).toBe(true)
+    expect(checkpointRestoreBlocked(false, false)).toBe(false)
   })
 })
 
