@@ -64,6 +64,7 @@ describe("workspace protocol", () => {
         checkpointCommit: checkpoint.commit,
         requestId: "fork-request-1",
         client: "desktop" as const,
+        requestedRuntime: source.runtime,
       },
     }
     snapshot.sessions.push(fork)
@@ -85,6 +86,16 @@ describe("workspace protocol", () => {
       providerThreadId: "provider-thread-fork-duplicate",
     })
     expect(workspaceSnapshotSchema.safeParse(duplicateRequest).success).toBe(false)
+
+    const truncated = structuredClone(snapshot)
+    truncated.thread = truncated.thread.filter((item) => item.id !== checkpoint.id)
+    expect(workspaceSnapshotSchema.safeParse(truncated).success).toBe(false)
+    const truncatedClient = { ...truncated, historyTruncated: true }
+    expect(workspaceSnapshotSchema.safeParse(truncatedClient).success).toBe(true)
+
+    const presentMismatch = structuredClone(truncatedClient)
+    presentMismatch.thread.push({ ...checkpoint, sessionId: snapshot.sessions[1]!.id })
+    expect(workspaceSnapshotSchema.safeParse(presentMismatch).success).toBe(false)
   })
 
   it("models durable session archive lifecycle and requests", () => {
