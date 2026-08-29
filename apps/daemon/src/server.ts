@@ -23,6 +23,7 @@ import {
   type RpcParams,
   type RpcMethod,
   type SessionHistoryPage,
+  type SessionHistoryEntry,
   type ClientKind,
   type Runtime,
   type TerminalOwner,
@@ -156,11 +157,121 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): Workspa
   return { ...snapshot, thread }
 }
 
+export function isTestCommandTitle(title: string): boolean {
+  const command = title.trim().toLocaleLowerCase()
+  const testScript = "test(?:[:.-][\\w.-]+)?(?:\\s|$)"
+  return new RegExp(
+    `^(?:(?:npm|yarn|bun)\\s+(?:run\\s+)?${testScript}`
+      + `|pnpm(?:\\s+--filter\\s+\\S+)*\\s+(?:run\\s+)?${testScript}`
+      + "|(?:npx\\s+)?(?:vitest|jest)(?:\\s|$)|pytest(?:\\s|$)"
+      + "|(?:go|cargo|dotnet|swift|mix)\\s+test(?:\\s|$)"
+      + "|(?:\\./)?gradle(?:w)?\\s+test(?:\\s|$)|mvn(?:\\s+\\S+)*\\s+test(?:\\s|$))",
+  ).test(command)
+}
+
+function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
+  return item.id.startsWith("handoff-") || item.body.startsWith("Handed off ")
+}
+
+export function sessionHistoryEntries(
+  snapshot: WorkspaceSnapshot,
+  sessionId: string,
+): SessionHistoryEntry[] {
+  const entries: SessionHistoryEntry[] = []
+  for (const item of snapshot.thread) {
+    if (item.sessionId !== sessionId) continue
+    const base = {
+      id: `thread:${item.id}`,
+      sourceId: item.id,
+      sessionId,
+      createdAt: item.createdAt,
+    }
+    if (item.kind === "checkpoint") {
+      entries.push({ ...base, category: "checkpoints", label: item.label, ...(item.commit ? { commit: item.commit } : {}) })
+    } else if (item.kind === "user" || item.kind === "assistant") {
+      entries.push({ ...base, category: "messages", role: item.kind, body: item.body })
+    } else if (item.kind === "system") {
+      entries.push(isProviderHandoff(item)
+        ? { ...base, category: "handoffs", body: item.body, ...(item.detail ? { detail: item.detail } : {}) }
+        : { ...base, category: "messages", role: "system", body: item.body, ...(item.detail ? { detail: item.detail } : {}) })
+    } else if (item.kind === "receipt") {
+      entries.push({
+        ...base,
+        category: "approvals",
+        decision: item.decision,
+        operation: item.operation,
+        checkpoint: item.checkpoint,
+        client: item.client,
+        ...(item.explanation ? { explanation: item.explanation } : {}),
+      })
+    } else {
+      entries.push({
+        ...base,
+        category: isTestCommandTitle(item.title) ? "tests" : "tools",
+        tool: item.tool,
+        status: item.status,
+        title: item.title,
+        ...(item.output !== undefined ? { output: item.output } : {}),
+      })
+    }
+  }
+  for (const annotation of snapshot.annotations) {
+    if (annotation.sessionId !== sessionId) continue
+    entries.push({
+      id: `annotation:${annotation.id}`,
+      sourceId: annotation.id,
+      sessionId,
+      category: "annotations",
+      annotationId: annotation.id,
+      action: "created",
+      body: annotation.body,
+      origin: annotation.origin,
+      artifactId: annotation.artifactId,
+      status: annotation.status,
+      createdAt: annotation.createdAt,
+    })
+    for (const reply of annotation.thread) {
+      entries.push({
+        id: `annotation-reply:${annotation.id}:${reply.id}`,
+        sourceId: reply.id,
+        sessionId,
+        category: "annotations",
+        annotationId: annotation.id,
+        action: "reply",
+        body: reply.body,
+        origin: reply.origin,
+        createdAt: reply.createdAt,
+      })
+    }
+  }
+  return entries.sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+  )
+}
+
+function sessionHistorySearchText(entry: SessionHistoryEntry): string {
+  if (entry.category === "messages") return `${entry.body}\n${entry.detail ?? ""}`
+  if (entry.category === "tools" || entry.category === "tests") {
+    return `${entry.title}\n${entry.output ?? ""}\n${entry.status}\n${entry.tool}`
+  }
+  if (entry.category === "approvals") {
+    return `${entry.operation}\n${entry.decision}\n${entry.checkpoint}\n${entry.client}\n${entry.explanation ?? ""}`
+  }
+  if (entry.category === "handoffs") return `${entry.body}\n${entry.detail ?? ""}`
+  if (entry.category === "checkpoints") return `${entry.label}\n${entry.commit ?? ""}`
+  return `${entry.body}\n${entry.origin}\n${entry.artifactId ?? ""}\n${entry.status ?? ""}`
+}
+
 export function sessionHistoryPage(
   snapshot: WorkspaceSnapshot,
   params: RpcParams<"session.history">,
 ): SessionHistoryPage | undefined {
-  const history = snapshot.thread.filter((item) => item.sessionId === params.sessionId)
+  const categories = params.categories ? new Set(params.categories) : undefined
+  const query = params.query?.toLocaleLowerCase()
+  const history = sessionHistoryEntries(snapshot, params.sessionId).filter((entry) =>
+    (!categories || categories.has(entry.category))
+    && (!query || sessionHistorySearchText(entry).toLocaleLowerCase().includes(query))
+  )
   const end = params.before
     ? history.findIndex((item) => item.id === params.before)
     : history.length
