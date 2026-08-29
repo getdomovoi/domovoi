@@ -386,7 +386,7 @@ export const workspaceSnapshotSchema = z.object({
       } else if (!checkpoint && !snapshot.historyTruncated) {
         context.addIssue({
           code: "custom",
-          message: "Fork checkpoint must belong to the source session",
+          message: "Fork checkpoint must exist unless snapshot history is truncated",
           path: ["sessions", index, "forkedFrom", "checkpointId"],
         })
       }

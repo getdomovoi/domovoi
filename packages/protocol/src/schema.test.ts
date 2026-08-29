@@ -89,7 +89,15 @@ describe("workspace protocol", () => {
 
     const truncated = structuredClone(snapshot)
     truncated.thread = truncated.thread.filter((item) => item.id !== checkpoint.id)
-    expect(workspaceSnapshotSchema.safeParse(truncated).success).toBe(false)
+    const missingCheckpoint = workspaceSnapshotSchema.safeParse(truncated)
+    expect(missingCheckpoint.success).toBe(false)
+    if (!missingCheckpoint.success) expect(missingCheckpoint.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Fork checkpoint must exist unless snapshot history is truncated",
+        }),
+      ]),
+    )
     const truncatedClient = { ...truncated, historyTruncated: true }
     expect(workspaceSnapshotSchema.safeParse(truncatedClient).success).toBe(true)
 
