@@ -7,6 +7,7 @@ import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  createEmptyWorkspace,
   demoWorkspace,
   maximumWorkspaceDeltaChunkLength,
   type ProviderModel,
@@ -54,6 +55,214 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("drains queued events once and rejects late shutdown events", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-shutdown"
+    session.activeTurnId = "turn-shutdown"
+    const saves: typeof snapshot[] = []
+    const order: string[] = []
+    const store: WorkspaceStore = {
+      load: () => structuredClone(snapshot),
+      save: (next) => {
+        order.push("save")
+        saves.push(structuredClone(next))
+      },
+      close: () => { order.push("store:close") },
+    }
+    let listener: ((event: AgentEvent) => void) | undefined
+    const unsubscribe = vi.fn()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return unsubscribe
+      }),
+      close: vi.fn(async () => { order.push("agent:close") }),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, authToken: "shutdown-token", store, agent })
+    await daemon.start()
+
+    listener!({
+      type: "text-delta",
+      threadId: "thread-shutdown",
+      turnId: "turn-shutdown",
+      delta: "queued before shutdown",
+    })
+    const firstStop = daemon.stop()
+    listener!({
+      type: "text-delta",
+      threadId: "thread-shutdown",
+      turnId: "turn-shutdown",
+      delta: "late after shutdown",
+    })
+    await Promise.all([firstStop, daemon.stop()])
+
+    const persisted = saves.at(-1)!
+    expect(persisted.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "assistant", body: "queued before shutdown" }),
+    ]))
+    expect(persisted.thread).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ body: expect.stringContaining("late after shutdown") }),
+    ]))
+    expect(saves).toHaveLength(1)
+    expect(unsubscribe).toHaveBeenCalledOnce()
+    expect(agent.close).toHaveBeenCalledOnce()
+    expect(order.at(-1)).toBe("store:close")
+  })
+
+  it("rejects RPC work after shutdown begins", async () => {
+    let resolveInspection: ((providers: []) => void) | undefined
+    const providerProbe = {
+      inspect: vi.fn(() => new Promise<[]>((resolve) => { resolveInspection = resolve })),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "shutdown-token",
+      statePath: ":memory:",
+      providerProbe,
+    })
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const stopping = daemon.stop()
+    const messages: Array<Record<string, unknown>> = []
+    socket.on("message", (data) => {
+      messages.push(JSON.parse(data.toString()) as Record<string, unknown>)
+    })
+    const responseFor = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+    })
+    const response = responseFor(1)
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "workspace.get", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: { code: -32002, message: "Daemon is shutting down" },
+    })
+    const barrier = responseFor(2)
+    socket.send(JSON.stringify({ jsonrpc: "2.0", method: "workspace.get", params: {} }))
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "workspace.get", params: {} }))
+    await barrier
+    expect(messages).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: null }),
+    ]))
+    resolveInspection!([])
+    await stopping
+  })
+
+  it("restores the final queued event after a shutdown restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-shutdown-"))
+    scratchDirectories.push(directory)
+    const statePath = join(directory, "state.sqlite")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-restart"
+    session.activeTurnId = "turn-restart"
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "restart-token",
+      statePath,
+      store: new SqliteWorkspaceStore(statePath, snapshot),
+      agent,
+    })
+    await daemon.start()
+
+    listener!({
+      type: "text-delta",
+      threadId: "thread-restart",
+      turnId: "turn-restart",
+      delta: "persist me before close",
+    })
+    await daemon.stop()
+
+    const recoveredStore = new SqliteWorkspaceStore(statePath, demoWorkspace)
+    const recovered = recoveredStore.load()
+    recoveredStore.close()
+    expect(recovered.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "assistant", body: "persist me before close" }),
+    ]))
+  })
+
+  it("closes providers and storage when the final shutdown save fails", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-save-failure"
+    session.activeTurnId = "turn-save-failure"
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(() => { throw new Error("disk full") }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, authToken: "failure-token", store, agent })
+    await daemon.start()
+    listener!({
+      type: "text-delta",
+      threadId: "thread-save-failure",
+      turnId: "turn-save-failure",
+      delta: "cannot persist",
+    })
+
+    await expect(daemon.stop()).rejects.toThrow("Domovoi shutdown failed")
+    expect(agent.close).toHaveBeenCalledOnce()
+    expect(store.close).toHaveBeenCalledOnce()
+  })
+
   it("bounds client snapshots without deleting durable session history", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -1733,9 +1942,24 @@ describe("DomovoiDaemon", () => {
         recoveryCommit: "c".repeat(40),
       })),
     } satisfies WorkspaceService
+    const initialSnapshot = createEmptyWorkspace({
+      id: "machine-orchestration",
+      name: "orchestration-test",
+      platform: process.platform,
+      arch: process.arch,
+      version: "0.0.1",
+      connection: "local",
+      reachable: true,
+      providers: [],
+    })
+    const store = {
+      load: vi.fn(() => structuredClone(initialSnapshot)),
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
     const daemon = new DomovoiDaemon({
       port: 0,
-      statePath: ":memory:",
+      store,
       agents: { codex: agent },
       workspaceService,
       agentTimeoutMs: 100,
@@ -1860,7 +2084,9 @@ describe("DomovoiDaemon", () => {
       "Focus on the failing test first",
     )
 
+    await rpc("workspace.get", {})
     notifications.length = 0
+    const savesBeforeStream = store.save.mock.calls.length
     for (const listener of agentListeners) {
       listener({
         type: "text-delta",
@@ -1890,7 +2116,7 @@ describe("DomovoiDaemon", () => {
     await vi.waitFor(() => expect(notifications.filter(
       (notification) => notification.method === "workspace.delta",
     )).toHaveLength(4))
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await vi.waitFor(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
     expect(notifications).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
     ]))
