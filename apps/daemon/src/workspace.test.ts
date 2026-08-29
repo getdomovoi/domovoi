@@ -16,7 +16,7 @@ afterEach(async () => {
 })
 
 describe("GitWorkspaceService", () => {
-  it("archives only the session worktree while retaining its branch and source repository", async () => {
+  it("archives only the session worktree while retaining its branch and source checkout", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-archive-"))
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
