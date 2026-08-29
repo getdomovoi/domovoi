@@ -290,6 +290,21 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.create", { title, runtime, client: this.kind })
   }
 
+  forkSession(
+    sessionId: string,
+    checkpointId: string,
+    runtime: Runtime,
+    requestId: string,
+  ): Promise<WorkspaceSnapshot> {
+    return this.request("session.fork", {
+      sessionId,
+      checkpointId,
+      runtime,
+      requestId,
+      client: this.kind,
+    })
+  }
+
   sendMessage(sessionId: string, prompt: string): Promise<WorkspaceSnapshot> {
     return this.request("session.send", { sessionId, prompt, client: this.kind })
   }
