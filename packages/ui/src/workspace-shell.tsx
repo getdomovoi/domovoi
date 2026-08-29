@@ -759,13 +759,42 @@ export function CheckpointThreadItem({
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => onRestore(item.id)}>Restore worktree</AlertDialogAction>
+              <CheckpointRestoreAction
+                checkpointId={item.id}
+                disabled={disabled}
+                onRestore={onRestore}
+              />
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
       ) : null}
     </div>
   )
+}
+
+export function CheckpointRestoreAction({
+  checkpointId,
+  disabled,
+  onRestore,
+}: {
+  checkpointId: string
+  disabled: boolean
+  onRestore: (checkpointId: string) => void
+}) {
+  return (
+    <AlertDialogAction
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onRestore(checkpointId)
+      }}
+    >
+      Restore worktree
+    </AlertDialogAction>
+  )
+}
+
+export function checkpointRestoreBlocked(pending: boolean, archiveReadOnly: boolean): boolean {
+  return pending || archiveReadOnly
 }
 
 export function checkpointBlockedReason(activeTurnId: string | undefined): string | undefined {
@@ -901,7 +930,7 @@ export function Thread({
   }
 
   const restoreCheckpoint = async (checkpointId: string) => {
-    if (pending) return
+    if (checkpointRestoreBlocked(pending, archiveReadOnly)) return
     setPending(true)
     setSendError("")
     try {
