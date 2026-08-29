@@ -8,6 +8,7 @@ import {
   FileDiffIcon,
   FileTextIcon,
   FolderOpenIcon,
+  HistoryIcon,
   LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
@@ -31,7 +32,10 @@ import type {
   PermissionMode,
   ProviderModel,
   ProviderRuntime,
+  RpcParams,
   Runtime,
+  SessionHistoryCategory,
+  SessionHistoryPage,
   SessionSummary,
   SkillSummary,
   ThreadItem,
@@ -117,6 +121,12 @@ import {
   selectRuntimeModel,
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
+import {
+  mergeOlderHistory,
+  sessionHistoryCategories,
+  sessionHistoryEntryDetail,
+  sessionHistoryEntryTitle,
+} from "./session-history"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -1143,6 +1153,146 @@ export function RuntimeControls({
   )
 }
 
+export function HistoryPanel({
+  sessionId,
+  connected,
+  onLoad,
+}: {
+  sessionId: string | null
+  connected: boolean
+  onLoad: (
+    sessionId: string,
+    options?: Omit<RpcParams<"session.history">, "sessionId">,
+  ) => Promise<SessionHistoryPage>
+}) {
+  const [categories, setCategories] = useState<SessionHistoryCategory[]>(() =>
+    sessionHistoryCategories.map(({ value }) => value)
+  )
+  const [query, setQuery] = useState("")
+  const [page, setPage] = useState<SessionHistoryPage>()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
+  const requestRef = useRef(0)
+  const filterKey = `${categories.join(",")}:${query.trim()}`
+
+  useEffect(() => {
+    const request = ++requestRef.current
+    setPage(undefined)
+    setError("")
+    if (!sessionId || !connected) {
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    void onLoad(sessionId, {
+      categories,
+      ...(query.trim() ? { query: query.trim() } : {}),
+      limit: 50,
+    }).then(
+      (next) => { if (request === requestRef.current) setPage(next) },
+      (cause: unknown) => {
+        if (request === requestRef.current) {
+          setError(cause instanceof Error ? cause.message : "Session history could not be loaded")
+        }
+      },
+    ).finally(() => {
+      if (request === requestRef.current) setLoading(false)
+    })
+    return () => { requestRef.current += 1 }
+  }, [connected, filterKey, onLoad, sessionId])
+
+  const toggleCategory = (category: SessionHistoryCategory) => {
+    if (categories.includes(category) && categories.length === 1) return
+    setPage(undefined)
+    setCategories((current) => current.includes(category)
+      ? current.length === 1 ? current : current.filter((value) => value !== category)
+      : sessionHistoryCategories.map(({ value }) => value).filter(
+        (value) => value === category || current.includes(value),
+      ))
+  }
+
+  const loadOlder = async () => {
+    if (!sessionId || !page?.hasMore || !page.nextCursor || loading) return
+    const request = ++requestRef.current
+    setLoading(true)
+    setError("")
+    try {
+      const older = await onLoad(sessionId, {
+        categories,
+        ...(query.trim() ? { query: query.trim() } : {}),
+        before: page.nextCursor,
+        limit: 50,
+      })
+      if (request === requestRef.current) setPage((current) =>
+        current ? mergeOlderHistory(current, older) : older
+      )
+    } catch (cause) {
+      if (request === requestRef.current) {
+        setError(cause instanceof Error ? cause.message : "Older history could not be loaded")
+      }
+    } finally {
+      if (request === requestRef.current) setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-col gap-2 border-b p-3">
+        <div className="relative">
+          <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
+          <Input
+            aria-label="Search session history"
+            className="pl-8 font-machine text-[10px]"
+            placeholder="Search recorded history"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {sessionHistoryCategories.map(({ value, label }) => (
+            <Button
+              key={value}
+              type="button"
+              size="xs"
+              variant={categories.includes(value) ? "secondary" : "ghost"}
+              aria-pressed={categories.includes(value)}
+              onClick={() => toggleCategory(value)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="flex flex-col p-3">
+          {page?.items.map((entry) => {
+            const detail = sessionHistoryEntryDetail(entry)
+            return (
+              <div key={entry.id} className="flex gap-3 border-b py-3 last:border-b-0">
+                <span className="mt-1 size-2 shrink-0 rounded-full bg-primary" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="min-w-0 flex-1 break-words text-[12px] font-medium">{sessionHistoryEntryTitle(entry)}</span>
+                    <span className="font-machine text-[9px] text-faint">{entry.createdAt.slice(11, 16)}</span>
+                  </div>
+                  <Badge variant="outline" className="mt-1 font-machine text-[8px]">{entry.category}</Badge>
+                  {detail ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-machine text-[10px] leading-relaxed text-muted-foreground">{detail}</pre> : null}
+                </div>
+              </div>
+            )
+          })}
+          {!loading && !error && page?.items.length === 0 ? (
+            <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
+          ) : null}
+          {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+          {page?.hasMore ? <Button className="my-3 self-center" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
+          {loading && !page ? <p role="status" className="p-4 text-center font-machine text-[10px] text-faint">Loading history</p> : null}
+        </div>
+      </ScrollArea>
+    </div>
+  )
+}
+
 function ArtifactDock({
   snapshot,
   onCollapse,
@@ -1154,6 +1304,7 @@ function ArtifactDock({
   onReplyToAnnotation,
   onSetAnnotationStatus,
   onCreateAnnotation,
+  onLoadSessionHistory,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
@@ -1170,6 +1321,10 @@ function ArtifactDock({
     anchor: Annotation["anchor"]
     body: string
   }) => Promise<void>
+  onLoadSessionHistory: (
+    sessionId: string,
+    options?: Omit<RpcParams<"session.history">, "sessionId">,
+  ) => Promise<SessionHistoryPage>
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
@@ -1297,6 +1452,7 @@ function ArtifactDock({
               {openAnnotations.length ? <Badge variant="outline" className="h-4 px-1 text-[8px]">{openAnnotations.length}</Badge> : null}
             </TabsTrigger>
             <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
+            <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
           <Button variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
@@ -1393,6 +1549,13 @@ function ArtifactDock({
               sessionId={snapshot.activeSessionId}
             />
           </Suspense>
+        </TabsContent>
+        <TabsContent value="history" className="min-h-0">
+          <HistoryPanel
+            sessionId={snapshot.activeSessionId}
+            connected={connected}
+            onLoad={onLoadSessionHistory}
+          />
         </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
@@ -1622,7 +1785,7 @@ function SidebarRail({
 }
 
 function DockRail({ onExpand }: { onExpand: () => void }) {
-  const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon]
+  const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
   return (
     <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
@@ -1645,6 +1808,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createTerminal,
     listModels,
     listSkills,
+    loadSessionHistory,
     openProject,
     pauseAll,
     pauseSession,
@@ -1794,7 +1958,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>
