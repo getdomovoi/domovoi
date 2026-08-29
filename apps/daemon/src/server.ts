@@ -213,6 +213,7 @@ export class DomovoiDaemon {
   #agentConnections = new Map<string, Promise<void>>()
   #providerModels = new Map<string, { models: ProviderModel[]; cachedAt: number }>()
   #providerModelRequests = new Map<string, Promise<ProviderModel[]>>()
+  #providerEpochs = new Map<string, number>()
   #loadedAgentThreads = new Set<string>()
   #unsubscribeAgents: Array<() => void>
   #mutations = new ResourceMutationQueue((error) => {
@@ -290,10 +291,14 @@ export class DomovoiDaemon {
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         if (this.#stopping || this.#stopped) return
-        void this.#mutations.enqueue(
-          this.#resourceForAgentEvent(provider, event),
-          () => this.#handleAgentEvent(provider, event),
-        )
+        if (event.type === "provider-disconnected") {
+          void this.#enqueueMutation(() => this.#handleAgentEvent(provider, event))
+        } else {
+          void this.#mutations.enqueue(
+            this.#resourceForAgentEvent(provider, event),
+            () => this.#handleAgentEvent(provider, event),
+          )
+        }
       }),
     )
   }
@@ -555,8 +560,9 @@ export class DomovoiDaemon {
     const agent = this.#agents.require(provider)
     if (this.#connectedAgents.has(provider)) return agent
     if (!this.#agentConnections.has(provider)) {
+      const epoch = this.#providerEpoch(provider)
       const connection = agent.connect().then(() => {
-        this.#connectedAgents.add(provider)
+        if (this.#providerEpoch(provider) === epoch) this.#connectedAgents.add(provider)
       })
       this.#agentConnections.set(provider, connection)
       void connection.then(
@@ -564,11 +570,18 @@ export class DomovoiDaemon {
         () => { if (this.#agentConnections.get(provider) === connection) this.#agentConnections.delete(provider) },
       )
     }
+    const pendingConnection = this.#agentConnections.get(provider)!
     await withTimeout(
-      this.#agentConnections.get(provider)!,
+      pendingConnection,
       this.#agentTimeoutMs,
       "Agent setup timed out",
     )
+    if (!this.#connectedAgents.has(provider)) {
+      if (this.#agentConnections.get(provider) === pendingConnection) {
+        this.#agentConnections.delete(provider)
+      }
+      throw new Error(`Agent provider ${provider} disconnected during setup`)
+    }
     return agent
   }
 
@@ -577,10 +590,11 @@ export class DomovoiDaemon {
     if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
     const agent = await this.#ensureAgentConnected(provider)
     if (!this.#providerModelRequests.has(provider)) {
+      const epoch = this.#providerEpoch(provider)
       const discovery = agent.listModels().then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === provider)
-        if (parsed.length > 0) {
+        if (parsed.length > 0 && this.#providerEpoch(provider) === epoch) {
           this.#providerModels.set(provider, { models: parsed, cachedAt: Date.now() })
         }
         return parsed
@@ -1577,6 +1591,10 @@ export class DomovoiDaemon {
   }
 
   async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
+    if (event.type === "provider-disconnected") {
+      this.#handleProviderDisconnect(provider, event.reason)
+      return
+    }
     const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
     const session = this.#snapshot.sessions.find(
@@ -1803,6 +1821,53 @@ export class DomovoiDaemon {
     } else {
       this.#flushAgentState()
     }
+  }
+
+  #handleProviderDisconnect(provider: string, reason: string): void {
+    const hadConnection = this.#connectedAgents.delete(provider)
+      || this.#agentConnections.has(provider)
+      || this.#providerModels.has(provider)
+      || this.#providerModelRequests.has(provider)
+      || [...this.#loadedAgentThreads].some((key) => key.startsWith(`${provider}\u0000`))
+    this.#agentConnections.delete(provider)
+    this.#providerModels.delete(provider)
+    this.#providerModelRequests.delete(provider)
+    this.#providerEpochs.set(provider, this.#providerEpoch(provider) + 1)
+    for (const key of [...this.#loadedAgentThreads]) {
+      if (key.startsWith(`${provider}\u0000`)) this.#loadedAgentThreads.delete(key)
+    }
+    if (!hadConnection) return
+
+    const createdAt = new Date().toISOString()
+    const providerName = provider === "codex" ? "Codex" : provider
+    let changed = false
+    const affectedSessionIds = new Set<string>()
+    for (const session of this.#snapshot.sessions) {
+      if (session.runtime.provider !== provider || !session.providerThreadId) continue
+      affectedSessionIds.add(session.id)
+      session.state = "failed"
+      delete session.activeTurnId
+      session.updatedAt = createdAt
+      this.#snapshot.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId: session.id,
+        kind: "system",
+        body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
+        detail: reason,
+        createdAt,
+      })
+      changed = true
+    }
+    if (affectedSessionIds.size > 0) {
+      this.#snapshot.approvals = this.#snapshot.approvals.filter(
+        (approval) => !affectedSessionIds.has(approval.sessionId),
+      )
+    }
+    if (changed) this.#flushAgentState()
+  }
+
+  #providerEpoch(provider: string): number {
+    return this.#providerEpochs.get(provider) ?? 0
   }
 
   async #pauseSessions(
