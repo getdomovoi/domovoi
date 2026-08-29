@@ -7,6 +7,7 @@ import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  createEmptyWorkspace,
   demoWorkspace,
   maximumWorkspaceDeltaChunkLength,
   type ProviderModel,
@@ -1941,9 +1942,24 @@ describe("DomovoiDaemon", () => {
         recoveryCommit: "c".repeat(40),
       })),
     } satisfies WorkspaceService
+    const initialSnapshot = createEmptyWorkspace({
+      id: "machine-orchestration",
+      name: "orchestration-test",
+      platform: process.platform,
+      arch: process.arch,
+      version: "0.0.1",
+      connection: "local",
+      reachable: true,
+      providers: [],
+    })
+    const store = {
+      load: vi.fn(() => structuredClone(initialSnapshot)),
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
     const daemon = new DomovoiDaemon({
       port: 0,
-      statePath: ":memory:",
+      store,
       agents: { codex: agent },
       workspaceService,
       agentTimeoutMs: 100,
@@ -2068,7 +2084,9 @@ describe("DomovoiDaemon", () => {
       "Focus on the failing test first",
     )
 
+    await rpc("workspace.get", {})
     notifications.length = 0
+    const savesBeforeStream = store.save.mock.calls.length
     for (const listener of agentListeners) {
       listener({
         type: "text-delta",
@@ -2098,7 +2116,7 @@ describe("DomovoiDaemon", () => {
     await vi.waitFor(() => expect(notifications.filter(
       (notification) => notification.method === "workspace.delta",
     )).toHaveLength(4))
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await vi.waitFor(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
     expect(notifications).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
     ]))

@@ -171,6 +171,7 @@ describe("terminal RPC", () => {
     expect(terminal.write).toHaveBeenCalledWith("after-create\r")
     terminal.write.mockClear()
 
+    await rpc("workspace.get", {})
     const output = new Promise<Record<string, unknown>>((resolve) => {
       socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
     })
