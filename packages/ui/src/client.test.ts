@@ -121,27 +121,24 @@ describe("DomovoiClient", () => {
       jsonrpc: "2.0",
       method: "workspace.delta",
       params: {
-        session,
-        thread: [{
+        sessionId: session.id,
+        updatedAt: session.updatedAt,
+        operations: [{
+          kind: "assistant.append",
           id: "assistant-turn-1",
-          sessionId: session.id,
-          kind: "assistant",
-          body: "Streamed",
+          delta: "Streamed",
           createdAt: session.updatedAt,
         }],
-        artifacts: [],
-        annotations: [],
-        removedArtifactIds: [],
       },
     })
     socket.receive({
       jsonrpc: "2.0",
       method: "workspace.delta",
-      params: { session, thread: "invalid" },
+      params: { sessionId: session.id, updatedAt: session.updatedAt, operations: "invalid" },
     })
 
     expect(received).toHaveLength(1)
-    expect(received[0]?.thread[0]).toMatchObject({ body: "Streamed" })
+    expect(received[0]?.operations[0]).toMatchObject({ delta: "Streamed" })
     client.disconnect()
   })
 
