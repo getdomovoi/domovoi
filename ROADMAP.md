@@ -67,7 +67,7 @@ access.
   - Persist the final canonical state before provider and SQLite cleanup, with restart recovery
     coverage.
 - [x] Add subprocess deadlines and cancellation to Git operations
-- [ ] Recover Codex cleanly after its subprocess exits
+- [x] Recover Codex cleanly after its subprocess exits
 - [ ] Add browser RPC response deadlines and cancellation
 - [ ] Return stable public RPC errors while keeping internal exception detail in redacted logs
 - [ ] Validate daemon environment configuration at runtime
