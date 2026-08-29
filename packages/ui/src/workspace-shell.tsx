@@ -34,6 +34,7 @@ import type {
   ProviderRuntime,
   RpcParams,
   Runtime,
+  SessionEvidence,
   SessionHistoryCategory,
   SessionHistoryPage,
   SessionSummary,
@@ -127,6 +128,7 @@ import {
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
 } from "./session-history"
+import { SessionEvidencePanel } from "./session-evidence"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -1305,6 +1307,7 @@ function ArtifactDock({
   onSetAnnotationStatus,
   onCreateAnnotation,
   onLoadSessionHistory,
+  onLoadSessionEvidence,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
@@ -1325,13 +1328,13 @@ function ArtifactDock({
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
   ) => Promise<SessionHistoryPage>
+  onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
   const preview = previewCandidate?.path && previewCandidate.mimeType === "text/html"
     ? previewCandidate
     : undefined
-  const diff = latestArtifactForActiveSession(snapshot, "diff")
   const annotations = annotationsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
@@ -1522,8 +1525,12 @@ function ArtifactDock({
             </Empty>
           )}
         </TabsContent>
-        <TabsContent value="changes" className="min-h-0 overflow-auto p-4 font-machine text-[11px] text-muted-foreground">
-          {diff?.content ? <pre className="whitespace-pre-wrap">{diff.content}</pre> : "No working changes yet."}
+        <TabsContent value="changes" className="min-h-0">
+          <SessionEvidencePanel
+            connected={connected}
+            sessionId={snapshot.activeSessionId}
+            onLoad={onLoadSessionEvidence}
+          />
         </TabsContent>
         <TabsContent value="comments" className="min-h-0">
           <AnnotationComments
@@ -1809,6 +1816,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     listModels,
     listSkills,
     loadSessionHistory,
+    loadSessionEvidence,
     openProject,
     pauseAll,
     pauseSession,
@@ -1958,7 +1966,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>
