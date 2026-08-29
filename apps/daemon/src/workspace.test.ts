@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
@@ -133,5 +133,154 @@ describe("GitWorkspaceService", () => {
     await expect(service.restore(workspace.path, "not-a-commit")).rejects.toThrow(
       "Checkpoint commit is invalid",
     )
+  })
+
+  it("reads changed-file and diff evidence from the Git worktree", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await mkdir(join(repositoryPath, "src"))
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await writeFile(join(repositoryPath, "binary.dat"), Buffer.from([0, 1, 2]))
+    await writeFile(join(repositoryPath, "src", "old.ts"), "export const old = true\n")
+    await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    const baseCommit = (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"]))
+      .stdout.trim()
+
+    await writeFile(join(repositoryPath, "README.md"), "staged\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await writeFile(join(repositoryPath, "README.md"), "unstaged too\n")
+    await writeFile(join(repositoryPath, "binary.dat"), Buffer.from([0, 1, 3]))
+    await execute("git", ["-C", repositoryPath, "mv", "src/old.ts", "src/new name.ts"])
+    await rm(join(repositoryPath, "remove.txt"))
+    await writeFile(join(repositoryPath, "untracked file.ts"), "export const fresh = true\n")
+
+    const evidence = await new GitWorkspaceService(join(scratch, "worktrees"))
+      .evidence(repositoryPath)
+
+    expect(evidence).toMatchObject({
+      baseCommit,
+      totalChangedFiles: 5,
+      filesTruncated: false,
+      diffTruncated: false,
+    })
+    expect(evidence.files).toEqual([
+      expect.objectContaining({
+        path: "binary.dat",
+        status: "modified",
+        binary: true,
+        additions: null,
+        deletions: null,
+      }),
+      expect.objectContaining({
+        path: "README.md",
+        status: "modified",
+        staged: true,
+        unstaged: true,
+        binary: false,
+      }),
+      expect.objectContaining({
+        path: "remove.txt",
+        status: "deleted",
+        staged: false,
+        unstaged: true,
+      }),
+      expect.objectContaining({
+        path: "src/new name.ts",
+        previousPath: "src/old.ts",
+        status: "renamed",
+        staged: true,
+        unstaged: false,
+      }),
+      expect.objectContaining({
+        path: "untracked file.ts",
+        status: "untracked",
+        staged: false,
+        unstaged: true,
+        additions: null,
+        deletions: null,
+      }),
+    ])
+    expect(evidence.diff).toContain("diff --git a/README.md b/README.md")
+    expect(evidence.diff).toContain("unstaged too")
+    expect(evidence.diff).not.toContain("untracked file.ts")
+  })
+
+  it("bounds Git evidence without changing its measured totals", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "tracked.txt"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    await writeFile(join(repositoryPath, "tracked.txt"), `${"changed\n".repeat(40_000)}`)
+    await Promise.all(Array.from({ length: 205 }, (_, index) =>
+      writeFile(join(repositoryPath, `untracked-${String(index).padStart(3, "0")}.txt`), "new\n")
+    ))
+
+    const evidence = await new GitWorkspaceService(join(scratch, "worktrees"))
+      .evidence(repositoryPath)
+
+    expect(evidence.totalChangedFiles).toBe(206)
+    expect(evidence.files).toHaveLength(200)
+    expect(evidence.filesTruncated).toBe(true)
+    expect(evidence.diffTruncated).toBe(true)
+    expect(Buffer.byteLength(evidence.diff, "utf8")).toBeLessThanOrEqual(256 * 1_024)
+  })
+
+  it("does not execute repository-configured text conversion commands", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, ".gitattributes"), "*.secret diff=observe\n")
+    await writeFile(join(repositoryPath, "value.secret"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "config",
+      "diff.observe.textconv",
+      "domovoi-textconv-must-not-run",
+    ])
+    await writeFile(join(repositoryPath, "value.secret"), "after\n")
+
+    await expect(new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath))
+      .resolves.toMatchObject({ totalChangedFiles: 1 })
   })
 })
