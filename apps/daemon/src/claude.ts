@@ -108,13 +108,11 @@ export function claudePermissionFor(runtime: Runtime): {
   if (runtime.permissionMode === "plan") {
     return { permissionMode: "plan", allowDangerouslySkipPermissions: false }
   }
-  if (runtime.permissionMode === "build" && runtime.auto) {
-    return { permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true }
-  }
   return { permissionMode: "default", allowDangerouslySkipPermissions: false }
 }
 
 export class ClaudeAgentSdkAdapter implements AgentAdapter {
+  readonly permissionCapabilities = { buildAuto: "pre-execution" } as const
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => string
   #sessions = new Map<string, Session>()
@@ -259,8 +257,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       model: runtime.model,
       effort: claudeEffortFor(runtime.reasoning),
       permissionMode: permission.permissionMode,
-      // Enables a later manual → auto mode switch; it does not bypass checks by itself.
-      allowDangerouslySkipPermissions: true,
+      allowDangerouslySkipPermissions: permission.allowDangerouslySkipPermissions,
       canUseTool: (toolName, toolInput, context) =>
         this.#requestApproval(threadId, cwd, toolName, toolInput, context),
     }

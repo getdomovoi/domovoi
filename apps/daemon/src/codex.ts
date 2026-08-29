@@ -158,6 +158,7 @@ export class StdioCodexTransport implements CodexTransport {
 }
 
 export class CodexAppServerAdapter implements AgentAdapter {
+  readonly permissionCapabilities = { buildAuto: "unsupported" } as const
   #transportFactory: () => CodexTransport
   #transport: CodexTransport | undefined
   #nextId = 0
