@@ -1,0 +1,128 @@
+import { join } from "node:path"
+
+export type DaemonEnvironment = Readonly<Record<string, string | undefined>>
+
+export type DaemonEnvironmentConfig = {
+  host: string
+  port: number
+  credentialPath: string
+  authToken?: string
+  allowedOrigins?: string[]
+  allowRemoteTransport: boolean
+}
+
+export class DaemonConfigurationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "DaemonConfigurationError"
+  }
+}
+
+const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
+
+export function parseDaemonEnvironment(
+  environment: DaemonEnvironment,
+  homeDirectory: string,
+): DaemonEnvironmentConfig {
+  const host = parseHost(environment.DOMOVOI_HOST)
+  const port = parsePort(environment.DOMOVOI_PORT)
+  const allowRemoteTransport = parseRemoteTransport(environment.DOMOVOI_ALLOW_REMOTE_TRANSPORT)
+  if (!loopbackHosts.has(host) && !allowRemoteTransport) {
+    throw new DaemonConfigurationError(
+      "Non-loopback DOMOVOI_HOST requires DOMOVOI_ALLOW_REMOTE_TRANSPORT=1",
+    )
+  }
+
+  const credentialPath = parseCredentialPath(
+    environment.DOMOVOI_CREDENTIAL_PATH,
+    homeDirectory,
+  )
+  const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
+  const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
+
+  return {
+    host,
+    port,
+    credentialPath,
+    ...(authToken !== undefined ? { authToken } : {}),
+    ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+    allowRemoteTransport,
+  }
+}
+
+function parseHost(value: string | undefined): string {
+  if (value === undefined) return "127.0.0.1"
+  if (!value || value.trim() !== value || /[\s/]/u.test(value)) {
+    throw new DaemonConfigurationError("DOMOVOI_HOST must be a non-empty host name or address")
+  }
+  return value
+}
+
+function parsePort(value: string | undefined): number {
+  if (value === undefined) return 47831
+  if (!/^[1-9]\d{0,4}$/u.test(value)) {
+    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 1 through 65535")
+  }
+  const port = Number(value)
+  if (port > 65_535) {
+    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 1 through 65535")
+  }
+  return port
+}
+
+function parseRemoteTransport(value: string | undefined): boolean {
+  if (value === undefined || value === "0") return false
+  if (value === "1") return true
+  throw new DaemonConfigurationError("DOMOVOI_ALLOW_REMOTE_TRANSPORT must be 0 or 1")
+}
+
+function parseCredentialPath(value: string | undefined, homeDirectory: string): string {
+  if (value === undefined) return join(homeDirectory, ".domovoi", "daemon.token")
+  const path = value.trim()
+  if (!path) {
+    throw new DaemonConfigurationError("DOMOVOI_CREDENTIAL_PATH cannot be empty")
+  }
+  return path
+}
+
+function parseAuthToken(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  if (!value.trim()) throw new DaemonConfigurationError("DOMOVOI_AUTH_TOKEN cannot be empty")
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new DaemonConfigurationError(
+      "DOMOVOI_AUTH_TOKEN must contain only A-Z, a-z, 0-9, hyphen, and underscore",
+    )
+  }
+  return value
+}
+
+function parseAllowedOrigins(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined
+  const candidates = value.split(",").map((origin) => origin.trim())
+  if (candidates.some((origin) => !origin)) {
+    throw new DaemonConfigurationError("DOMOVOI_ALLOWED_ORIGINS contains an empty origin")
+  }
+  const origins = candidates.map(normalizeOrigin)
+  return [...new Set(origins)]
+}
+
+function normalizeOrigin(value: string): string {
+  if (value === "file://") return value
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new DaemonConfigurationError("DOMOVOI_ALLOWED_ORIGINS contains an invalid origin")
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol)
+    || url.username
+    || url.password
+    || url.pathname !== "/"
+    || url.search
+    || url.hash
+  ) {
+    throw new DaemonConfigurationError("DOMOVOI_ALLOWED_ORIGINS contains an invalid origin")
+  }
+  return url.origin
+}
