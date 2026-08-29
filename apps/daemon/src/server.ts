@@ -60,6 +60,11 @@ import {
 import type { ProviderProbe } from "./providers.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
+import {
+  internalRpcErrorMessage,
+  PublicRpcError,
+  redactErrorDetail,
+} from "./rpc-errors.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -78,7 +83,12 @@ const sessionResourceMethods = new Set([
 ])
 
 class RuntimeValidationError extends Error {}
-class OperationTimeoutError extends Error {}
+class OperationTimeoutError extends PublicRpcError {
+  constructor(message: string) {
+    super(internalError, message)
+    this.name = "OperationTimeoutError"
+  }
+}
 
 export function appendPlanDelta(
   artifacts: Artifact[],
@@ -184,7 +194,15 @@ export type DaemonServerOptions = {
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   skillCatalog?: SkillCatalog
+  errorSink?: DaemonErrorSink
 }
+
+export type DaemonErrorEntry = {
+  context: string
+  detail: string
+}
+
+export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 
 type ActiveTerminal = {
   sessionId: string
@@ -217,7 +235,7 @@ export class DomovoiDaemon {
   #loadedAgentThreads = new Set<string>()
   #unsubscribeAgents: Array<() => void>
   #mutations = new ResourceMutationQueue((error) => {
-    console.error("Domovoi mutation failed", error)
+    this.#reportError("Domovoi mutation failed", error)
   })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #agentTimeoutMs: number
@@ -237,11 +255,13 @@ export class DomovoiDaemon {
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
+  #errorSink: DaemonErrorSink
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
+    this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
@@ -392,7 +412,7 @@ export class DomovoiDaemon {
 
     if (this.#providerProbe) {
       this.#providerRefresh = this.#refreshProviderReadiness().catch((error: unknown) => {
-        console.error("Domovoi could not inspect provider runtimes", error)
+        this.#reportError("Domovoi could not inspect provider runtimes", error)
       })
     }
 
@@ -481,6 +501,14 @@ export class DomovoiDaemon {
 
   #error(socket: WebSocket, id: string | number | null, code: number, message: string): void {
     this.#send(socket, { jsonrpc: "2.0", id, error: { code, message } })
+  }
+
+  #reportError(context: string, error: unknown): void {
+    try {
+      this.#errorSink({ context, detail: redactErrorDetail(error) })
+    } catch {
+      // Diagnostics must never prevent the daemon from returning a stable response.
+    }
   }
 
   #acceptsHost(host: string | undefined): boolean {
@@ -1205,6 +1233,7 @@ export class DomovoiDaemon {
             "Provider handoff timed out",
             (threadId) => nextAgent.stopThread(threadId),
             "Domovoi could not stop a late provider handoff thread",
+            (context, error) => this.#reportError(context, error),
           )
           const previousAgent = this.#agents.require(previousRuntime.provider)
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
@@ -1227,7 +1256,7 @@ export class DomovoiDaemon {
             try {
               await nextAgent.stopThread(nextThreadId)
             } catch (cleanupError) {
-              console.error("Domovoi could not stop a failed handoff thread", cleanupError)
+              this.#reportError("Domovoi could not stop a failed handoff thread", cleanupError)
             }
             throw error
           }
@@ -1358,6 +1387,7 @@ export class DomovoiDaemon {
             "Agent setup timed out",
             (threadId) => agent.stopThread(threadId),
             "Domovoi could not stop a late session thread",
+            (context, error) => this.#reportError(context, error),
           )
         } catch (error) {
           try {
@@ -1367,7 +1397,7 @@ export class DomovoiDaemon {
               "Session workspace cleanup timed out",
             )
           } catch (cleanupError) {
-            console.error("Domovoi could not remove a failed session worktree", cleanupError)
+            this.#reportError("Domovoi could not remove a failed session worktree", cleanupError)
           }
           throw error
         }
@@ -1585,8 +1615,15 @@ export class DomovoiDaemon {
 
       if (changed) this.#broadcastSnapshot()
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown daemon error"
-      this.#error(socket, request.id, internalError, message)
+      if (error instanceof PublicRpcError) {
+        if (error instanceof OperationTimeoutError) {
+          this.#reportError(`RPC ${method} timed out`, error)
+        }
+        this.#error(socket, request.id, error.code, error.message)
+        return
+      }
+      this.#reportError(`RPC ${method} failed`, error)
+      this.#error(socket, request.id, internalError, internalRpcErrorMessage)
     }
   }
 
@@ -1961,7 +1998,7 @@ export class DomovoiDaemon {
     try {
       this.#saveAgentState(broadcast)
     } catch (error) {
-      console.error("Domovoi could not persist agent state", error)
+      this.#reportError("Domovoi could not persist agent state", error)
     }
   }
 
@@ -2012,7 +2049,7 @@ export class DomovoiDaemon {
           "Provider quarantine cleanup timed out",
         )
       } catch (error) {
-        console.error("Domovoi could not stop a quarantined provider thread", error)
+        this.#reportError("Domovoi could not stop a quarantined provider thread", error)
       }
     }
   }
@@ -2029,7 +2066,7 @@ export class DomovoiDaemon {
           )
         } catch (error) {
           errors.push(error)
-          console.error("Domovoi could not stop a provider thread", error)
+          this.#reportError("Domovoi could not stop a provider thread", error)
         }
         this.#loadedAgentThreads.delete(
           providerThreadKey(session.runtime.provider, session.providerThreadId),
@@ -2047,7 +2084,7 @@ export class DomovoiDaemon {
           )
         } catch (error) {
           errors.push(error)
-          console.error("Domovoi could not remove a session worktree", error)
+          this.#reportError("Domovoi could not remove a session worktree", error)
         }
       }
     }
@@ -2207,6 +2244,7 @@ async function withLateCleanup<T>(
   message: string,
   cleanup: (value: T) => Promise<void>,
   cleanupErrorMessage: string,
+  reportError: (context: string, error: unknown) => void,
 ): Promise<T> {
   try {
     return await withTimeout(promise, timeoutMs, message)
@@ -2216,7 +2254,7 @@ async function withLateCleanup<T>(
         try {
           await withTimeout(cleanup(value), timeoutMs, "Late provider cleanup timed out")
         } catch (cleanupError) {
-          console.error(cleanupErrorMessage, cleanupError)
+          reportError(cleanupErrorMessage, cleanupError)
         }
       }, () => undefined)
     }
