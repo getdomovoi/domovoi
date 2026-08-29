@@ -325,6 +325,22 @@ describe("session evidence", () => {
     { tests: { ...evidence.tests, totalRuns: 0 } },
     { tests: { ...evidence.tests, passed: 2 } },
     { tests: { ...evidence.tests, failed: 2 } },
+    {
+      tests: {
+        ...evidence.tests,
+        passed: 0,
+        failed: 2,
+      },
+    },
+    {
+      tests: {
+        passed: 2,
+        failed: 0,
+        totalRuns: 2,
+        runs: [evidence.tests.runs[0], evidence.tests.runs[0]],
+        runsTruncated: false,
+      },
+    },
   ])("rejects inconsistent evidence aggregates %#", (override) => {
     expect(sessionEvidenceSchema.safeParse({ ...evidence, ...override }).success).toBe(false)
   })
