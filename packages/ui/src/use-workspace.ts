@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, Runtime, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
+import { applyWorkspaceDelta } from "./workspace-delta"
 
 type WorkspaceSnapshotState = {
   target: string
@@ -59,6 +60,14 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       next,
     ))
   }, [target])
+  const updateDeltaFrom = useCallback((client: DomovoiClient, delta: WorkspaceDelta) => {
+    setWorkspace((current) => {
+      if (!isCurrentConnection(clientRef.current, client) || current.target !== target) return current
+      return current.snapshot
+        ? { target, snapshot: applyWorkspaceDelta(current.snapshot, delta) }
+        : current
+    })
+  }, [target])
 
   useEffect(() => {
     let active = true
@@ -72,6 +81,9 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const onSnapshot = (event: Event) => {
       if (active) updateSnapshotFrom(client, (event as CustomEvent<WorkspaceSnapshot>).detail)
     }
+    const onDelta = (event: Event) => {
+      if (active) updateDeltaFrom(client, (event as CustomEvent<WorkspaceDelta>).detail)
+    }
     const onDisconnected = () => {
       if (active) setConnected(false)
     }
@@ -79,6 +91,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       if (active) setConnected(true)
     }
     client.addEventListener("snapshot", onSnapshot)
+    client.addEventListener("workspace-delta", onDelta)
     client.addEventListener("connected", onConnected)
     client.addEventListener("disconnected", onDisconnected)
     client.connect().then(
@@ -95,12 +108,13 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return () => {
       active = false
       client.removeEventListener("snapshot", onSnapshot)
+      client.removeEventListener("workspace-delta", onDelta)
       client.removeEventListener("connected", onConnected)
       client.removeEventListener("disconnected", onDisconnected)
       client.disconnect()
       clientRef.current = null
     }
-  }, [authToken, kind, target, updateSnapshotFrom, url])
+  }, [authToken, kind, target, updateDeltaFrom, updateSnapshotFrom, url])
 
   const resolveApproval = useCallback(
     async (

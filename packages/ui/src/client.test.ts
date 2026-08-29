@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
 
@@ -102,6 +102,43 @@ describe("DomovoiClient", () => {
     })
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
+    client.disconnect()
+  })
+
+  it("publishes validated workspace deltas", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const received: WorkspaceDelta[] = []
+    client.addEventListener("workspace-delta", (event) => {
+      received.push((event as CustomEvent<WorkspaceDelta>).detail)
+    })
+    const session = demoWorkspace.sessions[0]!
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "workspace.delta",
+      params: {
+        sessionId: session.id,
+        updatedAt: session.updatedAt,
+        operations: [{
+          kind: "assistant.append",
+          id: "assistant-turn-1",
+          delta: "Streamed",
+          createdAt: session.updatedAt,
+        }],
+      },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "workspace.delta",
+      params: { sessionId: session.id, updatedAt: session.updatedAt, operations: "invalid" },
+    })
+
+    expect(received).toHaveLength(1)
+    expect(received[0]?.operations[0]).toMatchObject({ delta: "Streamed" })
     client.disconnect()
   })
 
