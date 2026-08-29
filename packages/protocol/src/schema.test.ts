@@ -32,6 +32,7 @@ import {
   previewBridgePickerMessageSchema,
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
+  sessionArchiveParamsSchema,
   sessionCreateParamsSchema,
   sessionPauseParamsSchema,
   sessionSendParamsSchema,
@@ -42,6 +43,73 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("models durable session archive lifecycle and requests", () => {
+    expect(sessionArchiveParamsSchema.parse({
+      sessionId: "session-billing",
+      client: "web",
+    })).toEqual({ sessionId: "session-billing", client: "web" })
+
+    const archiving = structuredClone(demoWorkspace)
+    archiving.sessions[0]!.state = "archiving"
+    archiving.sessions[0]!.archiveRequestedAt = "2026-08-29T12:00:00.000Z"
+    expect(workspaceSnapshotSchema.parse(archiving).sessions[0]).toMatchObject({
+      state: "archiving",
+      archiveRequestedAt: "2026-08-29T12:00:00.000Z",
+    })
+
+    const archived = structuredClone(archiving)
+    archived.sessions[0]!.state = "archived"
+    archived.sessions[0]!.archivedAt = "2026-08-29T12:01:00.000Z"
+    archived.sessions[0]!.archiveCheckpoint = "a".repeat(40)
+    delete archived.sessions[0]!.workspacePath
+    delete archived.sessions[0]!.providerThreadId
+    delete archived.sessions[0]!.activeTurnId
+    expect(workspaceSnapshotSchema.parse(archived).sessions[0]).toMatchObject({
+      state: "archived",
+      archiveCheckpoint: "a".repeat(40),
+    })
+    const expectArchiveIssue = (
+      snapshot: typeof archived,
+      replacement: (typeof archived.sessions)[number],
+      field: string,
+    ) => {
+      const parsed = workspaceSnapshotSchema.safeParse({
+        ...snapshot,
+        sessions: snapshot.sessions.map((session) =>
+          session.id === replacement.id ? replacement : session
+        ),
+      })
+      expect(parsed.success).toBe(false)
+      if (!parsed.success) expect(parsed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: ["sessions", 0, field] }),
+      ]))
+    }
+    expectArchiveIssue(
+      archiving,
+      { ...archiving.sessions[0]!, archiveRequestedAt: undefined },
+      "archiveRequestedAt",
+    )
+    expectArchiveIssue(
+      archived,
+      { ...archived.sessions[0]!, archivedAt: undefined },
+      "archivedAt",
+    )
+    expectArchiveIssue(
+      archived,
+      { ...archived.sessions[0]!, workspacePath: "/worktrees/stale" },
+      "workspacePath",
+    )
+    expectArchiveIssue(
+      archived,
+      {
+        ...archived.sessions[0]!,
+        state: "idle",
+        archiveRequestedAt: "2026-08-29T12:00:00.000Z",
+      },
+      "state",
+    )
+  })
+
   it("reserves a stable daemon shutdown error code", () => {
     expect(daemonShuttingDownErrorCode).toBe(-32002)
   })

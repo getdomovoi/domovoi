@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AppBar, checkpointBlockedReason, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -123,6 +123,21 @@ describe("CheckpointThreadItem", () => {
     expect(restorable).toContain("Restore worktree")
     expect(legacy).not.toContain("Restore worktree")
   })
+
+  it("keeps an open confirmation inert when the session becomes archived", () => {
+    const onRestore = vi.fn()
+    const action = CheckpointRestoreAction({
+      checkpointId: "checkpoint-1",
+      disabled: true,
+      onRestore,
+    })
+
+    expect(action.props.disabled).toBe(true)
+    action.props.onClick()
+    expect(onRestore).not.toHaveBeenCalled()
+    expect(checkpointRestoreBlocked(false, true)).toBe(true)
+    expect(checkpointRestoreBlocked(false, false)).toBe(false)
+  })
 })
 
 describe("HistoryPanel", () => {
@@ -154,6 +169,48 @@ describe("checkpointBlockedReason", () => {
 })
 
 describe("Thread", () => {
+  it("offers a signed archive confirmation describing retained history and cleanup", () => {
+    const markup = renderToStaticMarkup(
+      <ArchiveSessionAction disabled={false} onArchive={vi.fn()} />,
+    )
+
+    expect(markup).toContain("Archive session")
+    expect(archiveSessionDescription).toContain("final checkpoint")
+    expect(archiveSessionDescription).toContain("provider and terminal")
+    expect(archiveSessionDescription).toContain("source checkout's branch, HEAD, status, and files remain unchanged")
+  })
+
+  it("renders archived sessions read-only with history still visible", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.state = "archived"
+    active.archiveRequestedAt = "2026-08-29T11:59:00.000Z"
+    active.archiveCheckpoint = "a".repeat(40)
+    active.archivedAt = "2026-08-29T12:00:00.000Z"
+    delete active.workspacePath
+    delete active.providerThreadId
+    delete active.activeTurnId
+    const markup = renderToStaticMarkup(
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn(async () => {})}
+        onSetRuntime={vi.fn(async () => {})}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn(async () => {})}
+        onRestoreCheckpoint={vi.fn(async () => {})}
+        onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain("Archived")
+    expect(markup).toContain("The Stripe retries are double-charging")
+    expect(markup).not.toContain('aria-label="Message"')
+  })
+
   it("disables manual checkpoint creation while the active turn owns the worktree", () => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
@@ -170,6 +227,7 @@ describe("Thread", () => {
         onCheckpoint={vi.fn(async () => {})}
         onRestoreCheckpoint={vi.fn(async () => {})}
         onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
       />,
     )
 
@@ -179,5 +237,64 @@ describe("Thread", () => {
     expect(markup).toContain(
       '<span role="status" class="font-machine text-[9px] text-faint">Stop the active turn before creating a checkpoint</span>',
     )
+  })
+})
+
+describe("archived annotation controls", () => {
+  it("keeps annotations visible while hiding every mutation control", () => {
+    const archived = structuredClone(demoWorkspace.sessions[0]!)
+    archived.state = "archived"
+    archived.archiveRequestedAt = "2026-08-29T11:59:00.000Z"
+    archived.archiveCheckpoint = "a".repeat(40)
+    archived.archivedAt = "2026-08-29T12:00:00.000Z"
+    delete archived.workspacePath
+    delete archived.providerThreadId
+    delete archived.activeTurnId
+    const annotations = demoWorkspace.annotations.filter(
+      (annotation) => annotation.sessionId === archived.id,
+    )
+    const markup = renderToStaticMarkup(
+      <AnnotationComments
+        annotations={annotations}
+        readOnly={sessionIsArchiveReadOnly(archived)}
+        onReply={vi.fn(async () => {})}
+        onSetStatus={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain(annotations[0]!.body)
+    expect(markup).not.toContain(">Reply</button>")
+    expect(markup).not.toContain(">Resolve</button>")
+    expect(sessionIsArchiveReadOnly({ ...archived, state: "archiving" })).toBe(true)
+    expect(sessionIsArchiveReadOnly({ ...archived, state: "idle" })).toBe(false)
+
+    const dock = renderToStaticMarkup(
+      <ArtifactDock
+        snapshot={{ ...structuredClone(demoWorkspace), activeSessionId: archived.id, sessions: [
+          archived,
+          ...demoWorkspace.sessions.slice(1),
+        ] }}
+        onCollapse={vi.fn()}
+        defaultTab="preview"
+        rpcUrl="ws://127.0.0.1/rpc"
+        authorizeArtifact={vi.fn()}
+        connected={false}
+        terminalControls={{
+          clientId: "test",
+          create: vi.fn(),
+          claim: vi.fn(),
+          write: vi.fn(),
+          resize: vi.fn(),
+          close: vi.fn(),
+          subscribe: vi.fn(() => vi.fn()),
+        }}
+        onReplyToAnnotation={vi.fn()}
+        onSetAnnotationStatus={vi.fn()}
+        onCreateAnnotation={vi.fn()}
+        onLoadSessionHistory={vi.fn()}
+        onLoadSessionEvidence={vi.fn()}
+      />,
+    )
+    expect(dock).not.toContain(">Annotate</button>")
   })
 })

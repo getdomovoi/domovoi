@@ -79,6 +79,7 @@ const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
   "checkpoint.restore",
+  "session.archive",
   "session.pause",
   "session.evidence",
   "session.history",
@@ -99,6 +100,12 @@ function buildAutoViolation(runtime: Runtime, agent: AgentAdapter): string | und
   if (agent.permissionCapabilities?.buildAuto === "pre-execution") return undefined
   const providerName = runtime.provider === "codex" ? "Codex" : runtime.provider
   return `${providerName} does not support enforceable Build auto`
+}
+
+function sessionIsArchiveReadOnly(
+  session: WorkspaceSnapshot["sessions"][number] | undefined,
+): boolean {
+  return session?.state === "archiving" || session?.state === "archived"
 }
 
 export function appendPlanDelta(
@@ -459,6 +466,8 @@ export class DomovoiDaemon {
   async start(): Promise<{ host: string; port: number }> {
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
+
+    await this.#recoverSessionArchives()
 
     this.#http = createServer((request, response) => {
       if (request.url === "/healthz") {
@@ -917,6 +926,10 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
+        if (session?.state === "archiving" || session?.state === "archived") {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         if (!session?.workspacePath) {
           this.#error(socket, request.id, invalidParams, "Session has no worktree")
           return
@@ -1221,7 +1234,9 @@ export class DomovoiDaemon {
       if (method === "system.pauseAll") {
         const params = rpcMethods[method].params.parse(request.params)
         changed = await this.#pauseSessions(this.#snapshot.sessions.filter(
-          (session) => session.providerThreadId && session.activeTurnId,
+          (session) => !sessionIsArchiveReadOnly(session)
+            && session.providerThreadId
+            && session.activeTurnId,
         ), params.client)
       }
 
@@ -1232,14 +1247,36 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         changed = await this.#pauseSessions(
           session.providerThreadId && session.activeTurnId ? [session] : [],
           params.client,
         )
       }
 
+      if (method === "session.archive") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        await this.#archiveSession(session.id, params.client)
+        changed = true
+      }
+
       if (method === "annotation.create") {
         const params = rpcMethods[method].params.parse(request.params)
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         const artifact = this.#snapshot.artifacts.find(
           (candidate) =>
             candidate.id === params.artifactId && candidate.sessionId === params.sessionId,
@@ -1274,6 +1311,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Annotation does not exist")
           return
         }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === annotation.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         const createdAt = new Date().toISOString()
         annotation.thread.push({
           id: `annotation-reply-${randomUUID()}`,
@@ -1294,6 +1338,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Annotation does not exist")
           return
         }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === annotation.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         const changedAt = new Date().toISOString()
         annotation.status = params.status
         annotation.statusChangedBy = params.client
@@ -1311,6 +1362,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === approval.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         if (approval.risk === "hard-gate" && params.decision === "always-project") {
           this.#error(
             socket,
@@ -1320,9 +1378,6 @@ export class DomovoiDaemon {
           )
           return
         }
-        const session = this.#snapshot.sessions.find(
-          (candidate) => candidate.id === approval.sessionId,
-        )
         if (approval.providerRequestId !== undefined && session) {
           this.#agents.require(session.runtime.provider)
             .resolveApproval(approval.providerRequestId, params.decision)
@@ -1369,6 +1424,10 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
           return
         }
         const providerChanged = params.runtime.provider !== session.runtime.provider
@@ -1612,6 +1671,10 @@ export class DomovoiDaemon {
       if (method === "session.send") {
         const params = rpcMethods[method].params.parse(request.params)
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (session?.state === "archiving" || session?.state === "archived") {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         if (!session?.workspacePath || !session.providerThreadId) {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
           return
@@ -1701,6 +1764,10 @@ export class DomovoiDaemon {
       if (method === "checkpoint.create") {
         const params = rpcMethods[method].params.parse(request.params)
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (session?.state === "archiving" || session?.state === "archived") {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         if (!session?.workspacePath) {
           this.#error(socket, request.id, invalidParams, "Session has no worktree")
           return
@@ -1743,6 +1810,10 @@ export class DomovoiDaemon {
       if (method === "checkpoint.restore") {
         const params = rpcMethods[method].params.parse(request.params)
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (session?.state === "archiving" || session?.state === "archived") {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
         if (!session?.workspacePath) {
           this.#error(socket, request.id, invalidParams, "Session has no worktree")
           return
@@ -1835,6 +1906,7 @@ export class DomovoiDaemon {
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
     if (!session) return
+    if (session.state === "archiving" || session.state === "archived") return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
     const createdAt = new Date().toISOString()
@@ -2162,6 +2234,218 @@ export class DomovoiDaemon {
     return active.length > 0
   }
 
+  async #recoverSessionArchives(): Promise<void> {
+    for (const session of this.#snapshot.sessions.filter(
+      (candidate) => candidate.state === "archiving",
+    )) {
+      await this.#mutations.enqueue(
+        `session:${session.id}`,
+        async () => {
+          try {
+            await this.#archiveSession(session.id)
+          } catch (error) {
+            this.#reportError(`Domovoi could not resume archive cleanup for ${session.id}`, error)
+          }
+        },
+      )
+    }
+  }
+
+  async #archiveSession(sessionId: string, client?: ClientKind): Promise<void> {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session || session.state === "archived") return
+    if (session.state !== "archiving") {
+      const requestedAt = new Date().toISOString()
+      session.state = "archiving"
+      session.archiveRequestedAt = requestedAt
+      session.updatedAt = requestedAt
+      this.#snapshot.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId,
+        kind: "system",
+        body: `Session archive requested${client ? ` by ${client}` : ""}.`,
+        detail: "Domovoi will preserve history and a final checkpoint, then stop active resources and remove only the isolated worktree.",
+        createdAt: requestedAt,
+      })
+      this.#saveAgentState()
+    }
+
+    this.#closeSessionTerminals(sessionId)
+
+    const approvals = this.#snapshot.approvals.filter(
+      (approval) => approval.sessionId === sessionId,
+    )
+    const unresolvedApprovalIds = new Set<string>()
+    for (const approval of approvals) {
+      try {
+        if (approval.providerRequestId !== undefined) {
+          await this.#agents.require(session.runtime.provider).resolveApproval(
+            approval.providerRequestId,
+            "deny",
+          )
+        }
+      } catch (error) {
+        unresolvedApprovalIds.add(approval.id)
+        this.#reportError(`Domovoi could not deny archive approval ${approval.id}`, error)
+        continue
+      }
+      this.#snapshot.thread.push({
+        id: `receipt-${approval.id}-${Date.now()}`,
+        sessionId,
+        kind: "receipt",
+        decision: "deny",
+        operation: approval.operation,
+        checkpoint: approval.checkpoint,
+        client: client ?? "cli",
+        explanation: "Session archived",
+        createdAt: new Date().toISOString(),
+      })
+      this.#snapshot.approvals = this.#snapshot.approvals.filter(
+        (candidate) => candidate.id !== approval.id,
+      )
+      this.#saveAgentState(false)
+    }
+
+    if (session.activeTurnId && session.providerThreadId) {
+      await this.#loadProviderThreadForArchive(session)
+      try {
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).interruptTurn(
+            session.providerThreadId,
+            session.activeTurnId,
+          ),
+          this.#agentTimeoutMs,
+          "Archive turn interrupt timed out",
+        )
+        delete session.activeTurnId
+        this.#saveAgentState(false)
+      } catch (error) {
+        this.#reportError(
+          `Domovoi could not interrupt active turn for archive ${session.id}; stopping provider`,
+          error,
+        )
+      }
+    }
+
+    if (session.providerThreadId) {
+      const threadId = session.providerThreadId
+      await this.#loadProviderThreadForArchive(session)
+      await withTimeout(
+        this.#agents.require(session.runtime.provider).stopThread(threadId),
+        this.#agentTimeoutMs,
+        "Archive provider cleanup timed out",
+      )
+      this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
+      delete session.providerThreadId
+      delete session.activeTurnId
+      this.#saveAgentState(false)
+    }
+
+    if (!session.providerThreadId && unresolvedApprovalIds.size > 0) {
+      for (const approval of approvals.filter(({ id }) => unresolvedApprovalIds.has(id))) {
+        this.#snapshot.thread.push({
+          id: `receipt-${approval.id}-${Date.now()}`,
+          sessionId,
+          kind: "receipt",
+          decision: "deny",
+          operation: approval.operation,
+          checkpoint: approval.checkpoint,
+          client: client ?? "cli",
+          explanation: "Session archived after provider cleanup",
+          createdAt: new Date().toISOString(),
+        })
+      }
+      this.#snapshot.approvals = this.#snapshot.approvals.filter(
+        ({ id }) => !unresolvedApprovalIds.has(id),
+      )
+      this.#saveAgentState(false)
+    }
+
+    if (!session.archiveCheckpoint) {
+      if (session.workspacePath) {
+        const checkpoint = await withAbortTimeout(
+          (signal) => this.#workspaceService.checkpoint(
+            session.workspacePath!,
+            "before session archive",
+            signal,
+          ),
+          this.#agentTimeoutMs,
+          "Archive checkpoint timed out",
+        )
+        session.archiveCheckpoint = checkpoint.commit
+        session.changedFiles = checkpoint.changedFiles.length
+        session.updatedAt = new Date().toISOString()
+        this.#snapshot.thread.push({
+          id: `checkpoint-${randomUUID()}`,
+          sessionId,
+          kind: "checkpoint",
+          label: `${checkpoint.commit.slice(0, 8)} · before session archive`,
+          commit: checkpoint.commit,
+          createdAt: session.updatedAt,
+        })
+      } else {
+        const prior = this.#snapshot.thread.findLast(
+          (item) => item.sessionId === sessionId && item.kind === "checkpoint" && item.commit,
+        )
+        session.archiveCheckpoint = prior?.kind === "checkpoint"
+          ? prior.commit
+          : session.baseCommit && /^[a-f0-9]{40}$/.test(session.baseCommit)
+            ? session.baseCommit
+            : undefined
+      }
+      if (!session.archiveCheckpoint) throw new Error("Session archive has no durable checkpoint")
+      this.#saveAgentState(false)
+    }
+
+    if (session.workspacePath) {
+      if (!this.#workspaceService.archiveSessionWorkspace) {
+        throw new Error("Workspace service cannot preserve archive branches")
+      }
+      const workspacePath = session.workspacePath
+      await withAbortTimeout(
+        (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
+        this.#agentTimeoutMs,
+        "Archive worktree cleanup timed out",
+      )
+      delete session.workspacePath
+      this.#saveAgentState(false)
+    }
+
+    const archivedAt = new Date().toISOString()
+    session.state = "archived"
+    session.archivedAt = archivedAt
+    session.updatedAt = archivedAt
+    this.#snapshot.thread.push({
+      id: `system-${randomUUID()}`,
+      sessionId,
+      kind: "system",
+      body: "Session archived.",
+      detail: `Final checkpoint ${session.archiveCheckpoint.slice(0, 8)} is retained. Provider, terminal, and isolated worktree resources were cleaned up; the source checkout's branch, HEAD, status, and files remain unchanged.`,
+      createdAt: archivedAt,
+    })
+    this.#saveAgentState(false)
+  }
+
+  async #loadProviderThreadForArchive(
+    session: WorkspaceSnapshot["sessions"][number],
+  ): Promise<void> {
+    if (!session.providerThreadId) return
+    const key = providerThreadKey(session.runtime.provider, session.providerThreadId)
+    if (this.#loadedAgentThreads.has(key)) return
+    if (!session.workspacePath) throw new Error("Archived provider thread has no resumable worktree")
+    const agent = await this.#ensureAgentConnected(session.runtime.provider)
+    await withTimeout(
+      agent.resumeThread({
+        threadId: session.providerThreadId,
+        cwd: session.workspacePath,
+        runtime: session.runtime,
+      }),
+      this.#agentTimeoutMs,
+      "Archive provider resume timed out",
+    )
+    this.#loadedAgentThreads.add(key)
+  }
+
   #rejectAuthentication(
     socket: WebSocket,
     id: string | number | null,
@@ -2184,6 +2468,12 @@ export class DomovoiDaemon {
     terminal.process.kill()
     this.#broadcastNotification("terminal.closed", { terminalId })
     return true
+  }
+
+  #closeSessionTerminals(sessionId: string): void {
+    for (const [terminalId, terminal] of this.#terminals) {
+      if (terminal.sessionId === sessionId) this.#closeTerminal(terminalId)
+    }
   }
 
   #closeAllTerminals(): void {

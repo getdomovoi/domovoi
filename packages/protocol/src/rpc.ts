@@ -680,6 +680,11 @@ export const sessionEvidenceParamsSchema = z.object({
   sessionId: streamedIdSchema,
 })
 
+export const sessionArchiveParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  client: clientKindSchema,
+})
+
 export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
   prompt: z.string().trim().min(1),
@@ -774,6 +779,7 @@ export const rpcMethods = {
   "project.open": { params: projectOpenParamsSchema, result: workspaceSnapshotSchema },
   "session.activate": { params: sessionActivateParamsSchema, result: workspaceSnapshotSchema },
   "session.pause": { params: sessionPauseParamsSchema, result: workspaceSnapshotSchema },
+  "session.archive": { params: sessionArchiveParamsSchema, result: workspaceSnapshotSchema },
   "session.create": { params: sessionCreateParamsSchema, result: workspaceSnapshotSchema },
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {

@@ -60,6 +60,7 @@ export interface WorkspaceService {
     signal?: AbortSignal,
   ): Promise<SessionWorkspace>
   removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void>
+  archiveSessionWorkspace?(worktreePath: string, signal?: AbortSignal): Promise<void>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
   evidence?(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence>
@@ -371,6 +372,30 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
+    const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
+    if (!resolved) return
+    const { path, commonDirectory } = resolved
+    const branch = await git(path, ["branch", "--show-current"], signal)
+    await gitDirectory(commonDirectory, ["worktree", "remove", "--force", path], signal)
+    if (branch.startsWith("domovoi/")) {
+      await gitDirectory(commonDirectory, ["branch", "-D", branch], signal)
+    }
+  }
+
+  async archiveSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
+    const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
+    if (!resolved) return
+    await gitDirectory(
+      resolved.commonDirectory,
+      ["worktree", "remove", "--force", resolved.path],
+      signal,
+    )
+  }
+
+  async #resolveManagedWorktree(
+    worktreePath: string,
+    signal?: AbortSignal,
+  ): Promise<{ path: string; commonDirectory: string } | undefined> {
     signal?.throwIfAborted()
     let path: string
     try {
@@ -388,15 +413,11 @@ export class GitWorkspaceService implements WorkspaceService {
     if (await realpath(repositoryRoot) !== path) {
       throw new Error("Worktree path does not identify a Git worktree root")
     }
-    const branch = await git(path, ["branch", "--show-current"], signal)
     const commonDirectory = await git(path, [
       "rev-parse",
       "--path-format=absolute",
       "--git-common-dir",
     ], signal)
-    await gitDirectory(commonDirectory, ["worktree", "remove", "--force", path], signal)
-    if (branch.startsWith("domovoi/")) {
-      await gitDirectory(commonDirectory, ["branch", "-D", branch], signal)
-    }
+    return { path, commonDirectory }
   }
 }
