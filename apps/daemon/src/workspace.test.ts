@@ -283,4 +283,42 @@ describe("GitWorkspaceService", () => {
     await expect(new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath))
       .resolves.toMatchObject({ totalChangedFiles: 1 })
   })
+
+  it("does not execute a repository-configured file-system monitor", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    const markerPath = join(scratch, "fsmonitor-ran")
+    const fsmonitorCommand = [
+      `"${process.execPath.replaceAll("\\", "/")}"`,
+      "-e",
+      `"require('node:fs').writeFileSync('${markerPath.replaceAll("\\", "/")}','ran')"`,
+    ].join(" ")
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "config",
+      "core.fsmonitor",
+      fsmonitorCommand,
+    ])
+    await writeFile(join(repositoryPath, "README.md"), "after\n")
+
+    await expect(new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath))
+      .resolves.toMatchObject({ totalChangedFiles: 1 })
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
 })
