@@ -5,11 +5,14 @@ import { DatabaseSync } from "node:sqlite"
 
 import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
+
 type StoredWorkspace = {
   snapshot: string
 }
 
 export interface WorkspaceStore {
+  readonly auditLog?: AuditLog
   load(): WorkspaceSnapshot
   save(snapshot: WorkspaceSnapshot): void
   close(): void
@@ -72,6 +75,7 @@ function migrateStoredWorkspace(value: unknown): {
 
 export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly path: string
+  readonly auditLog: SqliteAuditLog
   #database: DatabaseSync
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
@@ -86,6 +90,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         updated_at TEXT NOT NULL
       );
     `)
+    this.auditLog = new SqliteAuditLog(this.#database)
 
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
