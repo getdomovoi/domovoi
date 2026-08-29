@@ -528,6 +528,14 @@ describe("workspace protocol", () => {
     expect(workspaceSnapshotSchema.safeParse(broken).success).toBe(false)
   })
 
+  it("rejects auto outside Build mode", () => {
+    const broken = structuredClone(demoWorkspace)
+    broken.sessions[0]!.runtime.permissionMode = "plan"
+    broken.sessions[0]!.runtime.auto = true
+
+    expect(workspaceSnapshotSchema.safeParse(broken).success).toBe(false)
+  })
+
   it("requires non-empty active and thread session identifiers", () => {
     const emptyActive = structuredClone(demoWorkspace)
     emptyActive.activeSessionId = ""

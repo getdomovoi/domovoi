@@ -21,6 +21,14 @@ export const runtimeSchema = z.object({
   reasoning: reasoningEffortSchema,
   permissionMode: permissionModeSchema,
   auto: z.boolean(),
+}).superRefine((runtime, context) => {
+  if (runtime.auto && runtime.permissionMode !== "build") {
+    context.addIssue({
+      code: "custom",
+      message: "Automatic execution is only valid in Build mode",
+      path: ["auto"],
+    })
+  }
 })
 
 export const providerModelSchema = z.object({
@@ -375,6 +383,7 @@ export const workspaceSnapshotSchema = z.object({
 
 export type ClientKind = z.infer<typeof clientKindSchema>
 export type PermissionMode = z.infer<typeof permissionModeSchema>
+export type ApprovalRisk = z.infer<typeof approvalRiskSchema>
 export type Runtime = z.infer<typeof runtimeSchema>
 export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>

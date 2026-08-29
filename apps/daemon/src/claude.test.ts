@@ -88,7 +88,7 @@ describe("claudePermissionFor", () => {
     [runtime("ask"), "default", false],
     [runtime("plan"), "plan", false],
     [runtime("build"), "default", false],
-    [runtime("build", true), "bypassPermissions", true],
+    [runtime("build", true), "default", false],
   ] as const)("maps Domovoi permissions to Claude enforcement", (input, mode, bypass) => {
     expect(claudePermissionFor(input)).toEqual({
       permissionMode: mode,
@@ -98,6 +98,13 @@ describe("claudePermissionFor", () => {
 })
 
 describe("ClaudeAgentSdkAdapter", () => {
+  it("declares pre-execution Build-auto enforcement", () => {
+    const { factory } = factoryHarness()
+    expect(new ClaudeAgentSdkAdapter(factory).permissionCapabilities).toEqual({
+      buildAuto: "pre-execution",
+    })
+  })
+
   it("discovers models from the installed Claude runtime", async () => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory)

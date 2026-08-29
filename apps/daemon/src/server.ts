@@ -66,6 +66,7 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
+import { permissionDecisionFor } from "./permission-policy.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -89,6 +90,13 @@ class OperationTimeoutError extends PublicRpcError {
     super(internalError, message)
     this.name = "OperationTimeoutError"
   }
+}
+
+function buildAutoViolation(runtime: Runtime, agent: AgentAdapter): string | undefined {
+  if (runtime.permissionMode !== "build" || !runtime.auto) return undefined
+  if (agent.permissionCapabilities?.buildAuto === "pre-execution") return undefined
+  const providerName = runtime.provider === "codex" ? "Codex" : runtime.provider
+  return `${providerName} does not support enforceable Build auto`
 }
 
 export function appendPlanDelta(
@@ -754,6 +762,17 @@ export class DomovoiDaemon {
   }
 
   async #resolveRuntime(runtime: Runtime): Promise<Runtime> {
+    let agent: AgentAdapter
+    try {
+      agent = this.#agents.require(runtime.provider)
+    } catch (error) {
+      if (error instanceof AgentProviderUnavailableError) {
+        throw new RuntimeValidationError(error.message)
+      }
+      throw error
+    }
+    const permissionViolation = buildAutoViolation(runtime, agent)
+    if (permissionViolation) throw new RuntimeValidationError(permissionViolation)
     let models: ProviderModel[]
     try {
       models = await this.#listProviderModels(runtime.provider)
@@ -1253,6 +1272,15 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Approval does not exist")
           return
         }
+        if (approval.risk === "hard-gate" && params.decision === "always-project") {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Hard-gate approvals cannot create standing rules",
+          )
+          return
+        }
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
@@ -1547,6 +1575,14 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session?.workspacePath || !session.providerThreadId) {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
+          return
+        }
+        const permissionViolation = buildAutoViolation(
+          session.runtime,
+          this.#agents.require(session.runtime.provider),
+        )
+        if (permissionViolation) {
+          this.#error(socket, request.id, invalidParams, permissionViolation)
           return
         }
         const createdAt = new Date().toISOString()
@@ -1860,16 +1896,23 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
+      const decision = permissionDecisionFor({
+        runtime: session.runtime,
+        ...(event.command ? { command: event.command } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+      })
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => rule.projectId === project.id && rule.command === event.command,
       )
-      if (matchingRule) {
+      if (decision.action === "allow") {
+        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
+      } else if (decision.risk === "normal" && matchingRule) {
         this.#agents.require(provider).resolveApproval(event.requestId, "always-project")
       } else {
         this.#snapshot.approvals.push({
           id: `approval-${randomUUID()}`,
           sessionId: session.id,
-          risk: /\b(migrate|deploy|delete|drop)\b/i.test(event.command ?? "") ? "hard-gate" : "normal",
+          risk: decision.risk,
           operation: event.reason ?? "Run a command",
           command: event.command ?? "Command details unavailable",
           machine: this.#snapshot.machine.name,
