@@ -1869,6 +1869,7 @@ export class DomovoiDaemon {
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
     if (!session) return
+    if (session.state === "archiving" || session.state === "archived") return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
     const createdAt = new Date().toISOString()
