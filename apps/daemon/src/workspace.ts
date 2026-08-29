@@ -60,6 +60,7 @@ export interface WorkspaceService {
     signal?: AbortSignal,
   ): Promise<SessionWorkspace>
   removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void>
+  archiveSessionWorkspace?(worktreePath: string, signal?: AbortSignal): Promise<void>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
   evidence?(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence>
@@ -398,5 +399,31 @@ export class GitWorkspaceService implements WorkspaceService {
     if (branch.startsWith("domovoi/")) {
       await gitDirectory(commonDirectory, ["branch", "-D", branch], signal)
     }
+  }
+
+  async archiveSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    let path: string
+    try {
+      path = await realpath(resolve(worktreePath))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+      throw error
+    }
+    const root = await realpath(this.worktreeRoot)
+    const pathFromRoot = relative(root, path)
+    if (!pathFromRoot || pathFromRoot.startsWith("..") || isAbsolute(pathFromRoot)) {
+      throw new Error("Worktree path is outside the Domovoi worktree root")
+    }
+    const repositoryRoot = await git(path, ["rev-parse", "--show-toplevel"], signal)
+    if (await realpath(repositoryRoot) !== path) {
+      throw new Error("Worktree path does not identify a Git worktree root")
+    }
+    const commonDirectory = await git(path, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ], signal)
+    await gitDirectory(commonDirectory, ["worktree", "remove", "--force", path], signal)
   }
 }

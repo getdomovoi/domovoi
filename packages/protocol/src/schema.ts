@@ -4,7 +4,15 @@ export const protocolVersion = "0.1.0" as const
 
 export const clientKindSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
-export const sessionStateSchema = z.enum(["active", "waiting", "idle", "done", "failed"])
+export const sessionStateSchema = z.enum([
+  "active",
+  "waiting",
+  "idle",
+  "done",
+  "failed",
+  "archiving",
+  "archived",
+])
 export const connectionKindSchema = z.enum(["local", "lan", "tailnet", "ssh", "relay", "wsl"])
 export const approvalRiskSchema = z.enum(["normal", "hard-gate"])
 export const approvalDecisionSchema = z.enum([
@@ -100,6 +108,33 @@ export const sessionSummarySchema = z.object({
   providerThreadId: z.string().min(1).optional(),
   activeTurnId: z.string().min(1).optional(),
   baseCommit: z.string().min(1).optional(),
+  archiveRequestedAt: z.string().datetime().optional(),
+  archiveCheckpoint: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  archivedAt: z.string().datetime().optional(),
+}).superRefine((session, context) => {
+  const archiveState = session.state === "archiving" || session.state === "archived"
+  if (!archiveState && (
+    session.archiveRequestedAt || session.archiveCheckpoint || session.archivedAt
+  )) {
+    context.addIssue({ code: "custom", path: ["state"], message: "Archive metadata requires an archive lifecycle state" })
+  }
+  if (archiveState && !session.archiveRequestedAt) {
+    context.addIssue({ code: "custom", path: ["archiveRequestedAt"], message: "Archive lifecycle requires a request timestamp" })
+  }
+  if (session.state === "archiving" && session.archivedAt) {
+    context.addIssue({ code: "custom", path: ["archivedAt"], message: "Archiving sessions cannot have a completion timestamp" })
+  }
+  if (session.state === "archived") {
+    if (!session.archiveCheckpoint) {
+      context.addIssue({ code: "custom", path: ["archiveCheckpoint"], message: "Archived sessions require a final checkpoint" })
+    }
+    if (!session.archivedAt) {
+      context.addIssue({ code: "custom", path: ["archivedAt"], message: "Archived sessions require a completion timestamp" })
+    }
+    for (const field of ["workspacePath", "providerThreadId", "activeTurnId"] as const) {
+      if (session[field]) context.addIssue({ code: "custom", path: [field], message: "Archived sessions cannot retain active resources" })
+    }
+  }
 })
 
 export const approvalRequestSchema = z.object({
