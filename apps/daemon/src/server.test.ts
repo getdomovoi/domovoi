@@ -221,6 +221,326 @@ describe("DomovoiDaemon", () => {
     ]))
   })
 
+  it("recovers sessions after a provider disconnect without steering a stale turn", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "thread-recover"
+    session.activeTurnId = "turn-stale"
+    snapshot.approvals = [{
+      id: "approval-stale",
+      sessionId: session.id,
+      risk: "normal",
+      operation: "Run tests",
+      command: "pnpm test",
+      machine: snapshot.machine.name,
+      agent: "codex / gpt-5.6-sol",
+      mode: session.runtime.permissionMode,
+      directory: session.workspacePath ?? "/worktrees/session-billing",
+      affects: "Session files",
+      network: "None",
+      estimatedDuration: "Unknown",
+      checkpoint: session.baseCommit ?? "unavailable",
+      providerRequestId: 91,
+      requestedAt: new Date().toISOString(),
+    }]
+    const store = {
+      load: vi.fn(() => structuredClone(snapshot)),
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-recovered"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, store, agent })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await rpc("runtime.models", { provider: "codex", client: "desktop" })
+    expect(agent.connect).toHaveBeenCalledOnce()
+    expect(agent.listModels).toHaveBeenCalledOnce()
+    for (const listener of listeners) {
+      listener({
+        type: "provider-disconnected",
+        reason: "Codex app-server exited with code 1",
+      })
+      listener({
+        type: "provider-disconnected",
+        reason: "Codex app-server exited with code 1",
+      })
+    }
+
+    const disconnected = await rpc("workspace.get", {})
+    expect(disconnected).toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          state: "failed",
+          providerThreadId: "thread-recover",
+        })]),
+        approvals: [],
+        thread: expect.arrayContaining([expect.objectContaining({
+          sessionId: session.id,
+          kind: "system",
+          body: "Codex disconnected. The next message will reconnect and resume this session.",
+          detail: "Codex app-server exited with code 1",
+        })]),
+      },
+    })
+    const disconnectedSession = (disconnected.result as {
+      sessions: Array<Record<string, unknown>>
+      thread: Array<{ body?: string }>
+    }).sessions.find((candidate) => candidate.id === session.id)!
+    expect(disconnectedSession).not.toHaveProperty("activeTurnId")
+    expect((disconnected.result as { thread: Array<{ body?: string }> }).thread.filter(
+      (item) => item.body === "Codex disconnected. The next message will reconnect and resume this session.",
+    )).toHaveLength(1)
+
+    await rpc("runtime.models", { provider: "codex", client: "desktop" })
+    expect(agent.connect).toHaveBeenCalledTimes(2)
+    expect(agent.listModels).toHaveBeenCalledTimes(2)
+    const resumed = await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue after recovery",
+      client: "desktop",
+    })
+
+    expect(resumed).toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          state: "active",
+          providerThreadId: "thread-recover",
+          activeTurnId: "turn-recovered",
+        })]),
+      },
+    })
+    expect(agent.resumeThread).toHaveBeenCalledOnce()
+    expect(agent.resumeThread).toHaveBeenCalledWith({
+      threadId: "thread-recover",
+      cwd: session.workspacePath,
+      runtime: session.runtime,
+    })
+    expect(agent.startTurn).toHaveBeenCalledOnce()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
+  it("serializes provider disconnect recovery with an in-flight session send", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-race"
+    session.providerThreadId = "thread-race"
+    delete session.activeTurnId
+    const listeners = new Set<(event: AgentEvent) => void>()
+    let finishFirstTurn: ((turnId: string) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn()
+        .mockImplementationOnce(() => new Promise<string>((resolve) => { finishFirstTurn = resolve }))
+        .mockResolvedValue("turn-after-race"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await rpc("runtime.models", { provider: "codex", client: "desktop" })
+    const interrupted = rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Begin the work",
+      client: "desktop",
+    })
+    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledOnce())
+    for (const listener of listeners) {
+      listener({ type: "provider-disconnected", reason: "transport lost during turn/start" })
+    }
+    finishFirstTurn!("turn-before-race")
+    await expect(interrupted).resolves.toMatchObject({
+      result: { sessions: expect.arrayContaining([expect.objectContaining({
+        id: session.id,
+        activeTurnId: "turn-before-race",
+      })]) },
+    })
+
+    const failed = await rpc("workspace.get", {})
+    expect(failed).toMatchObject({
+      result: { sessions: expect.arrayContaining([expect.objectContaining({
+        id: session.id,
+        state: "failed",
+        providerThreadId: "thread-race",
+      })]) },
+    })
+    const failedSession = (failed.result as {
+      sessions: Array<{ id: string; activeTurnId?: string }>
+    }).sessions.find((candidate) => candidate.id === session.id)!
+    expect(failedSession).not.toHaveProperty("activeTurnId")
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Retry after the transport loss",
+      client: "desktop",
+    })
+    expect(agent.connect).toHaveBeenCalledTimes(2)
+    expect(agent.resumeThread).toHaveBeenCalledTimes(2)
+    expect(agent.startTurn).toHaveBeenCalledTimes(2)
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    expect(agent.startTurn.mock.calls.map(([input]) => input.prompt)).toEqual([
+      expect.stringContaining("Begin the work"),
+      expect.stringContaining("Retry after the transport loss"),
+    ])
+    expect(agent.startTurn.mock.calls[1]![0].prompt).not.toContain("Begin the work")
+    socket.close()
+  })
+
+  it("rejects a stale connection completion and reconnects on the next request", async () => {
+    let finishFirstConnection: (() => void) | undefined
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((resolve) => {
+          finishFirstConnection = resolve
+        }))
+        .mockResolvedValue(undefined),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", agent })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    const models = rpc("runtime.models", { provider: "codex", client: "desktop" })
+    await vi.waitFor(() => expect(agent.connect).toHaveBeenCalledOnce())
+    for (const listener of listeners) {
+      listener({ type: "provider-disconnected", reason: "lost during initialization" })
+    }
+    await rpc("workspace.get", {})
+    finishFirstConnection!()
+
+    await expect(models).resolves.toMatchObject({
+      error: {
+        code: -32603,
+        message: "Agent provider codex disconnected during setup",
+      },
+    })
+    expect(agent.connect).toHaveBeenCalledOnce()
+    expect(agent.listModels).not.toHaveBeenCalled()
+
+    await expect(rpc("runtime.models", {
+      provider: "codex",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: [expect.objectContaining({ provider: "codex", id: "gpt-5.6-sol" })],
+    })
+    expect(agent.connect).toHaveBeenCalledTimes(2)
+    expect(agent.listModels).toHaveBeenCalledOnce()
+    socket.close()
+  })
+
   it("closes providers and storage when the final shutdown save fails", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
