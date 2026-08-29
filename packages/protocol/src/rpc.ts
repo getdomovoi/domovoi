@@ -6,7 +6,6 @@ import {
   clientKindSchema,
   providerModelsSchema,
   runtimeSchema,
-  threadItemSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
@@ -69,8 +68,10 @@ export const rpcNotificationSchema = z.object({
 export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
 export const maximumWorkspaceDeltaOperations = 16
 export const maximumSessionHistoryPageItems = 100
+export const maximumSessionHistoryQueryLength = 256
 
 const streamedIdSchema = z.string().min(1).max(512)
+const historyEntryIdSchema = z.string().min(1).max(1_024)
 const streamedChunkSchema = z.string().min(1).max(maximumWorkspaceDeltaChunkLength)
 
 export const workspaceDeltaOperationSchema = z.discriminatedUnion("kind", [
@@ -100,17 +101,99 @@ export const workspaceDeltaSchema = z.object({
   operations: z.array(workspaceDeltaOperationSchema).min(1).max(maximumWorkspaceDeltaOperations),
 })
 
+export const sessionHistoryCategorySchema = z.enum([
+  "messages",
+  "tools",
+  "approvals",
+  "handoffs",
+  "checkpoints",
+  "annotations",
+  "tests",
+])
+
+const historyEntryBase = {
+  id: historyEntryIdSchema,
+  sourceId: streamedIdSchema,
+  sessionId: streamedIdSchema,
+  createdAt: z.string().datetime(),
+}
+
+const historyToolFields = {
+  tool: z.enum(["command", "file-change"]),
+  status: z.enum(["running", "completed", "failed", "declined"]),
+  title: z.string(),
+  output: z.string().optional(),
+}
+
+export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("messages"),
+    role: z.enum(["user", "assistant", "system"]),
+    body: z.string(),
+    detail: z.string().optional(),
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("tools"),
+    ...historyToolFields,
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("approvals"),
+    decision: approvalDecisionSchema,
+    operation: z.string(),
+    checkpoint: z.string(),
+    client: clientKindSchema,
+    explanation: z.string().min(1).optional(),
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("handoffs"),
+    body: z.string(),
+    detail: z.string().optional(),
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("checkpoints"),
+    label: z.string(),
+    commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("annotations"),
+    annotationId: streamedIdSchema,
+    action: z.enum(["created", "reply"]),
+    body: z.string(),
+    origin: clientKindSchema,
+    artifactId: streamedIdSchema.optional(),
+    status: z.enum(["open", "resolved"]).optional(),
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("tests"),
+    ...historyToolFields,
+  }),
+])
+
 export const sessionHistoryParamsSchema = z.object({
   sessionId: streamedIdSchema,
-  before: streamedIdSchema.optional(),
+  before: historyEntryIdSchema.optional(),
   limit: z.number().int().min(1).max(maximumSessionHistoryPageItems).default(50),
+  categories: z.array(sessionHistoryCategorySchema).min(1).max(
+    sessionHistoryCategorySchema.options.length,
+  ).refine(
+    (categories) => new Set(categories).size === categories.length,
+    "History categories must be unique",
+  ).optional(),
+  query: z.string().trim().min(1).max(maximumSessionHistoryQueryLength).optional(),
 })
 
 export const sessionHistoryPageSchema = z.object({
   sessionId: streamedIdSchema,
-  items: z.array(threadItemSchema).max(maximumSessionHistoryPageItems),
+  items: z.array(sessionHistoryEntrySchema).max(maximumSessionHistoryPageItems),
   hasMore: z.boolean(),
-  nextCursor: streamedIdSchema.optional(),
+  nextCursor: historyEntryIdSchema.optional(),
 }).superRefine((page, context) => {
   const itemIds = new Set<string>()
   page.items.forEach((item, index) => {
@@ -408,4 +491,6 @@ export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificati
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
 export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
 export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
+export type SessionHistoryCategory = z.infer<typeof sessionHistoryCategorySchema>
+export type SessionHistoryEntry = z.infer<typeof sessionHistoryEntrySchema>
 export type SessionHistoryPage = z.infer<typeof sessionHistoryPageSchema>
