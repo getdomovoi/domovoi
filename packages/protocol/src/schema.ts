@@ -235,10 +235,134 @@ export const workspaceSnapshotSchema = z.object({
   artifacts: z.array(artifactSchema),
   annotations: z.array(annotationSchema).default([]),
 }).superRefine((snapshot, context) => {
+  const aggregates = [
+    ["sessions", snapshot.sessions],
+    ["approvals", snapshot.approvals],
+    ["approvalRules", snapshot.approvalRules],
+    ["thread", snapshot.thread],
+    ["artifacts", snapshot.artifacts],
+    ["annotations", snapshot.annotations],
+  ] as const
+  for (const [field, records] of aggregates) {
+    const ids = new Set<string>()
+    records.forEach((record, index) => {
+      if (ids.has(record.id)) {
+        context.addIssue({
+          code: "custom",
+          message: `${field} IDs must be unique`,
+          path: [field, index, "id"],
+        })
+      }
+      ids.add(record.id)
+    })
+  }
+
+  snapshot.annotations.forEach((annotation, annotationIndex) => {
+    const replyIds = new Set<string>()
+    annotation.thread.forEach((reply, replyIndex) => {
+      if (replyIds.has(reply.id)) {
+        context.addIssue({
+          code: "custom",
+          message: "Annotation reply IDs must be unique within a thread",
+          path: ["annotations", annotationIndex, "thread", replyIndex, "id"],
+        })
+      }
+      replyIds.add(reply.id)
+    })
+  })
+
+  if (snapshot.project === null) {
+    const populatedFields = [
+      snapshot.sessions,
+      snapshot.approvals,
+      snapshot.approvalRules,
+      snapshot.thread,
+      snapshot.artifacts,
+      snapshot.annotations,
+    ]
+    if (snapshot.activeSessionId !== null || populatedFields.some((field) => field.length > 0)) {
+      context.addIssue({
+        code: "custom",
+        message: "An unopened workspace cannot contain project state",
+        path: ["project"],
+      })
+    }
+    return
+  }
+  const project = snapshot.project
+
+  if (project.machineId !== snapshot.machine.id) {
+    context.addIssue({
+      code: "custom",
+      message: "Project must belong to the workspace machine",
+      path: ["project", "machineId"],
+    })
+  }
+
+  const sessionIds = new Set(snapshot.sessions.map((session) => session.id))
+  snapshot.sessions.forEach((session, index) => {
+    if (session.projectId !== project.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Session must belong to the workspace project",
+        path: ["sessions", index, "projectId"],
+      })
+    }
+  })
+  if (snapshot.activeSessionId !== null && !sessionIds.has(snapshot.activeSessionId)) {
+    context.addIssue({
+      code: "custom",
+      message: "Active session must reference an existing session",
+      path: ["activeSessionId"],
+    })
+  }
+  snapshot.approvals.forEach((approval, index) => {
+    if (!sessionIds.has(approval.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Approval must reference an existing session",
+        path: ["approvals", index, "sessionId"],
+      })
+    }
+  })
+  snapshot.approvalRules.forEach((rule, index) => {
+    if (rule.projectId !== project.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Approval rule must reference the workspace project",
+        path: ["approvalRules", index, "projectId"],
+      })
+    }
+  })
+  snapshot.thread.forEach((item, index) => {
+    if (!sessionIds.has(item.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread item must reference an existing session",
+        path: ["thread", index, "sessionId"],
+      })
+    }
+  })
+  const artifactsById = new Map<string, Artifact>()
+  snapshot.artifacts.forEach((artifact, index) => {
+    if (!artifactsById.has(artifact.id)) artifactsById.set(artifact.id, artifact)
+    if (!sessionIds.has(artifact.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Artifact must reference an existing session",
+        path: ["artifacts", index, "sessionId"],
+      })
+    }
+  })
   snapshot.annotations.forEach((annotation, index) => {
-    const artifact = snapshot.artifacts.find(
-      (candidate) => candidate.id === annotation.artifactId,
-    )
+    if (!sessionIds.has(annotation.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Annotation must reference an existing session",
+        path: ["annotations", index, "sessionId"],
+      })
+    }
+    const artifact = artifactsById.get(annotation.artifactId)
     if (!artifact || artifact.sessionId !== annotation.sessionId) {
       context.addIssue({
         code: "custom",
@@ -247,22 +371,6 @@ export const workspaceSnapshotSchema = z.object({
       })
     }
   })
-  if (snapshot.project !== null) return
-  const populatedFields = [
-    snapshot.sessions,
-    snapshot.approvals,
-    snapshot.approvalRules,
-    snapshot.thread,
-    snapshot.artifacts,
-    snapshot.annotations,
-  ]
-  if (snapshot.activeSessionId !== null || populatedFields.some((field) => field.length > 0)) {
-    context.addIssue({
-      code: "custom",
-      message: "An unopened workspace cannot contain project state",
-      path: ["project"],
-    })
-  }
 })
 
 export type ClientKind = z.infer<typeof clientKindSchema>
