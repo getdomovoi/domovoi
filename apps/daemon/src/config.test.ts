@@ -1,3 +1,5 @@
+import { join } from "node:path"
+
 import { describe, expect, it } from "vitest"
 
 import { DaemonConfigurationError, parseDaemonEnvironment } from "./config.js"
@@ -7,7 +9,7 @@ describe("parseDaemonEnvironment", () => {
     expect(parseDaemonEnvironment({}, "/home/tester")).toEqual({
       host: "127.0.0.1",
       port: 47831,
-      credentialPath: "/home/tester/.domovoi/daemon.token",
+      credentialPath: join("/home/tester", ".domovoi", "daemon.token"),
       allowRemoteTransport: false,
     })
   })
