@@ -172,7 +172,8 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): Workspa
     retainedBySession.set(item.sessionId, retained + 1)
     return true
   }).reverse()
-  return { ...snapshot, thread }
+  const historyTruncated = thread.length < snapshot.thread.length
+  return { ...snapshot, thread, ...(historyTruncated ? { historyTruncated: true } : {}) }
 }
 
 export function isTestCommandTitle(title: string): boolean {
@@ -1676,7 +1677,7 @@ export class DomovoiDaemon {
         )
         if (existingFork) {
           const sameRuntime = Object.entries(params.runtime).every(
-            ([key, value]) => existingFork.runtime[key as keyof Runtime] === value,
+            ([key, value]) => existingFork.forkedFrom?.requestedRuntime[key as keyof Runtime] === value,
           )
           if (
             existingFork.forkedFrom?.sourceSessionId !== params.sessionId
@@ -1757,7 +1758,13 @@ export class DomovoiDaemon {
           return
         }
         if (!this.#workspaceService.createSessionWorkspaceFromCheckpoint) {
-          throw new Error("Workspace service cannot fork checkpoints")
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Checkpoint forks are not supported by this workspace",
+          )
+          return
         }
         const sessionId = `session-fork-${createHash("sha256")
           .update(params.requestId)
@@ -1817,6 +1824,7 @@ export class DomovoiDaemon {
             checkpointCommit: checkpoint.commit,
             requestId: params.requestId,
             client: params.client,
+            requestedRuntime: params.runtime,
           },
         })
         candidate.thread.push({

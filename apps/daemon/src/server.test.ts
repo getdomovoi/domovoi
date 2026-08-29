@@ -10,6 +10,7 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   maximumWorkspaceDeltaChunkLength,
+  workspaceSnapshotSchema,
   type ProviderModel,
 } from "@getdomovoi/protocol"
 
@@ -915,6 +916,43 @@ describe("DomovoiDaemon", () => {
     expect(clientSnapshot.thread).toHaveLength(100)
     expect(clientSnapshot.thread[0]?.id).toBe("message-5")
     expect(snapshot.thread).toHaveLength(105)
+  })
+
+  it("marks client history truncation so fork ancestry remains parseable", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const source = snapshot.sessions[0]!
+    const checkpoint = snapshot.thread.find((item) =>
+      item.sessionId === source.id && item.kind === "checkpoint"
+    )!
+    if (checkpoint.kind !== "checkpoint" || !checkpoint.commit) throw new Error("checkpoint missing")
+    snapshot.sessions.push({
+      ...source,
+      id: "session-fork-truncated",
+      workspacePath: "/worktrees/session-fork-truncated",
+      providerThreadId: "provider-thread-fork-truncated",
+      forkedFrom: {
+        sourceSessionId: source.id,
+        checkpointId: checkpoint.id,
+        checkpointCommit: checkpoint.commit,
+        requestId: "fork-request-truncated",
+        client: "desktop",
+        requestedRuntime: source.runtime,
+      },
+    })
+    snapshot.thread.push(...Array.from({ length: 100 }, (_, index) => ({
+      id: `newer-message-${index}`,
+      sessionId: source.id,
+      kind: "user" as const,
+      body: `Message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 29, 0, 0, index)).toISOString(),
+    })))
+
+    const clientSnapshot = workspaceSnapshotForClient(snapshot)
+
+    expect(clientSnapshot.historyTruncated).toBe(true)
+    expect(clientSnapshot.thread.some((item) => item.id === checkpoint.id)).toBe(false)
+    expect(workspaceSnapshotSchema.safeParse(clientSnapshot).success).toBe(true)
+    expect(workspaceSnapshotSchema.safeParse(snapshot).success).toBe(true)
   })
 
   it("pages backward through complete session history", () => {
@@ -3612,11 +3650,12 @@ describe("DomovoiDaemon", () => {
       permissionMode: "build",
       auto: false,
     }
+    const requestedRuntime = { ...runtime, model: "default" }
     const forkParams = {
       sessionId: source.id,
       checkpointId: sourceCheckpoint.id,
       requestId: "fork-request-audit",
-      runtime,
+      runtime: requestedRuntime,
       client: "desktop",
     }
 
@@ -3673,6 +3712,7 @@ describe("DomovoiDaemon", () => {
         checkpointCommit: sourceCheckpoint.commit,
         requestId: forkParams.requestId,
         client: "desktop",
+        requestedRuntime,
       },
     })
     expect(createdResult.thread.filter((item) => item.sessionId === fork.id)).toEqual([
@@ -3695,6 +3735,66 @@ describe("DomovoiDaemon", () => {
       error: { code: -32602, message: "Fork request ID conflicts with an existing fork" },
     })
     expect(createSessionWorkspaceFromCheckpoint).toHaveBeenCalledTimes(3)
+    socket.close()
+  })
+
+  it("rejects checkpoint forks when the workspace service lacks fork support", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const source = snapshot.sessions[0]!
+    source.state = "idle"
+    source.workspacePath = "/worktrees/session-billing"
+    delete source.activeTurnId
+    const runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build" as const,
+      auto: false,
+    }
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(), restore: vi.fn(),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "unsupported-fork-token",
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      agents: { codex: agent },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.fork",
+      params: {
+        sessionId: source.id,
+        checkpointId: "thread-checkpoint",
+        requestId: "fork-request-unsupported",
+        runtime,
+        client: "desktop",
+      },
+    }))
+    await expect(response).resolves.toMatchObject({
+      error: { code: -32602, message: "Checkpoint forks are not supported by this workspace" },
+    })
+    expect(agent.startThread).not.toHaveBeenCalled()
     socket.close()
   })
 

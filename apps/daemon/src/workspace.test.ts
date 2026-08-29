@@ -172,7 +172,32 @@ describe("GitWorkspaceService", () => {
       sourceBefore.map((value) => typeof value === "string" ? value : value.stdout),
     )
 
+    await writeFile(join(fork.path, "fork-only.txt"), "advance fork\n")
+    await execute("git", ["-C", fork.path, "add", "fork-only.txt"])
+    await execute("git", ["-C", fork.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "advance fork"])
+    await expect(service.createSessionWorkspaceFromCheckpoint(
+      source.path,
+      checkpoint.commit,
+      "session-fork-request",
+    )).rejects.toThrow("conflicts with an existing session worktree")
+    await execute("git", ["-C", fork.path, "reset", "--hard", checkpoint.commit])
+    await execute("git", ["-C", fork.path, "checkout", "-b", "wrong-fork-branch"])
+    await expect(service.createSessionWorkspaceFromCheckpoint(
+      source.path,
+      checkpoint.commit,
+      "session-fork-request",
+    )).rejects.toThrow("conflicts with an existing session worktree")
+
     await execute("git", ["-C", repositoryPath, "worktree", "remove", "--force", fork.path])
+    await execute("git", ["-C", source.path, "add", "README.md"])
+    await execute("git", ["-C", source.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "advance source"])
+    await execute("git", ["-C", source.path, "branch", "-f", fork.branch, "HEAD"])
+    await expect(service.createSessionWorkspaceFromCheckpoint(
+      source.path,
+      checkpoint.commit,
+      "session-fork-request",
+    )).rejects.toThrow("conflicts with an existing session branch")
+    await execute("git", ["-C", source.path, "branch", "-f", fork.branch, checkpoint.commit])
     const reattached = await service.createSessionWorkspaceFromCheckpoint(
       source.path,
       checkpoint.commit,
@@ -180,6 +205,11 @@ describe("GitWorkspaceService", () => {
     )
     expect(reattached).toEqual(fork)
     await expect(readFile(join(reattached.path, "README.md"), "utf8")).resolves.toBe("checkpoint state\n")
+    await expect(service.createSessionWorkspaceFromCheckpoint(
+      source.path,
+      "f".repeat(40),
+      "session-missing-checkpoint",
+    )).rejects.toThrow("Commit is not a Domovoi checkpoint")
   })
 
   it("rejects session identifiers that could escape the worktree root", async () => {
