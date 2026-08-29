@@ -183,6 +183,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.pauseSession(sessionId))
   }, [updateSnapshotFrom])
 
+  const archiveSession = useCallback(async (sessionId: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshotFrom(client, await client.archiveSession(sessionId))
+  }, [updateSnapshotFrom])
+
   const loadSessionHistory = useCallback(async (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
@@ -336,6 +342,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
 
   return {
     activateSession,
+    archiveSession,
     authorizeArtifact,
     claimTerminal,
     closeTerminal,

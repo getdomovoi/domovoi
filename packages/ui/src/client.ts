@@ -322,6 +322,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.evidence", { sessionId })
   }
 
+  archiveSession(sessionId: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.archive", { sessionId, client: this.kind })
+  }
+
   loadSessionHistory(
     sessionId: string,
     options: Omit<RpcParams<"session.history">, "sessionId"> = { limit: 50 },
