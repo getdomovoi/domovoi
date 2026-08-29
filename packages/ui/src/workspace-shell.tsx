@@ -856,12 +856,7 @@ export function Thread({
     explanation?: string,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
-  onForkSession: (
-    sessionId: string,
-    checkpointId: string,
-    runtime: Runtime,
-    requestId: string,
-  ) => Promise<void>
+  onForkSession: (input: Omit<RpcParams<"session.fork">, "client">) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
@@ -997,7 +992,12 @@ export function Thread({
     setRuntimePending(true)
     setRuntimeError("")
     try {
-      await onForkSession(active.id, checkpointId, runtime, requestId)
+      await onForkSession({
+        sessionId: active.id,
+        checkpointId,
+        runtime,
+        requestId,
+      })
     } catch (cause) {
       setRuntimeError(cause instanceof Error ? cause.message : "The session could not be forked")
       throw cause

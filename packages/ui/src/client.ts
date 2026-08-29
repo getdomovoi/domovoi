@@ -291,16 +291,10 @@ export class DomovoiClient extends EventTarget {
   }
 
   forkSession(
-    sessionId: string,
-    checkpointId: string,
-    runtime: Runtime,
-    requestId: string,
+    input: Omit<RpcParams<"session.fork">, "client">,
   ): Promise<WorkspaceSnapshot> {
     return this.request("session.fork", {
-      sessionId,
-      checkpointId,
-      runtime,
-      requestId,
+      ...input,
       client: this.kind,
     })
   }

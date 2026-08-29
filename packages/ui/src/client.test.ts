@@ -694,12 +694,12 @@ describe("DomovoiClient", () => {
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await initial
 
-    const forking = client.forkSession(
-      "session-billing",
-      "thread-checkpoint",
-      demoWorkspace.sessions[0]!.runtime,
-      "fork-request-tablet",
-    )
+    const forking = client.forkSession({
+      sessionId: "session-billing",
+      checkpointId: "thread-checkpoint",
+      runtime: demoWorkspace.sessions[0]!.runtime,
+      requestId: "fork-request-tablet",
+    })
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "session.fork",
       params: {
