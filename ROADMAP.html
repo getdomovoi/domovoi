@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domovoi roadmap</title>
+<style>
+:root {
+  --bg: #000;
+  --panel: #1a1a19;
+  --panel2: #232321;
+  --fg: #ffffff;
+  --ink2: #c3c2b7;
+  --muted: #8a8a80;
+  --rule: #2e2e2c;
+  --link: #3987e5;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+* { scrollbar-width: thin; scrollbar-color: #3a3a37 transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #3a3a37;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #55554f; background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+.layout {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 6rem;
+}
+.meta {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.75rem;
+  margin-bottom: 2rem;
+}
+details.toc {
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  margin: 0 0 2.5rem;
+  font-size: 0.8125rem;
+}
+details.toc > summary {
+  cursor: pointer;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.6875rem;
+}
+details.toc ul { list-style: none; margin: 0.7rem 0 0; padding: 0; }
+details.toc li { margin: 0.15rem 0; }
+details.toc li.lvl3 { padding-left: 1rem; font-size: 0.75rem; color: var(--muted); }
+details.toc a { color: var(--ink2); text-decoration: none; }
+details.toc li.lvl3 a { color: var(--muted); }
+details.toc a:hover { color: var(--link); text-decoration: underline; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.25; font-weight: 600; color: var(--fg); }
+h1 { font-size: 26px; margin: 0 0 1rem; letter-spacing: -0.01em; }
+h2 {
+  font-size: 18px;
+  margin: 40px 0 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+h3 { font-size: 15px; margin: 26px 0 8px; color: var(--ink2); }
+h4 {
+  font-size: 12px;
+  margin: 20px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+p { margin: 0 0 1.05rem; color: var(--ink2); }
+ul, ol { margin: 0 0 1.05rem; padding-left: 1.4rem; }
+li { margin: 0.3rem 0; color: var(--ink2); }
+li > ul, li > ol { margin: 0.3rem 0 0.4rem; }
+a { color: var(--link); }
+strong { font-weight: 600; color: var(--fg); }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+blockquote {
+  margin: 0 0 1.05rem;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  color: var(--ink2);
+}
+blockquote p:last-child { margin-bottom: 0; }
+code {
+  font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 0.875em;
+  background: var(--panel2);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.05em 0.3em;
+  overflow-wrap: break-word;
+}
+pre {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0 0 1.25rem;
+  line-height: 1.5;
+}
+pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  white-space: pre;
+}
+.tw { overflow-x: auto; margin: 12px 0 22px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { border-bottom: 1px solid var(--rule); padding: 7px 10px; vertical-align: top; }
+th {
+  background: none;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 12px;
+}
+td { color: var(--ink2); }
+@media (min-width: 1180px) {
+  .layout {
+    max-width: 74rem;
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 46rem);
+    gap: 3.5rem;
+    align-items: start;
+    padding-top: 3rem;
+  }
+  .layout > .doc { min-width: 0; }
+  .side {
+    position: sticky;
+    top: 3rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+  }
+  .meta { border-bottom: 0; margin-bottom: 0; }
+  details.toc {
+    background: none;
+    border: 0;
+    border-radius: 0;
+    border-left: 1px solid var(--rule);
+    padding: 0 0 0 1rem;
+    margin: 1rem 0 0;
+  }
+  details.toc > summary { display: none; }
+  details.toc ul { margin-top: 0; }
+}
+@media print {
+  details.toc { display: none; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  p, li, td { color: #000; }
+  pre, .tw { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="side">
+<div class="meta">ROADMAP.md  ·  2026-08-29 06:29</div>
+<details class="toc" open><summary>Contents</summary><ul><li class="lvl2"><a href="#status-and-priority">Status and priority</a></li><li class="lvl2"><a href="#current-baseline">Current baseline</a></li><li class="lvl2"><a href="#goal-0-secure-and-bound-the-local-core">Goal 0: secure and bound the local core</a></li><li class="lvl2"><a href="#goal-1-finish-the-local-desktop-alpha">Goal 1: finish the local desktop alpha</a></li><li class="lvl3"><a href="#sessions-and-worktrees">Sessions and worktrees</a></li><li class="lvl3"><a href="#providers-and-credentials">Providers and credentials</a></li><li class="lvl3"><a href="#permissions-and-auditability">Permissions and auditability</a></li><li class="lvl3"><a href="#preview-and-review">Preview and review</a></li><li class="lvl3"><a href="#skills">Skills</a></li><li class="lvl3"><a href="#desktop-quality">Desktop quality</a></li><li class="lvl2"><a href="#goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</a></li><li class="lvl2"><a href="#goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</a></li><li class="lvl3"><a href="#account-and-transport-services">Account and transport services</a></li><li class="lvl3"><a href="#hosted-client">Hosted client</a></li><li class="lvl3"><a href="#guest-sessions">Guest sessions</a></li><li class="lvl2"><a href="#goal-4-package-and-release-the-open-core">Goal 4: package and release the open core</a></li><li class="lvl2"><a href="#goal-5-public-product-and-ecosystem">Goal 5: public product and ecosystem</a></li><li class="lvl2"><a href="#post-mvp-expansion">Post-MVP expansion</a></li><li class="lvl2"><a href="#unresolved-product-decisions">Unresolved product decisions</a></li><li class="lvl2"><a href="#resolved-architecture-decisions">Resolved architecture decisions</a></li><li class="lvl2"><a href="#first-public-alpha-definition-of-done">First public alpha definition of done</a></li></ul></details>
+</aside>
+<main class="doc">
+<h1 id="domovoi-roadmap">Domovoi roadmap</h1>
+<p>This roadmap turns the signed product handoff, product contract, distribution contract, and the 2026-08-28 repository audit into an ordered delivery plan. It describes outcomes, dependencies, and proof of completion. It does not replace <code>PRODUCT.md</code>, <code>DESIGN.md</code>, or the Claude Design handoffs.</p>
+<h2 id="status-and-priority">Status and priority</h2>
+<ul>
+<li><code>[x]</code> implemented and verified in the repository
+</li>
+<li><code>[ ]</code> not complete
+</li>
+<li><code>P0</code> required before untrusted or remote use
+</li>
+<li><code>P1</code> required for the first useful public alpha
+</li>
+<li><code>P2</code> required for hosted beta or broad distribution
+</li>
+<li><code>P3</code> later expansion
+</li>
+</ul>
+<h2 id="current-baseline">Current baseline</h2>
+<p>The repository already proves this local vertical slice:</p>
+<ul>
+<li>[x] pnpm TypeScript monorepo with protocol, daemon, shared UI, Electron, and web packages
+</li>
+<li>[x] versioned Zod schemas over WebSocket JSON-RPC
+</li>
+<li>[x] daemon-owned SQLite workspace state and restart persistence
+</li>
+<li>[x] isolated Git worktrees with durable checkpoints and recoverable restore
+</li>
+<li>[x] Ask, Plan, Build manual, and Build auto runtime policy
+</li>
+<li>[x] approval requests, decisions, standing rules, receipts, and originating-client attribution
+</li>
+<li>[x] Codex CLI, Claude Code, OpenCode, and Kilo session adapters
+</li>
+<li>[x] provider/model selection and checkpointed cross-provider handoff
+</li>
+<li>[x] interactive daemon-owned PTYs with ownership transfer
+</li>
+<li>[x] sandboxed HTML artifacts with short-lived preview capabilities
+</li>
+<li>[x] structured preview annotations, replies, and resolution
+</li>
+<li>[x] local skill discovery across project, user, system, Codex, Claude, Kilo, and <code>.agents</code> paths
+</li>
+<li>[x] searchable skill browser and read-only <code>SKILL.md</code> source viewer
+</li>
+<li>[x] shared responsive UI in Electron and the installable web/PWA shell
+</li>
+<li>[x] custom desktop window decoration with native platform fallback
+</li>
+<li>[x] Linux, macOS, and Windows CI for typecheck, tests, and builds
+</li>
+<li>[x] Apache-2.0 local core and documented open-core boundary
+</li>
+</ul>
+<h2 id="goal-0-secure-and-bound-the-local-core">Goal 0: secure and bound the local core</h2>
+<p>Priority: <code>P0</code>. Finish before asking users to trust Domovoi with real repositories or remote access.</p>
+<ul>
+<li>[x] Require authentication for every daemon, including loopback listeners
+<ul>
+<li>Generate a high-entropy credential when none is supplied.
+</li>
+<li>Persist standalone credentials in a user-private file and keep browser handoff session-only.
+</li>
+<li>Prove unauthenticated RPC and terminal requests are rejected.
+</li>
+</ul>
+</li>
+<li>[x] Protect embedded OpenCode and Kilo provider servers
+<ul>
+<li>Use provider-supported authentication or OS-protected IPC.
+</li>
+<li>Prove direct unauthenticated requests cannot bypass Domovoi approvals.
+</li>
+</ul>
+</li>
+<li>[x] Restrict persisted state permissions
+<ul>
+<li>Create the Domovoi state directory as <code>0700</code> and database plus sidecars as <code>0600</code> on POSIX.
+</li>
+<li>Repair permissive existing files on startup.
+</li>
+</ul>
+</li>
+<li>[x] Make RPC timeouts cancel or quarantine underlying work
+<ul>
+<li>A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the serialized request has failed.
+</li>
+</ul>
+</li>
+<li>[x] Split the daemon-wide mutation queue
+<ul>
+<li>Keep ordering per session and resource.
+</li>
+<li>Terminal input, unrelated sessions, and independent machines must not block behind slow Git or provider work.
+</li>
+</ul>
+</li>
+<li>[x] Bound streamed workspace updates
+<ul>
+<li>Broadcast bounded typed deltas and debounce canonical persistence instead of sending the complete growing snapshot for every token.
+</li>
+<li>Keep complete durable history while paging older items behind a bounded recent window.
+</li>
+</ul>
+</li>
+<li>[x] Drain queued events before persistence shutdown
+<ul>
+<li>Reject new RPC and provider events after shutdown starts while draining already-queued work.
+</li>
+<li>Persist the final canonical state before provider and SQLite cleanup, with restart recovery coverage.
+</li>
+</ul>
+</li>
+<li>[x] Add subprocess deadlines and cancellation to Git operations
+</li>
+<li>[x] Recover Codex cleanly after its subprocess exits
+</li>
+<li>[x] Add browser RPC response deadlines and cancellation
+</li>
+<li>[x] Return stable public RPC errors while keeping internal exception detail in redacted logs
+</li>
+<li>[x] Validate daemon environment configuration at runtime
+</li>
+<li>[x] Tighten protocol aggregate references and JSON-RPC response invariants
+</li>
+</ul>
+<p>Completion proof:</p>
+<ul>
+<li>adversarial authentication and authorization tests;
+</li>
+<li>timeout and race tests with late completions;
+</li>
+<li>bounded long-session measurements;
+</li>
+<li>clean shutdown recovery tests;
+</li>
+<li>Linux, macOS, and Windows CI.
+</li>
+</ul>
+<h2 id="goal-1-finish-the-local-desktop-alpha">Goal 1: finish the local desktop alpha</h2>
+<p>Priority: <code>P1</code>. Produce a dependable single-machine Domovoi that can replace a terminal-only agent workflow without becoming a code editor.</p>
+<h3 id="sessions-and-worktrees">Sessions and worktrees</h3>
+<ul>
+<li>[x] Open a local Git repository and create a session worktree
+</li>
+<li>[x] Send, steer, stop, persist, and resume agent turns
+</li>
+<li>[x] Create and restore checkpoints with a recovery checkpoint
+</li>
+<li>[x] Change providers/models through a documented checkpointed handoff
+</li>
+<li>[x] Prevent manual checkpoint creation while an agent is mutating the worktree
+</li>
+<li>[ ] Add a complete session history with filters for messages, tools, approvals, handoffs, checkpoints, annotations, and tests
+</li>
+<li>[ ] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
+</li>
+<li>[ ] Add session archive and deliberate cleanup without deleting the source repository
+</li>
+<li>[ ] Add explicit fork-with-model beside switch-here behavior
+</li>
+</ul>
+<h3 id="providers-and-credentials">Providers and credentials</h3>
+<ul>
+<li>[x] Codex CLI adapter
+</li>
+<li>[x] Claude Code adapter
+</li>
+<li>[x] OpenCode adapter
+</li>
+<li>[x] Kilo adapter
+</li>
+<li>[ ] Cursor Agent adapter
+</li>
+<li>[ ] Grok CLI adapter
+</li>
+<li>[ ] Provider account and readiness settings from the signed handoff
+</li>
+<li>[ ] OS-keychain storage for direct provider API keys and other secrets
+</li>
+<li>[ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
+</li>
+<li>[ ] Token and cost telemetry normalized per turn, session, provider, and model
+</li>
+<li>[ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing model access
+</li>
+</ul>
+<h3 id="permissions-and-auditability">Permissions and auditability</h3>
+<ul>
+<li>[x] Ask, Plan, Build manual, and Build auto controls
+</li>
+<li>[x] Approval cards with decision receipts and client attribution
+</li>
+<li>[x] Per-project standing approval rules
+</li>
+<li>[ ] Enforce hard gates that Build auto cannot bypass
+</li>
+<li>[ ] Add a searchable audit log with redaction and export
+</li>
+<li>[ ] Add command-level secret redaction before persistence or display
+</li>
+<li>[ ] Add a global emergency stop that cancels all active tools and providers, not only UI state
+</li>
+</ul>
+<h3 id="preview-and-review">Preview and review</h3>
+<ul>
+<li>[x] Full-fidelity sandboxed HTML preview
+</li>
+<li>[x] Picker bridge and structured anchored annotations
+</li>
+<li>[x] Annotation replies and open/resolved lifecycle
+</li>
+<li>[ ] Detect new plan/design artifacts written inside the worktree without provider-specific events
+</li>
+<li>[ ] Preserve annotation anchors across document revisions with selector, text quote, and bounding-box fallbacks
+</li>
+<li>[ ] Capture cropped visual context for an annotation and pass it to vision-capable agents
+</li>
+<li>[ ] Add variant metadata, thumbnail filmstrip, device-width presets, and optional compare layouts
+</li>
+<li>[ ] Add chat-inline Markdown quick views while keeping generated HTML canonical
+</li>
+<li>[ ] Add print/share-safe plan rendering without weakening the preview sandbox
+</li>
+</ul>
+<h3 id="skills">Skills</h3>
+<ul>
+<li>[x] Discover and deduplicate local skills
+</li>
+<li>[x] Show provenance, scope, exact path, metadata, and source
+</li>
+<li>[ ] Define capability manifests, content digests, signature state, and trust state
+</li>
+<li>[ ] Add reviewed per-project skill enablement
+</li>
+<li>[ ] Inject only enabled skills into provider session context
+</li>
+<li>[ ] Gate terminal-based skill installs through the normal permission system
+</li>
+<li>[ ] Define safe behavior for unsigned skills in Build auto
+</li>
+<li>[ ] Compare skill availability across machines without silently distributing executables
+</li>
+</ul>
+<h3 id="desktop-quality">Desktop quality</h3>
+<ul>
+<li>[x] Shared Claude-handoff workspace and custom window decoration
+</li>
+<li>[ ] Persist layout, selected surface, project, and session safely across restarts
+</li>
+<li>[ ] Keyboard command palette for navigation and common session actions
+</li>
+<li>[ ] Native completion, failure, and approval-needed notifications
+</li>
+<li>[ ] OS file dialogs, deep links, clipboard behavior, and external-editor handoff
+</li>
+<li>[ ] First-run provider diagnostics and actionable recovery states
+</li>
+<li>[ ] Accessibility pass for keyboard, focus, screen readers, reduced motion, contrast, and zoom
+</li>
+<li>[ ] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
+</li>
+</ul>
+<h2 id="goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</h2>
+<p>Priority: <code>P1</code>. Keep code and execution on the selected machine while one client controls the fleet.</p>
+<ul>
+<li>[ ] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
+</li>
+<li>[ ] Add device pairing, revocation, and credential rotation
+</li>
+<li>[ ] Add a fleet registry and machine selector to the shared protocol and UI
+</li>
+<li>[ ] Implement one transport abstraction with this order:
+<ol>
+<li>loopback or OS-private IPC;
+</li>
+<li>LAN or direct tailnet connection;
+</li>
+<li>SSH tunnel where explicitly configured;
+</li>
+<li>outbound relay fallback after hosted services exist.
+</li>
+</ol>
+</li>
+<li>[ ] Authenticate every connection even inside a tailnet
+</li>
+<li>[ ] Bootstrap <code>domovoid</code> through a version-pinned, checksummed install script
+</li>
+<li>[ ] Install and supervise the daemon through systemd, launchd, and Windows Services
+</li>
+<li>[ ] Implement WSL discovery and a <code>domovoi open .</code> Windows interop shim
+</li>
+<li>[ ] Keep all WSL filesystem and Git work inside the distro daemon, never through <code>\\wsl$</code>
+</li>
+<li>[ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
+</li>
+<li>[ ] Add checkpointed machine transfer with live source and target preflight
+</li>
+<li>[ ] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote ref workflow
+</li>
+<li>[ ] Record transfer receipts and retain the source recovery checkpoint
+</li>
+</ul>
+<p>Completion proof:</p>
+<ul>
+<li>one session can be controlled across two clients without divergent state;
+</li>
+<li>Linux, macOS, Windows, and WSL daemons pass pairing and reconnect tests;
+</li>
+<li>repository bytes never flow through a filesystem sync layer;
+</li>
+<li>revoked devices lose access promptly;
+</li>
+<li>interrupted transfers recover without losing either worktree.
+</li>
+</ul>
+<h2 id="goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</h2>
+<p>Priority: <code>P2</code>. Make plan review and safe remote control work from iPad, phones, and guest browsers.</p>
+<h3 id="account-and-transport-services">Account and transport services</h3>
+<ul>
+<li>[ ] OAuth/passkey account service
+</li>
+<li>[ ] Account-scoped device registry and short-lived client sessions
+</li>
+<li>[ ] Outbound daemon connection manager and horizontally scalable relay
+</li>
+<li>[ ] Payload-level end-to-end encryption between client and daemon
+</li>
+<li>[ ] Relay protocol version negotiation, backpressure, reconnect, and resumable subscriptions
+</li>
+<li>[ ] Hosted usage, subscription, billing, and relay-entitlement management
+</li>
+<li>[ ] Device/session revocation and security-event history
+</li>
+<li>[ ] Recovery flow that does not give the service plaintext provider credentials
+</li>
+</ul>
+<h3 id="hosted-client">Hosted client</h3>
+<ul>
+<li>[ ] Browser <code>PlatformAdapter</code> for dialogs, notifications, credentials, clipboard, and install state
+</li>
+<li>[ ] Supply authenticated daemon credentials without embedding long-lived secrets in the bundle
+</li>
+<li>[ ] Select any paired machine and resume its daemon-owned sessions
+</li>
+<li>[ ] Full-fidelity plan/design preview on iPad, tablet, and phone
+</li>
+<li>[ ] Read, annotate, reply, resolve, and select variants from touch devices
+</li>
+<li>[ ] Review and decide approvals with every safety fact preserved
+</li>
+<li>[ ] Touch-capable terminal with explicit ownership transfer
+</li>
+<li>[ ] Push notifications for completion, failure, and approval-needed events
+</li>
+<li>[ ] Offline-safe read cache for previously opened plans, without offline command mutation
+</li>
+</ul>
+<h3 id="guest-sessions">Guest sessions</h3>
+<ul>
+<li>[ ] Short-lived guest login with passkey or second-factor enforcement
+</li>
+<li>[ ] No persisted daemon tokens, project content, terminal history, or provider credentials after logout
+</li>
+<li>[ ] Guest session listing and immediate revocation from a paired device
+</li>
+<li>[ ] Distinct guest attribution in every audit receipt
+</li>
+<li>[ ] Enforce the approved guest hard-gate capability policy
+</li>
+</ul>
+<h2 id="goal-4-package-and-release-the-open-core">Goal 4: package and release the open core</h2>
+<p>Priority: <code>P2</code>. Every install channel must wrap the same immutable release.</p>
+<ul>
+<li>[ ] Establish versioning, compatibility, deprecation, and release-support policy
+</li>
+<li>[ ] Publish <code>@getdomovoi/protocol</code>, daemon, and CLI packages to npm with provenance
+</li>
+<li>[ ] Verify npm artifacts install and run through npm, pnpm, and Bun
+</li>
+<li>[ ] Build signed desktop installers for macOS, Windows, and Linux
+</li>
+<li>[ ] Add macOS signing/notarization and Windows code signing
+</li>
+<li>[ ] Publish SHA-256 checksums and SBOMs for release artifacts
+</li>
+<li>[ ] Add Homebrew formulae from immutable GitHub release artifacts
+</li>
+<li>[ ] Add AUR source and binary packages from immutable GitHub release artifacts
+</li>
+<li>[ ] Add a Windows package-manager manifest after installer signing is stable
+</li>
+<li>[ ] Choose and publish the Linux AppImage/native package set
+</li>
+<li>[ ] Add daemon and desktop update checks with explicit user control
+</li>
+<li>[ ] Add rollback and compatibility handling for daemon/client protocol mismatches
+</li>
+<li>[ ] Pin GitHub Actions by immutable commit SHA
+</li>
+<li>[ ] Replace the no-op lint gate with real TypeScript/React linting
+</li>
+<li>[ ] Review or replace dependencies whose licenses do not fit the public daemon
+</li>
+<li>[ ] Move build-time tooling such as the shadcn CLI out of production dependency graphs
+</li>
+</ul>
+<h2 id="goal-5-public-product-and-ecosystem">Goal 5: public product and ecosystem</h2>
+<p>Priority: <code>P3</code>. Start only after the app surfaces and real product captures exist.</p>
+<ul>
+<li>[ ] Run a new design-studio exploration for the public site
+</li>
+<li>[ ] Approve positioning, information order, responsive behavior, light/dark treatment, and real product captures before implementation
+</li>
+<li>[ ] Build the marketing site at <code>domovoi.sh</code>
+</li>
+<li>[ ] Publish architecture, threat model, protocol, daemon installation, provider, and contributor documentation
+</li>
+<li>[ ] Publish an extension contract for tools and MCP integrations
+</li>
+<li>[ ] Add a reviewed skill directory only after the trust model is implemented
+</li>
+<li>[ ] Add opt-in diagnostics and crash reporting with local redaction controls
+</li>
+<li>[ ] Define contribution governance, maintainer policy, release signing custody, and cloud/core compatibility guarantees
+</li>
+</ul>
+<h2 id="post-mvp-expansion">Post-MVP expansion</h2>
+<p>These are valuable but must not displace the secure single-user fleet workflow:</p>
+<ul>
+<li>[ ] encrypted client-side provider-key vault sync
+</li>
+<li>[ ] team organizations, roles, shared projects, policies, and audit retention
+</li>
+<li>[ ] hosted relay regions and enterprise self-hosting
+</li>
+<li>[ ] native iOS and Android shells where PWA limitations justify them
+</li>
+<li>[ ] native tablet multitasking and platform notification extensions
+</li>
+<li>[ ] provider routing policies based on cost, context, capability, and availability
+</li>
+<li>[ ] parallel agents in isolated worktrees with explicit merge/review workflows
+</li>
+<li>[ ] reusable session templates and automation schedules
+</li>
+<li>[ ] plugin marketplace and signed third-party integration bundles
+</li>
+</ul>
+<h2 id="unresolved-product-decisions">Unresolved product decisions</h2>
+<p>These remain decisions, not implementation tasks. Resolve them through an issue or RFC before the dependent work starts.</p>
+<ol>
+<li><strong>Offline machine transfer:</strong> refuse immediately or queue with TTL, cancellation, source write-lock behavior, and divergence rules.
+</li>
+<li><strong>Provider handoff disclosure:</strong> required pre-switch loss disclosure, safe-boundary behavior, and the warning difference between switch and fork.
+</li>
+<li><strong>Skill trust:</strong> capability vocabulary, signature authority, privileged installation, unsigned Build-auto behavior, and fleet declaration semantics.
+</li>
+<li><strong>Guest hard gates:</strong> whether guest clients may approve migrations, deploys, or secret reads and whether each decision requires a second factor.
+</li>
+<li><strong>Account requirement:</strong> which local capabilities, if any, require a Domovoi account after the hosted service exists.
+</li>
+<li><strong>Public site direction:</strong> architecture-led or folklore-led narrative after real product screenshots are available.
+</li>
+<li><strong>Packaging formats:</strong> final Linux package set and Windows package-manager targets.
+</li>
+<li><strong>Support policy:</strong> stable release cadence, supported versions, protocol compatibility window, and security backport duration.
+</li>
+</ol>
+<h2 id="resolved-architecture-decisions">Resolved architecture decisions</h2>
+<ul>
+<li>Electron is the desktop shell; the shared React UI remains browser-capable.
+</li>
+<li>pnpm manages the monorepo; published ESM packages remain npm and Bun compatible.
+</li>
+<li>WebSocket JSON-RPC is the client/daemon protocol; gRPC is not required for the current surfaces.
+</li>
+<li>The daemon owns sessions, Git, tools, terminals, credentials, and canonical state.
+</li>
+<li>Code stays on its execution machine; Domovoi does not add a filesystem sync layer.
+</li>
+<li>Remote connectivity prefers direct private-network transport and later uses an outbound relay.
+</li>
+<li>SQLite is owned directly by the daemon; an ORM is not currently justified.
+</li>
+<li>Domovoi is open-core. The daemon, protocol, clients, and local transports are Apache-2.0; hosted account, billing, relay, vault, and team services may remain separate.
+</li>
+<li>Claude Design's app and brand handoffs remain the design source of truth.
+</li>
+</ul>
+<h2 id="first-public-alpha-definition-of-done">First public alpha definition of done</h2>
+<p>The alpha is ready only when all of these are proven:</p>
+<ul>
+<li>Goal 0 is complete.
+</li>
+<li>Goal 1 is complete except direct API adapters that duplicate a capable subscription CLI.
+</li>
+<li>A signed desktop build can install, start, update, and remove its supervised local daemon.
+</li>
+<li>A new user can open a repository, start an agent, review tool activity, annotate a plan, approve or deny consequential work, restore a checkpoint, and reopen the session after restart.
+</li>
+<li>Every supported provider failure produces an actionable state without losing the worktree.
+</li>
+<li>No product surface claims remote fleet, hosted relay, mobile control, or account behavior that is not yet implemented.
+</li>
+<li>Installation and recovery documentation has been tested on Linux, macOS, and Windows.
+</li>
+</ul>
+</main>
+</div>
+</body>
+</html>
