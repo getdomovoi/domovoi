@@ -5,7 +5,9 @@ import {
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
+  sessionHistoryCategorySchema,
   sessionHistoryPageSchema,
+  sessionHistoryParamsSchema,
 } from "./index.js"
 
 describe("JSON-RPC envelopes", () => {
@@ -74,7 +76,16 @@ describe("JSON-RPC envelopes", () => {
 })
 
 describe("RPC aggregate references", () => {
-  const item = demoWorkspace.thread[0]!
+  const source = demoWorkspace.thread.find((item) => item.kind === "user")!
+  const item = {
+    id: `thread:${source.id}`,
+    sourceId: source.id,
+    sessionId: source.sessionId,
+    category: "messages" as const,
+    role: "user" as const,
+    body: source.kind === "user" ? source.body : "",
+    createdAt: source.createdAt,
+  }
 
   it("accepts a history cursor that references the first returned item", () => {
     expect(sessionHistoryPageSchema.parse({
@@ -124,5 +135,42 @@ describe("RPC aggregate references", () => {
     if (!result.success) {
       expect(result.error.issues.filter((issue) => issue.path[0] === "nextCursor")).toHaveLength(1)
     }
+  })
+})
+
+describe("session history filters", () => {
+  it("accepts bounded semantic categories and a normalized query", () => {
+    expect(sessionHistoryParamsSchema.parse({
+      sessionId: "session-billing",
+      categories: ["messages", "tests"],
+      query: "  vitest replay  ",
+    })).toEqual({
+      sessionId: "session-billing",
+      categories: ["messages", "tests"],
+      query: "vitest replay",
+      limit: 50,
+    })
+    expect(sessionHistoryCategorySchema.options).toEqual([
+      "messages",
+      "tools",
+      "approvals",
+      "handoffs",
+      "checkpoints",
+      "annotations",
+      "tests",
+    ])
+  })
+
+  it.each([
+    { categories: [] },
+    { categories: ["messages", "messages"] },
+    { categories: ["unknown"] },
+    { query: "   " },
+    { query: "x".repeat(257) },
+  ])("rejects malformed history filters %#", (filters) => {
+    expect(sessionHistoryParamsSchema.safeParse({
+      sessionId: "session-billing",
+      ...filters,
+    }).success).toBe(false)
   })
 })

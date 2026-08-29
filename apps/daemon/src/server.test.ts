@@ -20,6 +20,8 @@ import {
   frameAncestorsFor,
   DomovoiDaemon,
   hostAuthorityMatches,
+  isTestCommandTitle,
+  sessionHistoryEntries,
   sessionHistoryPage,
   signArtifactAccess,
   workspaceSnapshotForClient,
@@ -611,6 +613,7 @@ describe("DomovoiDaemon", () => {
       body: `Message ${index}`,
       createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
     }))
+    snapshot.annotations = []
 
     const newest = sessionHistoryPage(snapshot, { sessionId: session.id, limit: 100 })
     const middle = sessionHistoryPage(snapshot, {
@@ -625,13 +628,13 @@ describe("DomovoiDaemon", () => {
     })
 
     expect(newest?.items.map((item) => item.id)).toEqual([
-      "message-105",
-      ...Array.from({ length: 99 }, (_, index) => `message-${index + 106}`),
+      "thread:message-105",
+      ...Array.from({ length: 99 }, (_, index) => `thread:message-${index + 106}`),
     ])
-    expect(middle?.items[0]?.id).toBe("message-5")
+    expect(middle?.items[0]?.id).toBe("thread:message-5")
     expect(oldest).toMatchObject({
       items: Array.from({ length: 5 }, (_, index) => expect.objectContaining({
-        id: `message-${index}`,
+        id: `thread:message-${index}`,
       })),
       hasMore: false,
     })
@@ -639,6 +642,181 @@ describe("DomovoiDaemon", () => {
       sessionId: session.id,
       before: "missing",
       limit: 50,
+    })).toBeUndefined()
+  })
+
+  it("builds typed history from durable thread and annotation records", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T12:00:00.000Z"
+    snapshot.thread = [
+      {
+        id: "message-one",
+        sessionId: session.id,
+        kind: "user",
+        body: "Check the replay worker",
+        createdAt,
+      },
+      {
+        id: "tool-tests",
+        sessionId: session.id,
+        kind: "tool",
+        tool: "command",
+        status: "failed",
+        title: "pnpm --filter @getdomovoi/ui test",
+        output: "1 failed",
+        createdAt,
+      },
+      {
+        id: "tool-status",
+        sessionId: session.id,
+        kind: "tool",
+        tool: "command",
+        status: "completed",
+        title: "git status --short",
+        createdAt,
+      },
+      {
+        id: "handoff-one",
+        sessionId: session.id,
+        kind: "system",
+        body: "Handed off codex / old to claude-code / new.",
+        detail: "Checkpointed first.",
+        createdAt,
+      },
+      {
+        id: "checkpoint-one",
+        sessionId: session.id,
+        kind: "checkpoint",
+        label: "before handoff",
+        commit: "a".repeat(40),
+        createdAt,
+      },
+      {
+        id: "approval-one",
+        sessionId: session.id,
+        kind: "receipt",
+        decision: "allow-once",
+        operation: "Run tests",
+        checkpoint: "checkpoint-one",
+        client: "desktop",
+        createdAt,
+      },
+    ]
+    snapshot.annotations = [{
+      id: "annotation-one",
+      sessionId: session.id,
+      artifactId: "artifact-plan",
+      anchor: { textQuote: "Replay worker" },
+      body: "Make this clearer",
+      status: "open",
+      origin: "desktop",
+      thread: [{
+        id: "reply-one",
+        body: "Updated in the next pass",
+        origin: "web",
+        createdAt,
+      }],
+      createdAt,
+      updatedAt: createdAt,
+    }]
+
+    const entries = sessionHistoryEntries(snapshot, session.id)
+
+    expect(entries.map(({ id, category }) => [id, category])).toEqual([
+      ["annotation-reply:annotation-one:reply-one", "annotations"],
+      ["annotation:annotation-one", "annotations"],
+      ["thread:approval-one", "approvals"],
+      ["thread:checkpoint-one", "checkpoints"],
+      ["thread:handoff-one", "handoffs"],
+      ["thread:message-one", "messages"],
+      ["thread:tool-status", "tools"],
+      ["thread:tool-tests", "tests"],
+    ])
+    expect(entries.find((entry) => entry.id === "annotation:annotation-one")).toMatchObject({
+      action: "created",
+      annotationId: "annotation-one",
+      status: "open",
+    })
+  })
+
+  it.each([
+    "pnpm --filter @getdomovoi/ui test",
+    "npm run test:unit",
+    "bun test src/replay.test.ts",
+    "npx vitest run",
+    "pytest -q",
+    "go test ./...",
+    "cargo test --workspace",
+    "./gradlew test",
+  ])("classifies an observed test command: %s", (title) => {
+    expect(isTestCommandTitle(title)).toBe(true)
+  })
+
+  it.each([
+    "echo test",
+    "cat test-results.txt",
+    "npm run contest",
+    "npm testicular",
+    "git status --short",
+    "Command output",
+  ])("does not infer tests from an unrelated command: %s", (title) => {
+    expect(isTestCommandTitle(title)).toBe(false)
+  })
+
+  it("filters before paging with stable cursors at equal timestamps", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T12:00:00.000Z"
+    snapshot.thread = ["alpha", "beta", "gamma"].map((name) => ({
+      id: `message-${name}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `${name} replay`,
+      createdAt,
+    }))
+    snapshot.thread.push({
+      id: "tool-test",
+      sessionId: session.id,
+      kind: "tool",
+      tool: "command",
+      status: "completed",
+      title: "pnpm test",
+      output: "replay passed",
+      createdAt,
+    })
+
+    const newest = sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      query: "REPLAY",
+      limit: 2,
+    })
+    const oldest = sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      query: "replay",
+      before: newest?.nextCursor,
+      limit: 2,
+    })
+
+    expect(newest).toMatchObject({
+      items: [
+        expect.objectContaining({ id: "thread:message-beta" }),
+        expect.objectContaining({ id: "thread:message-gamma" }),
+      ],
+      hasMore: true,
+      nextCursor: "thread:message-beta",
+    })
+    expect(oldest).toMatchObject({
+      items: [expect.objectContaining({ id: "thread:message-alpha" })],
+      hasMore: false,
+    })
+    expect(sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      before: "thread:tool-test",
+      limit: 2,
     })).toBeUndefined()
   })
 
@@ -652,6 +830,7 @@ describe("DomovoiDaemon", () => {
       body: `Message ${index}`,
       createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
     }))
+    snapshot.annotations = []
     const agent = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
@@ -703,17 +882,27 @@ describe("DomovoiDaemon", () => {
 
     const newest = await rpc("session.history", { sessionId: session.id, limit: 100 })
     expect(newest.result).toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ id: "message-5" })]),
+      items: expect.arrayContaining([expect.objectContaining({ id: "thread:message-5" })]),
       hasMore: true,
-      nextCursor: "message-5",
+      nextCursor: "thread:message-5",
     })
     const oldest = await rpc("session.history", {
       sessionId: session.id,
-      before: "message-5",
+      before: "thread:message-5",
       limit: 100,
     })
     expect((oldest.result as { items: unknown[] }).items).toHaveLength(5)
     expect(oldest.result).toMatchObject({ hasMore: false })
+    const filtered = await rpc("session.history", {
+      sessionId: session.id,
+      categories: ["messages"],
+      query: "MESSAGE 104",
+      limit: 100,
+    })
+    expect(filtered.result).toMatchObject({
+      items: [expect.objectContaining({ id: "thread:message-104", category: "messages" })],
+      hasMore: false,
+    })
     await expect(rpc("session.history", {
       sessionId: session.id,
       before: "missing",

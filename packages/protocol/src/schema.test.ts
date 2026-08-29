@@ -48,7 +48,18 @@ describe("workspace protocol", () => {
 
   it("bounds cursor-based session history pages", () => {
     const session = demoWorkspace.sessions[0]!
-    const item = demoWorkspace.thread.find((candidate) => candidate.sessionId === session.id)!
+    const source = demoWorkspace.thread.find((candidate) =>
+      candidate.sessionId === session.id && candidate.kind === "user"
+    )!
+    const item = {
+      id: `thread:${source.id}`,
+      sourceId: source.id,
+      sessionId: source.sessionId,
+      category: "messages" as const,
+      role: "user" as const,
+      body: source.kind === "user" ? source.body : "",
+      createdAt: source.createdAt,
+    }
 
     expect(sessionHistoryParamsSchema.parse({
       sessionId: session.id,
