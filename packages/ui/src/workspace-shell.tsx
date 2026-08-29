@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -839,6 +839,7 @@ export function Thread({
   connected,
   onResolve,
   onSetRuntime,
+  onForkSession,
   onListModels,
   onNewSession,
   onSend,
@@ -855,6 +856,12 @@ export function Thread({
     explanation?: string,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
+  onForkSession: (
+    sessionId: string,
+    checkpointId: string,
+    runtime: Runtime,
+    requestId: string,
+  ) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
   onNewSession: () => void
   onSend: (sessionId: string, prompt: string) => Promise<void>
@@ -900,6 +907,10 @@ export function Thread({
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
+  const forkCheckpoint = snapshot.thread.filter((item) =>
+    item.sessionId === active.id && item.kind === "checkpoint" && item.commit
+  ).at(-1)
+  const forkReason = forkSessionBlockedReason(active, forkCheckpoint)
 
   const submitPrompt = async () => {
     const nextPrompt = prompt.trim()
@@ -981,6 +992,20 @@ export function Thread({
     }
   }
 
+  const forkRuntime = async (runtime: Runtime, checkpointId: string, requestId: string) => {
+    if (runtimePending || forkReason) return
+    setRuntimePending(true)
+    setRuntimeError("")
+    try {
+      await onForkSession(active.id, checkpointId, runtime, requestId)
+    } catch (cause) {
+      setRuntimeError(cause instanceof Error ? cause.message : "The session could not be forked")
+      throw cause
+    } finally {
+      setRuntimePending(false)
+    }
+  }
+
   const resolveCurrentApproval = (
     approvalId: string,
     decision: ApprovalDecision,
@@ -1011,7 +1036,10 @@ export function Thread({
           runtime={active.runtime}
           providers={snapshot.machine.providers}
           pending={runtimePending}
+          {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
+          {...(forkReason ? { forkBlockedReason: forkReason } : {})}
           onChange={(runtime) => void updateRuntime(runtime)}
+          onFork={forkRuntime}
           onListModels={onListModels}
         />}
       </div>
@@ -1094,23 +1122,83 @@ export function sessionIsArchiveReadOnly(
   return session?.state === "archiving" || session?.state === "archived"
 }
 
+export function forkSessionBlockedReason(
+  session: SessionSummary,
+  checkpoint: ThreadItem | undefined,
+): string | undefined {
+  if (session.state === "archiving" || session.state === "archived") {
+    return "Archived sessions cannot be forked"
+  }
+  if (session.activeTurnId || session.state === "active") {
+    return "Stop the active turn before forking"
+  }
+  if (session.state === "waiting") return "Resolve the pending approval before forking"
+  if (!session.workspacePath) return "This session has no isolated worktree to fork"
+  if (checkpoint?.kind !== "checkpoint" || !checkpoint.commit) {
+    return "Create a durable checkpoint before forking"
+  }
+  return undefined
+}
+
+export function providerHandoffChoices(pending: boolean, forkBlockedReason: string | undefined) {
+  return [
+    { label: "Switch here", variant: "outline" as const, disabled: pending },
+    {
+      label: "Fork session",
+      variant: "default" as const,
+      disabled: pending || Boolean(forkBlockedReason),
+    },
+  ] as const
+}
+
+export type ProviderChoice = {
+  model: ProviderModel
+  requestId: string
+}
+
+export function openProviderChoice(
+  runtime: Runtime,
+  model: ProviderModel,
+  createRequestId: () => string = () => crypto.randomUUID(),
+): ProviderChoice | undefined {
+  if (runtime.provider === model.provider && runtime.model === model.id) return undefined
+  return { model, requestId: createRequestId() }
+}
+
+export function forkProviderChoice(
+  runtime: Runtime,
+  choice: ProviderChoice,
+  checkpointId: string,
+  onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>,
+): Promise<void> {
+  return onFork(selectRuntimeModel(runtime, choice.model), checkpointId, choice.requestId)
+}
+
 export function RuntimeControls({
   runtime,
   providers,
   pending,
+  forkCheckpointId,
+  forkBlockedReason,
   onChange,
+  onFork,
   onListModels,
 }: {
   runtime: Runtime
   providers: readonly ProviderRuntime[]
   pending: boolean
+  forkCheckpointId?: string
+  forkBlockedReason?: string
   onChange: (runtime: Runtime) => void
+  onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
 }) {
   const [modelCatalogs, setModelCatalogs] = useState<Record<string, ProviderModel[]>>({})
   const [modelsPending, setModelsPending] = useState<Record<string, boolean>>({})
   const [modelsError, setModelsError] = useState<Record<string, string>>({})
-  const [handoffModel, setHandoffModel] = useState<ProviderModel>()
+  const [providerChoice, setProviderChoice] = useState<ProviderChoice>()
+  const [choicePending, setChoicePending] = useState(false)
+  const handoffModel = providerChoice?.model
   const models = modelCatalogs[runtime.provider] ?? []
   const selectedModel = models.find(
     (model) => model.provider === runtime.provider && model.id === runtime.model,
@@ -1118,6 +1206,8 @@ export function RuntimeControls({
   const reasoningOptions = reasoningOptionsFor(selectedModel)
   const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
   const availableProviders = providers.filter(providerCanStartSession)
+  const actionPending = pending || choicePending
+  const handoffChoices = providerHandoffChoices(actionPending, forkBlockedReason)
 
   const loadModels = (provider: string) => {
     if (modelCatalogs[provider] || modelsPending[provider]) return
@@ -1157,11 +1247,21 @@ export function RuntimeControls({
   }, [onListModels, runtime.provider])
 
   const chooseModel = (model: ProviderModel) => {
-    if (requiresProviderHandoff(runtime, model)) {
-      setHandoffModel(model)
-      return
+    setProviderChoice(openProviderChoice(runtime, model))
+  }
+
+  const submitForkChoice = async (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    if (!providerChoice || !forkCheckpointId || forkBlockedReason || actionPending) return
+    setChoicePending(true)
+    try {
+      await forkProviderChoice(runtime, providerChoice, forkCheckpointId, onFork)
+      setProviderChoice(undefined)
+    } catch {
+      // The parent surfaces the RPC error. Keep this attempt and request ID open for retry.
+    } finally {
+      setChoicePending(false)
     }
-    onChange(selectRuntimeModel(runtime, model))
   }
 
   const setMode = (permissionMode: string) => {
@@ -1226,28 +1326,48 @@ export function RuntimeControls({
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
       <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending} onCheckedChange={(auto) => onChange({ ...runtime, auto })} />Auto</label>
-      <AlertDialog open={handoffModel !== undefined} onOpenChange={(open) => { if (!open) setHandoffModel(undefined) }}>
+      <AlertDialog
+        open={providerChoice !== undefined}
+        onOpenChange={(open) => {
+          if (!open && !actionPending) setProviderChoice(undefined)
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Switch provider here?</AlertDialogTitle>
+            <AlertDialogTitle>Switch here or fork session?</AlertDialogTitle>
             <AlertDialogDescription>
               {handoffModel
-                ? providerHandoffDescription(
-                    providerDisplayName(handoffModel.provider),
-                    handoffModel.displayName,
-                  )
+                ? requiresProviderHandoff(runtime, handoffModel)
+                  ? providerHandoffDescription(
+                      providerDisplayName(handoffModel.provider),
+                      handoffModel.displayName,
+                    )
+                  : `Switch here changes this session to ${handoffModel.displayName}.`
                 : null}
+              {handoffModel
+                ? ` Fork session starts ${providerDisplayName(handoffModel.provider)} / ${handoffModel.displayName} in a separate worktree from the latest durable checkpoint. Domovoi records the source, checkpoint, provider/model, and requesting client in its history.`
+                : null}
+              {forkBlockedReason ? ` Fork unavailable: ${forkBlockedReason}.` : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={actionPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending}
+              variant={handoffChoices[0].variant}
+              disabled={handoffChoices[0].disabled}
               onClick={() => {
                 if (handoffModel) onChange(selectRuntimeModel(runtime, handoffModel))
               }}
             >
-              Switch here
+              {handoffChoices[0].label}
+            </AlertDialogAction>
+            <AlertDialogAction
+              variant={handoffChoices[1].variant}
+              disabled={handoffChoices[1].disabled}
+              title={forkBlockedReason}
+              onClick={(event) => void submitForkChoice(event)}
+            >
+              {handoffChoices[1].label}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1924,6 +2044,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createCheckpoint,
     createAnnotation,
     createSession,
+    forkSession,
     createTerminal,
     listModels,
     listSkills,
@@ -2077,7 +2198,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
