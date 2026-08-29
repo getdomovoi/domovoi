@@ -8,6 +8,7 @@ import {
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   demoWorkspace,
+  maximumSessionHistoryPageItems,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolVersion,
@@ -18,7 +19,9 @@ import {
   type Annotation,
   type Artifact,
   type ProviderModel,
+  type RpcParams,
   type RpcMethod,
+  type SessionHistoryPage,
   type ClientKind,
   type Runtime,
   type TerminalOwner,
@@ -68,6 +71,7 @@ const sessionResourceMethods = new Set([
   "checkpoint.create",
   "checkpoint.restore",
   "session.pause",
+  "session.history",
   "session.send",
   "session.setRuntime",
 ])
@@ -128,6 +132,37 @@ export function workspaceDeltaChunks(value: string): string[] {
     chunks.push(value.slice(offset, offset + maximumWorkspaceDeltaChunkLength))
   }
   return chunks
+}
+
+export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const retainedBySession = new Map<string, number>()
+  const thread = snapshot.thread.toReversed().filter((item) => {
+    const retained = retainedBySession.get(item.sessionId) ?? 0
+    if (retained >= maximumSessionHistoryPageItems) return false
+    retainedBySession.set(item.sessionId, retained + 1)
+    return true
+  }).reverse()
+  return { ...snapshot, thread }
+}
+
+export function sessionHistoryPage(
+  snapshot: WorkspaceSnapshot,
+  params: RpcParams<"session.history">,
+): SessionHistoryPage | undefined {
+  const history = snapshot.thread.filter((item) => item.sessionId === params.sessionId)
+  const end = params.before
+    ? history.findIndex((item) => item.id === params.before)
+    : history.length
+  if (end < 0) return undefined
+  const start = Math.max(0, end - params.limit)
+  const items = history.slice(start, end)
+  const hasMore = start > 0
+  return {
+    sessionId: params.sessionId,
+    items,
+    hasMore,
+    ...(hasMore ? { nextCursor: items[0]!.id } : {}),
+  }
 }
 
 export type DaemonServerOptions = {
@@ -365,7 +400,7 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
-    this.#broadcastNotification("workspace.changed", this.#snapshot)
+    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
   }
 
   #broadcastNotification(method: string, params: unknown): void {
@@ -902,6 +937,25 @@ export class DomovoiDaemon {
           if (!(error instanceof SkillNotFoundError)) throw error
           this.#error(socket, request.id, invalidParams, error.message)
         }
+        return
+      }
+
+      if (method === "session.history") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (!this.#snapshot.sessions.some((session) => session.id === params.sessionId)) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        const page = sessionHistoryPage(this.#snapshot, params)
+        if (!page) {
+          this.#error(socket, request.id, invalidParams, "History cursor does not exist")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(page),
+        })
         return
       }
 
@@ -1463,7 +1517,11 @@ export class DomovoiDaemon {
 
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed) this.#store.save(this.#snapshot)
-      this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.#snapshot })
+      this.#send(socket, {
+        jsonrpc: "2.0",
+        id: request.id,
+        result: workspaceSnapshotForClient(this.#snapshot),
+      })
 
       if (changed) this.#broadcastSnapshot()
     } catch (error) {
