@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -60,6 +60,21 @@ const providers: ProviderRuntime[] = [
 
 it("names settings navigation for the surface it opens", () => {
   expect(providerSettingsNavigationLabel).toBe("Provider settings")
+})
+
+it("does not refetch skills for unrelated workspace updates", () => {
+  const updated = structuredClone(demoWorkspace)
+  updated.thread.push({
+    id: "unrelated-thread-update",
+    sessionId: updated.activeSessionId!,
+    kind: "system",
+    body: "Unrelated workspace update",
+    createdAt: "2026-08-30T12:00:00.000Z",
+  })
+
+  expect(skillInventoryRefreshKey(updated)).toBe(skillInventoryRefreshKey(demoWorkspace))
+  updated.machine.version = "0.0.2"
+  expect(skillInventoryRefreshKey(updated)).not.toBe(skillInventoryRefreshKey(demoWorkspace))
 })
 
 describe("RuntimeControls", () => {
