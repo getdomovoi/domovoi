@@ -78,12 +78,23 @@ export function ProviderSettings({
                       <span className="truncate font-machine text-[9.5px] text-faint">
                         {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                       </span>
+                      <span id={`provider-account-${provider.id}`} className="text-[10px] text-muted-foreground">
+                        Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal
+                      </span>
                     </span>
                     <span className="flex items-center gap-2">
                       <Badge variant={provider.status === "ready" ? "success" : provider.status === "auth-required" ? "warning" : "outline"}>
                         {providerStatusLabel(provider)}
                       </Badge>
-                      <Button variant="outline" size="sm">{providerAccountAction(provider)}</Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        data-provider-account-action=""
+                        aria-describedby={`provider-account-${provider.id}`}
+                        disabled
+                      >
+                        {providerAccountAction(provider)}
+                      </Button>
                     </span>
                   </div>
                 </div>
@@ -183,6 +194,17 @@ export function providerAccountAction(provider: ProviderRuntime): string {
   if (provider.status === "auth-required") return "Re-authenticate"
   if (provider.status === "missing") return "Install"
   return "Check status"
+}
+
+export function providerAccountCommand(provider: ProviderRuntime): string {
+  if (provider.id === "claude-code") return "claude auth login"
+  if (provider.id === "codex") return "codex login"
+  if (provider.id === "cursor-agent") return `${provider.command} login`
+  if (provider.id === "grok") return "grok login"
+  if (provider.id === "opencode" || provider.id === "kilo") {
+    return `${provider.command} auth login`
+  }
+  return `${provider.command} --help`
 }
 
 function directProviderName(provider: ProviderSecretStatus["provider"]): string {
