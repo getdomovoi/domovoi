@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 
-import { maximumPrintableArtifactBytes, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
+import {
+  maximumPrintableArtifactBytes,
+  maximumPrintableArtifactNodes,
+  PrintableArtifactError,
+  safeArtifactFilename,
+  sanitizePrintableArtifact,
+} from "./print-artifact.js"
 
 describe("sanitizePrintableArtifact", () => {
   it("preserves semantics and print styles while removing active and remote content", () => {
@@ -30,8 +36,50 @@ describe("sanitizePrintableArtifact", () => {
     expect(safeArtifactFilename('../../Migration: plan? <script>')).toBe("Migration-plan-script.html")
   })
 
+  it("removes normalized foreign and SMIL elements while retaining inert SVG", () => {
+    const output = sanitizePrintableArtifact(`<svg viewBox="0 0 10 10">
+      <path d="M0 0L10 10"></path>
+      <foreignObject><p>active foreign content</p></foreignObject>
+      <animate attributeName="x"></animate><set attributeName="x"></set>
+      <animateTransform attributeName="transform"></animateTransform>
+      <animateMotion path="M0 0L10 10"></animateMotion>
+    </svg>`, "Diagram")
+
+    expect(output).toContain("<svg")
+    expect(output).toContain("<path")
+    for (const unsafe of ["foreignobject", "active foreign content", "<animate", "<set", "animatetransform", "animatemotion"]) {
+      expect(output.toLowerCase(), unsafe).not.toContain(unsafe)
+    }
+  })
+
+  it("inserts derived metadata as nodes despite hostile tag substrings", () => {
+    const output = sanitizePrintableArtifact(
+      '<html data-marker="<head>"><head data-marker="<body>"></head><body><main>Plan</main></body></html>',
+      "Hostile markers",
+    )
+
+    expect(output).toContain('data-marker="<head>"')
+    expect(output).toContain('<head data-marker="<body>"><meta charset="utf-8">')
+    expect(output).toContain('<body><aside class="domovoi-safe-note"')
+    expect(output).not.toContain('data-marker="<head><meta')
+    expect(output).not.toContain('data-marker="<body><aside')
+  })
+
   it("bounds source and tree work", () => {
-    expect(() => sanitizePrintableArtifact("x".repeat(maximumPrintableArtifactBytes + 1), "Plan")).toThrow("size limit")
-    expect(() => sanitizePrintableArtifact(`<div>${"<div>".repeat(80)}x${"</div>".repeat(80)}</div>`, "Plan")).toThrow("depth limit")
+    const cases = [
+      ["source-size", "x".repeat(maximumPrintableArtifactBytes + 1)],
+      ["tree-depth", `<div>${"<div>".repeat(80)}x${"</div>".repeat(80)}</div>`],
+      ["tree-nodes", `<main>${"<i></i>".repeat(maximumPrintableArtifactNodes + 1)}</main>`],
+      ["output-size", `<main>${"&".repeat(1_000_000)}</main>`],
+    ] as const
+    for (const [code, content] of cases) {
+      try {
+        sanitizePrintableArtifact(content, "Plan")
+        throw new Error(`Expected ${code}`)
+      } catch (error) {
+        expect(error).toBeInstanceOf(PrintableArtifactError)
+        expect(error).toMatchObject({ code, kind: "limit" })
+      }
+    }
   })
 })

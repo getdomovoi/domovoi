@@ -36,6 +36,7 @@ import type { WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
+import { maximumPrintableArtifactDepth } from "./print-artifact.js"
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -4508,6 +4509,17 @@ describe("DomovoiDaemon", () => {
     const downloadAccess = downloadResponse.result as typeof access
     const download = await fetch(`http://${address.host}:${address.port}/artifacts/${encodeURIComponent(downloadAccess.artifactId)}?session=${downloadAccess.sessionId}&revision=${downloadAccess.revision}&purpose=download&expires=${downloadAccess.expiresAt}&signature=${downloadAccess.signature}`)
     expect(download.headers.get("content-disposition")).toContain("attachment")
+
+    await writeFile(join(worktree, "preview.html"), `<main>${"<div>".repeat(maximumPrintableArtifactDepth + 2)}Plan${"</div>".repeat(maximumPrintableArtifactDepth + 2)}</main>`)
+    const limited = await fetch(printUrl)
+    expect(limited.status).toBe(413)
+    await expect(limited.json()).resolves.toEqual({ error: "artifact_limit" })
+    await unlink(join(worktree, "preview.html"))
+    const missing = await fetch(printUrl)
+    expect(missing.status).toBe(404)
+    await expect(missing.json()).resolves.toEqual({ error: "not_found" })
+    await writeFile(join(worktree, "preview.html"), "<h1>Domovoi preview</h1>")
+
     await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: artifact!.revision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
     await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: artifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 

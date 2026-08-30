@@ -87,7 +87,7 @@ import {
   type SessionArtifactWatcherFactory,
 } from "./artifact-watcher.js"
 import { testEvidence } from "./test-evidence.js"
-import { safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
+import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
   appendDurableOutput,
@@ -1090,7 +1090,12 @@ export class DomovoiDaemon {
           ? injectPreviewBridge(content, artifact.id, bridgeChannel, parentOrigin)
           : content),
       )
-    } catch {
+    } catch (error) {
+      if (error instanceof PrintableArtifactError) {
+        response.writeHead(error.kind === "limit" ? 413 : 422, { "content-type": "application/json" })
+        response.end(JSON.stringify({ error: error.kind === "limit" ? "artifact_limit" : "artifact_derivation_failed" }))
+        return
+      }
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
     }
