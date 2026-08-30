@@ -9,6 +9,7 @@ import {
   terminalOwnershipNotificationSchema,
   terminalOutputNotificationSchema,
   terminalSessionSchema,
+  systemEmergencyStoppedNotificationSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type ClientKind,
@@ -515,6 +516,15 @@ export class DomovoiClient extends EventTarget {
         const delta = workspaceDeltaSchema.safeParse(notification.data.params)
         if (delta.success) {
           this.dispatchEvent(new CustomEvent("workspace-delta", { detail: delta.data }))
+        }
+        return
+      }
+      if (notification.data.method === "system.emergencyStopped") {
+        const stopped = systemEmergencyStoppedNotificationSchema.safeParse(
+          notification.data.params,
+        )
+        if (stopped.success) {
+          this.dispatchEvent(new CustomEvent("emergency-stopped", { detail: stopped.data }))
         }
         return
       }
