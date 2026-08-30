@@ -5128,7 +5128,7 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = "/worktrees/build-auto"
     session.providerThreadId = "thread-build-auto"
     delete session.activeTurnId
-    const skillInstallCommand = "pnpm dlx skills add getdomovoi/design-studio"
+    const skillInstallCommand = "/usr/bin/bash -lc 'pnpm dlx skills add getdomovoi/design-studio'"
     snapshot.approvalRules.push({
       id: "rule-skill-install",
       projectId: snapshot.project!.id,

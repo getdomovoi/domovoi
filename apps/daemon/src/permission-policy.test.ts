@@ -92,6 +92,9 @@ describe("permissionDecisionFor", () => {
     "pwsh ./scripts/install-skill.ps1",
     "bash -lc 'npx skills add getdomovoi/design-studio'",
     "bash -c 'pnpm dlx skills add getdomovoi/design-studio'",
+    "/bin/sh -c 'npx skills add getdomovoi/design-studio'",
+    "/usr/bin/bash -lc 'pnpm dlx skills add getdomovoi/design-studio'",
+    String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command "bunx skills install getdomovoi/design-studio"`,
     "powershell.exe -Command \"bunx skills install getdomovoi/design-studio\"",
   ])("hard-gates recognized skill install %s", (command) => {
     expect(isSkillInstallCommand(command)).toBe(true)

@@ -36,7 +36,8 @@ const skillCliInstallPatterns = [
   new RegExp(String.raw`^bun\s+x\s+${skillInstallerPackage}\s+(?:add|install)\b`, "i"),
 ] as const
 const downloadBootstrap = /^(?:curl|wget)\b[^\r\n|]*\|\s*(?:(?:ba|z)?sh|pwsh|powershell)(?:\.exe)?(?:\s|$)/i
-const shellInvocation = /^(?:(?:ba|z)?sh|(?:pwsh|powershell)(?:\.exe)?)(?:\s+(?:-c|-lc?|-command|\/c))?\s+(.+)$/i
+const shellInvocation = /^(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s\r\n]+))\s+(.+)$/
+const shellExecutables = new Set(["sh", "bash", "zsh", "pwsh", "powershell", "powershell.exe"])
 const skillBootstrapScript = /(?:install|bootstrap)[-_.]?skills?|skills?[-_.]?(?:install|bootstrap)/i
 
 function withoutOuterQuotes(value: string): string {
@@ -44,6 +45,17 @@ function withoutOuterQuotes(value: string): string {
   return value.length >= 2 && (quote === "\"" || quote === "'") && value.at(-1) === quote
     ? value.slice(1, -1).trim()
     : value
+}
+
+function shellPayloadFor(value: string): string | undefined {
+  const match = shellInvocation.exec(value)
+  if (!match) return undefined
+  const executable = match[1] ?? match[2] ?? match[3] ?? ""
+  const basename = executable.split(/[/\\]/).at(-1)?.toLowerCase()
+  if (!basename || !shellExecutables.has(basename)) return undefined
+  const remainder = match[4]!.trim()
+  const option = /^(?:-c|-lc?|-command|\/c)\s+(.+)$/i.exec(remainder)
+  return withoutOuterQuotes(option?.[1] ?? remainder)
 }
 
 export function isSkillInstallCommand(command: string): boolean {
@@ -55,9 +67,9 @@ export function isSkillInstallCommand(command: string): boolean {
       && /\b(?:install|bootstrap)\b/i.test(candidate)
       && downloadBootstrap.test(candidate)
     ) return true
-    const shellPayload = shellInvocation.exec(candidate)?.[1]
+    const shellPayload = shellPayloadFor(candidate)
     if (!shellPayload) return false
-    candidate = withoutOuterQuotes(shellPayload)
+    candidate = shellPayload
     if (skillBootstrapScript.test(candidate)) return true
   }
   return false
