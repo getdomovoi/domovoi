@@ -51,6 +51,15 @@ export function applyEmergencyStopResult<T>(
   return applyConnectionSnapshot(currentClient, candidateClient, state, target, result.snapshot)
 }
 
+export function claimEmergencyStop<T>(
+  pending: { current: T | null },
+  client: T,
+): boolean {
+  if (pending.current) return false
+  pending.current = client
+  return true
+}
+
 export function useWorkspace(url: string, kind: ClientKind, authToken?: string) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
@@ -223,13 +232,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
 
   const emergencyStop = useCallback(async (): Promise<void> => {
     const client = clientRef.current
-    if (emergencyStopClientRef.current) return
     if (!client) {
       setEmergencyStopError("Daemon connection is not open")
       return
     }
+    if (!claimEmergencyStop(emergencyStopClientRef, client)) return
 
-    emergencyStopClientRef.current = client
     setEmergencyStopPending(true)
     setEmergencyStopOutcome(null)
     setEmergencyStopError(null)
