@@ -238,6 +238,11 @@ function redact(value: unknown, maximumLength: number): RedactedText {
   if (bounded.truncated) {
     output = replace(
       output,
+      /(https?:\/\/)[^\s/:@]+:[^\s/@]*$/gu,
+      `$1${replacement}`,
+    )
+    output = replace(
+      output,
       /(eyJ[A-Za-z0-9_-]{3,}(?:\.[A-Za-z0-9_-]*){0,2})$/gu,
       replacement,
     )
