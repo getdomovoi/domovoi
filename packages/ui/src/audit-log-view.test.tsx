@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { AuditEntry, AuditQueryPage } from "@getdomovoi/protocol"
 
-import { AuditLogView, auditActorLabel, auditExportFilename } from "./audit-log-view"
+import { AuditLogView, auditActorLabel, auditExportFilename, collectAuditExport } from "./audit-log-view"
 
 const entry: AuditEntry = {
   id: "audit-111111111111",
@@ -54,5 +54,53 @@ describe("audit log view", () => {
     expect(auditExportFilename("2026-08-29T18:30:00.000Z")).toBe(
       "domovoi-audit-2026-08-29T18-30-00-000Z.jsonl",
     )
+  })
+
+  it("drains stable export cursors instead of silently downloading one page", async () => {
+    const onExport = vi.fn()
+      .mockResolvedValueOnce({
+        format: "jsonl",
+        exportedAt: "2026-08-29T18:30:00.000Z",
+        entryCount: 1,
+        content: `${JSON.stringify(entry)}\n`,
+        hasMore: true,
+        nextCursor: entry.id,
+      })
+      .mockResolvedValueOnce({
+        format: "jsonl",
+        exportedAt: "2026-08-29T18:29:00.000Z",
+        entryCount: 1,
+        content: `${JSON.stringify({ ...entry, id: "audit-222222222222" })}\n`,
+        hasMore: false,
+      })
+
+    const exported = await collectAuditExport(onExport, { query: "session" }, {
+      signal: new AbortController().signal,
+      deadlineAt: Date.now() + 30_000,
+    })
+
+    expect(onExport).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ before: entry.id, limit: 500 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(exported.entryCount).toBe(2)
+    expect(exported.content.trimEnd().split("\n")).toHaveLength(2)
+  })
+
+  it("fails an unstable paginated export instead of producing a partial file", async () => {
+    const onExport = vi.fn(async () => ({
+      format: "jsonl" as const,
+      exportedAt: "2026-08-29T18:30:00.000Z",
+      entryCount: 1,
+      content: `${JSON.stringify(entry)}\n`,
+      hasMore: true,
+      nextCursor: entry.id,
+    }))
+
+    await expect(collectAuditExport(onExport, {}, {
+      signal: new AbortController().signal,
+      deadlineAt: Date.now() + 30_000,
+    })).rejects.toThrow("repeated a continuation cursor")
   })
 })
