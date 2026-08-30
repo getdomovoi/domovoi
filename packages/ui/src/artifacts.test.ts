@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { latestArtifactForActiveSession, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 
 describe("latestArtifactForActiveSession", () => {
   it("returns the newest matching artifact for the active session", () => {
@@ -67,6 +67,8 @@ describe("previewVariantsForActiveSession", () => {
 
   it("wraps review controls in narrow containers", () => {
     expect(previewToolbarLayoutFor(520)).toBe("wrap")
+    expect(previewControlLayoutFor(520)).toEqual({ wrap: true, fullWidth: true })
     expect(previewToolbarLayoutFor(900)).toBe("inline")
+    expect(previewControlLayoutFor(900)).toEqual({ wrap: false, fullWidth: false })
   })
 })

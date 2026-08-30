@@ -49,3 +49,8 @@ export function reviewLayoutFor(containerWidth: number, compareRequested: boolea
 export function previewToolbarLayoutFor(containerWidth: number): "wrap" | "inline" {
   return containerWidth < 720 ? "wrap" : "inline"
 }
+
+export function previewControlLayoutFor(containerWidth: number): { wrap: boolean; fullWidth: boolean } {
+  const wrap = containerWidth < 720
+  return { wrap, fullWidth: wrap }
+}
