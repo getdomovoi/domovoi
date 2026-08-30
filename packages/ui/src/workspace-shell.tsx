@@ -114,6 +114,7 @@ import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridg
 import { latestArtifactForActiveSession } from "./artifacts"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
+import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
 import {
   providerHandoffDescription,
   preferredSessionProvider,
@@ -2095,6 +2096,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     forkSession,
     createTerminal,
     listModels,
+    listProviderSecrets,
     listSkills,
     exportAudit,
     loadSessionHistory,
@@ -2110,6 +2112,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     replyToAnnotation,
     sendMessage,
     setRuntime,
+    setProviderSecret,
+    deleteProviderSecret,
     setAnnotationStatus,
     snapshot,
     subscribeTerminal,
@@ -2131,7 +2135,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const [workspaceError, setWorkspaceError] = useState("")
   const [connectionError, setConnectionError] = useState("")
-  const [surface, setSurface] = useState<"workspace" | "skills" | "audit">("workspace")
+  const [surface, setSurface] = useState<"workspace" | "providers" | "skills" | "audit">("workspace")
+  const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
+  const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
@@ -2173,6 +2179,30 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useEffect(() => {
     if (connected) setConnectionError("")
   }, [connected])
+
+  useEffect(() => {
+    if (surface !== "providers") return
+    if (!connected) {
+      setProviderSecrets([
+        { provider: "anthropic", state: "unavailable", source: "keychain" },
+        { provider: "openai", state: "unavailable", source: "keychain" },
+        { provider: "openrouter", state: "unavailable", source: "keychain" },
+      ])
+      return
+    }
+    let active = true
+    void listProviderSecrets().then(
+      (statuses) => { if (active) setProviderSecrets(statuses) },
+      () => {
+        if (active) setProviderSecrets([
+          { provider: "anthropic", state: "unavailable", source: "keychain" },
+          { provider: "openai", state: "unavailable", source: "keychain" },
+          { provider: "openrouter", state: "unavailable", source: "keychain" },
+        ])
+      },
+    )
+    return () => { active = false }
+  }, [connected, listProviderSecrets, providerRefresh, surface])
 
   useEffect(() => {
     if (surface !== "skills") return
@@ -2222,7 +2252,23 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
           </div>
         ) : null}
-        {snapshot && surface === "skills" ? (
+        {snapshot && surface === "providers" ? (
+          <ProviderSettings
+            providers={snapshot.machine.providers}
+            secrets={providerSecrets}
+            onBack={() => setSurface("workspace")}
+            onOpenSkills={() => setSurface("skills")}
+            onOpenAudit={() => setSurface("audit")}
+            onSetSecret={async (provider, secret) => {
+              await setProviderSecret(provider, secret)
+              setProviderRefresh((current) => current + 1)
+            }}
+            onDeleteSecret={async (provider) => {
+              await deleteProviderSecret(provider)
+              setProviderRefresh((current) => current + 1)
+            }}
+          />
+        ) : snapshot && surface === "skills" ? (
           <SkillBrowser
             skills={skills}
             loading={skillsLoading}
@@ -2242,7 +2288,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : snapshot ? (
           <div className="flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenSkills={() => setSurface("skills")} /> : null}
+            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenSkills={() => setSurface("providers")} /> : null}
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
@@ -2252,7 +2298,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
