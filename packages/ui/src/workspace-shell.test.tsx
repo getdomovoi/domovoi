@@ -374,6 +374,8 @@ describe("provider failure guidance", () => {
     ["rate-limit", "retry", "Provider rate limit reached", true, "Retry the message after the provider cooldown"],
     ["quota-exhausted", "check-quota", "Provider quota is exhausted", false, "Check the provider quota or billing plan"],
     ["model-unavailable", "change-model", "Selected model is unavailable", false, "Choose another model in the runtime controls"],
+    ["transport", "retry", "Provider connection failed", true, "Retry the message after the provider reconnects"],
+    ["unknown", "retry", "Provider request failed", true, "Retry the message, or review Provider settings if the failure continues"],
   ] as const)("renders %s with a fixed recovery action", (kind, action, message, retryable, guidance) => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
