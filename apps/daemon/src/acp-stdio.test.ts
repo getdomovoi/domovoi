@@ -18,10 +18,14 @@ function fakeAcpProcess(response: (id: number) => object) {
   let input = ""
   child.stdin.on("data", (chunk) => {
     input += chunk.toString()
-    const newline = input.indexOf("\n")
-    if (newline === -1) return
-    const request = JSON.parse(input.slice(0, newline)) as { id: number }
-    child.stdout.write(`${JSON.stringify(response(request.id))}\n`)
+    while (input.includes("\n")) {
+      const newline = input.indexOf("\n")
+      const line = input.slice(0, newline)
+      input = input.slice(newline + 1)
+      if (!line) continue
+      const request = JSON.parse(line) as { id: number }
+      child.stdout.write(`${JSON.stringify(response(request.id))}\n`)
+    }
   })
   child.kill.mockImplementation(() => {
     child.emit("exit", 1, null)
@@ -31,6 +35,16 @@ function fakeAcpProcess(response: (id: number) => object) {
 }
 
 describe("ACP stdio mapping", () => {
+  it("consumes each parsed fake-process request line", () => {
+    const response = vi.fn((id: number) => ({ jsonrpc: "2.0", id, result: {} }))
+    const child = fakeAcpProcess(response)
+
+    child.stdin.write('{"id":1}\n{"id":2}\n')
+    child.stdin.write('{"id":3}\n')
+
+    expect(response.mock.calls).toEqual([[1], [2], [3]])
+  })
+
   it.each([
     ["initialize rejection", (id: number) => ({
       jsonrpc: "2.0",
