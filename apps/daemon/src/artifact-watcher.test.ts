@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, opendir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -136,6 +136,53 @@ describe("ArtifactWatcher", () => {
     })
 
     await expect(watcher.start()).rejects.toThrow("baseline exceeded its entry limit")
+    expect(watchFactory).not.toHaveBeenCalled()
+  })
+
+  it("skips only vanished or unreadable nested directories", async () => {
+    const root = await scratch("domovoi-artifact-directory-errors")
+    for (const name of ["gone", "denied", "safe"]) await mkdir(join(root, name))
+    const openDirectory = vi.fn<typeof opendir>(async (path, options) => {
+      const name = String(path).split("/").at(-1)
+      if (name === "gone") throw Object.assign(new Error("gone"), { code: "ENOENT" })
+      if (name === "denied") throw Object.assign(new Error("denied"), { code: "EACCES" })
+      return opendir(path, options)
+    })
+    const watcher = new ArtifactWatcher({ root, onChange: vi.fn(), openDirectory, watchFactory: () => ({ close: vi.fn() }) })
+    await expect(watcher.start()).resolves.toBeUndefined()
+
+    const brokenRoot = await scratch("domovoi-artifact-directory-eio")
+    await mkdir(join(brokenRoot, "broken"))
+    const broken = new ArtifactWatcher({
+      root: brokenRoot,
+      onChange: vi.fn(),
+      watchFactory: () => ({ close: vi.fn() }),
+      openDirectory: async (path, options) => {
+        if (String(path).endsWith("/broken")) throw Object.assign(new Error("broken"), { code: "EIO" })
+        return opendir(path, options)
+      },
+    })
+    await expect(broken.start()).rejects.toThrow("broken")
+  })
+
+  it("does not install a subscription after stop during baseline", async () => {
+    const root = await scratch("domovoi-artifact-stop-baseline")
+    let release!: () => void
+    const baseline = new Promise<void>((resolve) => { release = resolve })
+    const watchFactory = vi.fn<ArtifactWatchFactory>(() => ({ close: vi.fn() }))
+    const watcher = new ArtifactWatcher({
+      root,
+      onChange: vi.fn(),
+      watchFactory,
+      openDirectory: async (path, options) => {
+        await baseline
+        return opendir(path, options)
+      },
+    })
+    const starting = watcher.start()
+    watcher.stop()
+    release()
+    await starting
     expect(watchFactory).not.toHaveBeenCalled()
   })
 })
