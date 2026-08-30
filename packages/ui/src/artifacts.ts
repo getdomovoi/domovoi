@@ -47,6 +47,20 @@ export function reviewLayoutFor(containerWidth: number, compareRequested: boolea
   return { compare, stages: compare ? availableStages : 1 }
 }
 
+export function previewStagesForReview(
+  variants: readonly Artifact[],
+  selected: Artifact | undefined,
+  stageCount: number,
+): Artifact[] {
+  if (!selected) return []
+  return [selected, ...variants.filter((artifact) => artifact.id !== selected.id)]
+    .slice(0, Math.max(1, Math.floor(stageCount)))
+}
+
+export function previewStageGridColumns(stageCount: number): string {
+  return `repeat(${Math.max(1, Math.floor(stageCount))}, minmax(0, 1fr))`
+}
+
 export function previewToolbarLayoutFor(containerWidth: number): "wrap" | "inline" {
   return containerWidth < 720 ? "wrap" : "inline"
 }

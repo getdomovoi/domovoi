@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { demoWorkspace, maximumRenderedPreviewStages, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 
 describe("latestArtifactForActiveSession", () => {
   it("returns the newest matching artifact for the active session", () => {
@@ -67,6 +67,27 @@ describe("previewVariantsForActiveSession", () => {
       stages: maximumRenderedPreviewStages,
     })
     expect(reviewLayoutFor(900, true, 1)).toEqual({ compare: false, stages: 1 })
+  })
+
+  it("selects every requested review stage and derives matching columns", () => {
+    const variants = Array.from({ length: 3 }, (_, index) => ({
+      id: `variant-${index}`,
+      sessionId: "session-billing",
+      title: `Variant ${index}`,
+      type: "preview" as const,
+      revision: 1,
+      path: `variant-${index}.html`,
+      mimeType: "text/html",
+    }))
+
+    expect(previewStagesForReview(variants, variants[1], 3).map(({ id }) => id)).toEqual([
+      "variant-1",
+      "variant-0",
+      "variant-2",
+    ])
+    expect(previewStageGridColumns(3)).toBe("repeat(3, minmax(0, 1fr))")
+    expect(previewStagesForReview(variants, variants[1], 1)).toEqual([variants[1]])
+    expect(previewStageGridColumns(1)).toBe("repeat(1, minmax(0, 1fr))")
   })
 
   it("wraps review controls in narrow containers", () => {

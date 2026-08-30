@@ -4,6 +4,7 @@ import type { SessionHistoryEntry, SessionHistoryPage } from "@getdomovoi/protoc
 
 import {
   latestSessionHistoryRequest,
+  historyWindowedAfterMerge,
   maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
   resetSessionHistoryWindow,
@@ -107,6 +108,25 @@ describe("session history view model", () => {
     expect(current.items.at(-1)?.sourceId).toBe("199")
     expect(current.hasMore).toBe(false)
     expect(current.nextCursor).toBeUndefined()
+  })
+
+  it("keeps a truncated history window marked after an overlap-only page", () => {
+    const current: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: Array.from(
+        { length: maximumRetainedSessionHistoryItems },
+        (_, index) => message(String(index)),
+      ),
+      hasMore: true,
+      nextCursor: "thread:0",
+    }
+    const overlapping: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: current.items.slice(0, 50),
+      hasMore: false,
+    }
+
+    expect(historyWindowedAfterMerge(true, current, overlapping)).toBe(true)
   })
 
   it("resets an older window before reloading the latest page", () => {
