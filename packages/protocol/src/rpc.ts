@@ -766,6 +766,20 @@ export const checkpointRestoreParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+export function canonicalBase64DecodedByteLength(value: string): number | undefined {
+  if (value.length === 0 || value.length % 4 !== 0 || !canonicalBase64Pattern.test(value)) return undefined
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
+  const significantIndex = value.length - padding - 1
+  const trailingValue = base64Alphabet.indexOf(value[significantIndex] ?? "")
+  if (trailingValue < 0 || (padding === 2 && (trailingValue & 0x0f) !== 0) || (padding === 1 && (trailingValue & 0x03) !== 0)) {
+    return undefined
+  }
+  return (value.length / 4) * 3 - padding
+}
+
 export const annotationCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
   artifactId: z.string().min(1),
@@ -777,7 +791,13 @@ export const annotationCreateParamsSchema = z.object({
     mimeType: z.literal("image/png"),
     width: z.number().int().positive().max(2048),
     height: z.number().int().positive().max(2048),
-    data: z.string().min(1).max(2_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+    data: z.string().min(4).max(2_000_000).refine(
+      (value) => {
+        const decodedBytes = canonicalBase64DecodedByteLength(value)
+        return decodedBytes !== undefined && decodedBytes <= 1_500_000
+      },
+      { message: "Visual context data must be canonical bounded Base64" },
+    ),
   }).optional(),
   client: clientKindSchema,
 })

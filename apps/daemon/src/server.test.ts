@@ -23,6 +23,7 @@ import {
   DomovoiDaemon,
   hostAuthorityMatches,
   isTestCommandTitle,
+  protectedAnnotationCropRefs,
   sessionHistoryEntries,
   sessionHistoryPage,
   signArtifactAccess,
@@ -63,6 +64,29 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("protects only valid crop references retained by annotations", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.annotations[0]!.visualContext = {
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 1,
+      mimeType: "image/png",
+      width: 1,
+      height: 1,
+      byteLength: 8,
+    }
+    snapshot.annotations[1]!.visualContext = {
+      status: "available",
+      ref: "../../invalid",
+      artifactRevision: 1,
+      mimeType: "image/png",
+      width: 1,
+      height: 1,
+      byteLength: 8,
+    }
+    expect(protectedAnnotationCropRefs(snapshot)).toEqual([`crop-${"a".repeat(64)}`])
+  })
+
   it("persists provider-independent worktree artifact changes and closes watchers", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-artifact-integration-"))
     scratchDirectories.push(scratch)

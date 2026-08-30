@@ -513,6 +513,22 @@ describe("workspace protocol", () => {
       },
       client: "tablet",
     }).visualContextUpload?.artifactRevision).toBe(2)
+    for (const data of ["AAA", "A===", "AB==", "AAB=", "AAAA====", "iVBORw0K Ggo=", "iVBORw0KGgo=\n"]) {
+      expect(annotationCreateParamsSchema.safeParse({
+        sessionId: "session-billing",
+        artifactId: "artifact-preview",
+        anchor: { textQuote: "Replay operations" },
+        body: "Invalid crop.",
+        visualContextUpload: {
+          artifactRevision: 2,
+          mimeType: "image/png",
+          width: 1,
+          height: 1,
+          data,
+        },
+        client: "desktop",
+      }).success, data).toBe(false)
+    }
     expect(annotationReplyParamsSchema.parse({
       annotationId: "annotation-1",
       body: "Updated in revision four.",
