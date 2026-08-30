@@ -60,10 +60,18 @@ function parseJsonEntries(output: string): CatalogEntry[] | undefined {
 
 function parseTextEntry(line: string): CatalogEntry[] {
   const cleaned = line.trim().replace(/^[-*]\s+/, "")
-  if (!cleaned || /^(available models|login required|not logged in):?$/i.test(cleaned)) return []
-  const isDefault = /\s*\(default\)\s*$/i.test(cleaned)
-  const id = cleaned.replace(/\s*\(default\)\s*$/i, "").split(/\s+/)[0]
-  return id ? [{ id, default: isDefault }] : []
+  if (!cleaned) return []
+  const defaultMarker = /\s+\((?:default|current)\)\s*$/i
+  const isDefault = defaultMarker.test(cleaned)
+  const entry = cleaned.replace(defaultMarker, "")
+  const separator = entry.indexOf(" - ")
+  const id = (separator === -1 ? entry : entry.slice(0, separator)).trim()
+  if (!id || /\s/.test(id) || isBannerToken(id)) return []
+  return [{ id, default: isDefault }]
+}
+
+function isBannerToken(value: string): boolean {
+  return /^(?:available|authentication|filter|login|models?|not|tip|workspace):?$/i.test(value)
 }
 
 function isModelId(value: string): boolean {
