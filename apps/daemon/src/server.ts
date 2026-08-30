@@ -72,6 +72,7 @@ import {
   redactErrorDetail,
 } from "./rpc-errors.js"
 import { permissionDecisionFor } from "./permission-policy.js"
+import { ProviderSecretManager } from "./provider-secrets.js"
 import { testEvidence } from "./test-evidence.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -348,6 +349,7 @@ export type DaemonServerOptions = {
   authTimeoutMs?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
+  providerSecrets?: Pick<ProviderSecretManager, "status" | "set" | "delete">
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
@@ -411,6 +413,7 @@ export class DomovoiDaemon {
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
+  #providerSecrets: Pick<ProviderSecretManager, "status" | "set" | "delete">
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #workspaceAbort = new AbortController()
@@ -476,6 +479,7 @@ export class DomovoiDaemon {
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
+    this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
@@ -863,6 +867,7 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "provider.secret.list"
         || request.method === "skill.list"
         || request.method === "skill.read"
         || request.method === "audit.query"
@@ -1372,6 +1377,45 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(models),
+        })
+        return
+      }
+
+      if (method === "provider.secret.list") {
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(this.#providerSecrets.status()),
+        })
+        return
+      }
+
+      if (method === "provider.secret.set") {
+        const params = rpcMethods[method].params.parse(request.params)
+        this.#providerSecrets.set(params.provider, params.secret)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            provider: params.provider,
+            state: "stored",
+            source: "keychain",
+          }),
+        })
+        return
+      }
+
+      if (method === "provider.secret.delete") {
+        const params = rpcMethods[method].params.parse(request.params)
+        this.#providerSecrets.delete(params.provider)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            provider: params.provider,
+            state: "not-set",
+            source: "keychain",
+          }),
         })
         return
       }

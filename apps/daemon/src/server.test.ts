@@ -34,6 +34,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import type { SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
+import type { ProviderSecretStatus } from "./provider-secrets.js"
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -2491,6 +2492,64 @@ describe("DomovoiDaemon", () => {
         },
       },
     })
+    socket.close()
+  })
+
+  it("stores provider keys through status-only keychain RPC", async () => {
+    const providerSecrets = {
+      status: vi.fn((): ProviderSecretStatus[] => [
+        { provider: "openai" as const, state: "not-set" as const, source: "keychain" as const },
+      ]),
+      set: vi.fn(),
+      delete: vi.fn(),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "provider-secret-token",
+      providerSecrets,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const request = (id: number, method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+      const listener = (data: import("ws").RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", listener)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", listener)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    })
+
+    const list = await request(101, "provider.secret.list", {})
+    expect(list).toMatchObject({ result: [{ provider: "openai", state: "not-set", source: "keychain" }] })
+    expect(JSON.stringify(list)).not.toContain("secret-value")
+
+    providerSecrets.status.mockReturnValue([
+      { provider: "openai", state: "stored", source: "keychain" },
+    ])
+    const stored = await request(102, "provider.secret.set", {
+      provider: "openai",
+      secret: "secret-value",
+      client: "desktop",
+    })
+    expect(providerSecrets.set).toHaveBeenCalledWith("openai", "secret-value")
+    expect(stored).toMatchObject({ result: { provider: "openai", state: "stored", source: "keychain" } })
+    expect(JSON.stringify(stored)).not.toContain("secret-value")
+
+    const removed = await request(103, "provider.secret.delete", {
+      provider: "openai",
+      client: "desktop",
+    })
+    expect(providerSecrets.delete).toHaveBeenCalledWith("openai")
+    expect(removed).toMatchObject({ result: { provider: "openai", state: "not-set", source: "keychain" } })
     socket.close()
   })
 
