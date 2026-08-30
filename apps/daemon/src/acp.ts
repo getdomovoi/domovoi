@@ -99,10 +99,11 @@ export class AcpAgentAdapter implements AgentAdapter {
   async connect(): Promise<void> {
     if (this.#peer) return
     this.#disconnected = false
-    const peer = this.#createPeer({
+    let peer: AcpPeer | undefined
+    peer = this.#createPeer({
       onUpdate: (sessionId, update) => this.#handleUpdate(sessionId, update),
       onPermission: (request) => this.#requestPermission(request),
-      onDisconnect: () => this.#handleDisconnect(),
+      onDisconnect: () => { if (peer) this.#handleDisconnect(peer) },
     })
     this.#peer = peer
     try {
@@ -213,6 +214,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   async #runPrompt(threadId: string, turnId: string, prompt: string): Promise<void> {
     try {
       const response = await this.#requirePeer().prompt(threadId, prompt)
+      if (this.#activeTurns.get(threadId)?.id !== turnId) return
       const failed = !["end_turn", "cancelled"].includes(response.stopReason)
       this.#emit({
         type: "turn-completed",
@@ -224,13 +226,16 @@ export class AcpAgentAdapter implements AgentAdapter {
         },
       })
     } catch (error) {
+      if (this.#activeTurns.get(threadId)?.id !== turnId) return
       const failure = classifyProviderFailure(error)
       this.#emit({
         type: "turn-completed",
         params: { threadId, turnId, status: "failed", reason: failure.message, failure },
       })
     } finally {
-      this.#activeTurns.delete(threadId)
+      if (this.#activeTurns.get(threadId)?.id === turnId) {
+        this.#activeTurns.delete(threadId)
+      }
     }
   }
 
@@ -289,9 +294,12 @@ export class AcpAgentAdapter implements AgentAdapter {
     }
   }
 
-  #handleDisconnect(): void {
+  #handleDisconnect(peer: AcpPeer): void {
+    if (this.#peer !== peer) return
+    this.#peer = undefined
     if (this.#disconnected) return
     this.#disconnected = true
+    this.#activeTurns.clear()
     for (const pending of this.#pendingPermissions.values()) pending.resolve({ cancelled: true })
     this.#pendingPermissions.clear()
     this.#emit({ type: "provider-disconnected", reason: "Provider process exited unexpectedly" })

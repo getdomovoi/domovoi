@@ -221,6 +221,45 @@ describe("AcpAgentAdapter", () => {
     }])
   })
 
+  it("recovers from disconnect without letting a stale peer clear its replacement", async () => {
+    const firstPeer = new FakePeer()
+    firstPeer.prompt.mockImplementation(() => new Promise(() => {}))
+    const replacementPeer = new FakePeer()
+    replacementPeer.prompt.mockImplementation(() => new Promise(() => {}))
+    const peers = [firstPeer, replacementPeer]
+    const createPeer = vi.fn((handlers: AcpPeerHandlers) => {
+      const peer = peers.shift()!
+      peer.handlers = handlers
+      return peer
+    })
+    const adapter = new AcpAgentAdapter({
+      definition: CURSOR_ACP_PROVIDER,
+      createPeer,
+      listModels: async () => [],
+      createId: vi.fn()
+        .mockReturnValueOnce("first-turn")
+        .mockReturnValueOnce("replacement-turn"),
+    })
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+
+    await adapter.connect()
+    await adapter.startTurn({ threadId: "acp-session", cwd: "/repo", prompt: "first", runtime })
+    firstPeer.handlers!.onDisconnect()
+    await adapter.connect()
+    await expect(adapter.startTurn({
+      threadId: "acp-session",
+      cwd: "/repo",
+      prompt: "replacement",
+      runtime,
+    })).resolves.toBe("replacement-turn")
+
+    firstPeer.handlers!.onDisconnect()
+    await expect(adapter.startThread({ cwd: "/repo", runtime })).resolves.toBe("acp-session")
+    expect(replacementPeer.initialize).toHaveBeenCalledOnce()
+    expect(events.filter((event) => event.type === "provider-disconnected")).toHaveLength(1)
+  })
+
   it("emits ACP aggregate usage without inventing a token breakdown", async () => {
     const { adapter, peer } = createHarness()
     const events: AgentEvent[] = []
