@@ -21,7 +21,7 @@ export interface ProviderProbe {
 
 type ProviderDefinition = {
   id: string
-  command: string
+  commands: string[]
   authArgs?: string[]
   authStatus?: (result: CommandResult) => ProviderDetection["status"]
 }
@@ -29,20 +29,30 @@ type ProviderDefinition = {
 const definitions: ProviderDefinition[] = [
   {
     id: "claude-code",
-    command: "claude",
+    commands: ["claude"],
     authArgs: ["auth", "status"],
     authStatus: claudeAuthStatus,
   },
   {
     id: "codex",
-    command: "codex",
+    commands: ["codex"],
     authArgs: ["login", "status"],
     authStatus: textAuthStatus,
   },
-  { id: "cursor-agent", command: "cursor-agent" },
-  { id: "opencode", command: "opencode" },
-  { id: "grok", command: "grok" },
-  { id: "kilo", command: "kilo" },
+  {
+    id: "cursor-agent",
+    commands: ["agent", "cursor-agent"],
+    authArgs: ["status"],
+    authStatus: textAuthStatus,
+  },
+  { id: "opencode", commands: ["opencode"] },
+  {
+    id: "grok",
+    commands: ["grok"],
+    authArgs: ["models"],
+    authStatus: modelProbeAuthStatus,
+  },
+  { id: "kilo", commands: ["kilo"] },
 ]
 
 export class CliProviderProbe implements ProviderProbe {
@@ -57,35 +67,45 @@ export class CliProviderProbe implements ProviderProbe {
   }
 
   async #inspect(definition: ProviderDefinition): Promise<ProviderDetection> {
-    let versionResult: CommandResult
-    try {
-      versionResult = await this.#run(definition.command, ["--version"])
-    } catch (error) {
-      if (isMissingCommand(error)) {
-        return { id: definition.id, command: definition.command, status: "missing" }
+    let command = definition.commands[0]!
+    let versionResult: CommandResult | undefined
+    for (const candidate of definition.commands) {
+      try {
+        versionResult = await this.#run(candidate, ["--version"])
+        command = candidate
+        break
+      } catch (error) {
+        if (!isMissingCommand(error)) {
+          return { id: definition.id, command: candidate, status: "unknown" }
+        }
       }
-      return { id: definition.id, command: definition.command, status: "unknown" }
     }
+    if (!versionResult) return { id: definition.id, command, status: "missing" }
     if (versionResult.exitCode !== 0) {
-      return { id: definition.id, command: definition.command, status: "unknown" }
+      return { id: definition.id, command, status: "unknown" }
     }
 
     const version = parseVersion(`${versionResult.stdout}\n${versionResult.stderr}`)
     let status: ProviderDetection["status"] = "unknown"
     if (definition.authArgs && definition.authStatus) {
       try {
-        status = definition.authStatus(await this.#run(definition.command, definition.authArgs))
+        status = definition.authStatus(await this.#run(command, definition.authArgs))
       } catch {
         status = "unknown"
       }
     }
     return {
       id: definition.id,
-      command: definition.command,
+      command,
       status,
       ...(version ? { version } : {}),
     }
   }
+}
+
+function modelProbeAuthStatus(result: CommandResult): ProviderDetection["status"] {
+  if (result.exitCode === 0 && result.stdout.trim()) return "ready"
+  return textAuthStatus(result)
 }
 
 export function runProviderCommand(command: string, args: string[]): Promise<CommandResult> {
