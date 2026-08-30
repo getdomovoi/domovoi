@@ -109,6 +109,25 @@ describe("durable secret redaction", () => {
     expect(result.value).not.toContain("eyJhbG")
   })
 
+  it("preserves bounded safe text while guarding secret suffixes that cross the cap", () => {
+    const safe = redactDurableText("a".repeat(maximumDurableTextLength + 4_096))
+    expect(safe.truncated).toBe(true)
+    expect(safe.value.length).toBe(maximumDurableTextLength)
+    expect(safe.value.startsWith("a".repeat(maximumDurableTextLength - 1))).toBe(true)
+
+    for (const candidate of [
+      "ghp_crossingKnownTokenSecret",
+      "TOKEN=crossing-assignment-secret",
+    ]) {
+      const visibleFragment = candidate.slice(0, Math.ceil(candidate.length / 2))
+      const prefix = `${"a".repeat(maximumDurableTextLength - visibleFragment.length - 1)} `
+      const result = redactDurableText(`${prefix}${candidate}`)
+      expect(result.truncated).toBe(true)
+      expect(result.value).not.toContain(visibleFragment)
+      expect(result.value.length).toBeLessThanOrEqual(maximumDurableTextLength)
+    }
+  })
+
   it("streams safe complete LF and CRLF records without delay", () => {
     const stream = new DurableOutputRedactor()
     expect(stream.push("first line\nsecond line\r\n")).toBe("first line\nsecond line\r\n")
