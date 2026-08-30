@@ -29,13 +29,16 @@ export function previewVariantsForActiveSession(
       !latest || artifact.revision >= latest.revision ? artifact : latest, undefined)
   if (!anchor) return []
   if (!anchor.variant) return [anchor]
-  return candidates
+  const ordered = candidates
     .filter((artifact) => artifact.variant?.groupId === anchor.variant?.groupId)
     .sort((left, right) =>
       (left.variant?.order ?? 0) - (right.variant?.order ?? 0)
       || left.id.localeCompare(right.id),
     )
-    .slice(0, maximumPreviewVariants)
+  if (ordered.length <= maximumPreviewVariants) return ordered
+  const anchorIndex = ordered.findIndex((artifact) => artifact.id === anchor.id)
+  const start = Math.max(0, anchorIndex - maximumPreviewVariants + 1)
+  return ordered.slice(start, start + maximumPreviewVariants)
 }
 
 export function reviewLayoutFor(containerWidth: number, compareRequested: boolean, variantCount: number) {
