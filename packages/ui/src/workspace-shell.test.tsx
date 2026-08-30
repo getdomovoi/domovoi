@@ -519,5 +519,8 @@ describe("archived annotation controls", () => {
     expect(dock).toContain("Selected")
     expect(dock).toContain("390 pixel preview")
     expect(dock).toContain(">Compare</button>")
+    expect(dock).toContain("Print view")
+    expect(dock).toContain("Download safe copy")
+    expect(dock).toContain("Safe copies remove scripts, forms, and external assets")
   })
 })

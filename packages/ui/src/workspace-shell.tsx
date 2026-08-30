@@ -10,12 +10,14 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   HistoryIcon,
+  DownloadIcon,
   LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MinusIcon,
   PanelLeftCloseIcon,
   PanelRightCloseIcon,
+  PrinterIcon,
   SearchIcon,
   SendIcon,
   SettingsIcon,
@@ -1625,7 +1627,13 @@ export function ArtifactDock({
   onCollapse: () => void
   defaultTab: "changes" | "preview"
   rpcUrl: string
-  authorizeArtifact: (artifactId: string, bridgeChannel?: string) => Promise<ArtifactAccess>
+  authorizeArtifact: (input: {
+    sessionId: string
+    artifactId: string
+    revision: number
+    purpose: ArtifactAccess["purpose"]
+    bridgeChannel?: string
+  }) => Promise<ArtifactAccess>
   connected: boolean
   terminalControls: TerminalControls
   onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
@@ -1691,6 +1699,8 @@ export function ArtifactDock({
   const [annotationError, setAnnotationError] = useState("")
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [previewError, setPreviewError] = useState("")
+  const [derivedArtifactPending, setDerivedArtifactPending] = useState<"print" | "download">()
+  const [derivedArtifactError, setDerivedArtifactError] = useState("")
   const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
   const [previewThumbnailUrls, setPreviewThumbnailUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
   const reservedPreviewThumbnails = useRef(new Set<string>())
@@ -1721,7 +1731,7 @@ export function ArtifactDock({
     setPreviewUrl(undefined)
     setPreviewError("")
     if (!preview || !connected) return () => { active = false }
-    void authorizeArtifact(preview.id, bridgeChannel).then(
+    void authorizeArtifact({ sessionId: preview.sessionId, artifactId: preview.id, revision: preview.revision, purpose: "preview", bridgeChannel }).then(
       (access) => {
         if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
       },
@@ -1740,7 +1750,7 @@ export function ArtifactDock({
     let active = true
     setComparePreviewUrl(undefined)
     if (!comparePreview || !connected) return () => { active = false }
-    void authorizeArtifact(comparePreview.id).then((access) => {
+    void authorizeArtifact({ sessionId: comparePreview.sessionId, artifactId: comparePreview.id, revision: comparePreview.revision, purpose: "preview" }).then((access) => {
       if (active) setComparePreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
     }, () => { if (active) setComparePreviewUrl(undefined) })
     return () => { active = false }
@@ -1785,6 +1795,33 @@ export function ArtifactDock({
     } catch {
       releasePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)
       // Web and denied desktop captures keep the truthful static placeholder.
+    }
+  }
+
+  const openDerivedArtifact = async (purpose: "print" | "download") => {
+    if (!preview || !connected || derivedArtifactPending) return
+    const printWindow = purpose === "print" ? window.open("about:blank", "_blank") : null
+    if (printWindow) printWindow.opener = null
+    setDerivedArtifactPending(purpose)
+    setDerivedArtifactError("")
+    try {
+      const access = await authorizeArtifact({ sessionId: preview.sessionId, artifactId: preview.id, revision: preview.revision, purpose })
+      const url = artifactUrlFor(rpcUrl, access)
+      if (purpose === "print") {
+        if (!printWindow) throw new Error("The browser blocked the print view")
+        printWindow.location.replace(url)
+      } else {
+        const anchor = document.createElement("a")
+        anchor.href = url
+        anchor.download = ""
+        anchor.rel = "noopener noreferrer"
+        anchor.click()
+      }
+    } catch (cause) {
+      printWindow?.close()
+      setDerivedArtifactError(cause instanceof Error ? cause.message : "The safe copy could not be prepared")
+    } finally {
+      setDerivedArtifactPending(undefined)
     }
   }
 
@@ -1940,6 +1977,8 @@ export function ArtifactDock({
               <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-3 py-1", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className="flex items-center gap-2">
+                  <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Open sanitized print view" onClick={() => void openDerivedArtifact("print")}><PrinterIcon data-icon="inline-start" />{derivedArtifactPending === "print" ? "Preparing" : "Print view"}</Button>
+                  <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Download sanitized offline HTML copy" onClick={() => void openDerivedArtifact("download")}><DownloadIcon data-icon="inline-start" />{derivedArtifactPending === "download" ? "Preparing" : "Download safe copy"}</Button>
                   <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
                     {[390, 768, 1440].map((width) => <ToggleGroupItem key={width} value={String(width)} className="min-h-11 min-w-11" aria-label={`${width} pixel preview`}>{width}</ToggleGroupItem>)}
                   </ToggleGroup>
@@ -1959,6 +1998,8 @@ export function ArtifactDock({
                   <Badge variant="success">Live</Badge>
                 </div>
               </div>
+              <p className="m-0 border-b px-3 py-1 text-[9px] text-muted-foreground">Safe copies remove scripts, forms, and external assets.</p>
+              {derivedArtifactError ? <Alert variant="destructive" className="m-3 w-auto" aria-live="polite"><CircleStopIcon /><AlertTitle>Safe copy unavailable</AlertTitle><AlertDescription>{derivedArtifactError}</AlertDescription></Alert> : null}
               {previewError ? (
                 <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
                   <CircleStopIcon />
