@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -95,5 +95,102 @@ describe("AnnotationVisualContextService", () => {
       height: 4,
     })).resolves.toMatchObject({ status: "unavailable", reason: "invalid-capture" })
     await expect(unavailable.read("../../secret", "image/png")).rejects.toThrow("Invalid crop reference")
+  })
+
+  it("prunes oldest unreferenced crops while retaining live and current refs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-crops-"))
+    roots.push(root)
+    let protectedRef = ""
+    const service = new AnnotationVisualContextService({
+      root,
+      maximumFileCount: 10,
+      maximumTotalBytes: 150,
+      protectedRefs: () => [protectedRef, "../../invalid"],
+    })
+    const stored = []
+    for (const fill of [1, 2, 3]) {
+      stored.push(await service.storeUpload({
+        artifactRevision: fill,
+        mimeType: "image/png",
+        bytes: Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, fill)]),
+        width: 8,
+        height: 8,
+      }))
+      if (fill === 1 && stored[0]!.status === "available") protectedRef = stored[0]!.ref
+    }
+    const refs = stored.map((result) => {
+      if (result.status !== "available") throw new Error("crops should be available")
+      return result.ref
+    })
+    await expect(service.read(refs[0]!, "image/png")).resolves.toBeDefined()
+    await expect(service.read(refs[1]!, "image/png")).rejects.toThrow("Stored crop is unavailable")
+    await expect(service.read(refs[2]!, "image/png")).resolves.toBeDefined()
+  })
+
+  it("tolerates unlink races and propagates unrelated prune errors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-crops-"))
+    roots.push(root)
+    let race = true
+    const racing = new AnnotationVisualContextService({
+      root,
+      maximumFileCount: 1,
+      maximumTotalBytes: 1_000,
+      removeFile: async (path) => {
+        await unlink(path)
+        if (race) {
+          race = false
+          throw Object.assign(new Error("gone"), { code: "ENOENT" })
+        }
+      },
+    })
+    await racing.storeUpload({ artifactRevision: 1, mimeType: "image/png", bytes: png, width: 8, height: 8 })
+    await expect(racing.storeUpload({
+      artifactRevision: 2,
+      mimeType: "image/png",
+      bytes: Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 2)]),
+      width: 8,
+      height: 8,
+    })).resolves.toMatchObject({ status: "available" })
+
+    const failing = new AnnotationVisualContextService({
+      root,
+      maximumFileCount: 1,
+      maximumTotalBytes: 1_000,
+      removeFile: async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }) },
+    })
+    await expect(failing.storeUpload({
+      artifactRevision: 3,
+      mimeType: "image/png",
+      bytes: Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 3)]),
+      width: 8,
+      height: 8,
+    })).rejects.toThrow("denied")
+  })
+
+  it("reports bounded overflow instead of deleting protected crops", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-crops-"))
+    roots.push(root)
+    const protectedRefs = new Set<string>()
+    const reportRetentionOverflow = vi.fn()
+    const service = new AnnotationVisualContextService({
+      root,
+      maximumFileCount: 1,
+      protectedRefs: () => protectedRefs,
+      reportRetentionOverflow,
+    })
+    const first = await service.storeUpload({ artifactRevision: 1, mimeType: "image/png", bytes: png, width: 8, height: 8 })
+    if (first.status !== "available") throw new Error("crop should be available")
+    protectedRefs.add(first.ref)
+    const second = await service.storeUpload({
+      artifactRevision: 2,
+      mimeType: "image/png",
+      bytes: Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 4)]),
+      width: 8,
+      height: 8,
+    })
+    if (second.status !== "available") throw new Error("crop should be available")
+    expect(reportRetentionOverflow).toHaveBeenCalledWith(expect.objectContaining({ fileCount: 2 }))
+    await expect(service.read(first.ref, "image/png")).resolves.toBeDefined()
+    await expect(service.read(second.ref, "image/png")).resolves.toBeDefined()
   })
 })
