@@ -53,7 +53,7 @@ export function downloadAuditExport(result: AuditDownload): void {
   anchor.href = url
   anchor.download = auditExportFilename(result.exportedAt)
   anchor.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 export async function collectAuditExport(
