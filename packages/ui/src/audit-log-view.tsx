@@ -29,6 +29,11 @@ import type { DomovoiRequestOptions } from "./client"
 
 const outcomes = ["all", "started", "succeeded", "failed", "denied", "cancelled"] as const
 type OutcomeFilter = (typeof outcomes)[number]
+type AuditExportFilters = Omit<AuditExportParams, "before" | "format" | "limit">
+type AuditDownload = Pick<AuditExportResult, "format" | "exportedAt" | "entryCount" | "content">
+
+const maximumAuditDownloadPages = 20
+const maximumAuditDownloadBytes = 20_000_000
 
 export function auditActorLabel(actor: AuditActor): string {
   if (actor.kind === "client") return [actor.client, actor.clientId].filter(Boolean).join(" · ")
@@ -42,13 +47,59 @@ export function auditExportFilename(exportedAt: string): string {
   return `domovoi-audit-${exportedAt.replace(/[.:]/g, "-")}.jsonl`
 }
 
-export function downloadAuditExport(result: AuditExportResult): void {
+export function downloadAuditExport(result: AuditDownload): void {
   const url = URL.createObjectURL(new Blob([result.content], { type: "application/x-ndjson" }))
   const anchor = document.createElement("a")
   anchor.href = url
   anchor.download = auditExportFilename(result.exportedAt)
   anchor.click()
   URL.revokeObjectURL(url)
+}
+
+export async function collectAuditExport(
+  onExport: (params: AuditExportParams, options?: DomovoiRequestOptions) => Promise<AuditExportResult>,
+  filters: AuditExportFilters,
+  options: { signal: AbortSignal; deadlineAt: number },
+): Promise<AuditDownload> {
+  const chunks: string[] = []
+  const cursors = new Set<string>()
+  let entryCount = 0
+  let byteCount = 0
+  let before: string | undefined
+  let exportedAt = "1970-01-01T00:00:00.000Z"
+
+  for (let pageIndex = 0; pageIndex < maximumAuditDownloadPages; pageIndex += 1) {
+    options.signal.throwIfAborted()
+    const remainingMs = Math.floor(options.deadlineAt - Date.now())
+    if (remainingMs <= 0) throw new Error("Audit export deadline exceeded")
+    const page = await onExport(
+      {
+        ...filters,
+        format: "jsonl",
+        limit: 500,
+        ...(before ? { before } : {}),
+      },
+      { signal: options.signal, timeoutMs: remainingMs },
+    )
+    if (pageIndex === 0) exportedAt = page.exportedAt
+    chunks.push(page.content)
+    entryCount += page.entryCount
+    byteCount += new TextEncoder().encode(page.content).byteLength
+    if (byteCount > maximumAuditDownloadBytes) {
+      throw new Error("Audit export exceeds the safe download limit; narrow the filters")
+    }
+    if (!page.hasMore) {
+      return { format: "jsonl", exportedAt, entryCount, content: chunks.join("") }
+    }
+    if (!page.nextCursor) throw new Error("Audit export omitted its continuation cursor")
+    if (cursors.has(page.nextCursor)) {
+      throw new Error("Audit export repeated a continuation cursor")
+    }
+    cursors.add(page.nextCursor)
+    before = page.nextCursor
+  }
+
+  throw new Error("Audit export exceeds the safe page limit; narrow the filters")
 }
 
 function outcomeVariant(outcome: AuditOutcome): "success" | "warning" | "destructive" | "outline" {
@@ -115,6 +166,7 @@ export function AuditLogView({
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState("")
   const requestRef = useRef(0)
+  const exportControllerRef = useRef<AbortController | undefined>(undefined)
   const filters = useMemo(() => ({
     ...(query.trim() ? { query: query.trim() } : {}),
     ...(action.trim() ? { action: action.trim() } : {}),
@@ -149,6 +201,8 @@ export function AuditLogView({
     }
   }, [connected, filterKey, onQuery])
 
+  useEffect(() => () => exportControllerRef.current?.abort(), [])
+
   const loadOlder = async () => {
     if (!page?.hasMore || !page.nextCursor || loading) return
     const request = ++requestRef.current
@@ -173,18 +227,30 @@ export function AuditLogView({
   const exportLog = async () => {
     if (!connected || exporting) return
     const controller = new AbortController()
+    exportControllerRef.current = controller
     setExporting(true)
     setError("")
     try {
-      downloadAuditExport(await onExport(
-        { ...filters, format: "jsonl", limit: 500 },
-        { signal: controller.signal, timeoutMs: 30_000 },
-      ))
+      downloadAuditExport(await collectAuditExport(onExport, filters, {
+        signal: controller.signal,
+        deadlineAt: Date.now() + 60_000,
+      }))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Audit export could not be created")
+      if (!controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : "Audit export could not be created")
+      }
     } finally {
+      if (exportControllerRef.current === controller) exportControllerRef.current = undefined
       setExporting(false)
     }
+  }
+
+  const toggleExport = () => {
+    if (exporting) {
+      exportControllerRef.current?.abort(new DOMException("Audit export cancelled", "AbortError"))
+      return
+    }
+    void exportLog()
   }
 
   return (
@@ -212,9 +278,9 @@ export function AuditLogView({
                 Search redacted security, session, provider, approval, tool, and terminal events stored on this machine.
               </p>
             </div>
-            <Button variant="outline" disabled={!connected || exporting} onClick={() => void exportLog()}>
+            <Button variant="outline" disabled={!connected} onClick={toggleExport}>
               <DownloadIcon data-icon="inline-start" />
-              {exporting ? "Exporting" : "Export JSONL"}
+              {exporting ? "Cancel export" : "Export JSONL"}
             </Button>
           </div>
 
