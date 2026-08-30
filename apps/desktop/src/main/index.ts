@@ -2,14 +2,28 @@ import { join } from "node:path"
 import { randomBytes } from "node:crypto"
 
 import { DomovoiDaemon } from "@getdomovoi/daemon"
-import { app, BrowserWindow, dialog, ipcMain } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, Notification } from "electron"
 
 import { startOwnedDaemon } from "./owned-daemon.js"
 import { captureAnnotationPng } from "./annotation-capture.js"
+import { DesktopNotificationController } from "./desktop-notifications.js"
 
 let mainWindow: BrowserWindow | undefined
 let localDaemon: DomovoiDaemon | undefined
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
+const desktopNotifications = new DesktopNotificationController({
+  isSupported: () => Notification.isSupported(),
+  create: (options) => {
+    const notification = new Notification(options)
+    return {
+      once: (event, listener) => {
+        if (event === "click") notification.once("click", listener)
+        else notification.once("failed", listener)
+      },
+      show: () => notification.show(),
+    }
+  },
+})
 
 async function ensureDaemon(): Promise<void> {
   const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831, authToken: rpcToken })
@@ -63,6 +77,16 @@ ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
     y: number
     width: number
     height: number
+  })
+})
+ipcMain.handle("domovoi:notify", (event, request: unknown) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return false
+  return desktopNotifications.notify(request, (sessionId) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    if (!mainWindow.isVisible()) mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send("domovoi:notification-activate", sessionId)
   })
 })
 

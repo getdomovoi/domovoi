@@ -161,6 +161,10 @@ import {
   CommandPalette,
   type CommandPalettePlatform,
 } from "./command-palette"
+import {
+  WorkspaceNotificationTracker,
+  type DesktopNotificationRequest,
+} from "./desktop-notifications"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -176,6 +180,8 @@ export type DesktopWindowBridge = {
     height: number
     data: string
   }>
+  notify(request: DesktopNotificationRequest): Promise<boolean>
+  onNotificationActivate(listener: (sessionId: string) => void): () => void
   minimize(): void
   maximize(): void
   close(): void
@@ -2481,6 +2487,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribe: subscribeTerminal,
   }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
+  const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
@@ -2553,6 +2560,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   })
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
+
+  useEffect(() => {
+    notificationTrackerRef.current = new WorkspaceNotificationTracker()
+  }, [clientKind, rpcUrl])
+
+  useEffect(() => {
+    if (!windowBridge) return
+    return windowBridge.onNotificationActivate((sessionId) => {
+      setWorkspaceError("")
+      void activateSession(sessionId).catch((cause: unknown) => {
+        setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+      })
+    })
+  }, [activateSession, windowBridge])
+
+  useEffect(() => {
+    if (!snapshot) return
+    const notifications = notificationTrackerRef.current.observe(snapshot)
+    if (!windowBridge) return
+    for (const notification of notifications) {
+      void windowBridge.notify(notification).catch(() => {})
+    }
+  }, [snapshot, windowBridge])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
