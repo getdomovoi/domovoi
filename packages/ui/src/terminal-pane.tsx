@@ -159,6 +159,7 @@ export function TerminalPane({
   }
 
   const writable = metadata?.owner.clientId === controls.clientId
+  const terminalStatus = closed ? "closed" : connected ? metadata ? "connected" : "connecting" : "disconnected"
   const sendInterrupt = () => {
     if (!terminalId || !writable) return
     void controls.write(terminalId, "\x03").catch((cause: unknown) => {
@@ -201,7 +202,8 @@ export function TerminalPane({
   return (
     <div className="flex h-full min-h-0 flex-col bg-code">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
-        <span className={`size-1.5 rounded-full ${closed ? "bg-faint" : connected ? "bg-success" : "bg-warning"}`} />
+        <span aria-hidden="true" data-status-dot="" className={`size-1.5 rounded-full ${closed ? "bg-faint" : connected ? "bg-success" : "bg-warning"}`} />
+        <span role="status" className="sr-only">Terminal status: {terminalStatus}. </span>
         <span className="min-w-0 truncate font-machine text-[10px] text-muted-foreground">
           pty · {machineName} · {metadata?.shell ?? "connecting"} · {metadata?.cwd ?? "session worktree"}
         </span>

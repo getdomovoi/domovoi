@@ -60,7 +60,7 @@ export function ProviderSettings({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
+      <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
         <Button variant="ghost" className="mb-2 justify-start" onClick={onBack}>
           <ArrowLeftIcon data-icon="inline-start" />
           Workspace
@@ -75,7 +75,7 @@ export function ProviderSettings({
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto w-full max-w-[780px] px-4 py-5 sm:px-8 sm:py-7">
-          <div className="mb-3 -ml-2 flex items-center gap-1 sm:hidden">
+          <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 sm:hidden">
             <Button variant="ghost" className="min-h-11" onClick={onBack}>
               <ArrowLeftIcon data-icon="inline-start" />
               Workspace
@@ -85,7 +85,7 @@ export function ProviderSettings({
             {editorCapability ? <Button variant="ghost" className="min-h-11" onClick={() => setSection("external-editor")}>External editor</Button> : null}
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
-          </div>
+          </nav>
 
           {activeSection === "external-editor" && editorCapability ? (
             <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
@@ -104,7 +104,7 @@ export function ProviderSettings({
               {providers.map((provider, index) => (
                 <div key={provider.id}>
                   {index > 0 ? <Separator /> : null}
-                  <div className="flex min-h-14 items-center justify-between gap-3 px-4 py-3">
+                  <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 px-4 py-3">
                     <span className="flex min-w-0 flex-col">
                       <span className="font-medium">{providerDisplayName(provider.id)}</span>
                       <span className="truncate font-machine text-[9.5px] text-faint">
@@ -114,7 +114,7 @@ export function ProviderSettings({
                         Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal
                       </span>
                     </span>
-                    <span className="flex items-center gap-2">
+                    <span className="ml-auto flex flex-wrap items-center gap-2">
                       <Badge variant={provider.status === "ready" ? "success" : provider.status === "auth-required" ? "warning" : "outline"}>
                         {providerStatusLabel(provider)}
                       </Badge>
@@ -230,7 +230,7 @@ function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
             {status.state === "stored" ? "Stored" : status.state === "unavailable" ? "Keychain unavailable" : "Not set"}
           </FieldDescription>
         </span>
-        <span className="min-w-64 flex-[2] text-[10px] leading-relaxed text-muted-foreground">
+        <span className="min-w-0 basis-64 flex-[2] text-[10px] leading-relaxed text-muted-foreground">
           Run <code className="font-machine">domovoid secret set {status.provider}</code> locally on the execution machine.
           {status.state === "stored" ? <><br />Delete with <code className="font-machine">domovoid secret delete {status.provider}</code>.</> : null}
         </span>
