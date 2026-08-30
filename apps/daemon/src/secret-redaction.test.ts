@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  DurableOutputRedactor,
   maximumDurableCommandLength,
+  maximumStreamingOutputBufferLength,
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
@@ -18,6 +20,10 @@ const secrets = [
   "json-api-secret",
   "yaml-password-secret",
   "xoxb-known-token-secret",
+  "basic64value",
+  "cmd secret with spaces",
+  "jvm-password-secret",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signatureSecret",
 ]
 
 const adversarial = [
@@ -28,6 +34,10 @@ const adversarial = [
   "set AZURE_CLIENT_SECRET=client-secret-cmd\r\ntool.exe /password:cmd-password",
   '{"apiKey":"json-api-secret","safe":"visible"}\r\npassword: yaml-password-secret',
   "provider returned xoxb-known-token-secret",
+  "Authorization: Basic basic64value",
+  'set "PASSWORD=cmd secret with spaces"',
+  "java -Dpassword=jvm-password-secret -jar app.jar",
+  "unlabeled eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signatureSecret",
 ].join("\n")
 
 describe("durable secret redaction", () => {
@@ -35,7 +45,7 @@ describe("durable secret redaction", () => {
     const result = redactDurableText(adversarial)
 
     expect(result.redacted).toBe(true)
-    expect(result.value).toContain("Authorization: Bearer [REDACTED]")
+    expect(result.value).toContain("Authorization: [REDACTED]")
     expect(result.value).toContain("https://[REDACTED]@example.test/private.git")
     expect(result.value).toContain("OPENAI_API_KEY='[REDACTED]'")
     expect(result.value).toContain("--token [REDACTED]")
@@ -44,6 +54,9 @@ describe("durable secret redaction", () => {
     expect(result.value).toContain("set AZURE_CLIENT_SECRET=[REDACTED]\r\n")
     expect(result.value).toContain('"apiKey":"[REDACTED]"')
     expect(result.value).toContain("password: [REDACTED]")
+    expect(result.value).toContain("Authorization: [REDACTED]")
+    expect(result.value).toContain('set "PASSWORD=[REDACTED]"')
+    expect(result.value).toContain("-Dpassword=[REDACTED]")
     for (const secret of secrets) expect(result.value).not.toContain(secret)
     expect(result.value).not.toContain("cmd-password")
     expect(result.value).not.toContain("value\n")
@@ -74,5 +87,34 @@ describe("durable secret redaction", () => {
       redacted: false,
       truncated: false,
     })
+  })
+
+  it("streams safe complete LF and CRLF records without delay", () => {
+    const stream = new DurableOutputRedactor()
+    expect(stream.push("first line\nsecond line\r\n")).toBe("first line\nsecond line\r\n")
+    expect(stream.flush()).toBe("")
+  })
+
+  it("holds split secret records until their value can be redacted", () => {
+    const stream = new DurableOutputRedactor()
+    expect(stream.push("token=")).toBe("")
+    expect(stream.push("split-stream-secret\r\nnext")).toBe("token=[REDACTED]\r\n")
+    expect(stream.flush()).toBe("next")
+  })
+
+  it("flushes sanitized output when a provider supplies no aggregate", () => {
+    const stream = new DurableOutputRedactor()
+    expect(stream.push("password=no-aggregate-secret")).toBe("")
+    expect(stream.flush()).toBe("password=[REDACTED]")
+  })
+
+  it("bounds pathological no-newline records without leaking later fragments", () => {
+    const stream = new DurableOutputRedactor()
+    const emitted = stream.push(`token=${"s".repeat(maximumStreamingOutputBufferLength + 1)}`)
+    expect(emitted).toBe("[Long command output line omitted]\n")
+    expect(emitted).not.toContain("s".repeat(100))
+    expect(stream.push("continuation-secret")).toBe("")
+    expect(stream.push("\r\nsafe line\n")).toBe("safe line\n")
+    expect(stream.flush()).toBe("")
   })
 })
