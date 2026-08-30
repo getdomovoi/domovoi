@@ -562,7 +562,7 @@ export class DomovoiDaemon {
     if (this.#http) throw new Error("Daemon is already running")
 
     await this.#recoverSessionArchives()
-    await this.#syncArtifactWatchers()
+    this.#syncArtifactWatchers()
 
     this.#http = createServer((request, response) => {
       if (request.url === "/healthz") {
@@ -2581,7 +2581,7 @@ export class DomovoiDaemon {
         changed = true
       }
 
-      if (changed) await this.#syncArtifactWatchers()
+      if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed) this.#store.save(this.#snapshot)
       this.#send(socket, {
@@ -2873,6 +2873,7 @@ export class DomovoiDaemon {
           if (!path.toLowerCase().endsWith(".html") || !session.workspacePath) continue
           const lexicalPath = resolveInside(session.workspacePath, path)
           if (!lexicalPath || !await resolveInsideReal(session.workspacePath, lexicalPath)) continue
+          const relativePath = relative(resolve(session.workspacePath), lexicalPath).replaceAll("\\", "/")
           const artifactId = `preview-${createHash("sha256")
             .update(`${session.id}:${lexicalPath}`)
             .digest("hex")
@@ -2880,14 +2881,17 @@ export class DomovoiDaemon {
           const existing = this.#snapshot.artifacts.find(
             (artifact) => artifact.id === artifactId,
           )
-          if (existing) existing.revision += 1
+          if (existing) {
+            existing.path = relativePath
+            existing.revision += 1
+          }
           else this.#snapshot.artifacts.push({
             id: artifactId,
             sessionId: session.id,
             title: basename(lexicalPath),
             type: "preview",
             revision: 1,
-            path: lexicalPath,
+            path: relativePath,
             mimeType: "text/html",
           })
         }
@@ -3543,7 +3547,7 @@ export class DomovoiDaemon {
     return true
   }
 
-  async #syncArtifactWatchers(): Promise<void> {
+  #syncArtifactWatchers(): void {
     const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
       session.workspacePath && !sessionIsArchiveReadOnly(session)
         ? [[session.id, resolve(session.workspacePath)] as const]
@@ -3556,14 +3560,6 @@ export class DomovoiDaemon {
     }
     for (const [sessionId, root] of liveSessions) {
       if (this.#artifactWatchers.has(sessionId)) continue
-      try {
-        await realpath(root)
-      } catch (error) {
-        if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
-          this.#reportError("Domovoi could not inspect session artifact path", error)
-        }
-        continue
-      }
       const watcher = this.#artifactWatcherFactory({
         root,
         onChange: (change) => {
@@ -3572,14 +3568,14 @@ export class DomovoiDaemon {
         },
         onError: (error) => this.#reportError("Domovoi artifact watcher failed", error),
       })
-      this.#artifactWatchers.set(sessionId, { root, watcher })
-      try {
-        await watcher.start()
-      } catch (error) {
+      const entry = { root, watcher }
+      this.#artifactWatchers.set(sessionId, entry)
+      void watcher.start().catch((error: unknown) => {
+        if (this.#artifactWatchers.get(sessionId) !== entry) return
         watcher.stop()
         this.#artifactWatchers.delete(sessionId)
         this.#reportError("Domovoi could not watch session artifacts", error)
-      }
+      })
     }
   }
 
