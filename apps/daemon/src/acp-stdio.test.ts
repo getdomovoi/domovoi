@@ -132,6 +132,73 @@ describe("ACP stdio mapping", () => {
     }
   })
 
+  it("waits for the ACP child to exit after forcing shutdown", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = fakeAcpProcess((id) => ({
+        jsonrpc: "2.0",
+        id,
+        result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+      }))
+      const { peer } = await initializePeer(child)
+      child.kill.mockImplementation(() => true)
+      let closed = false
+
+      const closing = peer.close().then(() => { closed = true })
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(child.kill.mock.calls).toEqual([[], ["SIGKILL"]])
+      expect(closed).toBe(false)
+
+      child.emit("exit", 137, "SIGKILL")
+      await closing
+      expect(closed).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("bounds forced shutdown when the ACP child never exits", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = fakeAcpProcess((id) => ({
+        jsonrpc: "2.0",
+        id,
+        result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+      }))
+      const { peer } = await initializePeer(child)
+      child.kill.mockImplementation(() => true)
+      let closed = false
+
+      const closing = peer.close().then(() => { closed = true })
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(closed).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(1)
+      await closing
+      expect(closed).toBe(true)
+      expect(child.kill.mock.calls).toEqual([[], ["SIGKILL"]])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ["already exited", () => false],
+    ["signal error", () => { throw new Error("process unavailable") }],
+  ])("safely closes when the ACP child has %s", async (_name, kill) => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const { peer } = await initializePeer(child)
+    child.kill.mockImplementation(kill)
+
+    await expect(peer.close()).resolves.toBeUndefined()
+    expect(child.kill).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ["initialize rejection", (id: number) => ({
       jsonrpc: "2.0",
