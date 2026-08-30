@@ -50,6 +50,7 @@ export class StdioAcpPeer implements AcpPeer {
     this.#closing = false
     const process = await this.#spawnFirstAvailable()
     this.#process = process
+    process.stderr.resume()
     process.once("exit", () => {
       if (!this.#closing) this.#handlers.onDisconnect()
     })

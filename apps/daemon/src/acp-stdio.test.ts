@@ -45,6 +45,30 @@ describe("ACP stdio mapping", () => {
     expect(response.mock.calls).toEqual([[1], [2], [3]])
   })
 
+  it("drains child stderr without exposing provider diagnostics", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const peer = new StdioAcpPeer({
+      definition: CURSOR_ACP_PROVIDER,
+      handlers: {
+        onUpdate: vi.fn(),
+        onPermission: vi.fn(),
+        onDisconnect: vi.fn(),
+      },
+      spawnProcess: () => {
+        queueMicrotask(() => child.emit("spawn"))
+        return child as unknown as ChildProcessWithoutNullStreams
+      },
+    })
+
+    await peer.initialize()
+    expect(child.stderr.readableFlowing).toBe(true)
+    await peer.close()
+  })
+
   it.each([
     ["initialize rejection", (id: number) => ({
       jsonrpc: "2.0",
