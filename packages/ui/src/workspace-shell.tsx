@@ -121,7 +121,7 @@ import {
   previewResolveAnchorsMessage,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { previewThumbnailObjectUrl, previewThumbnailRect, releasePreviewThumbnail, reservePreviewThumbnail } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
@@ -1675,6 +1675,7 @@ export function ArtifactDock({
   const [deviceWidth, setDeviceWidth] = useState(768)
   const [compareRequested, setCompareRequested] = useState(false)
   const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
+  const previewControlLayout = previewControlLayoutFor(stageContainerWidth)
   const comparePreview = reviewLayout.compare
     ? previewVariants.find((artifact) => artifact.id !== preview?.id)
     : undefined
@@ -1976,7 +1977,7 @@ export function ArtifactDock({
               ) : null}
               <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-3 py-1", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
-                <div className="flex items-center gap-2">
+                <div className={cn("flex min-w-0 items-center justify-end gap-2", previewControlLayout.wrap && "flex-wrap", previewControlLayout.fullWidth && "w-full")}>
                   <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Open sanitized print view" onClick={() => void openDerivedArtifact("print")}><PrinterIcon data-icon="inline-start" />{derivedArtifactPending === "print" ? "Preparing" : "Print view"}</Button>
                   <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Download sanitized offline HTML copy" onClick={() => void openDerivedArtifact("download")}><DownloadIcon data-icon="inline-start" />{derivedArtifactPending === "download" ? "Preparing" : "Download safe copy"}</Button>
                   <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
@@ -1988,6 +1989,7 @@ export function ArtifactDock({
                     <Button
                       variant={pickerActive ? "secondary" : "outline"}
                       size="xs"
+                      className="min-h-11"
                       aria-pressed={pickerActive}
                       onClick={togglePicker}
                     >
