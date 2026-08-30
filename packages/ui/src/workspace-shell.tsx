@@ -47,6 +47,7 @@ import type {
   ThreadItem,
   WorkspaceSnapshot,
   PreviewBridgePickerMessage,
+  PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
 
@@ -115,10 +116,11 @@ import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { annotationCaptureUpload } from "./annotation-capture"
 import {
-  anchorResolutionMapFor,
   anchorResolutionsFor,
   createPreviewBridgeChannel,
-  previewResolveAnchorsMessage,
+  mergeAnchorResolutionBatch,
+  previewReadyFor,
+  previewResolveAnchorMessages,
   previewSelectionFor,
 } from "./preview-bridge"
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
@@ -1710,6 +1712,9 @@ export function ArtifactDock({
     string,
     "selector" | "text-quote" | "bounding-box" | "unresolved"
   >>(() => new Map())
+  const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
+  const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
+  const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [activeTab, setActiveTab] = useState<string>(defaultTab)
 
   useEffect(() => {
@@ -1826,16 +1831,26 @@ export function ArtifactDock({
     }
   }
 
-  const postAnchorResolutionRequest = () => {
+  const postNextAnchorResolutionBatch = () => {
+    if (pendingAnchorResolutionBatch.current) return
+    const message = queuedAnchorResolutionBatches.current.shift()
+    if (!message) return
+    pendingAnchorResolutionBatch.current = message
+    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
+  }
+
+  const startAnchorResolutionRequests = () => {
     if (!preview) return
-    const message = previewResolveAnchorsMessage(
+    queuedAnchorResolutionBatches.current = previewResolveAnchorMessages(
       bridgeChannel,
       preview.id,
       annotations
         .filter((annotation) => annotation.artifactId === preview.id)
         .map((annotation) => ({ annotationId: annotation.id, anchor: annotation.anchor })),
     )
-    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
+    pendingAnchorResolutionBatch.current = undefined
+    setAnchorResolutions(new Map())
+    postNextAnchorResolutionBatch()
   }
 
   useEffect(() => {
@@ -1846,14 +1861,27 @@ export function ArtifactDock({
         || event.source !== previewFrameRef.current?.contentWindow
         || event.origin !== "null"
       ) return
-      const anchorResolutionMessage = anchorResolutionsFor(event.data, bridgeChannel, preview.id)
-      if (anchorResolutionMessage) {
-        setAnchorResolutions(anchorResolutionMapFor(
-          annotations
-            .filter((annotation) => annotation.artifactId === preview.id)
-            .map((annotation) => annotation.id),
+      if (previewReadyFor(event.data, bridgeChannel, preview.id)) {
+        setBridgeReadyKey(previewKey)
+        return
+      }
+      const pendingBatch = pendingAnchorResolutionBatch.current
+      const anchorResolutionMessage = pendingBatch
+        ? anchorResolutionsFor(
+            event.data,
+            bridgeChannel,
+            preview.id,
+            pendingBatch.requestId,
+            pendingBatch.annotations.map((annotation) => annotation.annotationId),
+          )
+        : undefined
+      if (anchorResolutionMessage && pendingBatch) {
+        setAnchorResolutions((current) => mergeAnchorResolutionBatch(
+          current,
           anchorResolutionMessage.resolutions,
         ))
+        pendingAnchorResolutionBatch.current = undefined
+        postNextAnchorResolutionBatch()
         return
       }
       if (archiveReadOnly || !pickerActive) return
@@ -1893,11 +1921,14 @@ export function ArtifactDock({
     setComment("")
     setAnnotationError("")
     setAnchorResolutions(new Map())
+    setBridgeReadyKey(undefined)
+    pendingAnchorResolutionBatch.current = undefined
+    queuedAnchorResolutionBatches.current = []
   }, [archiveReadOnly, preview?.id, preview?.revision])
 
   useEffect(() => {
-    if (previewUrl) postAnchorResolutionRequest()
-  }, [annotations, previewUrl])
+    if (bridgeReadyKey === previewKey) startAnchorResolutionRequests()
+  }, [annotations, bridgeReadyKey, previewKey])
 
   const togglePicker = () => {
     if (archiveReadOnly) return
@@ -2020,7 +2051,6 @@ export function ArtifactDock({
                   title={preview.title}
                   onLoad={() => {
                     postPickerState(pickerActive)
-                    postAnchorResolutionRequest()
                     void capturePreviewThumbnail()
                   }}
                 />

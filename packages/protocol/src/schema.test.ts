@@ -553,6 +553,7 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.resolve-anchors",
       channel,
       artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
       annotations: [{
         annotationId: "annotation-1",
         anchor: {
@@ -566,6 +567,7 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.anchor-resolutions",
       channel,
       artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
       resolutions: [
         { annotationId: "annotation-1", status: "resolved", strategy: "text-quote" },
         { annotationId: "annotation-2", status: "unresolved" },
@@ -575,6 +577,7 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.resolve-anchors",
       channel,
       artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
       annotations: Array.from({ length: 101 }, (_, index) => ({
         annotationId: `annotation-${index}`,
         anchor: { textQuote: "Bounded" },
@@ -584,6 +587,7 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.resolve-anchors",
       channel,
       artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
       annotations: [{
         annotationId: "annotation-1",
         anchor: { cssSelector: `#${"x".repeat(1_001)}` },
@@ -593,6 +597,7 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.resolve-anchors",
       channel,
       artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
       annotations: [{ annotationId: "annotation-1", anchor: { textQuote: "Bounded" } }],
       unexpected: true,
     }).success).toBe(false)
