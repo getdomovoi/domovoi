@@ -1,7 +1,7 @@
 import { z } from "zod"
 
 import {
-  maximumRetainedSessionHistoryItems,
+  maximumSessionHistoryPageItems,
   maximumTerminalOutputChunkCharacters,
 } from "./performance.js"
 
@@ -79,7 +79,6 @@ export const rpcNotificationSchema = z.object({
 
 export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
 export const maximumWorkspaceDeltaOperations = 16
-export const maximumSessionHistoryPageItems = maximumRetainedSessionHistoryItems / 2
 export const maximumSessionHistoryQueryLength = 256
 export const maximumAuditQueryPageItems = 100
 export const maximumAuditExportItems = 500

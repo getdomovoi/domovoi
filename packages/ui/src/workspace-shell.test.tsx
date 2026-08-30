@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } from "@getdomovoi/protocol"
 
-import { demoWorkspace, providerFailureSchema } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -78,6 +78,23 @@ it("does not refetch skills for unrelated workspace updates", () => {
 })
 
 describe("RuntimeControls", () => {
+  it("bounds initial rendered thread work with the canonical effective limit", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const sessionId = snapshot.activeSessionId!
+    snapshot.thread = Array.from({ length: maximumEffectiveClientThreadItems + 5 }, (_, index) => ({
+      id: `rendered-${index}`,
+      sessionId,
+      kind: "user" as const,
+      body: `Message ${index}`,
+      createdAt: snapshot.sessions[0]!.updatedAt,
+    }))
+
+    const rendered = renderedThreadForActiveSession(snapshot)
+
+    expect(rendered).toHaveLength(maximumEffectiveClientThreadItems)
+    expect(rendered[0]?.id).toBe("rendered-5")
+  })
+
   it("renders safe Markdown in user, assistant, and system thread bodies", () => {
     const snapshot = structuredClone(demoWorkspace)
     const sessionId = snapshot.activeSessionId!

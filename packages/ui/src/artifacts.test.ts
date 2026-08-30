@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumRenderedPreviewStages, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 
@@ -62,7 +62,11 @@ describe("previewVariantsForActiveSession", () => {
 
   it("falls back from compare when the container is narrow", () => {
     expect(reviewLayoutFor(700, true, 2)).toEqual({ compare: false, stages: 1 })
-    expect(reviewLayoutFor(900, true, 2)).toEqual({ compare: true, stages: 2 })
+    expect(reviewLayoutFor(900, true, 3)).toEqual({
+      compare: true,
+      stages: maximumRenderedPreviewStages,
+    })
+    expect(reviewLayoutFor(900, true, 1)).toEqual({ compare: false, stages: 1 })
   })
 
   it("wraps review controls in narrow containers", () => {
