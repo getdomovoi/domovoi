@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, DomovoiRpcTimeoutError } from "./client"
 
@@ -143,6 +143,46 @@ describe("DomovoiClient", () => {
 
     expect(received).toHaveLength(1)
     expect(received[0]?.operations[0]).toMatchObject({ delta: "Streamed" })
+    client.disconnect()
+  })
+
+  it("publishes validated emergency-stopped notifications", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const received: SystemEmergencyStoppedNotification[] = []
+    client.addEventListener("emergency-stopped", (event) => {
+      received.push((event as CustomEvent<SystemEmergencyStoppedNotification>).detail)
+    })
+    const result = {
+      snapshot: demoWorkspace,
+      stopId: "stop-notification-1",
+      requestedAt: "2026-08-29T12:00:00.000Z",
+      client: "desktop",
+      outcomes: {
+        turnsStopped: 1,
+        terminalsClosed: 1,
+        approvalsDenied: 1,
+        mutationsCancelled: 1,
+        providersReset: 1,
+      },
+      failures: [],
+    }
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "system.emergencyStopped",
+      params: result,
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "system.emergencyStopped",
+      params: { ...result, outcomes: { turnsStopped: -1 } },
+    })
+
+    expect(received).toEqual([result])
     client.disconnect()
   })
 
@@ -935,7 +975,8 @@ describe("DomovoiClient", () => {
         turnsStopped: 1,
         terminalsClosed: 2,
         approvalsDenied: 3,
-        queuedTurnsCancelled: 4,
+        mutationsCancelled: 4,
+        providersReset: 2,
       },
       failures: [],
     } as const
