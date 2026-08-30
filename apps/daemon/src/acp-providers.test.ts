@@ -53,8 +53,18 @@ describe("ACP provider definitions", () => {
   })
 
   it("drops banners and malformed catalog entries", () => {
-    expect(parseAcpModelCatalog("grok", "Available models:\n\n- grok-code-fast-1\nlogin required\n")).toEqual([
-      expect.objectContaining({ id: "grok-code-fast-1" }),
+    expect(parseAcpModelCatalog("cursor-agent", [
+      "Available models",
+      "",
+      "auto - Auto (default)",
+      "gpt-5.4 - GPT 5.4",
+      "Tip: use --model <id> to switch.",
+      "Workspace Trust Required",
+      "Filter:",
+      "login required",
+    ].join("\n"))).toEqual([
+      expect.objectContaining({ id: "auto", isDefault: true }),
+      expect.objectContaining({ id: "gpt-5.4", isDefault: false }),
     ])
   })
 })
