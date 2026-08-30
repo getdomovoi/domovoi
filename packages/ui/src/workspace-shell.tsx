@@ -31,6 +31,7 @@ import type {
   ArtifactAccess,
   ClientKind,
   PermissionMode,
+  ProviderFailure,
   ProviderModel,
   ProviderRuntime,
   RpcParams,
@@ -171,6 +172,17 @@ const defaultRuntime: Runtime = {
   reasoning: "medium",
   permissionMode: "build",
   auto: false,
+}
+
+export function providerFailureActionCopy(failure: ProviderFailure): string {
+  switch (failure.action) {
+    case "sign-in": return "Open Provider settings and sign in again."
+    case "retry": return failure.kind === "rate-limit"
+      ? "Retry the message after the provider cooldown."
+      : "Retry the message after the provider reconnects."
+    case "check-quota": return "Check the provider quota or billing plan, then retry."
+    case "change-model": return "Choose another model in the runtime controls, then retry."
+  }
 }
 
 function WindowControls({ bridge }: { bridge: DesktopWindowBridge }) {
@@ -1090,6 +1102,13 @@ export function Thread({
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
+          {active.providerFailure ? (
+            <Alert variant="destructive">
+              <CircleStopIcon />
+              <AlertTitle>{active.providerFailure.message}</AlertTitle>
+              <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
+            </Alert>
+          ) : null}
           {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
             if (item.kind === "checkpoint") {
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />

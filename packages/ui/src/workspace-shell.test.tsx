@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } from "@getdomovoi/protocol"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, providerFailureSchema } from "@getdomovoi/protocol"
 
 import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
 
@@ -361,6 +361,39 @@ describe("Thread", () => {
     expect(markup).toContain(
       '<span role="status" class="font-machine text-[9px] text-faint">Stop the active turn before creating a checkpoint</span>',
     )
+  })
+})
+
+describe("provider failure guidance", () => {
+  it.each([
+    ["authentication-expired", "sign-in", "Provider authentication expired", false, "Open Provider settings and sign in again"],
+    ["rate-limit", "retry", "Provider rate limit reached", true, "Retry the message after the provider cooldown"],
+    ["quota-exhausted", "check-quota", "Provider quota is exhausted", false, "Check the provider quota or billing plan"],
+    ["model-unavailable", "change-model", "Selected model is unavailable", false, "Choose another model in the runtime controls"],
+  ] as const)("renders %s with a fixed recovery action", (kind, action, message, retryable, guidance) => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.state = "failed"
+    active.providerFailure = providerFailureSchema.parse({ kind, action, message, retryable })
+    const markup = renderToStaticMarkup(
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn(async () => {})}
+        onSetRuntime={vi.fn(async () => {})}
+        onForkSession={vi.fn(async () => {})}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn(async () => {})}
+        onRestoreCheckpoint={vi.fn(async () => {})}
+        onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain(message)
+    expect(markup).toContain(guidance)
   })
 })
 

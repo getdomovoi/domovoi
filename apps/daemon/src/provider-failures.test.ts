@@ -1,8 +1,31 @@
 import { describe, expect, it } from "vitest"
 
-import { classifyProviderFailure } from "./provider-failures.js"
+import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 
 describe("provider failure classification", () => {
+  it("normalizes direct and nested turn failures without retaining provider detail", () => {
+    expect(providerTurnCompletion({
+      status: "failed",
+      reason: "429 Authorization: Bearer super-secret",
+    })).toEqual({
+      failed: true,
+      failure: {
+        kind: "rate-limit",
+        action: "retry",
+        message: "Provider rate limit reached",
+        retryable: true,
+      },
+    })
+    expect(providerTurnCompletion({
+      turn: { status: "failed" },
+      reason: "insufficient_quota",
+    }).failure?.kind).toBe("quota-exhausted")
+    expect(providerTurnCompletion({
+      turn: { status: "failed", error: { message: "model old-model is unavailable" } },
+    }).failure?.kind).toBe("model-unavailable")
+    expect(providerTurnCompletion({ status: "completed" })).toEqual({ failed: false })
+  })
+
   it.each([
     ["401 token expired", "authentication-expired", "sign-in"],
     ["429 rate limit exceeded", "rate-limit", "retry"],
