@@ -7,6 +7,7 @@ import {
   applyEmergencyStopResult,
   applyConnectionSnapshot,
   applyWorkspaceSnapshot,
+  claimEmergencyStop,
   isCurrentConnection,
   useWorkspace,
   visibleWorkspaceSnapshot,
@@ -63,6 +64,15 @@ describe("useWorkspace", () => {
     const machineB = {}
     expect(isCurrentConnection(machineB, machineA)).toBe(false)
     expect(isCurrentConnection(machineB, machineB)).toBe(true)
+  })
+
+  it("admits only one emergency-stop activation while one is pending", () => {
+    const pending = { current: null as object | null }
+    const client = {}
+
+    expect(claimEmergencyStop(pending, client)).toBe(true)
+    expect(claimEmergencyStop(pending, client)).toBe(false)
+    expect(pending.current).toBe(client)
   })
 
   it("rejects a stale client after an A to B to A reconnect", () => {
