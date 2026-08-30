@@ -180,7 +180,9 @@ export class AcpAgentAdapter implements AgentAdapter {
   async #configure(setup: AcpSessionSetup, runtime: Runtime): Promise<void> {
     const peer = this.#requirePeer()
     await this.#setOption(peer, setup, "model", runtime.model)
-    await this.#setOption(peer, setup, "thought_level", runtime.reasoning)
+    if (runtime.reasoning !== "none") {
+      await this.#setOption(peer, setup, "thought_level", runtime.reasoning)
+    }
     const mode = this.#definition.modes[runtime.permissionMode]
     if (!setup.modes.includes(mode)) {
       throw new Error(`${this.#definition.id} does not advertise mode ${mode}`)
