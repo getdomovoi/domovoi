@@ -1732,7 +1732,11 @@ export class DomovoiDaemon {
           "Repository inspection timed out",
         )
         this.#closeAllTerminals()
+        for (const session of this.#snapshot.sessions) {
+          this.#flushCommandOutputStreams(session.id)
+        }
         await this.#cleanupSessions()
+        this.#commandOutputRedactors.clear()
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         this.#snapshot.project = {
           id: projectId,
@@ -2735,6 +2739,7 @@ export class DomovoiDaemon {
   async #archiveSession(sessionId: string, client?: ClientKind): Promise<void> {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     if (!session || session.state === "archived") return
+    this.#flushCommandOutputStreams(sessionId)
     if (session.state !== "archiving") {
       const requestedAt = new Date().toISOString()
       session.state = "archiving"
@@ -2996,6 +3001,7 @@ export class DomovoiDaemon {
     const threadId = session.providerThreadId
     if (!threadId) return
     const provider = session.runtime.provider
+    this.#flushCommandOutputStreams(sessionId)
     delete session.providerThreadId
     delete session.activeTurnId
     session.state = "failed"
