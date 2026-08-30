@@ -179,8 +179,8 @@ td { color: var(--ink2); }
 <body>
 <div class="layout">
 <aside class="side">
-<div class="meta">ROADMAP.md  ·  2026-08-30 17:39</div>
-<details class="toc" open><summary>Contents</summary><ul><li class="lvl2"><a href="#status-and-priority">Status and priority</a></li><li class="lvl2"><a href="#current-baseline">Current baseline</a></li><li class="lvl2"><a href="#goal-0-secure-and-bound-the-local-core">Goal 0: secure and bound the local core</a></li><li class="lvl2"><a href="#goal-1-finish-the-local-desktop-alpha">Goal 1: finish the local desktop alpha</a></li><li class="lvl3"><a href="#sessions-and-worktrees">Sessions and worktrees</a></li><li class="lvl3"><a href="#providers-and-credentials">Providers and credentials</a></li><li class="lvl3"><a href="#permissions-and-auditability">Permissions and auditability</a></li><li class="lvl3"><a href="#preview-and-review">Preview and review</a></li><li class="lvl3"><a href="#skills">Skills</a></li><li class="lvl3"><a href="#desktop-quality">Desktop quality</a></li><li class="lvl2"><a href="#goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</a></li><li class="lvl2"><a href="#goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</a></li><li class="lvl3"><a href="#account-and-transport-services">Account and transport services</a></li><li class="lvl3"><a href="#hosted-client">Hosted client</a></li><li class="lvl3"><a href="#guest-sessions">Guest sessions</a></li><li class="lvl2"><a href="#goal-4-package-and-release-the-open-core">Goal 4: package and release the open core</a></li><li class="lvl2"><a href="#goal-5-public-product-and-ecosystem">Goal 5: public product and ecosystem</a></li><li class="lvl2"><a href="#post-mvp-expansion">Post-MVP expansion</a></li><li class="lvl2"><a href="#unresolved-product-decisions">Unresolved product decisions</a></li><li class="lvl2"><a href="#resolved-architecture-decisions">Resolved architecture decisions</a></li><li class="lvl2"><a href="#first-public-alpha-definition-of-done">First public alpha definition of done</a></li></ul></details>
+<div class="meta">ROADMAP.md  ·  2026-08-30 23:14</div>
+<details class="toc" open><summary>Contents</summary><ul><li class="lvl2"><a href="#status-and-priority">Status and priority</a></li><li class="lvl2"><a href="#current-baseline">Current baseline</a></li><li class="lvl2"><a href="#goal-0-secure-and-bound-the-local-core">Goal 0: secure and bound the local core</a></li><li class="lvl2"><a href="#goal-1-finish-the-local-desktop-alpha">Goal 1: finish the local desktop alpha</a></li><li class="lvl3"><a href="#sessions-and-worktrees">Sessions and worktrees</a></li><li class="lvl3"><a href="#providers-and-credentials">Providers and credentials</a></li><li class="lvl3"><a href="#permissions-and-auditability">Permissions and auditability</a></li><li class="lvl3"><a href="#preview-and-review">Preview and review</a></li><li class="lvl3"><a href="#skills">Skills</a></li><li class="lvl3"><a href="#desktop-quality">Desktop quality</a></li><li class="lvl2"><a href="#goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</a></li><li class="lvl2"><a href="#goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</a></li><li class="lvl3"><a href="#account-and-transport-services">Account and transport services</a></li><li class="lvl3"><a href="#hosted-client">Hosted client</a></li><li class="lvl3"><a href="#guest-sessions">Guest sessions</a></li><li class="lvl2"><a href="#goal-4-package-and-release-the-open-core">Goal 4: package and release the open core</a></li><li class="lvl3"><a href="#release-engineering-and-semantic-versioning">Release engineering and semantic versioning</a></li><li class="lvl3"><a href="#distribution-and-packaging">Distribution and packaging</a></li><li class="lvl2"><a href="#goal-5-public-product-and-ecosystem">Goal 5: public product and ecosystem</a></li><li class="lvl2"><a href="#post-mvp-expansion">Post-MVP expansion</a></li><li class="lvl2"><a href="#unresolved-product-decisions">Unresolved product decisions</a></li><li class="lvl2"><a href="#resolved-architecture-decisions">Resolved architecture decisions</a></li><li class="lvl2"><a href="#first-public-alpha-definition-of-done">First public alpha definition of done</a></li></ul></details>
 </aside>
 <main class="doc">
 <h1 id="domovoi-roadmap">Domovoi roadmap</h1>
@@ -432,19 +432,19 @@ td { color: var(--ink2); }
 <ul>
 <li>[x] Shared Claude-handoff workspace and custom window decoration
 </li>
-<li>[ ] Persist layout, selected surface, project, and session safely across restarts
+<li>[x] Persist layout, selected surface, project, and session safely across restarts
 </li>
-<li>[ ] Keyboard command palette for navigation and common session actions
+<li>[x] Keyboard command palette for navigation and common session actions
 </li>
-<li>[ ] Native completion, failure, and approval-needed notifications
+<li>[x] Native completion, failure, and approval-needed notifications
 </li>
-<li>[ ] OS file dialogs, deep links, clipboard behavior, and external-editor handoff
+<li>[x] OS file dialogs, deep links, clipboard behavior, and external-editor handoff
 </li>
-<li>[ ] First-run provider diagnostics and actionable recovery states
+<li>[x] First-run provider diagnostics and actionable recovery states
 </li>
-<li>[ ] Accessibility pass for keyboard, focus, screen readers, reduced motion, contrast, and zoom
+<li>[x] Accessibility pass for keyboard, focus, screen readers, reduced motion, contrast, and zoom
 </li>
-<li>[ ] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
+<li>[x] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
 </li>
 </ul>
 <h2 id="goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</h2>
@@ -557,10 +557,23 @@ td { color: var(--ink2); }
 </ul>
 <h2 id="goal-4-package-and-release-the-open-core">Goal 4: package and release the open core</h2>
 <p>Priority: <code>P2</code>. Every install channel must wrap the same immutable release.</p>
+<h3 id="release-engineering-and-semantic-versioning">Release engineering and semantic versioning</h3>
+<p>This remains future work. Complete it before any public package or application publish.</p>
 <ul>
-<li>[ ] Establish versioning, compatibility, deprecation, and release-support policy
+<li>[ ] Add Changesets and require release metadata for every publishable change before any public publish
 </li>
-<li>[ ] Publish <code>@getdomovoi/protocol</code>, daemon, and CLI packages to npm with provenance
+<li>[ ] Make <code>0.1.0-alpha.1</code> the first public alpha release
+</li>
+<li>[ ] Keep package, app, daemon, protocol, and CLI versions in lockstep through <code>0.x</code>, and treat compatibility as one release unit
+</li>
+<li>[ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and GitHub Releases from the same immutable commit
+</li>
+<li>[ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts are stable
+</li>
+</ul>
+<h3 id="distribution-and-packaging">Distribution and packaging</h3>
+<ul>
+<li>[ ] Define compatibility, deprecation, and release-support policy
 </li>
 <li>[ ] Verify npm artifacts install and run through npm, pnpm, and Bun
 </li>
@@ -569,10 +582,6 @@ td { color: var(--ink2); }
 <li>[ ] Add macOS signing/notarization and Windows code signing
 </li>
 <li>[ ] Publish SHA-256 checksums and SBOMs for release artifacts
-</li>
-<li>[ ] Add Homebrew formulae from immutable GitHub release artifacts
-</li>
-<li>[ ] Add AUR source and binary packages from immutable GitHub release artifacts
 </li>
 <li>[ ] Add a Windows package-manager manifest after installer signing is stable
 </li>
