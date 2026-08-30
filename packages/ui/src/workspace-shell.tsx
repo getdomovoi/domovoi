@@ -43,6 +43,7 @@ import type {
   SessionHistoryPage,
   SessionSummary,
   SkillSummary,
+  SkillInventorySource,
   SystemEmergencyStopResult,
   ThreadItem,
   WorkspaceSnapshot,
@@ -2413,6 +2414,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     emergencyStopOutcome,
     emergencyStopPending,
     forkSession,
+    getSkillInventory,
     createTerminal,
     listModels,
     listProviderSecrets,
@@ -2457,6 +2459,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
@@ -2526,24 +2529,49 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (surface !== "skills") return
     if (!connected) {
       setSkillsLoading(false)
+      setSkillInventories(snapshot ? [{
+        state: "unreachable",
+        machine: {
+          id: snapshot.machine.id,
+          name: snapshot.machine.name,
+          platform: snapshot.machine.platform,
+          arch: snapshot.machine.arch,
+          version: snapshot.machine.version,
+        },
+      }] : [])
       setSkillsError("Reconnect to the execution machine to refresh its skill directories.")
       return
     }
     let active = true
     setSkillsLoading(true)
     setSkillsError("")
-    void listSkills().then(
-      (discovered) => {
-        if (active) setSkills(discovered)
+    void Promise.all([listSkills(), getSkillInventory()]).then(
+      ([discovered, inventory]) => {
+        if (active) {
+          setSkills(discovered)
+          setSkillInventories([{ state: "available", inventory }])
+        }
       },
       (cause: unknown) => {
-        if (active) setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
+        if (active) {
+          setSkillInventories(snapshot ? [{
+            state: connected ? "unknown" : "unreachable",
+            machine: {
+              id: snapshot.machine.id,
+              name: snapshot.machine.name,
+              platform: snapshot.machine.platform,
+              arch: snapshot.machine.arch,
+              version: snapshot.machine.version,
+            },
+          }] : [])
+          setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
+        }
       },
     ).finally(() => {
       if (active) setSkillsLoading(false)
     })
     return () => { active = false }
-  }, [connected, listSkills, skillsRefresh, surface])
+  }, [connected, getSkillInventory, listSkills, skillsRefresh, snapshot, surface])
 
   useEffect(() => {
     const shell = shellRef.current
@@ -2581,6 +2609,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : snapshot && surface === "skills" ? (
           <SkillBrowser
             skills={skills}
+            inventorySources={skillInventories}
             loading={skillsLoading}
             error={skillsError}
             onBack={() => setSurface("workspace")}
