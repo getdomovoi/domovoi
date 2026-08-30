@@ -17,6 +17,7 @@ import {
   protocolVersion,
   rpcMethods,
   rpcRequestSchema,
+  skillInventoryEntryFromSummary,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type Annotation,
@@ -64,6 +65,7 @@ import {
 } from "./annotation-visual-context.js"
 import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 import { agentPromptWithHandoff } from "./handoff-context.js"
+import { agentPromptWithSkills, BuildAutoSkillTrustError } from "./skill-context.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -121,6 +123,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
   "runtime.models",
   "skill.list",
+  "skill.inventory",
   "skill.read",
   "session.history",
   "session.evidence",
@@ -744,6 +747,7 @@ export class DomovoiDaemon {
     const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
+      ?? (method === "skill.setEnabled" && typeof values.id === "string" ? values.id : undefined)
     const pending = this.#pendingAudits.get(socket) ?? new Map<string, AuditAppendInput>()
     const key = JSON.stringify(id)
     if (pending.has(key)) return false
@@ -754,6 +758,9 @@ export class DomovoiDaemon {
       ...(sessionId ? { sessionId } : {}),
       ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
       ...(target ? { target } : {}),
+      ...(method === "skill.setEnabled"
+        ? { detail: `enabled=${values.enabled === true} digest=${String(values.contentDigest ?? "")}` }
+        : {}),
     })
     this.#pendingAudits.set(socket, pending)
     return true
@@ -928,6 +935,7 @@ export class DomovoiDaemon {
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
         || request.method === "skill.list"
+        || request.method === "skill.inventory"
         || request.method === "skill.read"
         || request.method === "audit.query"
         || request.method === "audit.export"
@@ -1507,6 +1515,29 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "skill.inventory") {
+        rpcMethods[method].params.parse(request.params)
+        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
+          skillRoots(homedir(), this.#snapshot.project?.path),
+        )
+        const machine = this.#snapshot.machine
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            machine: {
+              id: machine.id,
+              name: machine.name,
+              platform: machine.platform,
+              arch: machine.arch,
+              version: machine.version,
+            },
+            skills: (await catalog.list()).map(skillInventoryEntryFromSummary),
+          }),
+        })
+        return
+      }
+
       if (method === "skill.read") {
         const params = rpcMethods[method].params.parse(request.params)
         const catalog = this.#skillCatalog ?? new FileSkillCatalog(
@@ -1523,6 +1554,60 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, error.message)
         }
         return
+      }
+
+      if (method === "skill.setEnabled") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const project = this.#snapshot.project
+        if (!project) {
+          this.#error(socket, request.id, invalidParams, "Open a project before reviewing skills")
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (!actor || actor.kind !== "client") {
+          this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
+          return
+        }
+        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
+          skillRoots(homedir(), project.path),
+        )
+        let current
+        try {
+          current = (await catalog.read(params.id)).skill
+        } catch (error) {
+          if (!(error instanceof SkillNotFoundError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        if (params.enabled && current.trust.state === "blocked") {
+          this.#error(socket, request.id, invalidParams, "Blocked skills cannot be enabled")
+          return
+        }
+        if (current.contentDigest !== params.contentDigest) {
+          this.#error(socket, request.id, invalidParams, "Skill content changed; review it again")
+          return
+        }
+        if (JSON.stringify(current.manifest) !== JSON.stringify(params.manifest)) {
+          this.#error(socket, request.id, invalidParams, "Skill capabilities changed; review them again")
+          return
+        }
+        const review = {
+          projectId: project.id,
+          skillId: current.id,
+          enabled: params.enabled,
+          contentDigest: current.contentDigest,
+          manifest: current.manifest,
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: {
+            client: actor.client,
+            ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          },
+        }
+        this.#snapshot.skillEnablements = this.#snapshot.skillEnablements.filter(
+          (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
+        )
+        this.#snapshot.skillEnablements.push(review)
+        changed = true
       }
 
       if (method === "session.history") {
@@ -2343,12 +2428,34 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
           return
         }
-        const permissionViolation = buildAutoViolation(
-          session.runtime,
-          this.#agents.require(session.runtime.provider),
-        )
+        const registeredAgent = this.#agents.require(session.runtime.provider)
+        const permissionViolation = buildAutoViolation(session.runtime, registeredAgent)
         if (permissionViolation) {
           this.#error(socket, request.id, invalidParams, permissionViolation)
+          return
+        }
+        const preparedTurn = await prepareAnnotationTurn(
+          this.#snapshot,
+          session.id,
+          agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
+          registeredAgent.capabilities,
+          this.#annotationVisualContext,
+        )
+        let prompt: string
+        try {
+          prompt = await agentPromptWithSkills(
+            this.#skillCatalog ?? new FileSkillCatalog(
+              skillRoots(homedir(), this.#snapshot.project?.path),
+            ),
+            this.#snapshot,
+            preparedTurn.prompt,
+            {
+              requireTrusted: session.runtime.permissionMode === "build" && session.runtime.auto,
+            },
+          )
+        } catch (error) {
+          if (!(error instanceof BuildAutoSkillTrustError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
           return
         }
         const createdAt = new Date().toISOString()
@@ -2399,14 +2506,6 @@ export class DomovoiDaemon {
           }
           this.#loadedAgentThreads.add(loadedThread)
         }
-        const preparedTurn = await prepareAnnotationTurn(
-          this.#snapshot,
-          session.id,
-          agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
-          agent.capabilities,
-          this.#annotationVisualContext,
-        )
-        const prompt = preparedTurn.prompt
         let turnId = session.activeTurnId
         try {
           signal?.throwIfAborted()

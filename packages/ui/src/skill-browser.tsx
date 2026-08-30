@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
 
-import type { SkillDocument, SkillSummary } from "@getdomovoi/protocol"
+import type { SkillDocument, SkillEnablementReview, SkillInventorySource, SkillSummary } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
@@ -27,6 +37,24 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { cn } from "./lib/utils"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
+import { compareSkillInventories, type SkillFleetCellState } from "./skill-fleet-comparison"
+
+const comparisonLabel: Record<SkillFleetCellState, string> = {
+  same: "Same",
+  different: "Different",
+  missing: "Missing",
+  blocked: "Blocked",
+  untrusted: "Untrusted",
+  unknown: "Unknown",
+  unreachable: "Unreachable",
+}
+
+function comparisonVariant(state: SkillFleetCellState): "success" | "warning" | "destructive" | "secondary" {
+  if (state === "same") return "success"
+  if (state === "blocked") return "destructive"
+  if (state === "different" || state === "missing" || state === "untrusted") return "warning"
+  return "secondary"
+}
 
 export function SkillSourceContent({
   skill,
@@ -66,19 +94,32 @@ export function SkillSourceContent({
 
 export function SkillBrowser({
   skills,
+  inventorySources = [],
   loading,
   error,
   onBack,
   onOpenAudit,
   onReadSkill,
+  projectId,
+  enablements,
+  onSetSkillEnabled,
   onRetry,
 }: {
   skills: readonly SkillSummary[]
+  inventorySources?: readonly SkillInventorySource[]
   loading: boolean
   error: string
   onBack: () => void
   onOpenAudit: () => void
   onReadSkill: (id: string) => Promise<SkillDocument>
+  projectId: string | undefined
+  enablements: readonly SkillEnablementReview[]
+  onSetSkillEnabled: (input: {
+    id: string
+    enabled: boolean
+    contentDigest: string
+    manifest: SkillSummary["manifest"]
+  }) => Promise<unknown>
   onRetry: () => void
 }) {
   const [query, setQuery] = useState("")
@@ -87,9 +128,28 @@ export function SkillBrowser({
   const [sourceContent, setSourceContent] = useState("")
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceError, setSourceError] = useState("")
+  const [reviewEnabled, setReviewEnabled] = useState<boolean>()
+  const [reviewPending, setReviewPending] = useState(false)
+  const [reviewError, setReviewError] = useState("")
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
+  const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
   const selected = skills.find((skill) => skill.id === selectedId) ?? filtered[0] ?? skills[0]
+  const selectedReview = selected && projectId
+    ? enablements.find((review) => review.projectId === projectId && review.skillId === selected.id)
+    : undefined
+  const selectedReviewIsCurrent = Boolean(
+    selectedReview
+    && selected
+    && selectedReview.contentDigest === selected.contentDigest
+    && JSON.stringify(selectedReview.manifest) === JSON.stringify(selected.manifest),
+  )
+  const selectedEnabled = selectedReviewIsCurrent && selectedReview?.enabled === true
+  const selectedComparison = selected
+    ? comparisons.find((row) => (
+        row.name === selected.name && row.scope === selected.scope && row.source === selected.source
+      ))
+    : undefined
 
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
@@ -104,6 +164,21 @@ export function SkillBrowser({
       (document) => setSourceContent(document.content),
       (cause: unknown) => setSourceError(cause instanceof Error ? cause.message : "SKILL.md could not be read"),
     ).finally(() => setSourceLoading(false))
+  }
+
+  const submitReview = () => {
+    if (!selected || reviewEnabled === undefined) return
+    setReviewPending(true)
+    setReviewError("")
+    void onSetSkillEnabled({
+      id: selected.id,
+      enabled: reviewEnabled,
+      contentDigest: selected.contentDigest,
+      manifest: selected.manifest,
+    }).then(
+      () => setReviewEnabled(undefined),
+      (cause: unknown) => setReviewError(cause instanceof Error ? cause.message : "Skill review failed"),
+    ).finally(() => setReviewPending(false))
   }
 
   return (
@@ -203,6 +278,12 @@ export function SkillBrowser({
                 <Badge variant="outline">{selected.scope} · {skillSourceLabel(selected.source)}</Badge>
               </div>
               <p className="mt-2 text-[12.5px] leading-relaxed text-muted-foreground">{selected.description}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge variant={selectedEnabled ? "default" : "secondary"}>
+                  {selectedEnabled ? "Enabled for this project" : "Not enabled for this project"}
+                </Badge>
+                {selectedReview && !selectedReviewIsCurrent ? <Badge variant="outline">Review is stale</Badge> : null}
+              </div>
               <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <Card>
                   <CardHeader><CardTitle>Source</CardTitle><CardDescription>Discovery provenance</CardDescription></CardHeader>
@@ -216,16 +297,55 @@ export function SkillBrowser({
                   <CardHeader><CardTitle>Location</CardTitle><CardDescription>SKILL.md on the execution machine</CardDescription></CardHeader>
                   <CardContent><code className="block break-all font-machine text-[10.5px]">{selected.path}</code></CardContent>
                 </Card>
+                <Card className="sm:col-span-2">
+                  <CardHeader><CardTitle>Review evidence</CardTitle><CardDescription>Exact content and declared capabilities</CardDescription></CardHeader>
+                  <CardContent className="flex flex-col gap-2 font-machine text-[10.5px]">
+                    <code className="break-all">{selected.contentDigest}</code>
+                    <div className="flex flex-wrap gap-1.5">
+                      {selected.manifest.capabilities.length > 0
+                        ? selected.manifest.capabilities.map((capability) => <Badge key={capability} variant="outline">{capability}</Badge>)
+                        : <span className="text-muted-foreground">No declared capabilities</span>}
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
+              <Card className="mt-4">
+                <CardHeader>
+                  <CardTitle>Machine comparison</CardTitle>
+                  <CardDescription>Metadata only. Domovoi never copies, installs, or syncs skills between machines.</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  {selectedComparison ? selectedComparison.machines.map((machine) => (
+                    <div key={machine.machineId} className="flex items-center justify-between gap-3">
+                      <span className="truncate font-machine text-[10.5px]">{machine.machineName}</span>
+                      <Badge variant={comparisonVariant(machine.state)}>{comparisonLabel[machine.state]}</Badge>
+                    </div>
+                  )) : (
+                    <p className="m-0 text-[11px] text-muted-foreground">Unknown until this machine inventory is fetched.</p>
+                  )}
+                  {inventorySources.length === 1 ? (
+                    <p className="m-0 text-[10.5px] text-muted-foreground">Other machines remain unknown until their daemon inventory is provided.</p>
+                  ) : null}
+                </CardContent>
+              </Card>
               <Alert className="mt-4">
                 <FileTextIcon />
-                <AlertTitle>Read-only discovery</AlertTitle>
-                <AlertDescription>Domovoi reports where this skill was found. Installation, enablement, capability review, and fleet distribution are not changed here.</AlertDescription>
+                <AlertTitle>Project review</AlertTitle>
+                <AlertDescription>Enablement does not change signature or trust state. Any content or capability change requires another review.</AlertDescription>
               </Alert>
-              <Button variant="outline" className="mt-4" onClick={() => readSource(selected)}>
-                <FileTextIcon data-icon="inline-start" />
-                View SKILL.md
-              </Button>
+              {reviewError ? <Alert variant="destructive" className="mt-4"><AlertTitle>Review failed</AlertTitle><AlertDescription>{reviewError}</AlertDescription></Alert> : null}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => readSource(selected)}>
+                  <FileTextIcon data-icon="inline-start" />
+                  View SKILL.md
+                </Button>
+                <Button
+                  disabled={!projectId || (selected.trust.state === "blocked" && !selectedEnabled)}
+                  onClick={() => setReviewEnabled(!selectedEnabled)}
+                >
+                  {selectedEnabled ? "Review & disable" : "Review & enable"}
+                </Button>
+              </div>
             </section>
           ) : null}
         </main>
@@ -248,6 +368,23 @@ export function SkillBrowser({
           <DialogFooter><Button variant="outline" onClick={() => setSourceSkill(undefined)}>Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      <AlertDialog open={reviewEnabled !== undefined} onOpenChange={(open) => { if (!open && !reviewPending) setReviewEnabled(undefined) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Review {selected?.name ?? "skill"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              Confirm this exact content digest and capability manifest for {projectId ? "the open project" : "a project"}. This does not grant trust.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {selected ? <div className="flex flex-col gap-2 font-machine text-[10.5px]"><code className="break-all">{selected.contentDigest}</code><span>{selected.manifest.capabilities.join(", ") || "No declared capabilities"}</span></div> : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reviewPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={reviewPending} onClick={submitReview}>
+              {reviewEnabled ? "Enable for project" : "Disable for project"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

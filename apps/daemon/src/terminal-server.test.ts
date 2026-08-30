@@ -652,7 +652,7 @@ describe("terminal RPC", () => {
       type: "approval-requested",
       requestId: 99,
       threadId: active[0]!.providerThreadId!,
-      command: "pnpm publish",
+      command: "pnpm dlx skills add getdomovoi/design-studio",
     })
     const afterLateEvent = await rpc("workspace.get", {})
     expect(afterLateEvent.result.approvals).toEqual([])

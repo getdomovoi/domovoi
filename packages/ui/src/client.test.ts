@@ -4,6 +4,13 @@ import { demoWorkspace, type SystemEmergencyStoppedNotification, type WorkspaceD
 
 import { DomovoiClient, DomovoiRpcTimeoutError } from "./client"
 
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
+
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
   static readonly OPEN = 1
@@ -821,12 +828,52 @@ describe("DomovoiClient", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user",
         source: "agents",
+        ...skillSecurityMetadata,
       }],
     })
 
     await expect(listing).resolves.toEqual([
       expect.objectContaining({ name: "repo-audit", source: "agents" }),
     ])
+    client.disconnect()
+  })
+
+  it("fetches only metadata for fleet skill comparison", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const request = client.getSkillInventory()
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skill.inventory",
+      params: {},
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        machine: { id: "machine-local", name: "devbox", platform: "linux", arch: "x64", version: "0.0.1" },
+        skills: [{
+          id: "skill-4d6f4d6f4d6f",
+          name: "repo-audit",
+          scope: "user",
+          source: "agents",
+          manifest: { version: 1, capabilities: [] },
+          contentDigest: `sha256:${"a".repeat(64)}`,
+          signature: { state: "unsigned" },
+          trust: { state: "untrusted", reason: "unsigned" },
+        }],
+      },
+    })
+    await expect(request).resolves.toMatchObject({ machine: { id: "machine-local" } })
+    expect(socket.sent).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/skill\.(?:install|copy|sync|distribute)/),
+    ]))
     client.disconnect()
   })
 
@@ -880,6 +927,7 @@ describe("DomovoiClient", () => {
           path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
           scope: "user",
           source: "agents",
+          ...skillSecurityMetadata,
         },
         content: "---\nname: repo-audit\n---\n",
       },
@@ -889,6 +937,35 @@ describe("DomovoiClient", () => {
       skill: { name: "repo-audit" },
       content: expect.stringContaining("name: repo-audit"),
     })
+    client.disconnect()
+  })
+
+  it("submits exact skill review evidence without client spoofing", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const update = client.setSkillEnabled({
+      id: "skill-4d6f4d6f4d6f",
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+    })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.setEnabled",
+      params: {
+        id: "skill-4d6f4d6f4d6f",
+        enabled: true,
+        contentDigest: `sha256:${"a".repeat(64)}`,
+        manifest: { version: 1, capabilities: ["filesystem.read"] },
+      },
+    })
+    expect(socket.sent.at(-1)).not.toContain("clientId")
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(update).resolves.toEqual(demoWorkspace)
     client.disconnect()
   })
 

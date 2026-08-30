@@ -153,6 +153,15 @@ describe("SqliteWorkspaceStore", () => {
       createdBy: "desktop",
       createdAt: "2026-08-26T06:00:00.000Z",
     })
+    changed.skillEnablements.push({
+      projectId: changed.project!.id,
+      skillId: "skill-111111111111",
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      reviewedAt: "2026-08-30T12:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "desktop-one" },
+    })
 
     first.save(changed)
     first.close()

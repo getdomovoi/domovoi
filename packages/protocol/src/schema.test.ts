@@ -48,6 +48,13 @@ import {
   artifactSchema,
 } from "./index.js"
 
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
+
 describe("workspace protocol", () => {
   it("keeps preview variant metadata bounded and reference-only", () => {
     expect(artifactSchema.parse({
@@ -68,6 +75,33 @@ describe("workspace protocol", () => {
           thumbnail: { path, mimeType: "image/png", revision: 1 } },
       }).success, path).toBe(false)
     }
+  })
+
+  it("defaults durable skill reviews for older snapshots", () => {
+    const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    delete legacy.skillEnablements
+
+    expect(workspaceSnapshotSchema.parse(legacy).skillEnablements).toEqual([])
+  })
+
+  it("keeps one review per project and skill", () => {
+    const review = {
+      projectId: "project-one",
+      skillId: "skill-111111111111",
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1 as const, capabilities: [] },
+      reviewedAt: "2026-08-30T12:00:00.000Z",
+      reviewedBy: { client: "desktop" as const },
+    }
+    expect(workspaceSnapshotSchema.safeParse({
+      ...demoWorkspace,
+      skillEnablements: [review, { ...review }],
+    }).success).toBe(false)
+    expect(workspaceSnapshotSchema.safeParse({
+      ...demoWorkspace,
+      skillEnablements: [review, { ...review, projectId: "project-two" }],
+    }).success).toBe(true)
   })
   it("keeps provider failures typed, safe, and actionable", () => {
     const failures = [
@@ -303,6 +337,7 @@ describe("workspace protocol", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user",
         source: "agents",
+        ...skillSecurityMetadata,
       },
       content: "---\nname: repo-audit\n---\n",
     }).content).toContain("repo-audit")
@@ -314,6 +349,7 @@ describe("workspace protocol", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user",
         source: "agents",
+        ...skillSecurityMetadata,
       },
       content: "x".repeat(128 * 1_024 + 1),
     }).success).toBe(false)
@@ -327,10 +363,12 @@ describe("workspace protocol", () => {
       path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
       scope: "user",
       source: "agents",
+      ...skillSecurityMetadata,
     })).toMatchObject({
       name: "repo-audit",
       scope: "user",
       source: "agents",
+      ...skillSecurityMetadata,
     })
     expect(skillSummarySchema.safeParse({
       id: "skill-4d6f4d6f4d6f",

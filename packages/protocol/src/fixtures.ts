@@ -15,6 +15,7 @@ export function createEmptyWorkspace(machine: Machine): WorkspaceSnapshot {
     thread: [],
     artifacts: [],
     annotations: [],
+    skillEnablements: [],
   }
 }
 
@@ -196,4 +197,5 @@ export const demoWorkspace: WorkspaceSnapshot = {
       updatedAt: "2026-08-25T21:50:00.000Z",
     },
   ],
+  skillEnablements: [],
 }
