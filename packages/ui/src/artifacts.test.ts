@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 
 describe("latestArtifactForActiveSession", () => {
   it("returns the newest matching artifact for the active session", () => {
@@ -70,5 +70,11 @@ describe("previewVariantsForActiveSession", () => {
     expect(previewControlLayoutFor(520)).toEqual({ wrap: true, fullWidth: true })
     expect(previewToolbarLayoutFor(900)).toBe("inline")
     expect(previewControlLayoutFor(900)).toEqual({ wrap: false, fullWidth: false })
+  })
+
+  it("restarts stage observation after same-preview error recovery", () => {
+    expect(previewStageObservationKey("artifact-a", "authorization failed")).not.toBe(
+      previewStageObservationKey("artifact-a", ""),
+    )
   })
 })
