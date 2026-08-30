@@ -16,7 +16,7 @@ describe("ACP provider definitions", () => {
       commands: ["grok"],
       launchArgs: ["agent", "stdio"],
       modelArgs: ["models"],
-      modes: { ask: "default", plan: "plan", build: "acceptEdits" },
+      modes: { ask: "default", plan: "plan", build: "default" },
     })
     expect(JSON.stringify([CURSOR_ACP_PROVIDER, GROK_ACP_PROVIDER])).not.toMatch(
       /always-approve|yolo|autoMode/i,
