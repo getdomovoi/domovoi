@@ -141,12 +141,12 @@ workflow without becoming a code editor.
 
 - [x] Discover and deduplicate local skills
 - [x] Show provenance, scope, exact path, metadata, and source
-- [ ] Define capability manifests, content digests, signature state, and trust state
-- [ ] Add reviewed per-project skill enablement
-- [ ] Inject only enabled skills into provider session context
-- [ ] Gate terminal-based skill installs through the normal permission system
-- [ ] Define safe behavior for unsigned skills in Build auto
-- [ ] Compare skill availability across machines without silently distributing executables
+- [x] Define capability manifests, content digests, signature state, and trust state
+- [x] Add reviewed per-project skill enablement
+- [x] Inject only enabled skills into provider session context
+- [x] Gate terminal-based skill installs through the normal permission system
+- [x] Define safe behavior for unsigned skills in Build auto
+- [x] Compare skill availability across machines without silently distributing executables
 
 ### Desktop quality
 
