@@ -9,6 +9,7 @@ import {
   terminalOwnershipNotificationSchema,
   terminalOutputNotificationSchema,
   terminalSessionSchema,
+  systemEmergencyStoppedNotificationSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type ClientKind,
@@ -28,6 +29,7 @@ import {
   type SessionHistoryPage,
   type SkillDocument,
   type SkillSummary,
+  type SystemEmergencyStopResult,
   type TerminalSession,
   type TerminalOwnershipNotification,
   type WorkspaceSnapshot,
@@ -328,6 +330,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("system.pauseAll", { client: this.kind })
   }
 
+  emergencyStop(): Promise<SystemEmergencyStopResult> {
+    return this.request("system.emergencyStop", { client: this.kind })
+  }
+
   pauseSession(sessionId: string): Promise<WorkspaceSnapshot> {
     return this.request("session.pause", { sessionId, client: this.kind })
   }
@@ -510,6 +516,15 @@ export class DomovoiClient extends EventTarget {
         const delta = workspaceDeltaSchema.safeParse(notification.data.params)
         if (delta.success) {
           this.dispatchEvent(new CustomEvent("workspace-delta", { detail: delta.data }))
+        }
+        return
+      }
+      if (notification.data.method === "system.emergencyStopped") {
+        const stopped = systemEmergencyStoppedNotificationSchema.safeParse(
+          notification.data.params,
+        )
+        if (stopped.success) {
+          this.dispatchEvent(new CustomEvent("emergency-stopped", { detail: stopped.data }))
         }
         return
       }

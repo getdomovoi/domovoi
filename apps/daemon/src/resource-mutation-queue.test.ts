@@ -9,6 +9,44 @@ function deferred() {
 }
 
 describe("ResourceMutationQueue", () => {
+  it("aborts running work, rejects queued work, and admits a fresh generation", async () => {
+    const queue = new ResourceMutationQueue()
+    const running = deferred()
+    const started = deferred()
+    const cancelled = vi.fn()
+    const queued = vi.fn(async () => {})
+
+    const active = queue.enqueue("session-a", async () => {
+      started.resolve()
+      await running.promise
+    })
+    await started.promise
+    const waiting = queue.enqueue("session-a", queued, { onCancelled: cancelled })
+
+    expect(queue.cancelAll(new Error("Emergency stop requested"))).toEqual({
+      active: 1,
+      queued: 1,
+    })
+    expect(queued).not.toHaveBeenCalled()
+    await expect(Promise.race([
+      waiting.then(() => "cancelled" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 50)),
+    ])).resolves.toBe("cancelled")
+    expect(cancelled).toHaveBeenCalledOnce()
+    expect(queue.cancelAll(new Error("Repeated emergency stop"))).toEqual({
+      active: 1,
+      queued: 0,
+    })
+
+    const fresh = vi.fn(async () => {})
+    await queue.enqueue("session-a", fresh)
+    expect(fresh).toHaveBeenCalledOnce()
+
+    running.resolve()
+    await Promise.all([active, waiting])
+    expect(cancelled).toHaveBeenCalledOnce()
+  })
+
   it("keeps mutations ordered within one resource", async () => {
     const queue = new ResourceMutationQueue()
     const first = deferred()
@@ -27,6 +65,21 @@ describe("ResourceMutationQueue", () => {
     first.resolve()
     await Promise.all([firstTask, secondTask])
     expect(order).toEqual(["first:start", "first:end", "second"])
+  })
+
+  it("continues cancelling when one cancellation callback fails", async () => {
+    const errors: unknown[] = []
+    const queue = new ResourceMutationQueue((error) => errors.push(error))
+    const first = queue.enqueue("first", async () => {}, {
+      onCancelled: () => { throw new Error("closed client") },
+    })
+    const secondCancelled = vi.fn()
+    const second = queue.enqueue("second", async () => {}, { onCancelled: secondCancelled })
+
+    expect(() => queue.cancelAll(new Error("Emergency stop requested"))).not.toThrow()
+    await Promise.all([first, second])
+    expect(secondCancelled).toHaveBeenCalledOnce()
+    expect(errors).toEqual([expect.objectContaining({ message: "closed client" })])
   })
 
   it("runs unrelated resources concurrently", async () => {

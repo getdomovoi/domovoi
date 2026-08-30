@@ -607,6 +607,8 @@ describe("DomovoiDaemon", () => {
       }
       socket.on("message", receive)
     })
+    const addedAbortListeners = vi.spyOn(AbortSignal.prototype, "addEventListener")
+    const removedAbortListeners = vi.spyOn(AbortSignal.prototype, "removeEventListener")
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
@@ -619,6 +621,19 @@ describe("DomovoiDaemon", () => {
       error: { code: -32603, message: "Session evidence timed out" },
     })
     expect(observedSignal?.aborted).toBe(true)
+    const parentAbortListener = addedAbortListeners.mock.calls.find(
+      ([type, _listener, options]) => type === "abort"
+        && typeof options === "object"
+        && options?.once === true,
+    )?.[1]
+    const parentAbortListenerRemoved = parentAbortListener !== undefined
+      && removedAbortListeners.mock.calls.some(
+        ([type, listener]) => type === "abort" && listener === parentAbortListener,
+      )
+    addedAbortListeners.mockRestore()
+    removedAbortListeners.mockRestore()
+    expect(parentAbortListener).toBeDefined()
+    expect(parentAbortListenerRemoved).toBe(true)
     releaseEvidence!({
       baseCommit: "a".repeat(40),
       diff: "late",
