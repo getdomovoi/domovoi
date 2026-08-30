@@ -918,6 +918,37 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("attributes the emergency stop to the current client", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "phone")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const result = {
+      snapshot: demoWorkspace,
+      stopId: "stop-1",
+      requestedAt: "2026-08-29T12:00:00.000Z",
+      client: "phone",
+      outcomes: {
+        turnsStopped: 1,
+        terminalsClosed: 2,
+        approvalsDenied: 3,
+        queuedTurnsCancelled: 4,
+      },
+      failures: [],
+    } as const
+    const stopping = client.emergencyStop()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "system.emergencyStop",
+      params: { client: "phone" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result })
+    await expect(stopping).resolves.toEqual(result)
+    client.disconnect()
+  })
+
   it("attributes session archive to the shared client kind", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
     const initial = client.connect()
