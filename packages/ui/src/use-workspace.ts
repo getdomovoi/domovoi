@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { applyWorkspaceDelta } from "./workspace-delta"
@@ -41,15 +41,38 @@ export function applyConnectionSnapshot<T>(
     : state
 }
 
+export function applyEmergencyStopResult<T>(
+  currentClient: T | null,
+  candidateClient: T,
+  state: WorkspaceSnapshotState,
+  target: string,
+  result: SystemEmergencyStopResult,
+): WorkspaceSnapshotState {
+  return applyConnectionSnapshot(currentClient, candidateClient, state, target, result.snapshot)
+}
+
+export function claimEmergencyStop<T>(
+  pending: { current: T | null },
+  client: T,
+): boolean {
+  if (pending.current) return false
+  pending.current = client
+  return true
+}
+
 export function useWorkspace(url: string, kind: ClientKind, authToken?: string) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
+  const emergencyStopClientRef = useRef<DomovoiClient | null>(null)
   const clientIdRef = useRef(crypto.randomUUID())
   const [workspace, setWorkspace] = useState<WorkspaceSnapshotState>(() => ({
     target,
     snapshot: null,
   }))
   const [connected, setConnected] = useState(false)
+  const [emergencyStopPending, setEmergencyStopPending] = useState(false)
+  const [emergencyStopOutcome, setEmergencyStopOutcome] = useState<SystemEmergencyStopResult | null>(null)
+  const [emergencyStopError, setEmergencyStopError] = useState<string | null>(null)
   const snapshot = visibleWorkspaceSnapshot(workspace, target)
   const updateSnapshotFrom = useCallback((client: DomovoiClient, next: WorkspaceSnapshot) => {
     setWorkspace((current) => applyConnectionSnapshot(
@@ -71,6 +94,10 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
 
   useEffect(() => {
     let active = true
+    emergencyStopClientRef.current = null
+    setEmergencyStopPending(false)
+    setEmergencyStopOutcome(null)
+    setEmergencyStopError(null)
     setConnected(false)
     setWorkspace({ target, snapshot: null })
     const client = new DomovoiClient(url, kind, {
@@ -84,6 +111,19 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const onDelta = (event: Event) => {
       if (active) updateDeltaFrom(client, (event as CustomEvent<WorkspaceDelta>).detail)
     }
+    const onEmergencyStopped = (event: Event) => {
+      if (!active) return
+      const result = (event as CustomEvent<SystemEmergencyStopResult>).detail
+      setWorkspace((current) => applyEmergencyStopResult(
+        clientRef.current,
+        client,
+        current,
+        target,
+        result,
+      ))
+      setEmergencyStopOutcome(result)
+      setEmergencyStopError(null)
+    }
     const onDisconnected = () => {
       if (active) setConnected(false)
     }
@@ -92,6 +132,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     }
     client.addEventListener("snapshot", onSnapshot)
     client.addEventListener("workspace-delta", onDelta)
+    client.addEventListener("emergency-stopped", onEmergencyStopped)
     client.addEventListener("connected", onConnected)
     client.addEventListener("disconnected", onDisconnected)
     client.connect().then(
@@ -109,6 +150,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       active = false
       client.removeEventListener("snapshot", onSnapshot)
       client.removeEventListener("workspace-delta", onDelta)
+      client.removeEventListener("emergency-stopped", onEmergencyStopped)
       client.removeEventListener("connected", onConnected)
       client.removeEventListener("disconnected", onDisconnected)
       client.disconnect()
@@ -187,6 +229,42 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     if (!client) throw new Error("Daemon connection is not open")
     updateSnapshotFrom(client, await client.pauseAll())
   }, [updateSnapshotFrom])
+
+  const emergencyStop = useCallback(async (): Promise<void> => {
+    const client = clientRef.current
+    if (!client) {
+      setEmergencyStopError("Daemon connection is not open")
+      return
+    }
+    if (!claimEmergencyStop(emergencyStopClientRef, client)) return
+
+    setEmergencyStopPending(true)
+    setEmergencyStopOutcome(null)
+    setEmergencyStopError(null)
+    try {
+      const result = await client.emergencyStop()
+      if (!isCurrentConnection(clientRef.current, client)) return
+      setWorkspace((current) => applyEmergencyStopResult(
+        clientRef.current,
+        client,
+        current,
+        target,
+        result,
+      ))
+      setEmergencyStopOutcome(result)
+    } catch (cause) {
+      if (isCurrentConnection(clientRef.current, client)) {
+        setEmergencyStopError(
+          cause instanceof Error ? cause.message : "Active work could not be stopped",
+        )
+      }
+    } finally {
+      if (emergencyStopClientRef.current === client) {
+        emergencyStopClientRef.current = null
+        if (isCurrentConnection(clientRef.current, client)) setEmergencyStopPending(false)
+      }
+    }
+  }, [target])
 
   const pauseSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
@@ -380,6 +458,10 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     createAnnotation,
     createTerminal,
     createSession,
+    emergencyStop,
+    emergencyStopError,
+    emergencyStopOutcome,
+    emergencyStopPending,
     exportAudit,
     forkSession,
     listSkills,
