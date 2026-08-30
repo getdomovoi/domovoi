@@ -46,6 +46,7 @@ describe("skill browser", () => {
         loading={false}
         error=""
         onBack={vi.fn()}
+        onOpenAudit={vi.fn()}
         onReadSkill={vi.fn()}
         onRetry={vi.fn()}
       />,

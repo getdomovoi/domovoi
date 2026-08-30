@@ -816,6 +816,42 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("queries and exports typed audit records with bounded request controls", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const query = client.queryAudit({ query: "session", limit: 25 })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "audit.query",
+      params: { query: "session", limit: 25 },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: { entries: [], hasMore: false } })
+    await expect(query).resolves.toEqual({ entries: [], hasMore: false })
+
+    const exported = client.exportAudit({ format: "jsonl", limit: 100 })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "audit.export",
+      params: { format: "jsonl", limit: 100 },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        format: "jsonl",
+        exportedAt: "2026-08-29T18:30:00.000Z",
+        entryCount: 0,
+        content: "",
+        hasMore: false,
+      },
+    })
+    await expect(exported).resolves.toMatchObject({ format: "jsonl", entryCount: 0 })
+    client.disconnect()
+  })
+
   it("preserves the parser failure for an invalid RPC result", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()

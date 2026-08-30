@@ -15,6 +15,10 @@ import {
   type ApprovalDecision,
   type Annotation,
   type ArtifactAccess,
+  type AuditExportParams,
+  type AuditExportResult,
+  type AuditQueryPage,
+  type AuditQueryParams,
   type ProviderModel,
   type RpcMethod,
   type RpcParams,
@@ -445,6 +449,20 @@ export class DomovoiClient extends EventTarget {
 
   readSkill(id: string): Promise<SkillDocument> {
     return this.request("skill.read", { id })
+  }
+
+  queryAudit(
+    params: AuditQueryParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<AuditQueryPage> {
+    return this.request("audit.query", params, options)
+  }
+
+  exportAudit(
+    params: AuditExportParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<AuditExportResult> {
+    return this.request("audit.export", params, options)
   }
 
   #scheduleReconnect(): void {
