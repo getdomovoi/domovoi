@@ -358,6 +358,31 @@ describe("checkpointBlockedReason", () => {
 })
 
 describe("Thread", () => {
+  it("keeps the signed Open in editor action in the session header", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.workspacePath = "/worktrees/session-billing"
+    const markup = renderToStaticMarkup(
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn(async () => {})}
+        onSetRuntime={vi.fn(async () => {})}
+        onForkSession={vi.fn(async () => {})}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn(async () => {})}
+        onRestoreCheckpoint={vi.fn(async () => {})}
+        onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
+        onOpenExternal={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain(">Open in editor</button>")
+  })
+
   it("offers a signed archive confirmation describing retained history and cleanup", () => {
     const markup = renderToStaticMarkup(
       <ArchiveSessionAction disabled={false} onArchive={vi.fn()} />,

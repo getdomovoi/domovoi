@@ -11,6 +11,7 @@ import {
   FolderOpenIcon,
   HistoryIcon,
   DownloadIcon,
+  ExternalLinkIcon,
   LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
@@ -165,27 +166,18 @@ import {
   WorkspaceNotificationTracker,
   type DesktopNotificationRequest,
 } from "./desktop-notifications"
+import {
+  copyDesktopText,
+  enqueueDesktopDeepLink,
+  openDesktopPath,
+  openProjectFromDesktop,
+  type DesktopWindowBridge,
+} from "./desktop-platform"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
   return { default: module.TerminalPane }
 })
-
-export type DesktopWindowBridge = {
-  platform: "darwin" | "linux" | "win32"
-  getRpcToken(): Promise<string>
-  captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{
-    mimeType: "image/png"
-    width: number
-    height: number
-    data: string
-  }>
-  notify(request: DesktopNotificationRequest): Promise<boolean>
-  onNotificationActivate(listener: (sessionId: string) => void): () => void
-  minimize(): void
-  maximize(): void
-  close(): void
-}
 
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
@@ -1002,6 +994,7 @@ export function Thread({
   onRestoreCheckpoint,
   onPauseSession,
   onArchiveSession,
+  onOpenExternal,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -1019,6 +1012,7 @@ export function Thread({
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
+  onOpenExternal?: ((path: string) => Promise<void>) | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -1029,6 +1023,7 @@ export function Thread({
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
+  const [desktopError, setDesktopError] = useState("")
 
   if (!active) {
     const hasProject = snapshot.project !== null
@@ -1129,6 +1124,16 @@ export function Thread({
     }
   }
 
+  const openExternal = async () => {
+    if (!active.workspacePath || !onOpenExternal) return
+    setDesktopError("")
+    try {
+      await onOpenExternal(active.workspacePath)
+    } catch (cause) {
+      setDesktopError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
+    }
+  }
+
   const updateRuntime = async (runtime: Runtime) => {
     if (runtimePending) return
     setRuntimePending(true)
@@ -1187,16 +1192,26 @@ export function Thread({
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
           </div>
         </div>
-        {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : <RuntimeControls
-          runtime={active.runtime}
-          providers={snapshot.machine.providers}
-          pending={runtimePending}
-          {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
-          {...(forkReason ? { forkBlockedReason: forkReason } : {})}
-          onChange={(runtime) => void updateRuntime(runtime)}
-          onFork={forkRuntime}
-          onListModels={onListModels}
-        />}
+        {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : (
+          <div className="flex max-w-[58%] flex-wrap items-center justify-end gap-1.5">
+            <RuntimeControls
+              runtime={active.runtime}
+              providers={snapshot.machine.providers}
+              pending={runtimePending}
+              {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
+              {...(forkReason ? { forkBlockedReason: forkReason } : {})}
+              onChange={(runtime) => void updateRuntime(runtime)}
+              onFork={forkRuntime}
+              onListModels={onListModels}
+            />
+            {active.workspacePath && onOpenExternal ? (
+              <Button variant="outline" size="sm" onClick={() => void openExternal()}>
+                <ExternalLinkIcon data-icon="inline-start" />
+                Open in editor
+              </Button>
+            ) : null}
+          </div>
+        )}
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
@@ -1241,6 +1256,7 @@ export function Thread({
           </Alert>
         </div>
       ) : <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
+        {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         <div className="mx-auto flex max-w-[620px] flex-col gap-2 rounded-xl border bg-card p-3">
@@ -1430,7 +1446,7 @@ export function RuntimeControls({
     if (permissionMode) onChange({ ...runtime, permissionMode: permissionMode as PermissionMode })
   }
   return (
-    <div className="flex max-w-[52%] flex-wrap items-center justify-end gap-1.5">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" disabled={pending}><BotIcon data-icon="inline-start" />{runtime.provider} / {runtime.model}<ChevronDownIcon data-icon="inline-end" /></Button>
@@ -2489,7 +2505,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const shellRef = useRef<HTMLDivElement>(null)
   const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
+  const deepLinkRoutingRef = useRef(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [workspaceUi, setWorkspaceUi] = useState(() =>
     loadWorkspaceUiState(browserWorkspaceUiStorage()),
@@ -2515,6 +2533,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const activeWorkspacePath = snapshot?.sessions.find(
+    (session) => session.id === snapshot.activeSessionId,
+  )?.workspacePath
   const skillMachineKey = skillInventoryRefreshKey(snapshot)
   const skillMachine = useMemo(() => {
     if (skillMachineKey === "no-machine") return null
@@ -2542,6 +2563,30 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const pauseActiveTurns = () => {
     void emergencyStop()
   }
+  const requestOpenProject = () => {
+    if (!windowBridge) {
+      setLauncherMode("project")
+      return
+    }
+    setWorkspaceError("")
+    void openProjectFromDesktop(windowBridge, openProject).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
+    })
+  }
+  const openActiveWorkspaceInEditor = () => {
+    if (!windowBridge || !activeWorkspacePath) return
+    setWorkspaceError("")
+    void openDesktopPath(windowBridge, activeWorkspacePath).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
+    })
+  }
+  const copyActiveWorkspacePath = () => {
+    if (!windowBridge || !activeWorkspacePath) return
+    setWorkspaceError("")
+    void copyDesktopText(windowBridge, activeWorkspacePath).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Clipboard text could not be copied")
+    })
+  }
   const openCommandPalette = () => {
     commandPaletteFocusRef.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -2549,10 +2594,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setCommandPaletteOpen(true)
   }
   const workspaceCommands = buildWorkspaceCommands({
+    ...(windowBridge && activeWorkspacePath ? {
+      activeWorkspacePath,
+      copyWorktreePath: copyActiveWorkspacePath,
+      openInEditor: openActiveWorkspaceInEditor,
+    } : {}),
     connected,
     emergencyStopPending,
     hasProject: Boolean(snapshot?.project),
-    openProject: () => setLauncherMode("project"),
+    openProject: requestOpenProject,
     newSession: () => setLauncherMode(snapshot?.project ? "session" : "project"),
     pauseAll: pauseActiveTurns,
     reconnect: reconnectDaemon,
@@ -2574,6 +2624,34 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       })
     })
   }, [activateSession, windowBridge])
+
+  useEffect(() => {
+    if (!windowBridge) return
+    return windowBridge.onDeepLink((sessionId) => {
+      setPendingDeepLinks((current) => enqueueDesktopDeepLink(current, sessionId))
+    })
+  }, [windowBridge])
+
+  useEffect(() => {
+    const sessionId = pendingDeepLinks[0]
+    if (!sessionId || !connected || !snapshot || deepLinkRoutingRef.current) return
+    const removeLink = () => setPendingDeepLinks((current) =>
+      current[0] === sessionId ? current.slice(1) : current.filter((candidate) => candidate !== sessionId)
+    )
+    if (!snapshot.sessions.some((session) => session.id === sessionId)) {
+      setWorkspaceError("The linked session is not available on this machine")
+      removeLink()
+      return
+    }
+    deepLinkRoutingRef.current = true
+    setWorkspaceError("")
+    void activateSession(sessionId).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "The linked session could not be opened")
+    }).finally(() => {
+      deepLinkRoutingRef.current = false
+      removeLink()
+    })
+  }, [activateSession, connected, pendingDeepLinks, snapshot])
 
   useEffect(() => {
     if (!snapshot) return
@@ -2690,7 +2768,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         {!connected ? (
           <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
             <span className="size-2 shrink-0 rounded-full bg-destructive" />
@@ -2746,8 +2824,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}

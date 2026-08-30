@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import {
+  ClipboardIcon,
   CircleStopIcon,
+  ExternalLinkIcon,
   FolderOpenIcon,
   HistoryIcon,
   MessageSquarePlusIcon,
@@ -77,20 +79,26 @@ export function rankWorkspaceCommands(
 }
 
 export function buildWorkspaceCommands({
+  activeWorkspacePath,
+  copyWorktreePath,
   connected,
   emergencyStopPending,
   hasProject,
   openProject,
   newSession,
+  openInEditor,
   pauseAll,
   reconnect,
   setSurface,
 }: {
+  activeWorkspacePath?: string | undefined
+  copyWorktreePath?: (() => void) | undefined
   connected: boolean
   emergencyStopPending: boolean
   hasProject: boolean
   openProject: () => void
   newSession: () => void
+  openInEditor?: (() => void) | undefined
   pauseAll: () => void
   reconnect: () => void
   setSurface: (surface: WorkspaceSurface) => void
@@ -98,6 +106,10 @@ export function buildWorkspaceCommands({
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
     { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, disabled: !connected || !hasProject, restoreFocus: false, run: newSession },
+    ...(activeWorkspacePath && openInEditor && copyWorktreePath ? [
+      { id: "open-in-editor", label: "Open in editor", section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, run: openInEditor },
+      { id: "copy-worktree-path", label: "Copy worktree path", section: "Session" as const, keywords: ["clipboard", "folder"], icon: ClipboardIcon, run: copyWorktreePath },
+    ] : []),
     { id: "pause-all", label: "Pause all", section: "Session", keywords: ["stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
     { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
     { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
