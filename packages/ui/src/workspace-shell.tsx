@@ -225,6 +225,13 @@ const statusClass: Record<SessionSummary["state"], string> = {
 
 export const providerSettingsNavigationLabel = "Provider settings"
 
+export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): string {
+  const machine = snapshot?.machine
+  return machine
+    ? JSON.stringify([machine.id, machine.name, machine.platform, machine.arch, machine.version])
+    : "no-machine"
+}
+
 const defaultRuntime: Runtime = {
   provider: "codex",
   model: "default",
@@ -2463,6 +2470,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const skillMachineKey = skillInventoryRefreshKey(snapshot)
+  const skillMachine = useMemo(() => {
+    if (skillMachineKey === "no-machine") return null
+    const [id, name, platform, arch, version] = JSON.parse(skillMachineKey) as [
+      string,
+      string,
+      WorkspaceSnapshot["machine"]["platform"],
+      string,
+      string,
+    ]
+    return { id, name, platform, arch, version }
+  }, [skillMachineKey])
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
@@ -2529,15 +2548,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (surface !== "skills") return
     if (!connected) {
       setSkillsLoading(false)
-      setSkillInventories(snapshot ? [{
+      setSkillInventories(skillMachine ? [{
         state: "unreachable",
-        machine: {
-          id: snapshot.machine.id,
-          name: snapshot.machine.name,
-          platform: snapshot.machine.platform,
-          arch: snapshot.machine.arch,
-          version: snapshot.machine.version,
-        },
+        machine: skillMachine,
       }] : [])
       setSkillsError("Reconnect to the execution machine to refresh its skill directories.")
       return
@@ -2554,15 +2567,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       },
       (cause: unknown) => {
         if (active) {
-          setSkillInventories(snapshot ? [{
+          setSkillInventories(skillMachine ? [{
             state: connected ? "unknown" : "unreachable",
-            machine: {
-              id: snapshot.machine.id,
-              name: snapshot.machine.name,
-              platform: snapshot.machine.platform,
-              arch: snapshot.machine.arch,
-              version: snapshot.machine.version,
-            },
+            machine: skillMachine,
           }] : [])
           setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
         }
@@ -2571,7 +2578,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       if (active) setSkillsLoading(false)
     })
     return () => { active = false }
-  }, [connected, getSkillInventory, listSkills, skillsRefresh, snapshot, surface])
+  }, [connected, getSkillInventory, listSkills, skillMachine, skillsRefresh, surface])
 
   useEffect(() => {
     const shell = shellRef.current
