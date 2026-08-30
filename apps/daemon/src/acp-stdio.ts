@@ -26,6 +26,7 @@ import type {
 import type { AcpProviderDefinition } from "./acp-providers.js"
 
 type ProcessSpawner = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams
+const ACP_CLOSE_GRACE_MS = 1_000
 
 export class StdioAcpPeer implements AcpPeer {
   readonly #definition: AcpProviderDefinition
@@ -52,6 +53,10 @@ export class StdioAcpPeer implements AcpPeer {
     this.#process = process
     process.stderr.resume()
     process.once("exit", () => {
+      if (this.#process !== process) return
+      this.#process = undefined
+      this.#connection = undefined
+      this.#capabilities = undefined
       if (!this.#closing) this.#handlers.onDisconnect()
     })
     try {
@@ -133,9 +138,27 @@ export class StdioAcpPeer implements AcpPeer {
 
   async close(): Promise<void> {
     this.#closing = true
-    this.#process?.kill()
+    const process = this.#process
     this.#process = undefined
     this.#connection = undefined
+    this.#capabilities = undefined
+    if (!process) return
+    const exit = exitDeadline(process, ACP_CLOSE_GRACE_MS)
+    try {
+      if (!process.kill()) {
+        exit.cancel()
+        return
+      }
+    } catch {
+      exit.cancel()
+      return
+    }
+    if (await exit.promise) return
+    try {
+      process.kill("SIGKILL")
+    } catch {
+      // Process already exited after the graceful-close deadline.
+    }
   }
 
   async #spawnFirstAvailable(): Promise<ChildProcessWithoutNullStreams> {
@@ -267,4 +290,26 @@ function spawned(process: ChildProcessWithoutNullStreams): Promise<ChildProcessW
 
 function isMissingCommand(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT"
+}
+
+function exitDeadline(process: ChildProcessWithoutNullStreams, timeoutMs: number): {
+  promise: Promise<boolean>
+  cancel(): void
+} {
+  let cancel = () => {}
+  const promise = new Promise<boolean>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    const onExit = () => finish(true)
+    function finish(exited: boolean): void {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      process.off("exit", onExit)
+      resolve(exited)
+    }
+    cancel = () => finish(false)
+    process.once("exit", onExit)
+  })
+  return { promise, cancel }
 }

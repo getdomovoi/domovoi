@@ -34,6 +34,24 @@ function fakeAcpProcess(response: (id: number) => object) {
   return child
 }
 
+async function initializePeer(child: ReturnType<typeof fakeAcpProcess>) {
+  const onDisconnect = vi.fn()
+  const peer = new StdioAcpPeer({
+    definition: CURSOR_ACP_PROVIDER,
+    handlers: {
+      onUpdate: vi.fn(),
+      onPermission: vi.fn(),
+      onDisconnect,
+    },
+    spawnProcess: () => {
+      queueMicrotask(() => child.emit("spawn"))
+      return child as unknown as ChildProcessWithoutNullStreams
+    },
+  })
+  await peer.initialize()
+  return { onDisconnect, peer }
+}
+
 describe("ACP stdio mapping", () => {
   it("consumes each parsed fake-process request line", () => {
     const response = vi.fn((id: number) => ({ jsonrpc: "2.0", id, result: {} }))
@@ -67,6 +85,51 @@ describe("ACP stdio mapping", () => {
     await peer.initialize()
     expect(child.stderr.readableFlowing).toBe(true)
     await peer.close()
+  })
+
+  it("waits for the ACP child to exit gracefully", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const { onDisconnect, peer } = await initializePeer(child)
+    child.kill.mockImplementation(() => true)
+    let closed = false
+
+    const closing = peer.close().then(() => { closed = true })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(closed).toBe(false)
+    child.emit("exit", 0, null)
+    await closing
+
+    expect(child.kill).toHaveBeenCalledOnce()
+    expect(onDisconnect).not.toHaveBeenCalled()
+  })
+
+  it("force-kills an ACP child after the graceful-close deadline", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = fakeAcpProcess((id) => ({
+        jsonrpc: "2.0",
+        id,
+        result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+      }))
+      const { onDisconnect, peer } = await initializePeer(child)
+      child.kill.mockImplementation((signal?: NodeJS.Signals | number) => {
+        if (signal === "SIGKILL") child.emit("exit", 137, "SIGKILL")
+        return true
+      })
+
+      const closing = peer.close()
+      await vi.advanceTimersByTimeAsync(5_000)
+      await closing
+
+      expect(child.kill.mock.calls).toEqual([[], ["SIGKILL"]])
+      expect(onDisconnect).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([
