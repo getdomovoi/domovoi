@@ -120,7 +120,7 @@ import {
   previewSelectionFor,
 } from "./preview-bridge"
 import { latestArtifactForActiveSession, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
-import { previewThumbnailObjectUrl, previewThumbnailRect, reservePreviewThumbnail } from "./preview-thumbnails"
+import { previewThumbnailObjectUrl, previewThumbnailRect, releasePreviewThumbnail, reservePreviewThumbnail } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
@@ -1762,7 +1762,10 @@ export function ArtifactDock({
     if (!rect || !reservePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)) return
     try {
       const url = previewThumbnailObjectUrl(await captureAnnotation(rect))
-      if (!url) return
+      if (!url) {
+        releasePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)
+        return
+      }
       allocatedPreviewThumbnailUrls.current.add(url)
       setPreviewThumbnailUrls((current) => {
         const next = new Map(current)
@@ -1774,10 +1777,12 @@ export function ArtifactDock({
             URL.revokeObjectURL(oldestUrl)
             allocatedPreviewThumbnailUrls.current.delete(oldestUrl)
           }
+          if (oldestKey) reservedPreviewThumbnails.current.delete(oldestKey)
         }
         return next.set(`${preview.id}:${preview.revision}`, url)
       })
     } catch {
+      releasePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)
       // Web and denied desktop captures keep the truthful static placeholder.
     }
   }
