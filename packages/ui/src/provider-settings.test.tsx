@@ -2,9 +2,23 @@ import type { ProviderRuntime } from "@getdomovoi/protocol"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
-import { ProviderSettings, providerAccountAction } from "./provider-settings.js"
+import { ProviderSettings, providerAccountAction, providerAccountCommand } from "./provider-settings.js"
 
 const providers: ProviderRuntime[] = [
+  {
+    id: "claude-code",
+    command: "claude",
+    status: "ready",
+    version: "2.1.247",
+    sessionCapable: true,
+  },
+  {
+    id: "codex",
+    command: "codex",
+    status: "ready",
+    version: "0.149.0",
+    sessionCapable: true,
+  },
   {
     id: "cursor-agent",
     command: "agent",
@@ -17,6 +31,19 @@ const providers: ProviderRuntime[] = [
     command: "grok",
     status: "auth-required",
     version: "0.18.0",
+    sessionCapable: true,
+  },
+  {
+    id: "opencode",
+    command: "opencode",
+    status: "ready",
+    version: "1.18.23",
+    sessionCapable: true,
+  },
+  {
+    id: "kilo",
+    command: "kilo",
+    status: "missing",
     sessionCapable: true,
   },
 ]
@@ -43,6 +70,13 @@ describe("ProviderSettings", () => {
     expect(markup).toContain("Subscription CLIs own their credentials")
     expect(markup).toContain("Cursor Agent")
     expect(markup).toContain("Re-authenticate")
+    expect(markup).toContain("claude auth login")
+    expect(markup).toContain("codex login")
+    expect(markup).toContain("agent login")
+    expect(markup).toContain("grok login")
+    expect(markup).toContain("opencode auth login")
+    expect(markup).toContain("kilo auth login")
+    expect(markup.match(/data-provider-account-action=""[^>]*disabled=""/g)).toHaveLength(6)
     expect(markup).toContain("OS keychain")
     expect(markup).toContain("OpenRouter")
     expect(markup).toContain("Keychain unavailable")
@@ -51,8 +85,16 @@ describe("ProviderSettings", () => {
 
   it("returns clear account actions for each readiness state", () => {
     expect(providerAccountAction(providers[0]!)).toBe("Manage")
-    expect(providerAccountAction(providers[1]!)).toBe("Re-authenticate")
+    expect(providerAccountAction(providers.find((provider) => provider.id === "grok")!)).toBe("Re-authenticate")
     expect(providerAccountAction({ ...providers[0]!, status: "missing" })).toBe("Install")
     expect(providerAccountAction({ ...providers[0]!, status: "unknown" })).toBe("Check status")
+    expect(providers.map(providerAccountCommand)).toEqual([
+      "claude auth login",
+      "codex login",
+      "agent login",
+      "grok login",
+      "opencode auth login",
+      "kilo auth login",
+    ])
   })
 })
