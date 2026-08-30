@@ -77,6 +77,8 @@ export const maximumSessionEvidenceFiles = 200
 export const maximumSessionEvidenceRuns = 50
 export const maximumSessionEvidenceCommandLength = 4_096
 export const maximumSessionEvidenceOutputLength = 4_096
+export const maximumEmergencyStopFailures = 100
+export const maximumEmergencyStopFailureMessageLength = 512
 
 const streamedIdSchema = z.string().min(1).max(512)
 const historyEntryIdSchema = z.string().min(1).max(1_024)
@@ -630,6 +632,34 @@ export const systemPauseAllParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const systemEmergencyStopParamsSchema = z.object({
+  client: clientKindSchema,
+}).strict()
+
+const emergencyStopCountSchema = z.number().int().nonnegative().safe()
+
+export const emergencyStopOutcomesSchema = z.object({
+  turnsStopped: emergencyStopCountSchema,
+  terminalsClosed: emergencyStopCountSchema,
+  approvalsDenied: emergencyStopCountSchema,
+  queuedTurnsCancelled: emergencyStopCountSchema,
+}).strict()
+
+export const emergencyStopFailureSchema = z.object({
+  target: z.enum(["turn", "terminal", "approval", "queued-turn"]),
+  targetId: z.string().trim().min(1).max(512).optional(),
+  message: z.string().trim().min(1).max(maximumEmergencyStopFailureMessageLength),
+}).strict()
+
+export const systemEmergencyStopResultSchema = z.object({
+  snapshot: workspaceSnapshotSchema,
+  stopId: z.string().trim().min(1).max(128),
+  requestedAt: z.string().datetime(),
+  client: clientKindSchema,
+  outcomes: emergencyStopOutcomesSchema,
+  failures: z.array(emergencyStopFailureSchema).max(maximumEmergencyStopFailures),
+}).strict()
+
 export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
@@ -753,6 +783,10 @@ export const rpcMethods = {
     params: systemPauseAllParamsSchema,
     result: workspaceSnapshotSchema,
   },
+  "system.emergencyStop": {
+    params: systemEmergencyStopParamsSchema,
+    result: systemEmergencyStopResultSchema,
+  },
   "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
   "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
@@ -816,6 +850,9 @@ export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
 export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
+export type EmergencyStopOutcomes = z.infer<typeof emergencyStopOutcomesSchema>
+export type EmergencyStopFailure = z.infer<typeof emergencyStopFailureSchema>
+export type SystemEmergencyStopResult = z.infer<typeof systemEmergencyStopResultSchema>
 export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
 export type SessionHistoryCategory = z.infer<typeof sessionHistoryCategorySchema>
 export type SessionHistoryEntry = z.infer<typeof sessionHistoryEntrySchema>

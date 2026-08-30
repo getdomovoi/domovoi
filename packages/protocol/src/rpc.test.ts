@@ -11,6 +11,7 @@ import {
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
+  systemEmergencyStopResultSchema,
   sessionEvidenceSchema,
   sessionHistoryCategorySchema,
   sessionHistoryPageSchema,
@@ -121,6 +122,74 @@ describe("authenticated client identity", () => {
 })
 
 describe("JSON-RPC envelopes", () => {
+  it("registers a bounded emergency-stop contract distinct from pause-all", () => {
+    expect(rpcMethods["system.emergencyStop"].params.parse({ client: "desktop" })).toEqual({
+      client: "desktop",
+    })
+    expect(rpcMethods["system.emergencyStop"].params.safeParse({}).success).toBe(false)
+
+    const result = {
+      snapshot: demoWorkspace,
+      stopId: "stop-2026-08-29",
+      requestedAt: "2026-08-29T12:00:00.000Z",
+      client: "desktop",
+      outcomes: {
+        turnsStopped: 2,
+        terminalsClosed: 1,
+        approvalsDenied: 3,
+        queuedTurnsCancelled: 4,
+      },
+      failures: [{
+        target: "terminal",
+        targetId: "terminal-2",
+        message: "terminal had already exited",
+      }],
+    } as const
+
+    expect(systemEmergencyStopResultSchema.parse(result)).toEqual(result)
+    expect(rpcMethods["system.emergencyStop"].result.parse(result)).toEqual(result)
+    expect(rpcMethods["system.emergencyStop"].result).not.toBe(
+      rpcMethods["system.pauseAll"].result,
+    )
+  })
+
+  it("bounds emergency-stop identifiers, counts, and failure detail", () => {
+    const base = {
+      snapshot: demoWorkspace,
+      stopId: "stop-1",
+      requestedAt: "2026-08-29T12:00:00.000Z",
+      client: "web",
+      outcomes: {
+        turnsStopped: 0,
+        terminalsClosed: 0,
+        approvalsDenied: 0,
+        queuedTurnsCancelled: 0,
+      },
+      failures: [],
+    }
+
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      stopId: "x".repeat(129),
+    }).success).toBe(false)
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      outcomes: { ...base.outcomes, turnsStopped: Number.MAX_SAFE_INTEGER + 1 },
+    }).success).toBe(false)
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      failures: Array.from({ length: 101 }, (_, index) => ({
+        target: "turn",
+        targetId: `turn-${index}`,
+        message: "could not stop",
+      })),
+    }).success).toBe(false)
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      failures: [{ target: "approval", message: "x".repeat(513) }],
+    }).success).toBe(false)
+  })
+
   it("registers archive as a typed session mutation", () => {
     expect(rpcMethods["session.archive"].params.parse({
       sessionId: "session-billing",
