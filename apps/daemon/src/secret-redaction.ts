@@ -180,14 +180,7 @@ function redact(value: unknown, maximumLength: number): RedactedText {
       return next
     })
 
-  // A truncated final record may end inside an otherwise recognizable secret.
-  // Drop that incomplete record before pattern matching instead of retaining a
-  // credential fragment whose terminator fell beyond the work bound.
-  const boundedWithoutIncompleteRecord = bounded.truncated
-    ? bounded.value.replace(/[^\r\n]*$/u, "")
-    : bounded.value
-  if (boundedWithoutIncompleteRecord !== bounded.value) changed = true
-  let output = boundedWithoutIncompleteRecord
+  let output = bounded.value
   output = replace(
     output,
     /(https?:\/\/)[^\s/:@]+:[^\s/@]+@/giu,
@@ -242,6 +235,18 @@ function redact(value: unknown, maximumLength: number): RedactedText {
     /\b(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/gu,
     replacement,
   )
+  if (bounded.truncated) {
+    output = replace(
+      output,
+      /(eyJ[A-Za-z0-9_-]{3,}(?:\.[A-Za-z0-9_-]*){0,2})$/gu,
+      replacement,
+    )
+    output = replace(
+      output,
+      /((?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{3,})$/gu,
+      replacement,
+    )
+  }
 
   if (bounded.truncated && !output.endsWith("…")) {
     output = `${output.slice(0, maximumLength - 1)}…`
