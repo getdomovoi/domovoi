@@ -5,7 +5,8 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -20,6 +21,31 @@ describe("PreviewVariantThumbnail", () => {
     expect(renderToStaticMarkup(<PreviewVariantThumbnail url="blob:domovoi-thumbnail" />)).toContain("<img")
     expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).toContain("PREVIEW")
     expect(renderToStaticMarkup(<PreviewVariantThumbnail url="https://attacker.example/x.png" />)).not.toContain("<img")
+  })
+
+  it.each([
+    ["invalid", async () => ({ mimeType: "image/png" as const, width: 0, height: 1, data: "invalid" })],
+    ["failed", async () => { throw new Error("capture denied") }],
+  ])("removes revoked thumbnail state after %s replacement capture", async (_case, capture) => {
+    const revoke = vi.fn()
+    const lifecycle = new PreviewThumbnailLifecycle(1, revoke)
+    lifecycle.reserve("old-artifact", 1)
+    lifecycle.resolve("old-artifact", 1, "blob:old")
+    const states: ReadonlyMap<string, string>[] = []
+
+    await capturePreviewThumbnailState({
+      lifecycle,
+      artifactId: "new-artifact",
+      revision: 2,
+      capture,
+      sync: (ready) => states.push(new Map(ready)),
+    })
+
+    expect(revoke).toHaveBeenCalledOnce()
+    expect(revoke).toHaveBeenCalledWith("blob:old")
+    expect(states.length).toBeGreaterThanOrEqual(1)
+    expect(states.every((state) => !state.has("old-artifact:1"))).toBe(true)
+    expect(states.at(-1)).toEqual(new Map())
   })
 })
 
