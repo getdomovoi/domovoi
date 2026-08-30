@@ -1,4 +1,5 @@
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
+import type { NormalizedUsage } from "./usage.js"
 
 export type AgentEvent =
   | { type: "provider-disconnected"; reason: string }
@@ -17,6 +18,7 @@ export type AgentEvent =
       reason?: string
     }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
+  | { type: "usage"; threadId: string; turnId: string; usage: NormalizedUsage }
   | { type: "turn-completed"; params: Record<string, unknown> }
 
 export type AgentPermissionCapabilities = Readonly<{

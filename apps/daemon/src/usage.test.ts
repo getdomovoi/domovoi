@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { UsageLedger, normalizeUsage } from "./usage.js"
+import { UsageLedger, normalizeProviderUsage, normalizeUsage } from "./usage.js"
 
 describe("provider usage telemetry", () => {
   it("normalizes tokens and provider-reported cost into integer micros", () => {
@@ -107,5 +107,17 @@ describe("provider usage telemetry", () => {
       model: "grok-code",
       usage: normalizeUsage({ cost: { amount: 1, currency: "EUR" } }),
     })).toThrow("mixed currencies")
+  })
+
+  it("normalizes Claude, Codex, and OpenCode-shaped payloads conservatively", () => {
+    expect(normalizeProviderUsage({
+      usage: { input_tokens: 20, cache_read_input_tokens: 5, output_tokens: 8 },
+      total_cost_usd: 0.02,
+    })).toMatchObject({ inputTokens: 20, cachedInputTokens: 5, outputTokens: 8, costMicros: 20_000 })
+    expect(normalizeProviderUsage({
+      tokens: { input: 12, output: 4, reasoning: 2, cache: { read: 3 } },
+      cost: 0.01,
+    })).toMatchObject({ inputTokens: 12, cachedInputTokens: 3, reasoningTokens: 2 })
+    expect(normalizeProviderUsage({ message: "no counters" })).toBeUndefined()
   })
 })
