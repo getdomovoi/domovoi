@@ -54,6 +54,29 @@ const providers: ProviderRuntime[] = [
 ]
 
 describe("ProviderSettings", () => {
+  it("shows external-editor settings only with an explicit desktop capability", () => {
+    const shared = {
+      providers,
+      secrets: [],
+      onBack: vi.fn(),
+      onOpenSkills: vi.fn(),
+      onOpenAudit: vi.fn(),
+    }
+    const webMarkup = renderToStaticMarkup(<ProviderSettings {...shared} />)
+    const desktopMarkup = renderToStaticMarkup(
+      <ProviderSettings
+        {...shared}
+        externalEditor="cursor"
+        onExternalEditorChange={vi.fn()}
+      />,
+    )
+
+    expect(webMarkup).toContain("Providers on this machine")
+    expect(webMarkup).not.toContain("External editor")
+    expect(webMarkup).not.toContain("external-editor-label")
+    expect(desktopMarkup).toContain(">External editor</button>")
+  })
+
   it("renders signed-handoff provider readiness and keychain status", () => {
     const markup = renderToStaticMarkup(
       <ProviderSettings
