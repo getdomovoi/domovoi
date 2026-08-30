@@ -1,4 +1,4 @@
-import { Entry } from "@napi-rs/keyring"
+import { createRequire } from "node:module"
 
 const providers = ["anthropic", "openai", "openrouter"] as const
 export type DirectApiProvider = typeof providers[number]
@@ -67,17 +67,56 @@ export class ProviderSecretManager {
   }
 }
 
-class NativeProviderKeyring implements ProviderKeyring {
+type KeyringEntry = {
+  getPassword(): string | null
+  setPassword(secret: string): void
+  deletePassword(): unknown
+}
+
+type KeyringBinding = {
+  Entry: new (service: string, account: string) => KeyringEntry
+}
+
+export type KeyringBindingLoader = () => KeyringBinding
+
+const require = createRequire(import.meta.url)
+const loadNativeBinding: KeyringBindingLoader = () =>
+  require("@napi-rs/keyring") as KeyringBinding
+
+export class NativeProviderKeyring implements ProviderKeyring {
+  readonly #loadBinding: KeyringBindingLoader
+  #binding: KeyringBinding | undefined
+  #loadFailed = false
+
+  constructor(loadBinding: KeyringBindingLoader = loadNativeBinding) {
+    this.#loadBinding = loadBinding
+  }
+
   get(account: string): string | undefined {
-    return new Entry("domovoi.provider-api-key", account).getPassword() ?? undefined
+    return new (this.#requireBinding().Entry)(
+      "domovoi.provider-api-key",
+      account,
+    ).getPassword() ?? undefined
   }
 
   set(account: string, secret: string): void {
-    new Entry("domovoi.provider-api-key", account).setPassword(secret)
+    new (this.#requireBinding().Entry)("domovoi.provider-api-key", account).setPassword(secret)
   }
 
   delete(account: string): void {
-    new Entry("domovoi.provider-api-key", account).deletePassword()
+    new (this.#requireBinding().Entry)("domovoi.provider-api-key", account).deletePassword()
+  }
+
+  #requireBinding(): KeyringBinding {
+    if (this.#binding) return this.#binding
+    if (this.#loadFailed) throw new Error("OS keychain binding is unavailable")
+    try {
+      this.#binding = this.#loadBinding()
+      return this.#binding
+    } catch {
+      this.#loadFailed = true
+      throw new Error("OS keychain binding is unavailable")
+    }
   }
 }
 

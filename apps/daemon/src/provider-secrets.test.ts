@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { ProviderSecretManager, ProviderSecretUnavailableError } from "./provider-secrets.js"
+import {
+  NativeProviderKeyring,
+  ProviderSecretManager,
+  ProviderSecretUnavailableError,
+} from "./provider-secrets.js"
 
 class MemoryKeyring {
   readonly values = new Map<string, string>()
@@ -10,6 +14,30 @@ class MemoryKeyring {
 }
 
 describe("ProviderSecretManager", () => {
+  it("loads the native binding lazily and fails closed when it is missing", () => {
+    const loadBinding = vi.fn(() => {
+      throw new Error("Cannot find native binding: secret-fragment")
+    })
+    const manager = new ProviderSecretManager(new NativeProviderKeyring(loadBinding))
+
+    expect(loadBinding).not.toHaveBeenCalled()
+    expect(manager.status()).toEqual([
+      { provider: "anthropic", state: "unavailable", source: "keychain" },
+      { provider: "openai", state: "unavailable", source: "keychain" },
+      { provider: "openrouter", state: "unavailable", source: "keychain" },
+    ])
+    expect(loadBinding).toHaveBeenCalledOnce()
+    expect(() => manager.set("openai", "secret-fragment")).toThrow(
+      new ProviderSecretUnavailableError("OS keychain is unavailable on this machine"),
+    )
+    expect(() => manager.delete("openai")).toThrow(
+      new ProviderSecretUnavailableError("OS keychain is unavailable on this machine"),
+    )
+    expect(() => manager.forExecution("openai")).toThrow(
+      new ProviderSecretUnavailableError("OS keychain is unavailable on this machine"),
+    )
+  })
+
   it("stores provider keys in the OS keyring and only reports status", () => {
     const keyring = new MemoryKeyring()
     const manager = new ProviderSecretManager(keyring)
