@@ -28,14 +28,15 @@ export type AuditAppendInput = {
   action: string
   outcome: AuditOutcome
   sessionId?: string
+  projectId?: string
   target?: string
   detail?: string
 }
 
 export interface AuditLog {
   append(input: AuditAppendInput): AuditEntry
-  query(params?: Partial<AuditQueryParams>): AuditQueryPage
-  export(params?: Partial<AuditExportParams>): AuditExportResult
+  query(params?: Partial<AuditQueryParams>, signal?: AbortSignal): AuditQueryPage
+  export(params?: Partial<AuditExportParams>, signal?: AbortSignal): AuditExportResult
 }
 
 export type SqliteAuditLogOptions = {
@@ -51,6 +52,7 @@ type StoredAuditEntry = {
   action: string
   outcome: string
   session_id: string | null
+  project_id: string | null
   target: string | null
   detail: string | null
 }
@@ -73,6 +75,7 @@ export class SqliteAuditLog implements AuditLog {
         action TEXT NOT NULL,
         outcome TEXT NOT NULL,
         session_id TEXT,
+        project_id TEXT,
         target TEXT,
         detail TEXT
       );
@@ -80,20 +83,30 @@ export class SqliteAuditLog implements AuditLog {
       CREATE INDEX IF NOT EXISTS audit_log_action ON audit_log (action);
       CREATE INDEX IF NOT EXISTS audit_log_session ON audit_log (session_id);
     `)
+    const columns = this.#database.prepare("PRAGMA table_info(audit_log)").all() as Array<{ name: string }>
+    if (!columns.some(({ name }) => name === "project_id")) {
+      this.#database.exec("ALTER TABLE audit_log ADD COLUMN project_id TEXT")
+    }
+    this.#database.exec(`
+      CREATE INDEX IF NOT EXISTS audit_log_project ON audit_log (project_id);
+    `)
   }
 
   append(input: AuditAppendInput): AuditEntry {
     const entry = auditEntrySchema.parse({
-      id: sanitizeAuditText(input.id ?? `audit-${randomUUID()}`),
+      id: sanitizeAuditText(input.id ?? `audit-${randomUUID()}`, 512),
       occurredAt: input.occurredAt ?? new Date().toISOString(),
       actor: sanitizeAuditActor(input.actor),
-      action: sanitizeAuditText(input.action),
+      action: sanitizeAuditText(input.action, 512),
       outcome: input.outcome,
       ...(input.sessionId === undefined
         ? {}
-        : { sessionId: sanitizeAuditText(input.sessionId) }),
-      ...(input.target === undefined ? {} : { target: sanitizeAuditText(input.target) }),
-      ...(input.detail === undefined ? {} : { detail: sanitizeAuditText(input.detail) }),
+        : { sessionId: sanitizeAuditText(input.sessionId, 512) }),
+      ...(input.projectId === undefined
+        ? {}
+        : { projectId: sanitizeAuditText(input.projectId, 512) }),
+      ...(input.target === undefined ? {} : { target: sanitizeAuditText(input.target, 512) }),
+      ...(input.detail === undefined ? {} : { detail: sanitizeAuditText(input.detail, 4_096) }),
     })
 
     this.#database.exec("BEGIN IMMEDIATE")
@@ -101,8 +114,8 @@ export class SqliteAuditLog implements AuditLog {
       this.#database.prepare(`
         INSERT INTO audit_log (
           id, occurred_at, actor_kind, actor_name, actor_reference,
-          action, outcome, session_id, target, detail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          action, outcome, session_id, project_id, target, detail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         entry.id,
         entry.occurredAt,
@@ -112,6 +125,7 @@ export class SqliteAuditLog implements AuditLog {
         entry.action,
         entry.outcome,
         entry.sessionId ?? null,
+        entry.projectId ?? null,
         entry.target ?? null,
         entry.detail ?? null,
       )
@@ -131,18 +145,22 @@ export class SqliteAuditLog implements AuditLog {
     return entry
   }
 
-  query(params: Partial<AuditQueryParams> = {}): AuditQueryPage {
+  query(params: Partial<AuditQueryParams> = {}, signal?: AbortSignal): AuditQueryPage {
+    signal?.throwIfAborted()
     const validated = auditQueryParamsSchema.parse(params)
     const { rows, hasMore } = this.#select(validated, validated.limit)
     const entries = rows.map(storedAuditEntry)
-    return auditQueryPageSchema.parse({
+    const result = auditQueryPageSchema.parse({
       entries,
       hasMore,
       ...(hasMore ? { nextCursor: entries.at(-1)?.id } : {}),
     })
+    signal?.throwIfAborted()
+    return result
   }
 
-  export(params: Partial<AuditExportParams> = {}): AuditExportResult {
+  export(params: Partial<AuditExportParams> = {}, signal?: AbortSignal): AuditExportResult {
+    signal?.throwIfAborted()
     const validated = auditExportParamsSchema.parse(params)
     const selection = this.#select(validated, validated.limit)
     const selectedEntries = selection.rows.map(storedAuditEntry)
@@ -155,14 +173,16 @@ export class SqliteAuditLog implements AuditLog {
       content += line
     }
     const hasMore = selection.hasMore || entries.length < selectedEntries.length
-    return auditExportResultSchema.parse({
+    const result = auditExportResultSchema.parse({
       format: validated.format,
-      exportedAt: new Date().toISOString(),
+      exportedAt: entries[0]?.occurredAt ?? "1970-01-01T00:00:00.000Z",
       entryCount: entries.length,
       content,
       hasMore,
       ...(hasMore ? { nextCursor: entries.at(-1)?.id } : {}),
     })
+    signal?.throwIfAborted()
+    return result
   }
 
   #select(
@@ -191,6 +211,10 @@ export class SqliteAuditLog implements AuditLog {
       conditions.push("session_id = ?")
       values.push(filters.sessionId)
     }
+    if (filters.projectId) {
+      conditions.push("project_id = ?")
+      values.push(filters.projectId)
+    }
     if (filters.query) {
       const query = `%${escapeLike(filters.query)}%`
       conditions.push(`(
@@ -199,15 +223,16 @@ export class SqliteAuditLog implements AuditLog {
         OR COALESCE(actor_name, '') LIKE ? ESCAPE '\\'
         OR COALESCE(actor_reference, '') LIKE ? ESCAPE '\\'
         OR COALESCE(session_id, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(project_id, '') LIKE ? ESCAPE '\\'
         OR COALESCE(target, '') LIKE ? ESCAPE '\\'
         OR COALESCE(detail, '') LIKE ? ESCAPE '\\'
       )`)
-      values.push(query, query, query, query, query, query, query)
+      values.push(query, query, query, query, query, query, query, query)
     }
     const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`
     const statement = this.#database.prepare(`
       SELECT id, occurred_at, actor_kind, actor_name, actor_reference,
-        action, outcome, session_id, target, detail
+        action, outcome, session_id, project_id, target, detail
       FROM audit_log
       ${where}
       ORDER BY sequence DESC
@@ -230,6 +255,7 @@ function storedAuditEntry(row: StoredAuditEntry): AuditEntry {
     action: row.action,
     outcome: row.outcome,
     ...(row.session_id === null ? {} : { sessionId: row.session_id }),
+    ...(row.project_id === null ? {} : { projectId: row.project_id }),
     ...(row.target === null ? {} : { target: row.target }),
     ...(row.detail === null ? {} : { detail: row.detail }),
   })
@@ -239,8 +265,8 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/gu, "\\$&")
 }
 
-function sanitizeAuditText(value: string): string {
-  return redactErrorDetail(value)
+function sanitizeAuditText(value: string, maximumLength: number): string {
+  return redactErrorDetail(value).slice(0, maximumLength)
 }
 
 function sanitizeAuditActor(actor: AuditActor): AuditActor {
@@ -251,22 +277,22 @@ function sanitizeAuditActor(actor: AuditActor): AuditActor {
         client: actor.client,
         ...(actor.clientId === undefined
           ? {}
-          : { clientId: sanitizeAuditText(actor.clientId) }),
+          : { clientId: sanitizeAuditText(actor.clientId, 128) }),
       }
     case "provider":
       return {
         kind: actor.kind,
-        provider: sanitizeAuditText(actor.provider),
+        provider: sanitizeAuditText(actor.provider, 128),
         ...(actor.providerThreadId === undefined
           ? {}
-          : { providerThreadId: sanitizeAuditText(actor.providerThreadId) }),
+          : { providerThreadId: sanitizeAuditText(actor.providerThreadId, 128) }),
       }
     case "daemon":
       return {
         kind: actor.kind,
         ...(actor.component === undefined
           ? {}
-          : { component: sanitizeAuditText(actor.component) }),
+          : { component: sanitizeAuditText(actor.component, 128) }),
       }
   }
 }
