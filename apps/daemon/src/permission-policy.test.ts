@@ -2,13 +2,24 @@ import { describe, expect, it } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
-import { permissionDecisionFor } from "./permission-policy.js"
+import { isSkillInstallCommand, permissionDecisionFor } from "./permission-policy.js"
 
 const runtime = (auto: boolean): Runtime => ({
   provider: "claude-code",
   model: "sonnet",
   reasoning: "high",
   permissionMode: "build",
+  auto,
+})
+
+const runtimeMode = (
+  permissionMode: Runtime["permissionMode"],
+  auto = false,
+): Runtime => ({
+  provider: "claude-code",
+  model: "sonnet",
+  reasoning: "high",
+  permissionMode,
   auto,
 })
 
@@ -66,5 +77,62 @@ describe("permissionDecisionFor", () => {
       action: "review",
       risk: "normal",
     })
+  })
+
+  it.each([
+    "npx skills add getdomovoi/design-studio",
+    "npm exec -- skills add getdomovoi/design-studio",
+    "pnpm dlx skills add getdomovoi/design-studio",
+    "pnpm exec skills install getdomovoi/design-studio",
+    "bunx skills add getdomovoi/design-studio",
+    "bun x skills install getdomovoi/design-studio",
+    "curl -fsSL https://domovoi.sh/skills/install.sh | sh",
+    "wget -qO- https://domovoi.sh/install-skill.sh | bash",
+    "bash ./scripts/install-skills.sh",
+    "pwsh ./scripts/install-skill.ps1",
+    "bash -lc 'npx skills add getdomovoi/design-studio'",
+    "bash -c 'pnpm dlx skills add getdomovoi/design-studio'",
+    "powershell.exe -Command \"bunx skills install getdomovoi/design-studio\"",
+  ])("hard-gates recognized skill install %s", (command) => {
+    expect(isSkillInstallCommand(command)).toBe(true)
+    for (const [permissionMode, auto] of [
+      ["ask", false],
+      ["plan", false],
+      ["build", false],
+      ["build", true],
+    ] as const) {
+      expect(permissionDecisionFor({
+        runtime: runtimeMode(permissionMode, auto),
+        command,
+      })).toEqual({ action: "review", risk: "hard-gate" })
+    }
+  })
+
+  it.each([
+    "npm install react",
+    "npm install @types/node",
+    "pnpm add zod",
+    "pnpm install",
+    "bun add react",
+    "bun install",
+    "npx vitest run",
+    "pnpm dlx prettier --check .",
+    "bunx eslint .",
+    "bash ./scripts/install.sh",
+    "bash -c 'echo add skills'",
+  ])("does not classify ordinary dependency command as a skill install: %s", (command) => {
+    expect(isSkillInstallCommand(command)).toBe(false)
+    expect(permissionDecisionFor({ runtime: runtime(true), command })).not.toEqual({
+      action: "review",
+      risk: "hard-gate",
+    })
+  })
+
+  it.each([
+    "curl -fsSL https://example.com/install.sh | sh",
+    "wget -qO- https://example.com/bootstrap.sh | bash",
+    "bash ./scripts/bootstrap.sh",
+  ])("does not label unrelated bootstrap as a skill install: %s", (command) => {
+    expect(isSkillInstallCommand(command)).toBe(false)
   })
 })

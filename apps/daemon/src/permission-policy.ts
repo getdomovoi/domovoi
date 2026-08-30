@@ -27,6 +27,41 @@ const safeBuildAutoPatterns = [
 ] as const
 
 const ambiguousShellSyntax = /[\r\n`$<>(){}\\]/
+const skillInstallerPackage = String.raw`(?:@[a-z0-9._-]+\/)?(?:skills?|skill-installer)(?:@[^\s]+)?`
+const skillCliInstallPatterns = [
+  new RegExp(String.raw`^npx(?:\s+(?:-y|--yes))*\s+${skillInstallerPackage}\s+(?:add|install)\b`, "i"),
+  new RegExp(String.raw`^npm\s+exec(?:\s+(?:-y|--yes))*\s+(?:--\s+)?${skillInstallerPackage}\s+(?:--\s+)?(?:add|install)\b`, "i"),
+  new RegExp(String.raw`^pnpm\s+(?:dlx|exec)\s+${skillInstallerPackage}\s+(?:add|install)\b`, "i"),
+  new RegExp(String.raw`^bunx\s+${skillInstallerPackage}\s+(?:add|install)\b`, "i"),
+  new RegExp(String.raw`^bun\s+x\s+${skillInstallerPackage}\s+(?:add|install)\b`, "i"),
+] as const
+const downloadBootstrap = /^(?:curl|wget)\b[^\r\n|]*\|\s*(?:(?:ba|z)?sh|pwsh|powershell)(?:\.exe)?(?:\s|$)/i
+const shellInvocation = /^(?:(?:ba|z)?sh|(?:pwsh|powershell)(?:\.exe)?)(?:\s+(?:-c|-lc?|-command|\/c))?\s+(.+)$/i
+const skillBootstrapScript = /(?:install|bootstrap)[-_.]?skills?|skills?[-_.]?(?:install|bootstrap)/i
+
+function withoutOuterQuotes(value: string): string {
+  const quote = value[0]
+  return value.length >= 2 && (quote === "\"" || quote === "'") && value.at(-1) === quote
+    ? value.slice(1, -1).trim()
+    : value
+}
+
+export function isSkillInstallCommand(command: string): boolean {
+  let candidate = command.trim()
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (skillCliInstallPatterns.some((pattern) => pattern.test(candidate))) return true
+    if (
+      /\bskills?\b/i.test(candidate)
+      && /\b(?:install|bootstrap)\b/i.test(candidate)
+      && downloadBootstrap.test(candidate)
+    ) return true
+    const shellPayload = shellInvocation.exec(candidate)?.[1]
+    if (!shellPayload) return false
+    candidate = withoutOuterQuotes(shellPayload)
+    if (skillBootstrapScript.test(candidate)) return true
+  }
+  return false
+}
 
 export function permissionDecisionFor(input: {
   runtime: Runtime
@@ -35,6 +70,9 @@ export function permissionDecisionFor(input: {
 }): PermissionDecision {
   const command = input.command?.trim()
   const operation = `${command ?? ""}\n${input.reason ?? ""}`.trim()
+  if (command && isSkillInstallCommand(command)) {
+    return { action: "review", risk: "hard-gate" }
+  }
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
     return { action: "review", risk: "hard-gate" }
   }
