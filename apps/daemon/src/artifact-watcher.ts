@@ -27,6 +27,7 @@ export type ArtifactWatcherOptions = {
   maximumEntries?: number
   maximumFileBytes?: number
   debounceMs?: number
+  openDirectory?: typeof opendir
 }
 
 export type ArtifactWatcherHandle = {
@@ -61,11 +62,13 @@ export class ArtifactWatcher {
   readonly #maximumEntries: number
   readonly #maximumFileBytes: number
   readonly #debounceMs: number
+  readonly #openDirectory: typeof opendir
   #known = new Map<string, string>()
   #subscription: ArtifactWatchSubscription | undefined
   #timer: ReturnType<typeof setTimeout> | undefined
   #tail: Promise<void> = Promise.resolve()
   #running = false
+  #generation = 0
 
   constructor(options: ArtifactWatcherOptions) {
     this.#root = resolve(options.root)
@@ -76,11 +79,14 @@ export class ArtifactWatcher {
     this.#maximumEntries = Math.max(1, options.maximumEntries ?? 20_000)
     this.#maximumFileBytes = Math.max(1, options.maximumFileBytes ?? maximumArtifactFileBytes)
     this.#debounceMs = Math.max(0, options.debounceMs ?? 40)
+    this.#openDirectory = options.openDirectory ?? opendir
   }
 
   async start(): Promise<void> {
     if (this.#running) return
+    const generation = ++this.#generation
     const baseline = await this.#scan()
+    if (generation !== this.#generation) return
     if (baseline.truncated) throw new Error("Artifact watcher baseline exceeded its entry limit")
     this.#known = new Map(baseline.files.map((file) => [file.path, file.fingerprint]))
     this.#running = true
@@ -92,6 +98,7 @@ export class ArtifactWatcher {
       )
       await this.rescan()
     } catch (error) {
+      if (generation !== this.#generation) return
       this.stop()
       throw error
     }
@@ -120,6 +127,7 @@ export class ArtifactWatcher {
   }
 
   stop(): void {
+    this.#generation += 1
     if (!this.#running && !this.#subscription) return
     this.#running = false
     if (this.#timer) clearTimeout(this.#timer)
@@ -143,13 +151,14 @@ export class ArtifactWatcher {
       maximumDepth: this.#maximumDepth,
       maximumEntries: this.#maximumEntries,
       maximumFileBytes: this.#maximumFileBytes,
-    })
+    }, this.#openDirectory)
   }
 }
 
 async function scanArtifactFiles(
   root: string,
   limits: { maximumDepth: number; maximumEntries: number; maximumFileBytes: number },
+  openDirectory: typeof opendir,
 ): Promise<ArtifactScan> {
   const realRoot = await realpath(root)
   const files: ArtifactFile[] = []
@@ -158,7 +167,14 @@ async function scanArtifactFiles(
 
   const visit = async (directory: string, depth: number): Promise<void> => {
     if (truncated) return
-    const handle = await opendir(directory)
+    let handle: Awaited<ReturnType<typeof opendir>>
+    try {
+      handle = await openDirectory(directory)
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined
+      if (depth > 0 && (code === "ENOENT" || code === "EACCES")) return
+      throw error
+    }
     const entries = []
     for await (const entry of handle) entries.push(entry)
     entries.sort((left, right) => left.name.localeCompare(right.name))
