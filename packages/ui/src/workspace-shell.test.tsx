@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
-import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
+import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
@@ -107,19 +107,75 @@ describe("RuntimeControls", () => {
 })
 
 describe("AppBar", () => {
-  it("disables pause-all without an active turn", () => {
+  it("keeps pause-all available while connected without an active turn", () => {
     const snapshot = structuredClone(demoWorkspace)
     for (const session of snapshot.sessions) delete session.activeTurnId
     const markup = renderToStaticMarkup(
       <AppBar
         snapshot={snapshot}
         connected
+        emergencyStopPending={false}
+        emergencyStopOutcome={null}
+        emergencyStopError={null}
+        onOpenProject={vi.fn()}
+        onPauseAll={vi.fn()}
+      />,
+    )
+
+    expect(markup).toMatch(/<button(?=[^>]*aria-label="Pause all")(?![^>]*disabled="")/)
+  })
+
+  it("disables pause-all while pending and announces its outcome", () => {
+    const outcome: SystemEmergencyStopResult = {
+      snapshot: demoWorkspace,
+      stopId: "stop-1",
+      requestedAt: "2026-08-29T12:00:00.000Z",
+      client: "desktop",
+      outcomes: {
+        turnsStopped: 2,
+        terminalsClosed: 1,
+        approvalsDenied: 3,
+        mutationsCancelled: 4,
+        providersReset: 2,
+      },
+      failures: [],
+    }
+    const markup = renderToStaticMarkup(
+      <AppBar
+        snapshot={demoWorkspace}
+        connected
+        emergencyStopPending
+        emergencyStopOutcome={outcome}
+        emergencyStopError={null}
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
       />,
     )
 
     expect(markup).toMatch(/<button(?=[^>]*aria-label="Pause all")(?=[^>]*disabled="")/)
+    expect(markup).toContain('role="status"')
+    expect(markup).toContain("2 turns stopped")
+    expect(markup).toContain("1 terminal closed")
+    expect(markup).toContain("3 approvals denied")
+    expect(markup).toContain("4 mutations cancelled")
+    expect(markup).toContain("2 providers reset")
+  })
+
+  it("announces an emergency-stop error", () => {
+    const markup = renderToStaticMarkup(
+      <AppBar
+        snapshot={demoWorkspace}
+        connected
+        emergencyStopPending={false}
+        emergencyStopOutcome={null}
+        emergencyStopError="daemon did not respond"
+        onOpenProject={vi.fn()}
+        onPauseAll={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain('role="alert"')
+    expect(markup).toContain("Pause all failed: daemon did not respond")
   })
 })
 
