@@ -54,8 +54,10 @@ describe("previewVariantsForActiveSession", () => {
       type: "preview" as const, revision: 1, path: `design-studio/x/variant-${index}.html`, mimeType: "text/html",
       variant: { id: `${index}`, groupId: "design-studio/x", label: `Variant ${index}`, order: 29 - index },
     }))
-    expect(previewVariantsForActiveSession(snapshot, "variant-0")).toHaveLength(24)
-    expect(previewVariantsForActiveSession(snapshot, "variant-0")[0]?.variant?.order).toBe(0)
+    const selectedWindow = previewVariantsForActiveSession(snapshot, "variant-0")
+    expect(selectedWindow).toHaveLength(24)
+    expect(selectedWindow[0]?.variant?.order).toBe(6)
+    expect(selectedWindow.at(-1)?.id).toBe("variant-0")
   })
 
   it("falls back from compare when the container is narrow", () => {
