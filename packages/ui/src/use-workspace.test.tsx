@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { demoWorkspace } from "@getdomovoi/protocol"
 
 import {
+  applyEmergencyStopResult,
   applyConnectionSnapshot,
   applyWorkspaceSnapshot,
   isCurrentConnection,
@@ -12,12 +13,24 @@ import {
 } from "./use-workspace"
 
 function SnapshotProbe() {
-  const { forkSession, reconnect, snapshot } = useWorkspace("ws://127.0.0.1:47831/rpc", "web")
+  const {
+    emergencyStop,
+    emergencyStopError,
+    emergencyStopOutcome,
+    emergencyStopPending,
+    forkSession,
+    reconnect,
+    snapshot,
+  } = useWorkspace("ws://127.0.0.1:47831/rpc", "web")
   return (
     <span>
       {snapshot?.project?.name ?? "no daemon snapshot"}
       {typeof reconnect === "function" ? " · can reconnect" : ""}
       {typeof forkSession === "function" ? " · can fork" : ""}
+      {typeof emergencyStop === "function" ? " · can emergency stop" : ""}
+      {!emergencyStopPending && !emergencyStopOutcome && !emergencyStopError
+        ? " · emergency stop idle"
+        : ""}
     </span>
   )
 }
@@ -28,6 +41,8 @@ describe("useWorkspace", () => {
     expect(markup).toContain("no daemon snapshot")
     expect(markup).toContain("can reconnect")
     expect(markup).toContain("can fork")
+    expect(markup).toContain("can emergency stop")
+    expect(markup).toContain("emergency stop idle")
   })
 
   it("does not expose a snapshot owned by another connection target", () => {
@@ -63,6 +78,42 @@ describe("useWorkspace", () => {
       state,
       "web:ws://machine-a/rpc",
       late,
+    )).toBe(state)
+  })
+
+  it("installs the emergency-stop snapshot only for the current connection", () => {
+    const currentClient = {}
+    const staleClient = {}
+    const state = { target: "web:ws://machine-a/rpc", snapshot: demoWorkspace }
+    const stopped = structuredClone(demoWorkspace)
+    stopped.activeSessionId = "session-audit"
+    const result = {
+      snapshot: stopped,
+      stopId: "stop-1",
+      requestedAt: "2026-08-29T12:00:00.000Z",
+      client: "web" as const,
+      outcomes: {
+        turnsStopped: 1,
+        terminalsClosed: 0,
+        approvalsDenied: 0,
+        queuedTurnsCancelled: 0,
+      },
+      failures: [],
+    }
+
+    expect(applyEmergencyStopResult(
+      currentClient,
+      currentClient,
+      state,
+      "web:ws://machine-a/rpc",
+      result,
+    ).snapshot).toBe(stopped)
+    expect(applyEmergencyStopResult(
+      currentClient,
+      staleClient,
+      state,
+      "web:ws://machine-a/rpc",
+      result,
     )).toBe(state)
   })
 })
