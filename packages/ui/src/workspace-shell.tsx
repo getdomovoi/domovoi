@@ -119,7 +119,8 @@ import {
   previewResolveAnchorsMessage,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { previewThumbnailObjectUrl, previewThumbnailRect, reservePreviewThumbnail } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
@@ -167,6 +168,13 @@ export type WorkspaceShellProps = {
   rpcToken?: string
   windowBridge?: DesktopWindowBridge
   onChangeCredential?: () => void
+}
+
+export function PreviewVariantThumbnail({ url }: { url?: string | undefined }) {
+  const safeUrl = url?.startsWith("blob:") ? url : undefined
+  return safeUrl
+    ? <img className="aspect-video w-full rounded-sm border object-cover" src={safeUrl} alt="" />
+    : <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
 }
 
 const statusClass: Record<SessionSummary["state"], string> = {
@@ -1683,6 +1691,9 @@ export function ArtifactDock({
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [previewError, setPreviewError] = useState("")
   const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
+  const [previewThumbnailUrls, setPreviewThumbnailUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const reservedPreviewThumbnails = useRef(new Set<string>())
+  const allocatedPreviewThumbnailUrls = useRef(new Set<string>())
   const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
     string,
     "selector" | "text-quote" | "bounding-box" | "unresolved"
@@ -1698,6 +1709,11 @@ export function ArtifactDock({
     observer.observe(element)
     return () => observer.disconnect()
   }, [preview?.id])
+
+  useEffect(() => () => {
+    for (const url of allocatedPreviewThumbnailUrls.current) URL.revokeObjectURL(url)
+    allocatedPreviewThumbnailUrls.current.clear()
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -1736,6 +1752,34 @@ export function ArtifactDock({
       active,
     }
     previewFrameRef.current?.contentWindow?.postMessage(message, "*")
+  }
+
+  const capturePreviewThumbnail = async () => {
+    if (!captureAnnotation || !preview || !previewUrl) return
+    const frame = previewFrameRef.current
+    if (!frame) return
+    const rect = previewThumbnailRect(frame.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight })
+    if (!rect || !reservePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)) return
+    try {
+      const url = previewThumbnailObjectUrl(await captureAnnotation(rect))
+      if (!url) return
+      allocatedPreviewThumbnailUrls.current.add(url)
+      setPreviewThumbnailUrls((current) => {
+        const next = new Map(current)
+        if (next.size >= 24) {
+          const oldestKey = next.keys().next().value as string | undefined
+          const oldestUrl = oldestKey ? next.get(oldestKey) : undefined
+          if (oldestKey) next.delete(oldestKey)
+          if (oldestUrl) {
+            URL.revokeObjectURL(oldestUrl)
+            allocatedPreviewThumbnailUrls.current.delete(oldestUrl)
+          }
+        }
+        return next.set(`${preview.id}:${preview.revision}`, url)
+      })
+    } catch {
+      // Web and denied desktop captures keep the truthful static placeholder.
+    }
   }
 
   const postAnchorResolutionRequest = () => {
@@ -1877,7 +1921,7 @@ export function ArtifactDock({
                     }}>
                       {previewVariants.map((artifact) => (
                         <Button key={artifact.id} variant={artifact.id === preview.id ? "secondary" : "outline"} className="min-h-11 min-w-28 flex-col items-start" aria-current={artifact.id === preview.id ? "true" : undefined} onClick={() => setSelectedPreviewId(artifact.id)}>
-                          <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
+                          <PreviewVariantThumbnail url={previewThumbnailUrls.get(`${artifact.id}:${artifact.revision}`)} />
                           <span>{artifact.variant?.label ?? artifact.title}</span>
                           <span className="text-[9px] text-muted-foreground">{artifact.id === preview.id ? "Selected" : `revision ${artifact.revision}`}</span>
                         </Button>
@@ -1887,7 +1931,7 @@ export function ArtifactDock({
                   </ScrollArea>
                 </div>
               ) : null}
-              <div className="flex h-10 items-center justify-between border-b px-3">
+              <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-3 py-1", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className="flex items-center gap-2">
                   <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
@@ -1928,6 +1972,7 @@ export function ArtifactDock({
                   onLoad={() => {
                     postPickerState(pickerActive)
                     postAnchorResolutionRequest()
+                    void capturePreviewThumbnail()
                   }}
                 />
                 {comparePreview && comparePreviewUrl ? <iframe className="min-h-0 flex-1 border bg-background" style={{ width: Math.min(deviceWidth, stageContainerWidth / 2), maxWidth: deviceWidth }} referrerPolicy="no-referrer" sandbox="allow-scripts" src={comparePreviewUrl} title={`${comparePreview.title} comparison`} /> : null}

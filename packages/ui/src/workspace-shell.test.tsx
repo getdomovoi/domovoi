@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -14,6 +14,14 @@ const runtime: Runtime = {
   permissionMode: "build",
   auto: false,
 }
+
+describe("PreviewVariantThumbnail", () => {
+  it("renders real cached imagery when available and a truthful fallback otherwise", () => {
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail url="blob:domovoi-thumbnail" />)).toContain("<img")
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).toContain("PREVIEW")
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail url="https://attacker.example/x.png" />)).not.toContain("<img")
+  })
+})
 
 const providers: ProviderRuntime[] = [
   {

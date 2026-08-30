@@ -61,6 +61,13 @@ describe("workspace protocol", () => {
       variant: { id: "a", groupId: "g", label: "A", order: 0,
         thumbnail: { path: "data:image/png;base64,AAA", mimeType: "image/png", revision: 1 } },
     }).success).toBe(false)
+    for (const path of ["/tmp/a.png", "../a.png", "a\\b.png", "https://x/a.png", "a.png?token=x", "a.png#x", "./a.png"]) {
+      expect(artifactSchema.safeParse({
+        id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview", revision: 1,
+        variant: { id: "a", groupId: "g", label: "A", order: 0,
+          thumbnail: { path, mimeType: "image/png", revision: 1 } },
+      }).success, path).toBe(false)
+    }
   })
   it("keeps provider failures typed, safe, and actionable", () => {
     const failures = [
