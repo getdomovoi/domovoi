@@ -357,12 +357,17 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
-  authorizeArtifact(artifactId: string, bridgeChannel?: string): Promise<ArtifactAccess> {
+  authorizeArtifact(input: {
+    sessionId: string
+    artifactId: string
+    revision: number
+    purpose: ArtifactAccess["purpose"]
+    bridgeChannel?: string
+  }): Promise<ArtifactAccess> {
     return this.request(
       "artifact.authorize",
       {
-        artifactId,
-        ...(bridgeChannel ? { bridgeChannel } : {}),
+        ...input,
         client: this.kind,
       },
       (value) => artifactAuthorizeResultSchema.parse(value),

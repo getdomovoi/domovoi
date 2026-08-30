@@ -1753,42 +1753,30 @@ describe("DomovoiDaemon", () => {
   })
 
   it("scopes artifact access to id, bridge channel, and expiry", () => {
-    const signature = signArtifactAccess(
-      "artifact-secret",
-      "preview-1",
-      "preview_channel_123456",
-      1_800_000_000,
-    )
+    const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", expiresAt: 1_800_000_000 }
+    const signature = signArtifactAccess("artifact-secret", scope)
     expect(signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-1",
-      "preview_channel_123456",
-      1_800_000_000,
+      scope,
       signature,
       1_799_999_999,
     )).toBe(true)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-2",
-      "preview_channel_123456",
-      1_800_000_000,
+      { ...scope, purpose: "print" },
       signature,
       1_799_999_999,
     )).toBe(false)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-1",
-      "preview_channel_changed",
-      1_800_000_000,
+      { ...scope, bridgeChannel: "preview_channel_changed" },
       signature,
       1_799_999_999,
     )).toBe(false)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-1",
-      "preview_channel_123456",
-      1_800_000_000,
+      scope,
       signature,
       1_800_000_001,
     )).toBe(false)
@@ -1892,20 +1880,23 @@ describe("DomovoiDaemon", () => {
       authToken: "remote-daemon-token",
     })
     const accessResponse = await rpc("artifact.authorize", {
+      sessionId: artifact.sessionId,
       artifactId: artifact.id,
+      revision: artifact.revision,
+      purpose: "preview",
       client: "web",
     })
-    const access = accessResponse.result as { expiresAt: number; signature: string }
+    const access = accessResponse.result as { sessionId: string; revision: number; purpose: string; expiresAt: number; signature: string }
     const baseUrl = `http://${address.host}:${address.port}/artifacts/${artifact.id}`
 
     expect((await fetch(baseUrl)).status).toBe(404)
     const authorized = await fetch(
-      `${baseUrl}?expires=${access.expiresAt}&signature=${access.signature}`,
+      `${baseUrl}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${access.signature}`,
     )
     expect(authorized.status).toBe(200)
     await expect(authorized.text()).resolves.toBe("<h1>Remote preview</h1>")
     expect((await fetch(
-      `${baseUrl}?expires=${access.expiresAt}&signature=${"x".repeat(43)}`,
+      `${baseUrl}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${"x".repeat(43)}`,
     )).status).toBe(404)
     socket.close()
   })
@@ -4432,18 +4423,24 @@ describe("DomovoiDaemon", () => {
 
     const snapshot = await rpc("workspace.get", {})
     const artifact = (snapshot.result as {
-      artifacts: Array<{ id: string; sessionId: string; type: string }>
+      artifacts: Array<{ id: string; sessionId: string; type: string; revision: number }>
     }).artifacts.find((candidate) => candidate.type === "preview")
     expect(artifact).toMatchObject({ sessionId, type: "preview" })
     expect((snapshot.result as { artifacts: unknown[] }).artifacts).toHaveLength(2)
 
     const accessResponse = await rpc("artifact.authorize", {
+      sessionId,
       artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       client: "desktop",
     })
     const access = accessResponse.result as {
+      sessionId: string
       artifactId: string
+      revision: number
+      purpose: string
       bridgeChannel: string
       expiresAt: number
       signature: string
@@ -4456,7 +4453,10 @@ describe("DomovoiDaemon", () => {
     expect(access.signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
 
     await expect(rpc("artifact.authorize", {
+      sessionId,
       artifactId: "missing-preview",
+      revision: 1,
+      purpose: "preview",
       client: "desktop",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Preview artifact does not exist" },
@@ -4478,10 +4478,38 @@ describe("DomovoiDaemon", () => {
     expect(bridgedContent).toContain(artifact!.id)
 
     const signedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
     )
     expect(signedPreview.status).toBe(200)
     expect(await signedPreview.text()).toContain("domovoi.preview.selection")
+
+    const printResponse = await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "print",
+      client: "desktop",
+    })
+    const printAccess = printResponse.result as typeof access
+    const printUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(printAccess.artifactId)}?session=${printAccess.sessionId}&revision=${printAccess.revision}&purpose=print&expires=${printAccess.expiresAt}&signature=${printAccess.signature}`
+    const printable = await fetch(printUrl)
+    expect(printable.status).toBe(200)
+    expect(printable.headers.get("content-security-policy")).toContain("sandbox")
+    expect(await printable.text()).toContain("External resources and active content were removed")
+    expect((await fetch(printUrl.replace(printAccess.signature, access.signature))).status).toBe(404)
+
+    const downloadResponse = await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "download",
+      client: "desktop",
+    })
+    const downloadAccess = downloadResponse.result as typeof access
+    const download = await fetch(`http://${address.host}:${address.port}/artifacts/${encodeURIComponent(downloadAccess.artifactId)}?session=${downloadAccess.sessionId}&revision=${downloadAccess.revision}&purpose=download&expires=${downloadAccess.expiresAt}&signature=${downloadAccess.signature}`)
+    expect(download.headers.get("content-disposition")).toContain("attachment")
+    await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: artifact!.revision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: artifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
     const invalidBridge = await fetch(
       `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,
