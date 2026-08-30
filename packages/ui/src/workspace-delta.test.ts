@@ -1,10 +1,38 @@
 import { describe, expect, it } from "vitest"
 
-import { demoWorkspace, type WorkspaceDelta } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumEffectiveClientThreadItems, type WorkspaceDelta } from "@getdomovoi/protocol"
 
 import { applyWorkspaceDelta } from "./workspace-delta.js"
 
 describe("applyWorkspaceDelta", () => {
+  it("keeps delta-applied thread state at the effective rendered cap", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.activeSessionId = session.id
+    snapshot.thread = Array.from({ length: maximumEffectiveClientThreadItems }, (_, index) => ({
+      id: `message-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `Message ${index}`,
+      createdAt: session.updatedAt,
+    }))
+
+    const updated = applyWorkspaceDelta(snapshot, {
+      sessionId: session.id,
+      updatedAt: session.updatedAt,
+      operations: [{
+        kind: "assistant.append",
+        id: "latest-message",
+        delta: "Latest",
+        createdAt: session.updatedAt,
+      }],
+    })
+
+    expect(updated.thread).toHaveLength(maximumEffectiveClientThreadItems)
+    expect(updated.thread[0]?.id).toBe("message-1")
+    expect(updated.thread.at(-1)?.id).toBe("latest-message")
+  })
+
   it("appends streamed chunks without duplicating entities", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!

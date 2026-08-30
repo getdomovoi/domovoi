@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -11,6 +11,7 @@ import {
   FolderOpenIcon,
   HistoryIcon,
   DownloadIcon,
+  ExternalLinkIcon,
   LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
@@ -51,6 +52,7 @@ import type {
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
+import { boundedClientThread } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -124,11 +126,26 @@ import {
   previewResolveAnchorMessages,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
+import {
+  DesktopFirstRunDialog,
+  desktopFirstRunAvailable,
+  firstRunFailureForProvider,
+  providerFirstRunRecovery,
+} from "./desktop-first-run"
+import {
+  browserDesktopFirstRunStorage,
+  completeDesktopFirstRun,
+  defaultDesktopFirstRunState,
+  loadDesktopFirstRunState,
+  resetDesktopFirstRunState,
+  saveDesktopFirstRunState,
+  type DesktopFirstRunState,
+} from "./desktop-first-run-persistence"
 import {
   providerHandoffDescription,
   preferredSessionProvider,
@@ -141,32 +158,47 @@ import {
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
 import {
+  latestSessionHistoryRequest,
+  historyWindowedAfterMerge,
   mergeOlderHistory,
+  resetSessionHistoryWindow,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
 } from "./session-history"
 import { SessionEvidencePanel } from "./session-evidence"
 import { MarkdownQuickView } from "./markdown-quick-view"
+import {
+  browserWorkspaceUiStorage,
+  loadWorkspaceUiState,
+  reconcileWorkspaceUiState,
+  saveWorkspaceUiState,
+  type WorkspaceSurface,
+} from "./workspace-persistence"
+import {
+  buildWorkspaceCommands,
+  commandPaletteShortcut,
+  CommandPalette,
+  type CommandPalettePlatform,
+} from "./command-palette"
+import {
+  WorkspaceNotificationTracker,
+  type DesktopNotificationRequest,
+} from "./desktop-notifications"
+import {
+  copyDesktopText,
+  desktopExternalActionLabel,
+  enqueueDesktopDeepLink,
+  openDesktopPath,
+  openProjectFromDesktop,
+  type DesktopExternalEditor,
+  type DesktopWindowBridge,
+} from "./desktop-platform"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
   return { default: module.TerminalPane }
 })
-
-export type DesktopWindowBridge = {
-  platform: "darwin" | "linux" | "win32"
-  getRpcToken(): Promise<string>
-  captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{
-    mimeType: "image/png"
-    width: number
-    height: number
-    data: string
-  }>
-  minimize(): void
-  maximize(): void
-  close(): void
-}
 
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
@@ -221,6 +253,19 @@ const statusClass: Record<SessionSummary["state"], string> = {
   failed: "bg-destructive",
   archiving: "bg-warning",
   archived: "bg-faint",
+}
+
+export function restoreFocusAfterUpdate(
+  target: { current: { focus(): void } | null },
+  schedule: (callback: () => void) => void = (callback) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => callback())
+    } else {
+      queueMicrotask(callback)
+    }
+  },
+): void {
+  schedule(() => target.current?.focus())
 }
 
 export const providerSettingsNavigationLabel = "Provider settings"
@@ -280,6 +325,8 @@ export function AppBar({
   bridge,
   onOpenProject,
   onPauseAll,
+  onOpenCommands,
+  commandShortcut,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -289,6 +336,8 @@ export function AppBar({
   bridge?: DesktopWindowBridge | undefined
   onOpenProject: () => void
   onPauseAll: () => void
+  onOpenCommands?: (() => void) | undefined
+  commandShortcut?: string | undefined
 }) {
   const emergencyStopMessage = emergencyStopError
     ? `Pause all failed: ${emergencyStopError}`
@@ -310,11 +359,21 @@ export function AppBar({
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
         <Badge variant="machine">
-          <span className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
+          <span aria-hidden="true" data-status-dot="" className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
+          <span className="sr-only">
+            {connected ? "Connected to " : "Disconnected from "}{snapshot?.machine.name ?? "daemon"}.
+          </span>
           <span className="hidden sm:inline">{snapshot?.machine.name ?? "daemon"}</span>
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
+        {onOpenCommands ? (
+          <Button variant="ghost" size="sm" aria-label="Open command palette" onClick={onOpenCommands}>
+            <SearchIcon data-icon="inline-start" />
+            <span className="hidden md:inline">Commands</span>
+            {commandShortcut ? <kbd className="hidden font-machine text-[9px] text-muted-foreground lg:inline">{commandShortcut}</kbd> : null}
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
@@ -366,7 +425,7 @@ export function emergencyStopAnnouncement(result: SystemEmergencyStopResult): st
   return `Pause all complete: ${summary.join(", ")}.`
 }
 
-function SessionRow({
+export function SessionRow({
   session,
   active,
   onActivate,
@@ -386,8 +445,9 @@ function SessionRow({
       )}
     >
       <span className="flex w-full items-start gap-2">
-        <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", statusClass[session.state])} />
+        <span aria-hidden="true" data-status-dot="" className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", statusClass[session.state])} />
         <span className="line-clamp-2 text-[12.5px] font-medium leading-[1.35]">{session.title}</span>
+        <span className="sr-only">Status: {session.state}</span>
       </span>
       <span className="ml-3.5 flex flex-wrap items-center gap-1">
         <Badge variant="machine">{session.runtime.provider}/{session.runtime.model}</Badge>
@@ -403,18 +463,20 @@ function SessionRow({
   )
 }
 
-function SessionsSidebar({
+export function SessionsSidebar({
   snapshot,
   onCollapse,
   onActivate,
   onNewSession,
   onOpenProviderSettings,
+  collapseButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
   onOpenProviderSettings: () => void
+  collapseButtonRef?: RefObject<HTMLButtonElement | null>
 }) {
   const groups = useMemo(
     () => [
@@ -427,10 +489,10 @@ function SessionsSidebar({
   )
 
   return (
-    <aside className="flex h-full min-w-0 flex-col bg-sidebar">
+    <aside aria-label="Sessions" data-workspace-panel="sessions" className="flex h-full min-w-0 flex-col bg-sidebar">
       <div className="flex h-11 items-center justify-between px-3">
         <span className="text-[9px] uppercase tracking-[0.15em] text-faint">Sessions</span>
-        <Button variant="ghost" size="icon-xs" aria-label="Collapse sessions" onClick={onCollapse}>
+        <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse sessions" onClick={onCollapse}>
           <PanelLeftCloseIcon />
         </Button>
       </div>
@@ -440,7 +502,7 @@ function SessionsSidebar({
         </Button>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
-          <Input className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
+          <Input aria-label="Search sessions, files, and skills" className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
         </div>
       </div>
       <Separator />
@@ -452,11 +514,11 @@ function SessionsSidebar({
             )
             return (
               <section key={group.label} className="flex flex-col gap-1">
-                <div className="flex h-7 items-center gap-2 px-2 text-[9px] uppercase tracking-[0.13em] text-faint">
+                <h2 className="m-0 flex h-7 items-center gap-2 px-2 text-[9px] font-normal uppercase tracking-[0.13em] text-faint">
                   <ChevronDownIcon className="size-3" />
                   {group.label}
                   <span className="font-machine">{sessions.length}</span>
-                </div>
+                </h2>
                 {sessions.map((session) => (
                   <SessionRow
                     key={session.id}
@@ -499,6 +561,7 @@ function ApprovalCard({
   ) => void
 }) {
   const cardRef = useRef<HTMLDivElement>(null)
+  const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
   const [explanation, setExplanation] = useState("")
   useEffect(() => {
@@ -514,6 +577,11 @@ function ApprovalCard({
     ["Network", approval.network],
     ["Est. duration", approval.estimatedDuration],
   ]
+  const closeExplanation = () => {
+    setExplainOpen(false)
+    setExplanation("")
+    restoreFocusAfterUpdate(explainTriggerRef)
+  }
 
   return (
     <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 p-4">
@@ -524,7 +592,7 @@ function ApprovalCard({
       </AlertTitle>
       <AlertDescription className="col-span-full flex flex-col gap-3">
         <p className="text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
-        <code className="rounded-md bg-warn-deep px-3 py-2 font-machine text-[11px] text-warn-foreground">
+        <code className="break-all whitespace-pre-wrap rounded-md bg-warn-deep px-3 py-2 font-machine text-[11px] text-warn-foreground">
           {approval.command}
         </code>
         <dl className="grid grid-cols-[100px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
@@ -546,6 +614,12 @@ function ApprovalCard({
               value={explanation}
               onChange={(event) => setExplanation(event.target.value)}
               onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  closeExplanation()
+                  return
+                }
                 if (event.key === "Enter" && explanation.trim()) {
                   onResolve("deny-explain", explanation.trim())
                 }
@@ -553,7 +627,7 @@ function ApprovalCard({
               placeholder="Explain what should change before retrying"
             />
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setExplainOpen(false)}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
               <Button
                 variant="warning"
                 size="sm"
@@ -566,7 +640,7 @@ function ApprovalCard({
           </div>
         ) : null}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={() => setExplainOpen(true)}>Deny and explain</Button>
+          <Button ref={explainTriggerRef} variant="ghost" size="sm" onClick={() => setExplainOpen(true)}>Deny and explain</Button>
           <Button variant="ghost" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
           <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
           <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
@@ -616,6 +690,8 @@ export function ProviderReadinessList({
 function LauncherDialog({
   mode,
   providers,
+  defaultProviderId,
+  defaultPermissionMode,
   onOpenChange,
   onOpenProject,
   onCreateSession,
@@ -623,6 +699,8 @@ function LauncherDialog({
 }: {
   mode: LauncherMode
   providers: readonly ProviderRuntime[]
+  defaultProviderId?: string
+  defaultPermissionMode: PermissionMode
   onOpenChange: (open: boolean) => void
   onOpenProject: (path: string) => Promise<void>
   onCreateSession: (title: string, runtime: Runtime) => Promise<void>
@@ -631,7 +709,11 @@ function LauncherDialog({
   const [value, setValue] = useState("")
   const [error, setError] = useState("")
   const [pending, setPending] = useState(false)
-  const [runtime, setRuntime] = useState(defaultRuntime)
+  const [runtime, setRuntime] = useState(() => ({
+    ...defaultRuntime,
+    ...(defaultProviderId ? { provider: defaultProviderId } : {}),
+    permissionMode: defaultPermissionMode,
+  }))
   const [models, setModels] = useState<ProviderModel[]>([])
   const [modelsPending, setModelsPending] = useState(false)
   const [modelsError, setModelsError] = useState("")
@@ -650,7 +732,9 @@ function LauncherDialog({
       return
     }
 
-    const provider = preferredSessionProvider(providers)
+    const provider = providers.find((candidate) =>
+      candidate.id === defaultProviderId && providerCanStartSession(candidate)
+    ) ?? preferredSessionProvider(providers)
     if (!provider) {
       setModels([])
       setModelsError("No provider on this machine can start a session")
@@ -658,7 +742,11 @@ function LauncherDialog({
     }
 
     const request = ++modelRequest.current
-    setRuntime({ ...defaultRuntime, provider: provider.id })
+    setRuntime({
+      ...defaultRuntime,
+      provider: provider.id,
+      permissionMode: defaultPermissionMode,
+    })
     setModels([])
     setModelsPending(true)
     setModelsError("")
@@ -678,7 +766,7 @@ function LauncherDialog({
     ).finally(() => {
       if (request === modelRequest.current) setModelsPending(false)
     })
-  }, [mode, onListModels, providerReadinessKey])
+  }, [defaultPermissionMode, defaultProviderId, mode, onListModels, providerReadinessKey])
 
   const selectProvider = (provider: ProviderRuntime) => {
     if (!providerCanStartSession(provider)) return
@@ -972,6 +1060,8 @@ export function Thread({
   onRestoreCheckpoint,
   onPauseSession,
   onArchiveSession,
+  onOpenExternal,
+  externalEditor = "system",
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -989,6 +1079,8 @@ export function Thread({
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
+  onOpenExternal?: ((path: string) => Promise<void>) | undefined
+  externalEditor?: DesktopExternalEditor | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -999,6 +1091,7 @@ export function Thread({
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
+  const [desktopError, setDesktopError] = useState("")
 
   if (!active) {
     const hasProject = snapshot.project !== null
@@ -1007,7 +1100,9 @@ export function Thread({
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">{hasProject ? <BotIcon /> : <FolderOpenIcon />}</EmptyMedia>
-            <EmptyTitle>{hasProject ? "No session is open" : "No project is open"}</EmptyTitle>
+            <EmptyTitle asChild>
+              <h1>{hasProject ? "No session is open" : "No project is open"}</h1>
+            </EmptyTitle>
             <EmptyDescription>
               {hasProject
                 ? "Start a session to create an isolated worktree and talk to an agent."
@@ -1099,6 +1194,16 @@ export function Thread({
     }
   }
 
+  const openExternal = async () => {
+    if (!active.workspacePath || !onOpenExternal) return
+    setDesktopError("")
+    try {
+      await onOpenExternal(active.workspacePath)
+    } catch (cause) {
+      setDesktopError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
+    }
+  }
+
   const updateRuntime = async (runtime: Runtime) => {
     if (runtimePending) return
     setRuntimePending(true)
@@ -1144,8 +1249,8 @@ export function Thread({
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
-      <div className="flex min-h-[76px] items-center justify-between gap-4 border-b px-5 py-3">
-        <div className="min-w-0">
+      <div className="flex min-h-[76px] flex-wrap items-start justify-between gap-4 border-b px-5 py-3">
+        <div className="min-w-0 flex-1">
           <h1 className="m-0 max-w-xl text-[17px] leading-[1.25] font-semibold tracking-[-0.01em]">
             {active.title}
           </h1>
@@ -1157,16 +1262,26 @@ export function Thread({
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
           </div>
         </div>
-        {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : <RuntimeControls
-          runtime={active.runtime}
-          providers={snapshot.machine.providers}
-          pending={runtimePending}
-          {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
-          {...(forkReason ? { forkBlockedReason: forkReason } : {})}
-          onChange={(runtime) => void updateRuntime(runtime)}
-          onFork={forkRuntime}
-          onListModels={onListModels}
-        />}
+        {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : (
+          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
+            <RuntimeControls
+              runtime={active.runtime}
+              providers={snapshot.machine.providers}
+              pending={runtimePending}
+              {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
+              {...(forkReason ? { forkBlockedReason: forkReason } : {})}
+              onChange={(runtime) => void updateRuntime(runtime)}
+              onFork={forkRuntime}
+              onListModels={onListModels}
+            />
+            {active.workspacePath && onOpenExternal ? (
+              <Button variant="outline" size="sm" onClick={() => void openExternal()}>
+                <ExternalLinkIcon data-icon="inline-start" />
+                {desktopExternalActionLabel(externalEditor)}
+              </Button>
+            ) : null}
+          </div>
+        )}
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
@@ -1177,7 +1292,7 @@ export function Thread({
               <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
             </Alert>
           ) : null}
-          {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
+          {renderedThreadForActiveSession(snapshot).map((item) => {
             if (item.kind === "checkpoint") {
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
@@ -1211,6 +1326,7 @@ export function Thread({
           </Alert>
         </div>
       ) : <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
+        {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         <div className="mx-auto flex max-w-[620px] flex-col gap-2 rounded-xl border bg-card p-3">
@@ -1228,15 +1344,15 @@ export function Thread({
               }
             }}
           />
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+          <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Badge variant="machine">{snapshot.machine.name}</Badge>
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
               {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span className="font-machine text-[9px] text-faint">Ctrl/⌘ + Enter send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
       </div>}
@@ -1246,6 +1362,12 @@ export function Thread({
 
 export function activeThreadKey(snapshot: WorkspaceSnapshot): string {
   return snapshot.activeSessionId ?? "no-active-session"
+}
+
+export function renderedThreadForActiveSession(snapshot: WorkspaceSnapshot): ThreadItem[] {
+  if (!snapshot.activeSessionId) return []
+  return boundedClientThread(snapshot.thread, snapshot.activeSessionId)
+    .filter((item) => item.sessionId === snapshot.activeSessionId)
 }
 
 export function sessionIsArchiveReadOnly(
@@ -1400,7 +1522,7 @@ export function RuntimeControls({
     if (permissionMode) onChange({ ...runtime, permissionMode: permissionMode as PermissionMode })
   }
   return (
-    <div className="flex max-w-[52%] flex-wrap items-center justify-end gap-1.5">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" disabled={pending}><BotIcon data-icon="inline-start" />{runtime.provider} / {runtime.model}<ChevronDownIcon data-icon="inline-end" /></Button>
@@ -1525,6 +1647,8 @@ export function HistoryPanel({
   )
   const [query, setQuery] = useState("")
   const [page, setPage] = useState<SessionHistoryPage>()
+  const [historyWindowed, setHistoryWindowed] = useState(false)
+  const [historyRefresh, setHistoryRefresh] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const requestRef = useRef(0)
@@ -1533,17 +1657,14 @@ export function HistoryPanel({
   useEffect(() => {
     const request = ++requestRef.current
     setPage(undefined)
+    setHistoryWindowed(false)
     setError("")
     if (!sessionId || !connected) {
       setLoading(false)
       return
     }
     setLoading(true)
-    void onLoad(sessionId, {
-      categories,
-      ...(query.trim() ? { query: query.trim() } : {}),
-      limit: 50,
-    }).then(
+    void onLoad(sessionId, latestSessionHistoryRequest(categories, query)).then(
       (next) => { if (request === requestRef.current) setPage(next) },
       (cause: unknown) => {
         if (request === requestRef.current) {
@@ -1554,7 +1675,7 @@ export function HistoryPanel({
       if (request === requestRef.current) setLoading(false)
     })
     return () => { requestRef.current += 1 }
-  }, [connected, filterKey, onLoad, sessionId])
+  }, [connected, filterKey, historyRefresh, onLoad, sessionId])
 
   const toggleCategory = (category: SessionHistoryCategory) => {
     if (categories.includes(category) && categories.length === 1) return
@@ -1578,9 +1699,10 @@ export function HistoryPanel({
         before: page.nextCursor,
         limit: 50,
       })
-      if (request === requestRef.current) setPage((current) =>
-        current ? mergeOlderHistory(current, older) : older
-      )
+      if (request === requestRef.current) {
+        setHistoryWindowed((current) => historyWindowedAfterMerge(current, page, older))
+        setPage(mergeOlderHistory(page, older))
+      }
     } catch (cause) {
       if (request === requestRef.current) {
         setError(cause instanceof Error ? cause.message : "Older history could not be loaded")
@@ -1588,6 +1710,13 @@ export function HistoryPanel({
     } finally {
       if (request === requestRef.current) setLoading(false)
     }
+  }
+
+  const backToLatest = () => {
+    const reset = resetSessionHistoryWindow({ page, historyWindowed, historyRefresh })
+    setPage(reset.page)
+    setHistoryWindowed(reset.historyWindowed)
+    setHistoryRefresh(reset.historyRefresh)
   }
 
   return (
@@ -1640,6 +1769,7 @@ export function HistoryPanel({
             <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+          {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
           {page?.hasMore ? <Button className="my-3 self-center" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
           {loading && !page ? <p role="status" className="p-4 text-center font-machine text-[10px] text-faint">Loading history</p> : null}
         </div>
@@ -1651,6 +1781,7 @@ export function HistoryPanel({
 export function ArtifactDock({
   snapshot,
   onCollapse,
+  collapseButtonRef,
   defaultTab,
   rpcUrl,
   authorizeArtifact,
@@ -1665,6 +1796,7 @@ export function ArtifactDock({
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
+  collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   rpcUrl: string
   authorizeArtifact: (input: {
@@ -1716,9 +1848,11 @@ export function ArtifactDock({
   const [compareRequested, setCompareRequested] = useState(false)
   const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
   const previewControlLayout = previewControlLayoutFor(stageContainerWidth)
-  const comparePreview = reviewLayout.compare
-    ? previewVariants.find((artifact) => artifact.id !== preview?.id)
-    : undefined
+  const reviewStages = previewStagesForReview(previewVariants, preview, reviewLayout.stages)
+  const comparisonStages = reviewStages.slice(1)
+  const comparisonStageKey = comparisonStages
+    .map((artifact) => `${artifact.sessionId}:${artifact.id}:${artifact.revision}`)
+    .join(",")
   const [bridgeState, setBridgeState] = useState(() => ({
     previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
     channel: createPreviewBridgeChannel(),
@@ -1742,7 +1876,9 @@ export function ArtifactDock({
   const [previewError, setPreviewError] = useState("")
   const [derivedArtifactPending, setDerivedArtifactPending] = useState<"print" | "download">()
   const [derivedArtifactError, setDerivedArtifactError] = useState("")
-  const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
+  const [comparisonStageUrls, setComparisonStageUrls] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  )
   const [previewThumbnailUrls, setPreviewThumbnailUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
   const previewThumbnailLifecycle = useRef(new PreviewThumbnailLifecycle())
   const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
@@ -1789,13 +1925,28 @@ export function ArtifactDock({
 
   useEffect(() => {
     let active = true
-    setComparePreviewUrl(undefined)
-    if (!comparePreview || !connected) return () => { active = false }
-    void authorizeArtifact({ sessionId: comparePreview.sessionId, artifactId: comparePreview.id, revision: comparePreview.revision, purpose: "preview" }).then((access) => {
-      if (active) setComparePreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
-    }, () => { if (active) setComparePreviewUrl(undefined) })
+    setComparisonStageUrls(new Map())
+    if (!comparisonStages.length || !connected) return () => { active = false }
+    const authorizeComparisonStages = async () => {
+      const entries: Array<readonly [string, string]> = []
+      await Promise.all(comparisonStages.map(async (artifact) => {
+        try {
+          const access = await authorizeArtifact({
+            sessionId: artifact.sessionId,
+            artifactId: artifact.id,
+            revision: artifact.revision,
+            purpose: "preview",
+          })
+          entries.push([artifact.id, artifactUrlFor(rpcUrl, access, window.location.origin)])
+        } catch {
+          // Keep failed comparison stages sandboxed and blank.
+        }
+      }))
+      if (active) setComparisonStageUrls(new Map(entries))
+    }
+    void authorizeComparisonStages()
     return () => { active = false }
-  }, [authorizeArtifact, comparePreview?.id, comparePreview?.revision, connected, rpcUrl])
+  }, [authorizeArtifact, comparisonStageKey, connected, rpcUrl])
 
   const postPickerState = (active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -1981,7 +2132,7 @@ export function ArtifactDock({
   }
 
   return (
-    <aside className="flex h-full min-w-0 flex-col bg-sidebar">
+    <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-sidebar">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
         <div className="flex h-11 items-center border-b px-2">
           <TabsList variant="line" className="min-w-0 flex-1 justify-start overflow-x-auto">
@@ -1996,7 +2147,7 @@ export function ArtifactDock({
             <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
-          <Button variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
+          <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
           {preview ? (
@@ -2057,21 +2208,27 @@ export function ArtifactDock({
                   <AlertDescription>{previewError}</AlertDescription>
                 </Alert>
               ) : (
-                <div ref={stageContainerRef} className="flex min-h-0 flex-1 justify-center gap-3 overflow-auto p-2">
-                <iframe
-                  ref={previewFrameRef}
-                  className="min-h-0 flex-1 border bg-background"
-                  style={{ width: Math.min(deviceWidth, reviewLayout.compare ? stageContainerWidth / 2 : stageContainerWidth), maxWidth: deviceWidth }}
-                  referrerPolicy="no-referrer"
-                  sandbox="allow-scripts"
-                  src={previewUrl ?? "about:blank"}
-                  title={preview.title}
-                  onLoad={() => {
-                    postPickerState(pickerActive)
-                    void capturePreviewThumbnail()
-                  }}
-                />
-                {comparePreview && comparePreviewUrl ? <iframe className="min-h-0 flex-1 border bg-background" style={{ width: Math.min(deviceWidth, stageContainerWidth / 2), maxWidth: deviceWidth }} referrerPolicy="no-referrer" sandbox="allow-scripts" src={comparePreviewUrl} title={`${comparePreview.title} comparison`} /> : null}
+                <div
+                  ref={stageContainerRef}
+                  className="grid min-h-0 flex-1 gap-3 overflow-auto p-2"
+                  style={{ gridTemplateColumns: previewStageGridColumns(reviewLayout.stages) }}
+                >
+                {reviewStages.map((artifact, index) => (
+                  <iframe
+                    key={artifact.id}
+                    ref={index === 0 ? previewFrameRef : undefined}
+                    className="min-h-0 w-full justify-self-center border bg-background"
+                    style={{ maxWidth: deviceWidth }}
+                    referrerPolicy="no-referrer"
+                    sandbox="allow-scripts"
+                    src={index === 0 ? previewUrl ?? "about:blank" : comparisonStageUrls.get(artifact.id) ?? "about:blank"}
+                    title={index === 0 ? artifact.title : `${artifact.title} comparison`}
+                    onLoad={index === 0 ? () => {
+                      postPickerState(pickerActive)
+                      void capturePreviewThumbnail()
+                    } : undefined}
+                  />
+                ))}
                 </div>
               )}
             </div>
@@ -2377,28 +2534,30 @@ function SidebarRail({
   onActivate,
   onExpand,
   onOpenProviderSettings,
+  expandButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
   onActivate: (sessionId: string) => void
   onExpand: () => void
   onOpenProviderSettings: () => void
+  expandButtonRef?: RefObject<HTMLButtonElement | null>
 }) {
   return (
-    <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
+    <aside aria-label="Collapsed sessions" data-workspace-panel="sessions-rail" className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
+      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
       <Separator />
-      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={session.title} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title}</TooltipContent></Tooltip>)}
+      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={`${session.title}. Status: ${session.state}`} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span aria-hidden="true" data-status-dot="" className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title} · {session.state}</TooltipContent></Tooltip>)}
       <span className="flex-1" />
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent></Tooltip>
     </aside>
   )
 }
 
-function DockRail({ onExpand }: { onExpand: () => void }) {
+function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
   const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
   return (
-    <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
+    <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
+      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
       <Separator />
       {items.map((Icon, index) => <Button key={index} variant="ghost" size="icon-sm" aria-label="Artifact dock item" onClick={onExpand}><Icon /></Button>)}
     </aside>
@@ -2433,6 +2592,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     pauseSession,
     queryAudit,
     readSkill,
+    refreshProviders,
     reconnect,
     restoreCheckpoint,
     resizeTerminal,
@@ -2457,12 +2617,66 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribe: subscribeTerminal,
   }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
+  const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
+  const sidebarExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
+  const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
+  const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
+  const deepLinkRoutingRef = useRef(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
-  const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
+  const [workspaceUi, setWorkspaceUi] = useState(() =>
+    loadWorkspaceUiState(browserWorkspaceUiStorage()),
+  )
+  const firstRunEnabled = desktopFirstRunAvailable(clientKind, windowBridge)
+  const [desktopFirstRun, setDesktopFirstRun] = useState<{
+    persisted: DesktopFirstRunState
+    open: boolean
+    selectedProviderId: string
+    permissionMode: PermissionMode
+    refreshing: boolean
+    error: string
+  }>(() => {
+    const persisted = firstRunEnabled
+      ? loadDesktopFirstRunState(browserDesktopFirstRunStorage())
+      : defaultDesktopFirstRunState()
+    return {
+      persisted,
+      open: firstRunEnabled && persisted.status === "pending",
+      selectedProviderId: persisted.status === "complete" ? persisted.providerId : "",
+      permissionMode: persisted.status === "complete" ? persisted.permissionMode : "build",
+      refreshing: false,
+      error: "",
+    }
+  })
+  const { dockCollapsed, externalEditor, layouts, sidebarCollapsed, surface } = workspaceUi
+  const commandPlatform: CommandPalettePlatform = windowBridge?.platform
+    ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
+  const setSidebarCollapsed = (collapsed: boolean) => {
+    const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
+      : null
+    setWorkspaceUi((current) => ({ ...current, sidebarCollapsed: collapsed }))
+    if ((collapsed && activePanel === "sessions") || (!collapsed && activePanel === "sessions-rail")) {
+      restoreFocusAfterUpdate(collapsed ? sidebarExpandButtonRef : sidebarCollapseButtonRef)
+    }
+  }
+  const setDockCollapsed = (collapsed: boolean) => {
+    const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
+      : null
+    setWorkspaceUi((current) => ({ ...current, dockCollapsed: collapsed }))
+    if ((collapsed && activePanel === "dock") || (!collapsed && activePanel === "dock-rail")) {
+      restoreFocusAfterUpdate(collapsed ? dockExpandButtonRef : dockCollapseButtonRef)
+    }
+  }
+  const setSurface = (nextSurface: WorkspaceSurface) => {
+    setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
+  }
   const [workspaceError, setWorkspaceError] = useState("")
   const [connectionError, setConnectionError] = useState("")
-  const [surface, setSurface] = useState<"workspace" | "providers" | "skills" | "audit">("workspace")
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -2470,6 +2684,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const activeWorkspacePath = snapshot?.sessions.find(
+    (session) => session.id === snapshot.activeSessionId,
+  )?.workspacePath
   const skillMachineKey = skillInventoryRefreshKey(snapshot)
   const skillMachine = useMemo(() => {
     if (skillMachineKey === "no-machine") return null
@@ -2494,27 +2711,220 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setConnectionError(cause instanceof Error ? cause.message : "The daemon could not be reached")
     })
   }
+  const retryDesktopFirstRun = () => {
+    if (!firstRunEnabled || desktopFirstRun.refreshing) return
+    setDesktopFirstRun((current) => ({ ...current, refreshing: true, error: "" }))
+    const refresh = async () => {
+      if (!connected) await reconnect()
+      await refreshProviders()
+    }
+    void refresh().catch((cause: unknown) => {
+      setDesktopFirstRun((current) => ({
+        ...current,
+        error: cause instanceof Error ? cause.message : "Provider diagnostics could not be refreshed",
+      }))
+    }).finally(() => {
+      setDesktopFirstRun((current) => ({ ...current, refreshing: false }))
+    })
+  }
+  const copyFirstRunGuidance = (value: string) => {
+    if (!windowBridge) return
+    setDesktopFirstRun((current) => ({ ...current, error: "" }))
+    void copyDesktopText(windowBridge, value).catch((cause: unknown) => {
+      setDesktopFirstRun((current) => ({
+        ...current,
+        error: cause instanceof Error ? cause.message : "Guidance could not be copied",
+      }))
+    })
+  }
+  const completeFirstRun = () => {
+    if (!firstRunEnabled || !connected || !snapshot) return
+    const provider = snapshot.machine.providers.find(
+      (candidate) => candidate.id === desktopFirstRun.selectedProviderId,
+    )
+    if (!provider || !providerFirstRunRecovery(
+      provider,
+      firstRunFailureForProvider(provider.id, snapshot.sessions),
+    ).canComplete) {
+      setDesktopFirstRun((current) => ({
+        ...current,
+        error: "Choose a provider whose diagnostics are ready before finishing setup.",
+      }))
+      return
+    }
+    const completed = completeDesktopFirstRun({
+      providerId: provider.id,
+      permissionMode: desktopFirstRun.permissionMode,
+    })
+    saveDesktopFirstRunState(browserDesktopFirstRunStorage(), completed)
+    setDesktopFirstRun((current) => ({
+      ...current,
+      persisted: completed,
+      open: false,
+      error: "",
+    }))
+  }
+  const resetFirstRun = () => {
+    if (!firstRunEnabled) return
+    resetDesktopFirstRunState(browserDesktopFirstRunStorage())
+    const providers = snapshot?.machine.providers ?? []
+    const provider = preferredSessionProvider(providers) ?? providers[0]
+    setDesktopFirstRun({
+      persisted: defaultDesktopFirstRunState(),
+      open: true,
+      selectedProviderId: provider?.id ?? "",
+      permissionMode: "build",
+      refreshing: false,
+      error: "",
+    })
+  }
   const pauseActiveTurns = () => {
     void emergencyStop()
   }
-  const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
-  const defaultLayout = useMemo(() => {
-    const saved = localStorage.getItem(layoutKey)
-    if (!saved) return undefined
-    try {
-      return JSON.parse(saved) as Record<string, number>
-    } catch {
-      return undefined
+  const requestOpenProject = () => {
+    if (!windowBridge) {
+      setLauncherMode("project")
+      return
     }
-  }, [layoutKey])
+    setWorkspaceError("")
+    void openProjectFromDesktop(windowBridge, openProject).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
+    })
+  }
+  const openActiveWorkspaceInEditor = () => {
+    if (!windowBridge || !activeWorkspacePath) return
+    setWorkspaceError("")
+    void openDesktopPath(windowBridge, activeWorkspacePath, externalEditor).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
+    })
+  }
+  const copyActiveWorkspacePath = () => {
+    if (!windowBridge || !activeWorkspacePath) return
+    setWorkspaceError("")
+    void copyDesktopText(windowBridge, activeWorkspacePath).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "Clipboard text could not be copied")
+    })
+  }
+  const openCommandPalette = () => {
+    commandPaletteFocusRef.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    setCommandPaletteOpen(true)
+  }
+  const workspaceCommands = buildWorkspaceCommands({
+    ...(windowBridge && activeWorkspacePath ? {
+      activeWorkspacePath,
+      copyWorktreePath: copyActiveWorkspacePath,
+      openInEditor: openActiveWorkspaceInEditor,
+      externalEditor,
+    } : {}),
+    connected,
+    emergencyStopPending,
+    hasProject: Boolean(snapshot?.project),
+    openProject: requestOpenProject,
+    newSession: () => setLauncherMode(snapshot?.project ? "session" : "project"),
+    pauseAll: pauseActiveTurns,
+    reconnect: reconnectDaemon,
+    setSurface,
+  })
+  const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
+  const defaultLayout = layouts[layoutKey]
 
   useEffect(() => {
-    localStorage.setItem("domovoi.sidebar-collapsed", String(sidebarCollapsed))
-  }, [sidebarCollapsed])
+    notificationTrackerRef.current = new WorkspaceNotificationTracker()
+  }, [clientKind, rpcUrl])
 
   useEffect(() => {
-    localStorage.setItem("domovoi.dock-collapsed", String(dockCollapsed))
-  }, [dockCollapsed])
+    if (!firstRunEnabled || !snapshot) return
+    const providers = snapshot.machine.providers
+    setDesktopFirstRun((current) => {
+      if (providers.some((provider) => provider.id === current.selectedProviderId)) return current
+      const persistedProviderId = current.persisted.status === "complete"
+        ? current.persisted.providerId
+        : undefined
+      const provider = providers.find((candidate) => candidate.id === persistedProviderId)
+        ?? preferredSessionProvider(providers)
+        ?? providers[0]
+      const selectedProviderId = provider?.id ?? ""
+      return selectedProviderId === current.selectedProviderId
+        ? current
+        : { ...current, selectedProviderId }
+    })
+  }, [firstRunEnabled, snapshot])
+
+  useEffect(() => {
+    if (!windowBridge) return
+    return windowBridge.onNotificationActivate((sessionId) => {
+      setWorkspaceError("")
+      void activateSession(sessionId).catch((cause: unknown) => {
+        setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+      })
+    })
+  }, [activateSession, windowBridge])
+
+  useEffect(() => {
+    if (!windowBridge) return
+    return windowBridge.onDeepLink((sessionId) => {
+      setPendingDeepLinks((current) => enqueueDesktopDeepLink(current, sessionId))
+    })
+  }, [windowBridge])
+
+  useEffect(() => {
+    const sessionId = pendingDeepLinks[0]
+    if (!sessionId || !connected || !snapshot || deepLinkRoutingRef.current) return
+    const removeLink = () => setPendingDeepLinks((current) =>
+      current[0] === sessionId ? current.slice(1) : current.filter((candidate) => candidate !== sessionId)
+    )
+    if (!snapshot.sessions.some((session) => session.id === sessionId)) {
+      setWorkspaceError("The linked session is not available on this machine")
+      removeLink()
+      return
+    }
+    deepLinkRoutingRef.current = true
+    setWorkspaceError("")
+    void activateSession(sessionId).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "The linked session could not be opened")
+    }).finally(() => {
+      deepLinkRoutingRef.current = false
+      removeLink()
+    })
+  }, [activateSession, connected, pendingDeepLinks, snapshot])
+
+  useEffect(() => {
+    if (!snapshot) return
+    const notifications = notificationTrackerRef.current.observe(snapshot)
+    if (!windowBridge) return
+    for (const notification of notifications) {
+      void windowBridge.notify(notification).catch(() => {})
+    }
+  }, [snapshot, windowBridge])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!commandPaletteShortcut(event, commandPlatform)) return
+      event.preventDefault()
+      if (commandPaletteOpen) {
+        setCommandPaletteOpen(false)
+      } else {
+        openCommandPalette()
+      }
+    }
+    globalThis.addEventListener("keydown", onKeyDown)
+    return () => globalThis.removeEventListener("keydown", onKeyDown)
+  }, [commandPaletteOpen, commandPlatform])
+
+  useEffect(() => {
+    if (!snapshot) return
+    setWorkspaceUi((current) => reconcileWorkspaceUiState(current, {
+      projectId: snapshot.project?.id ?? null,
+      activeSessionId: snapshot.activeSessionId,
+      sessionIds: snapshot.sessions.map(({ id }) => id),
+    }))
+  }, [snapshot])
+
+  useEffect(() => {
+    saveWorkspaceUiState(browserWorkspaceUiStorage(), workspaceUi)
+  }, [workspaceUi])
 
   useEffect(() => {
     if (connected) setConnectionError("")
@@ -2595,11 +3005,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} onPauseAll={pauseActiveTurns} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         {!connected ? (
-          <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
-            <span className="size-2 shrink-0 rounded-full bg-destructive" />
-            <span>{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
+          <div role="status" aria-live="polite" aria-atomic="true" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
+            <span aria-hidden="true" data-status-dot="" className="size-2 shrink-0 rounded-full bg-destructive" />
+            <span className="min-w-0 flex-1 break-words">{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
             <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
             {onChangeCredential ? <Button variant="outline" size="sm" onClick={onChangeCredential}>Change credential</Button> : null}
             <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
@@ -2612,6 +3022,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
+            {...(firstRunEnabled ? { onResetFirstRun: resetFirstRun } : {})}
+            {...(windowBridge ? {
+              externalEditor,
+              onExternalEditorChange: (editor: DesktopExternalEditor) => {
+                setWorkspaceUi((current) => ({ ...current, externalEditor: editor }))
+              },
+            } : {})}
           />
         ) : snapshot && surface === "skills" ? (
           <SkillBrowser
@@ -2637,28 +3054,32 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : snapshot ? (
           <div className="flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} /> : null}
+            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} expandButtonRef={sidebarExpandButtonRef} /> : null}
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
               className="min-h-0 min-w-0 flex-1"
               {...(defaultLayout ? { defaultLayout } : {})}
               onLayoutChanged={(layout, meta) => {
-                if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
+                if (!meta.isUserInteraction) return
+                setWorkspaceUi((current) => ({
+                  ...current,
+                  layouts: { ...current.layouts, [layoutKey]: layout },
+                }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
-            {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
+            {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>
         ) : (
           <main className="flex min-h-0 flex-1 bg-background">
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon"><DomovoiMark reduced className="size-5" /></EmptyMedia>
-                <EmptyTitle>Connecting to the daemon</EmptyTitle>
+                <EmptyTitle asChild><h1>Connecting to the daemon</h1></EmptyTitle>
                 <EmptyDescription>Domovoi will show workspace state after the execution machine responds.</EmptyDescription>
               </EmptyHeader>
             </Empty>
@@ -2677,11 +3098,53 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         {snapshot ? <LauncherDialog
           mode={launcherMode}
           providers={snapshot.machine.providers}
+          {...(desktopFirstRun.persisted.status === "complete"
+            ? { defaultProviderId: desktopFirstRun.persisted.providerId }
+            : {})}
+          defaultPermissionMode={desktopFirstRun.persisted.status === "complete"
+            ? desktopFirstRun.persisted.permissionMode
+            : "build"}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
           onOpenProject={openProject}
           onCreateSession={createSession}
           onListModels={listModels}
         /> : null}
+        <CommandPalette
+          open={commandPaletteOpen}
+          platform={commandPlatform}
+          commands={workspaceCommands}
+          onOpenChange={setCommandPaletteOpen}
+          restoreFocusTo={commandPaletteFocusRef.current}
+        />
+        {firstRunEnabled ? (
+          <DesktopFirstRunDialog
+            open={desktopFirstRun.open}
+            connected={connected}
+            {...(snapshot ? {
+              machine: {
+                name: snapshot.machine.name,
+                platform: snapshot.machine.platform,
+                version: snapshot.machine.version,
+              },
+            } : {})}
+            providers={snapshot?.machine.providers ?? []}
+            sessions={snapshot?.sessions ?? []}
+            selectedProviderId={desktopFirstRun.selectedProviderId}
+            permissionMode={desktopFirstRun.permissionMode}
+            refreshing={desktopFirstRun.refreshing}
+            recoveryError={desktopFirstRun.error}
+            onProviderChange={(selectedProviderId) => {
+              setDesktopFirstRun((current) => ({ ...current, selectedProviderId, error: "" }))
+            }}
+            onPermissionModeChange={(permissionMode) => {
+              setDesktopFirstRun((current) => ({ ...current, permissionMode }))
+            }}
+            onRetry={retryDesktopFirstRun}
+            onCopyGuidance={copyFirstRunGuidance}
+            onSkip={() => setDesktopFirstRun((current) => ({ ...current, open: false }))}
+            onComplete={completeFirstRun}
+          />
+        ) : null}
       </div>
     </TooltipProvider>
   )

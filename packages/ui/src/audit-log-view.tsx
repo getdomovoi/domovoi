@@ -274,7 +274,7 @@ export function AuditLogView({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
+      <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
         <Button variant="ghost" className="mb-2 justify-start" onClick={onBack}>
           <ArrowLeftIcon data-icon="inline-start" />
           Workspace
@@ -286,13 +286,13 @@ export function AuditLogView({
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto flex w-full max-w-[900px] flex-col px-4 py-5 sm:px-8 sm:py-7">
-          <div className="mb-3 -ml-2 flex items-center gap-1 self-start sm:hidden">
+          <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 self-start sm:hidden">
             <Button variant="ghost" className="min-h-11" onClick={onBack}>
               <ArrowLeftIcon data-icon="inline-start" />
               Workspace
             </Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
-          </div>
+          </nav>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h1 className="m-0 text-[17px] font-semibold">Audit log</h1>

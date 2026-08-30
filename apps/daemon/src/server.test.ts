@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createEmptyWorkspace,
   demoWorkspace,
+  maximumEffectiveClientThreadItems,
   maximumWorkspaceDeltaChunkLength,
   workspaceSnapshotSchema,
   type ProviderModel,
@@ -1361,7 +1362,7 @@ describe("DomovoiDaemon", () => {
   it("bounds client snapshots without deleting durable session history", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
-    snapshot.thread = Array.from({ length: 105 }, (_, index) => ({
+    snapshot.thread = Array.from({ length: maximumEffectiveClientThreadItems + 5 }, (_, index) => ({
       id: `message-${index}`,
       sessionId: session.id,
       kind: "user" as const,
@@ -1371,9 +1372,31 @@ describe("DomovoiDaemon", () => {
 
     const clientSnapshot = workspaceSnapshotForClient(snapshot)
 
-    expect(clientSnapshot.thread).toHaveLength(100)
+    expect(clientSnapshot.thread).toHaveLength(maximumEffectiveClientThreadItems)
     expect(clientSnapshot.thread[0]?.id).toBe("message-5")
-    expect(snapshot.thread).toHaveLength(105)
+    expect(snapshot.thread).toHaveLength(maximumEffectiveClientThreadItems + 5)
+  })
+
+  it("bounds client thread retention globally and prioritizes the active session", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions[0]!
+    const inactive = snapshot.sessions[1]!
+    snapshot.activeSessionId = active.id
+    snapshot.thread = [active, inactive].flatMap((session) =>
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `${session.id}-message-${index}`,
+        sessionId: session.id,
+        kind: "user" as const,
+        body: `Message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+      })),
+    )
+
+    const clientSnapshot = workspaceSnapshotForClient(snapshot)
+
+    expect(clientSnapshot.thread).toHaveLength(100)
+    expect(clientSnapshot.thread.every((item) => item.sessionId === active.id)).toBe(true)
+    expect(snapshot.thread).toHaveLength(200)
   })
 
   it("marks client history truncation so fork ancestry remains parseable", () => {
@@ -2704,9 +2727,20 @@ describe("DomovoiDaemon", () => {
     running.push(daemon)
     const address = await daemon.start()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const notifications: Array<Record<string, unknown>> = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>
+      if (message.method === "workspace.changed") notifications.push(message)
+    })
     const rpc = (id: number, method: string, params: Record<string, unknown>) =>
       new Promise<Record<string, unknown>>((resolve) => {
-        socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       })
     await new Promise<void>((resolve) => socket.once("open", () => resolve()))
@@ -2772,6 +2806,17 @@ describe("DomovoiDaemon", () => {
       enabled: false,
     })
     expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
+    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "workspace.changed",
+        params: expect.objectContaining({
+          skillEnablements: [expect.objectContaining({
+            skillId: currentSkill.id,
+            enabled: false,
+          })],
+        }),
+      }),
+    ])))
     expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
       actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
       action: "skill.setEnabled",
@@ -2866,6 +2911,56 @@ describe("DomovoiDaemon", () => {
         },
       },
     })
+    socket.close()
+  })
+
+  it("re-probes provider readiness on authenticated refresh without accepting credentials", async () => {
+    const providerProbe = {
+      inspect: vi.fn()
+        .mockResolvedValueOnce([
+          { id: "codex", command: "codex", status: "unknown" as const },
+        ])
+        .mockResolvedValueOnce([
+          { id: "codex", command: "codex", status: "ready" as const, version: "0.149.0" },
+        ]),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      providerProbe,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.once("error", reject)
+      socket.once("open", () => socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "provider.refresh",
+        params: { client: "desktop" },
+      })))
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+
+    expect(providerProbe.inspect).toHaveBeenCalledTimes(2)
+    expect(response).toMatchObject({
+      result: {
+        machine: {
+          providers: [{
+            id: "codex",
+            status: "ready",
+            version: "0.149.0",
+            sessionCapable: true,
+          }],
+        },
+      },
+    })
+    expect(JSON.stringify(response)).not.toMatch(/credential|password|secret|token/i)
     socket.close()
   })
 

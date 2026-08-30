@@ -805,6 +805,31 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("refreshes provider readiness through an attributed daemon request", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const refreshing = client.refreshProviders()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "provider.refresh",
+      params: { client: "desktop" },
+    })
+    const refreshed = structuredClone(demoWorkspace)
+    refreshed.machine.providers = [{
+      id: "codex",
+      command: "codex",
+      status: "ready",
+      sessionCapable: true,
+    }]
+    socket.receive({ jsonrpc: "2.0", id: 2, result: refreshed })
+    await expect(refreshing).resolves.toEqual(refreshed)
+    client.disconnect()
+  })
+
   it("lists daemon skills without parsing them as workspace state", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()

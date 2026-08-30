@@ -1,16 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron"
 
-contextBridge.exposeInMainWorld("domovoiDesktop", {
-  platform: process.platform,
-  getRpcToken: () => ipcRenderer.invoke("domovoi:rpc-token") as Promise<string>,
-  captureAnnotation: (rect: { x: number; y: number; width: number; height: number }) =>
-    ipcRenderer.invoke("domovoi:capture-annotation", rect) as Promise<{
-      mimeType: "image/png"
-      width: number
-      height: number
-      data: string
-    }>,
-  minimize: () => ipcRenderer.send("window:minimize"),
-  maximize: () => ipcRenderer.send("window:maximize"),
-  close: () => ipcRenderer.send("window:close"),
-})
+import { createDesktopWindowBridge, type IpcRendererAdapter } from "./desktop-bridge.js"
+
+if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") {
+  throw new Error("Domovoi Desktop does not support this platform")
+}
+
+const ipc: IpcRendererAdapter = {
+  invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args) as Promise<unknown>,
+  send: (channel, ...args) => ipcRenderer.send(channel, ...args),
+  on: (channel, listener) => ipcRenderer.on(channel, listener),
+  removeListener: (channel, listener) => ipcRenderer.removeListener(channel, listener),
+}
+
+contextBridge.exposeInMainWorld(
+  "domovoiDesktop",
+  createDesktopWindowBridge(ipc, process.platform),
+)

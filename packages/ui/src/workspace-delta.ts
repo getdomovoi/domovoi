@@ -1,4 +1,4 @@
-import type { WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { boundedClientThread, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 export function applyWorkspaceDelta(
   snapshot: WorkspaceSnapshot,
@@ -70,7 +70,7 @@ export function applyWorkspaceDelta(
     sessions: snapshot.sessions.map((candidate) => candidate.id === delta.sessionId
       ? { ...candidate, updatedAt: delta.updatedAt }
       : candidate),
-    thread,
+    thread: boundedClientThread(thread, snapshot.activeSessionId),
     artifacts,
   }
 }

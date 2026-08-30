@@ -1,19 +1,86 @@
-import { join } from "node:path"
+import { homedir } from "node:os"
+import { realpath, stat } from "node:fs/promises"
+import { join, resolve } from "node:path"
 import { randomBytes } from "node:crypto"
 
 import { DomovoiDaemon } from "@getdomovoi/daemon"
-import { app, BrowserWindow, dialog, ipcMain } from "electron"
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
-import { startOwnedDaemon } from "./owned-daemon.js"
+import { startDesktop, startOwnedDaemon } from "./owned-daemon.js"
+import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { captureAnnotationPng } from "./annotation-capture.js"
+import { DesktopNotificationController } from "./desktop-notifications.js"
+import {
+  chooseDirectory,
+  ExternalTargetController,
+  SafeClipboard,
+  type DesktopPlatform,
+} from "./desktop-platform.js"
+import {
+  DesktopDeepLinkQueue,
+  deepLinksFromArgv,
+  parseDomovoiDeepLink,
+  type DesktopDeepLink,
+} from "./deep-links.js"
+
+if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") {
+  throw new Error("Domovoi Desktop does not support this platform")
+}
 
 let mainWindow: BrowserWindow | undefined
 let localDaemon: DomovoiDaemon | undefined
+let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
+const desktopPlatform: DesktopPlatform = process.platform
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
+const deepLinks = new DesktopDeepLinkQueue()
+const startupMetrics = new DesktopStartupMetrics({
+  enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
+})
+const desktopFileSystem = { realpath, stat }
+const safeClipboard = new SafeClipboard({
+  readText: () => clipboard.readText(),
+  writeText: (value) => clipboard.writeText(value),
+})
+const externalTargets = new ExternalTargetController({
+  openPath: (path) => shell.openPath(path),
+  openExternal: (url) => shell.openExternal(url),
+}, desktopFileSystem, {
+  platform: desktopPlatform,
+  allowedRoots: [join(homedir(), ".domovoi", "worktrees")],
+})
+const desktopNotifications = new DesktopNotificationController({
+  isSupported: () => Notification.isSupported(),
+  create: (options) => {
+    const notification = new Notification(options)
+    return {
+      once: (event, listener) => {
+        if (event === "click") notification.once("click", listener)
+        else notification.once("failed", listener)
+      },
+      show: () => notification.show(),
+    }
+  },
+})
 
 async function ensureDaemon(): Promise<void> {
   const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831, authToken: rpcToken })
   localDaemon = await startOwnedDaemon(daemon)
+}
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
+
+function acceptDeepLink(link: DesktopDeepLink): void {
+  focusMainWindow()
+  deepLinks.enqueue(link)
+}
+
+function authorizedDesktopSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents)
 }
 
 function createWindow(): void {
@@ -35,8 +102,17 @@ function createWindow(): void {
       sandbox: true,
     },
   })
+  startupMetrics.mark("window-created")
 
-  mainWindow.once("ready-to-show", () => mainWindow?.show())
+  mainWindow.once("ready-to-show", () => {
+    startupMetrics.mark("ready-to-show")
+    mainWindow?.show()
+  })
+  mainWindow.once("closed", () => {
+    if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
+    rendererDeepLinkSink = undefined
+    mainWindow = undefined
+  })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault())
 
@@ -47,15 +123,23 @@ function createWindow(): void {
   }
 }
 
-ipcMain.on("window:minimize", () => mainWindow?.minimize())
-ipcMain.on("window:maximize", () => {
+ipcMain.on("window:minimize", (event) => {
+  if (authorizedDesktopSender(event)) mainWindow?.minimize()
+})
+ipcMain.on("window:maximize", (event) => {
+  if (!authorizedDesktopSender(event)) return
   if (mainWindow?.isMaximized()) mainWindow.unmaximize()
   else mainWindow?.maximize()
 })
-ipcMain.on("window:close", () => mainWindow?.close())
-ipcMain.handle("domovoi:rpc-token", () => rpcToken)
+ipcMain.on("window:close", (event) => {
+  if (authorizedDesktopSender(event)) mainWindow?.close()
+})
+ipcMain.handle("domovoi:rpc-token", (event) => {
+  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
+  return rpcToken
+})
 ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) {
+  if (!authorizedDesktopSender(event) || !mainWindow) {
     throw new Error("Annotation capture sender is not authorized")
   }
   return captureAnnotationPng(mainWindow.webContents, rect as {
@@ -65,18 +149,105 @@ ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
     height: number
   })
 })
-
-app.whenReady().then(async () => {
-  await ensureDaemon()
-  createWindow()
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+ipcMain.handle("domovoi:notify", (event, request: unknown) => {
+  if (!authorizedDesktopSender(event)) return false
+  return desktopNotifications.notify(request, (sessionId) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    focusMainWindow()
+    mainWindow.webContents.send("domovoi:notification-activate", sessionId)
   })
-}).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unknown daemon startup failure"
-  dialog.showErrorBox("Domovoi could not start", message)
-  app.quit()
 })
+
+ipcMain.handle("domovoi:open-directory", async (event) => {
+  if (!authorizedDesktopSender(event) || !mainWindow) throw new Error("Desktop request is not authorized")
+  const result = await chooseDirectory({
+    showOpenDirectory: () => dialog.showOpenDialog(mainWindow!, {
+      title: "Open a project",
+      buttonLabel: "Open project",
+      properties: ["openDirectory"],
+    }),
+  }, desktopFileSystem, desktopPlatform)
+  if (result.status === "selected") externalTargets.allowRoot(result.path)
+  return result
+})
+
+ipcMain.handle("domovoi:clipboard-read", (event) => {
+  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
+  return safeClipboard.readText()
+})
+
+ipcMain.handle("domovoi:clipboard-write", (event, value: unknown) => {
+  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
+  return safeClipboard.writeText(value)
+})
+
+ipcMain.handle("domovoi:open-external", (event, request: unknown) => {
+  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
+  return externalTargets.open(request)
+})
+
+ipcMain.on("domovoi:deep-link-ready", (event) => {
+  if (!authorizedDesktopSender(event)) return
+  if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
+  const sink = (link: DesktopDeepLink) => {
+    if (!authorizedDesktopSender(event)) {
+      deepLinks.pause(sink)
+      if (rendererDeepLinkSink === sink) rendererDeepLinkSink = undefined
+      deepLinks.enqueue(link)
+      return
+    }
+    event.sender.send("domovoi:deep-link", link.sessionId)
+  }
+  rendererDeepLinkSink = sink
+  deepLinks.ready(sink)
+})
+
+ipcMain.on("domovoi:deep-link-paused", (event) => {
+  if (!authorizedDesktopSender(event) || !rendererDeepLinkSink) return
+  deepLinks.pause(rendererDeepLinkSink)
+  rendererDeepLinkSink = undefined
+})
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  if (process.defaultApp && process.argv[1]) {
+    app.setAsDefaultProtocolClient("domovoi", process.execPath, [resolve(process.argv[1])])
+  } else {
+    app.setAsDefaultProtocolClient("domovoi")
+  }
+
+  for (const link of deepLinksFromArgv(process.argv)) deepLinks.enqueue(link)
+
+  app.on("second-instance", (_event, commandLine) => {
+    focusMainWindow()
+    for (const link of deepLinksFromArgv(commandLine)) acceptDeepLink(link)
+  })
+
+  app.on("open-url", (event, url) => {
+    event.preventDefault()
+    const link = parseDomovoiDeepLink(url)
+    if (link) acceptDeepLink(link)
+  })
+
+  app.whenReady().then(async () => {
+    startupMetrics.mark("app-ready")
+    await startDesktop(createWindow, async () => {
+      await ensureDaemon()
+      startupMetrics.mark("daemon-ready")
+    })
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  }).catch(() => {
+    dialog.showErrorBox(
+      "Domovoi could not start",
+      "The local daemon did not start. Check Domovoi logs and try again.",
+    )
+    app.quit()
+  })
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
