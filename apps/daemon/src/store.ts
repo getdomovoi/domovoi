@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite"
 import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
+import { redactWorkspaceCopies } from "./secret-redaction.js"
 
 type StoredWorkspace = {
   snapshot: string
@@ -36,7 +37,7 @@ function migrateStoredWorkspace(value: unknown): {
   repaired: boolean
 } {
   if (!isRecord(value) || !isRecord(value.machine) || !isRecord(value.project)) {
-    return { snapshot: workspaceSnapshotSchema.parse(value), repaired: false }
+    return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false)
   }
   const machineId = value.machine.id
   const storedMachineId = value.project.machineId
@@ -45,7 +46,7 @@ function migrateStoredWorkspace(value: unknown): {
     || machineId.length === 0
     || typeof storedMachineId !== "string"
     || storedMachineId === machineId
-  ) return { snapshot: workspaceSnapshotSchema.parse(value), repaired: false }
+  ) return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false)
 
   const migrated = structuredClone(value)
   const project = migrated.project as Record<string, unknown>
@@ -70,7 +71,18 @@ function migrateStoredWorkspace(value: unknown): {
       createdAt: new Date().toISOString(),
     })
   }
-  return { snapshot: workspaceSnapshotSchema.parse(migrated), repaired: true }
+  return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(migrated), true)
+}
+
+function finalizeStoredWorkspace(
+  snapshot: WorkspaceSnapshot,
+  repaired: boolean,
+): { snapshot: WorkspaceSnapshot; repaired: boolean } {
+  const sanitized = redactWorkspaceCopies(snapshot)
+  return {
+    snapshot: sanitized,
+    repaired: repaired || JSON.stringify(sanitized) !== JSON.stringify(snapshot),
+  }
 }
 
 export class SqliteWorkspaceStore implements WorkspaceStore {
@@ -128,7 +140,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 
   save(snapshot: WorkspaceSnapshot): void {
-    const validated = workspaceSnapshotSchema.parse(snapshot)
+    const validated = workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot))
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)
