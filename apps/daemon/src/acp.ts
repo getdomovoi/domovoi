@@ -123,7 +123,8 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   async stopThread(threadId: string): Promise<void> {
     this.#cancelPermissions(threadId)
-    this.#activeTurns.delete(threadId)
+    const active = this.#activeTurns.delete(threadId)
+    if (active) await this.#requirePeer().cancel(threadId)
     await this.#requirePeer().closeSession(threadId)
   }
 
