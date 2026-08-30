@@ -2869,6 +2869,56 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("re-probes provider readiness on authenticated refresh without accepting credentials", async () => {
+    const providerProbe = {
+      inspect: vi.fn()
+        .mockResolvedValueOnce([
+          { id: "codex", command: "codex", status: "unknown" as const },
+        ])
+        .mockResolvedValueOnce([
+          { id: "codex", command: "codex", status: "ready" as const, version: "0.149.0" },
+        ]),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      providerProbe,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.once("error", reject)
+      socket.once("open", () => socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "provider.refresh",
+        params: { client: "desktop" },
+      })))
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 1) resolve(message as Record<string, unknown>)
+      })
+    })
+
+    expect(providerProbe.inspect).toHaveBeenCalledTimes(2)
+    expect(response).toMatchObject({
+      result: {
+        machine: {
+          providers: [{
+            id: "codex",
+            status: "ready",
+            version: "0.149.0",
+            sessionCapable: true,
+          }],
+        },
+      },
+    })
+    expect(JSON.stringify(response)).not.toMatch(/credential|password|secret|token/i)
+    socket.close()
+  })
+
   it("reports provider keychain status without mutation RPC", async () => {
     const providerSecrets = {
       status: vi.fn((): ProviderSecretStatus[] => [

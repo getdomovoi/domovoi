@@ -299,6 +299,14 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.listModels(provider)
   }, [])
 
+  const refreshProviders = useCallback(async (): Promise<WorkspaceSnapshot> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    const next = await client.refreshProviders()
+    updateSnapshotFrom(client, next)
+    return next
+  }, [updateSnapshotFrom])
+
   const listSkills = useCallback(async (): Promise<SkillSummary[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -503,6 +511,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     pauseSession,
     queryAudit,
     readSkill,
+    refreshProviders,
     reconnect,
     restoreCheckpoint,
     resizeTerminal,

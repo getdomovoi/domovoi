@@ -68,13 +68,16 @@ describe("ProviderSettings", () => {
         {...shared}
         externalEditor="cursor"
         onExternalEditorChange={vi.fn()}
+        onResetFirstRun={vi.fn()}
       />,
     )
 
     expect(webMarkup).toContain("Providers on this machine")
     expect(webMarkup).not.toContain("External editor")
     expect(webMarkup).not.toContain("external-editor-label")
+    expect(webMarkup).not.toContain("First-run setup")
     expect(desktopMarkup).toContain(">External editor</button>")
+    expect(desktopMarkup).toContain(">First-run setup</button>")
   })
 
   it("renders signed-handoff provider readiness and keychain status", () => {
@@ -91,6 +94,7 @@ describe("ProviderSettings", () => {
         onOpenAudit={vi.fn()}
         externalEditor="cursor"
         onExternalEditorChange={vi.fn()}
+        onResetFirstRun={vi.fn()}
       />,
     )
 

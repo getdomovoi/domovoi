@@ -141,6 +141,20 @@ describe("provider secret RPC contracts", () => {
 
 })
 
+describe("provider readiness refresh RPC contracts", () => {
+  it("returns a daemon snapshot and accepts only an attributed client", () => {
+    expect(rpcMethods["provider.refresh"].params.parse({ client: "desktop" })).toEqual({
+      client: "desktop",
+    })
+    expect(rpcMethods["provider.refresh"].result.parse(demoWorkspace)).toEqual(demoWorkspace)
+    expect(rpcMethods["provider.refresh"].params.safeParse({}).success).toBe(false)
+    expect(rpcMethods["provider.refresh"].params.safeParse({
+      client: "desktop",
+      token: "forbidden",
+    }).success).toBe(false)
+  })
+})
+
 describe("session usage RPC contracts", () => {
   it("keeps token and reported-cost totals attributable to a runtime", () => {
     expect(rpcMethods["session.usage"].result.parse({
