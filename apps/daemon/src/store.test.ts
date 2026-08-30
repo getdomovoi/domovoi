@@ -15,6 +15,98 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("redacts every durable command copy and drops legacy secret-bearing rules", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-redaction-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const changed = structuredClone(demoWorkspace)
+    changed.approvals[0]!.risk = "normal"
+    changed.approvals[0]!.command = "pnpm test --token persisted-command-secret"
+    changed.approvals[0]!.operation = "Authorization: Bearer persisted-reason-secret"
+    changed.approvalRules.push({
+      id: "rule-secret",
+      projectId: changed.project!.id,
+      operation: "Deploy with secret",
+      command: "deploy --api-key persisted-rule-secret",
+      createdBy: "desktop",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+    changed.thread.push({
+      id: "tool-secret",
+      sessionId: changed.sessions[0]!.id,
+      kind: "tool",
+      tool: "command",
+      status: "completed",
+      title: "pnpm test --password persisted-title-secret",
+      output: "token=persisted-output-secret",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+
+    store.save(changed)
+    const loaded = store.load()
+    expect(loaded.approvals[0]).toMatchObject({
+      risk: "hard-gate",
+      command: "pnpm test --token [REDACTED]",
+      operation: "Authorization: [REDACTED]",
+    })
+    expect(loaded.approvalRules).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "rule-secret" }),
+    ]))
+    expect(loaded.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "tool-secret",
+        title: "pnpm test --password [REDACTED]",
+        output: "token=[REDACTED]",
+      }),
+    ]))
+    const database = new DatabaseSync(databasePath)
+    const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+    database.close()
+    expect(JSON.stringify(raw)).not.toMatch(
+      /persisted-command-secret|persisted-reason-secret|persisted-rule-secret|persisted-title-secret|persisted-output-secret/,
+    )
+    store.close()
+  })
+
+  it("repairs a pre-existing raw snapshot before returning it after restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-redaction-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    legacy.thread.push({
+      id: "legacy-tool-secret",
+      sessionId: legacy.sessions[0]!.id,
+      kind: "tool",
+      tool: "command",
+      status: "completed",
+      title: "pnpm test --token legacy-command-secret",
+      output: "password=legacy-output-secret",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    expect(visible.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "legacy-tool-secret",
+        title: "pnpm test --token [REDACTED]",
+        output: "password=[REDACTED]",
+      }),
+    ]))
+    reopened.close()
+    const repaired = new DatabaseSync(databasePath)
+    const raw = repaired.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+    repaired.close()
+    expect(JSON.stringify(raw)).not.toMatch(/legacy-command-secret|legacy-output-secret/)
+  })
+
   it("keeps audit receipts across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
