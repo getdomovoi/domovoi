@@ -150,6 +150,22 @@ describe("AcpAgentAdapter", () => {
     expect(peer.cancel).toHaveBeenCalledWith("acp-session")
   })
 
+  it("cancels an active turn before closing a session", async () => {
+    const { adapter, peer } = createHarness()
+    peer.prompt.mockImplementation(() => new Promise(() => {}))
+    await adapter.connect()
+    await adapter.startThread({ cwd: "/repo", runtime })
+    await adapter.startTurn({ threadId: "acp-session", cwd: "/repo", prompt: "Ship it", runtime })
+
+    await adapter.stopThread("acp-session")
+
+    expect(peer.cancel).toHaveBeenCalledWith("acp-session")
+    expect(peer.closeSession).toHaveBeenCalledWith("acp-session")
+    expect(peer.cancel.mock.invocationCallOrder[0]).toBeLessThan(
+      peer.closeSession.mock.invocationCallOrder[0]!,
+    )
+  })
+
   it("declares build-auto and mid-turn steering unsupported", async () => {
     const { adapter } = createHarness()
     expect(adapter.permissionCapabilities).toEqual({ buildAuto: "unsupported" })
