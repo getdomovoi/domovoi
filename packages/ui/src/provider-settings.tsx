@@ -22,6 +22,23 @@ export type ProviderSecretStatus = {
   source: "keychain"
 }
 
+type ProviderSettingsProps = {
+  providers: readonly ProviderRuntime[]
+  secrets: readonly ProviderSecretStatus[]
+  onBack: () => void
+  onOpenSkills: () => void
+  onOpenAudit: () => void
+} & (
+  | {
+    externalEditor: DesktopExternalEditor
+    onExternalEditorChange: (editor: DesktopExternalEditor) => void
+  }
+  | {
+    externalEditor?: undefined
+    onExternalEditorChange?: undefined
+  }
+)
+
 export function ProviderSettings({
   providers,
   secrets,
@@ -30,16 +47,14 @@ export function ProviderSettings({
   onOpenSkills,
   onOpenAudit,
   onExternalEditorChange,
-}: {
-  providers: readonly ProviderRuntime[]
-  secrets: readonly ProviderSecretStatus[]
-  externalEditor: DesktopExternalEditor
-  onBack: () => void
-  onOpenSkills: () => void
-  onOpenAudit: () => void
-  onExternalEditorChange: (editor: DesktopExternalEditor) => void
-}) {
+}: ProviderSettingsProps) {
   const [section, setSection] = useState<"providers" | "external-editor">("providers")
+  const editorCapability = externalEditor !== undefined && onExternalEditorChange !== undefined
+    ? { editor: externalEditor, onChange: onExternalEditorChange }
+    : undefined
+  const activeSection = section === "external-editor" && editorCapability
+    ? "external-editor"
+    : "providers"
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -49,8 +64,8 @@ export function ProviderSettings({
           Workspace
         </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
-        <Button variant={section === "providers" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("providers")}>Providers</Button>
-        <Button variant={section === "external-editor" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("external-editor")}>External editor</Button>
+        <Button variant={activeSection === "providers" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("providers")}>Providers</Button>
+        {editorCapability ? <Button variant={activeSection === "external-editor" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("external-editor")}>External editor</Button> : null}
         <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
         <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
       </aside>
@@ -63,13 +78,13 @@ export function ProviderSettings({
               Workspace
             </Button>
             <Button variant="ghost" className="min-h-11" onClick={() => setSection("providers")}>Providers</Button>
-            <Button variant="ghost" className="min-h-11" onClick={() => setSection("external-editor")}>External editor</Button>
+            {editorCapability ? <Button variant="ghost" className="min-h-11" onClick={() => setSection("external-editor")}>External editor</Button> : null}
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
           </div>
 
-          {section === "external-editor" ? (
-            <ExternalEditorSettings editor={externalEditor} onEditorChange={onExternalEditorChange} />
+          {activeSection === "external-editor" && editorCapability ? (
+            <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
           ) : <>
           <h1 className="m-0 text-[17px] font-semibold">Providers on this machine</h1>
           <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">

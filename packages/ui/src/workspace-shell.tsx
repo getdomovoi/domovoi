@@ -2787,13 +2787,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <ProviderSettings
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
-            externalEditor={externalEditor}
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
-            onExternalEditorChange={(editor) => {
-              setWorkspaceUi((current) => ({ ...current, externalEditor: editor }))
-            }}
+            {...(windowBridge ? {
+              externalEditor,
+              onExternalEditorChange: (editor: DesktopExternalEditor) => {
+                setWorkspaceUi((current) => ({ ...current, externalEditor: editor }))
+              },
+            } : {})}
           />
         ) : snapshot && surface === "skills" ? (
           <SkillBrowser
