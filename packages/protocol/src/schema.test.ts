@@ -22,6 +22,7 @@ import {
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
   maximumWorkspaceDeltaChunkLength,
+  maximumSessionHistoryPageItems,
   maximumTerminalOutputChunkCharacters,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
@@ -306,7 +307,16 @@ describe("workspace protocol", () => {
     })).toEqual({ sessionId: session.id, before: item.id, limit: 50 })
     expect(sessionHistoryParamsSchema.safeParse({
       sessionId: session.id,
-      limit: 101,
+      limit: maximumSessionHistoryPageItems + 1,
+    }).success).toBe(false)
+    expect(sessionHistoryPageSchema.safeParse({
+      sessionId: session.id,
+      items: Array.from({ length: maximumSessionHistoryPageItems + 1 }, (_, index) => ({
+        ...item,
+        id: `thread:message-${index}`,
+        sourceId: `message-${index}`,
+      })),
+      hasMore: false,
     }).success).toBe(false)
     expect(sessionHistoryPageSchema.parse({
       sessionId: session.id,

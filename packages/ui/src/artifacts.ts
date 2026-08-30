@@ -1,4 +1,4 @@
-import { performanceBudgets, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { maximumRenderedPreviewStages, performanceBudgets, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 export function latestArtifactForActiveSession(
   snapshot: WorkspaceSnapshot,
@@ -42,8 +42,9 @@ export function previewVariantsForActiveSession(
 }
 
 export function reviewLayoutFor(containerWidth: number, compareRequested: boolean, variantCount: number) {
-  const compare = compareRequested && variantCount > 1 && containerWidth >= 760
-  return { compare, stages: compare ? 2 : 1 }
+  const availableStages = Math.min(maximumRenderedPreviewStages, variantCount)
+  const compare = compareRequested && availableStages > 1 && containerWidth >= 760
+  return { compare, stages: compare ? availableStages : 1 }
 }
 
 export function previewToolbarLayoutFor(containerWidth: number): "wrap" | "inline" {

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createEmptyWorkspace,
   demoWorkspace,
+  maximumEffectiveClientThreadItems,
   maximumWorkspaceDeltaChunkLength,
   workspaceSnapshotSchema,
   type ProviderModel,
@@ -1361,7 +1362,7 @@ describe("DomovoiDaemon", () => {
   it("bounds client snapshots without deleting durable session history", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
-    snapshot.thread = Array.from({ length: 105 }, (_, index) => ({
+    snapshot.thread = Array.from({ length: maximumEffectiveClientThreadItems + 5 }, (_, index) => ({
       id: `message-${index}`,
       sessionId: session.id,
       kind: "user" as const,
@@ -1371,9 +1372,9 @@ describe("DomovoiDaemon", () => {
 
     const clientSnapshot = workspaceSnapshotForClient(snapshot)
 
-    expect(clientSnapshot.thread).toHaveLength(100)
+    expect(clientSnapshot.thread).toHaveLength(maximumEffectiveClientThreadItems)
     expect(clientSnapshot.thread[0]?.id).toBe("message-5")
-    expect(snapshot.thread).toHaveLength(105)
+    expect(snapshot.thread).toHaveLength(maximumEffectiveClientThreadItems + 5)
   })
 
   it("bounds client thread retention globally and prioritizes the active session", () => {

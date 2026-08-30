@@ -52,6 +52,7 @@ import type {
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
+import { boundedClientThread } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -1291,7 +1292,7 @@ export function Thread({
               <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
             </Alert>
           ) : null}
-          {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
+          {renderedThreadForActiveSession(snapshot).map((item) => {
             if (item.kind === "checkpoint") {
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
@@ -1361,6 +1362,12 @@ export function Thread({
 
 export function activeThreadKey(snapshot: WorkspaceSnapshot): string {
   return snapshot.activeSessionId ?? "no-active-session"
+}
+
+export function renderedThreadForActiveSession(snapshot: WorkspaceSnapshot): ThreadItem[] {
+  if (!snapshot.activeSessionId) return []
+  return boundedClientThread(snapshot.thread, snapshot.activeSessionId)
+    .filter((item) => item.sessionId === snapshot.activeSessionId)
 }
 
 export function sessionIsArchiveReadOnly(
