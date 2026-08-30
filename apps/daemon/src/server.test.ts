@@ -2727,9 +2727,20 @@ describe("DomovoiDaemon", () => {
     running.push(daemon)
     const address = await daemon.start()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const notifications: Array<Record<string, unknown>> = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>
+      if (message.method === "workspace.changed") notifications.push(message)
+    })
     const rpc = (id: number, method: string, params: Record<string, unknown>) =>
       new Promise<Record<string, unknown>>((resolve) => {
-        socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       })
     await new Promise<void>((resolve) => socket.once("open", () => resolve()))
@@ -2795,6 +2806,17 @@ describe("DomovoiDaemon", () => {
       enabled: false,
     })
     expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
+    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "workspace.changed",
+        params: expect.objectContaining({
+          skillEnablements: [expect.objectContaining({
+            skillId: currentSkill.id,
+            enabled: false,
+          })],
+        }),
+      }),
+    ])))
     expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
       actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
       action: "skill.setEnabled",
