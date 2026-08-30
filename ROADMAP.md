@@ -129,13 +129,13 @@ workflow without becoming a code editor.
 - [x] Full-fidelity sandboxed HTML preview
 - [x] Picker bridge and structured anchored annotations
 - [x] Annotation replies and open/resolved lifecycle
-- [ ] Detect new plan/design artifacts written inside the worktree without provider-specific events
-- [ ] Preserve annotation anchors across document revisions with selector, text quote, and bounding-box
+- [x] Detect new plan/design artifacts written inside the worktree without provider-specific events
+- [x] Preserve annotation anchors across document revisions with selector, text quote, and bounding-box
   fallbacks
-- [ ] Capture cropped visual context for an annotation and pass it to vision-capable agents
-- [ ] Add variant metadata, thumbnail filmstrip, device-width presets, and optional compare layouts
-- [ ] Add chat-inline Markdown quick views while keeping generated HTML canonical
-- [ ] Add print/share-safe plan rendering without weakening the preview sandbox
+- [x] Capture cropped visual context for an annotation and pass it to vision-capable agents
+- [x] Add variant metadata, thumbnail filmstrip, device-width presets, and optional compare layouts
+- [x] Add chat-inline Markdown quick views while keeping generated HTML canonical
+- [x] Add print/share-safe plan rendering without weakening the preview sandbox
 
 ### Skills
 
