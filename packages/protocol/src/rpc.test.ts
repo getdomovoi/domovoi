@@ -107,6 +107,37 @@ describe("audit RPC contracts", () => {
   })
 })
 
+describe("provider secret RPC contracts", () => {
+  it("returns status-only keychain records", () => {
+    expect(rpcMethods["provider.secret.list"].result.parse([
+      { provider: "openai", state: "stored", source: "keychain" },
+    ])).toEqual([
+      { provider: "openai", state: "stored", source: "keychain" },
+    ])
+    expect(rpcMethods["provider.secret.list"].result.safeParse([
+      { provider: "openai", state: "stored", source: "keychain", secret: "forbidden" },
+    ]).success).toBe(false)
+  })
+
+  it("bounds key writes and only accepts supported providers", () => {
+    expect(rpcMethods["provider.secret.set"].params.parse({
+      provider: "anthropic",
+      secret: "key",
+      client: "desktop",
+    })).toMatchObject({ provider: "anthropic" })
+    expect(rpcMethods["provider.secret.set"].params.safeParse({
+      provider: "xai",
+      secret: "key",
+      client: "desktop",
+    }).success).toBe(false)
+    expect(rpcMethods["provider.secret.set"].params.safeParse({
+      provider: "openai",
+      secret: " ",
+      client: "desktop",
+    }).success).toBe(false)
+  })
+})
+
 describe("authenticated client identity", () => {
   it("bounds optional hello client ids", () => {
     expect(helloParamsSchema.parse({
