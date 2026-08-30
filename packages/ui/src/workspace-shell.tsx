@@ -31,6 +31,7 @@ import type {
   ArtifactAccess,
   ClientKind,
   PermissionMode,
+  ProviderFailure,
   ProviderModel,
   ProviderRuntime,
   RpcParams,
@@ -114,6 +115,7 @@ import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridg
 import { latestArtifactForActiveSession } from "./artifacts"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
+import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
 import {
   providerHandoffDescription,
   preferredSessionProvider,
@@ -164,12 +166,27 @@ const statusClass: Record<SessionSummary["state"], string> = {
   archived: "bg-faint",
 }
 
+export const providerSettingsNavigationLabel = "Provider settings"
+
 const defaultRuntime: Runtime = {
   provider: "codex",
   model: "default",
   reasoning: "medium",
   permissionMode: "build",
   auto: false,
+}
+
+export function providerFailureActionCopy(failure: ProviderFailure): string {
+  switch (failure.action) {
+    case "sign-in": return "Open Provider settings and sign in again."
+    case "retry": {
+      if (failure.kind === "rate-limit") return "Retry the message after the provider cooldown."
+      if (failure.kind === "transport") return "Retry the message after the provider reconnects."
+      return "Retry the message, or review Provider settings if the failure continues."
+    }
+    case "check-quota": return "Check the provider quota or billing plan, then retry."
+    case "change-model": return "Choose another model in the runtime controls, then retry."
+  }
 }
 
 function WindowControls({ bridge }: { bridge: DesktopWindowBridge }) {
@@ -327,13 +344,13 @@ function SessionsSidebar({
   onCollapse,
   onActivate,
   onNewSession,
-  onOpenSkills,
+  onOpenProviderSettings,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
-  onOpenSkills: () => void
+  onOpenProviderSettings: () => void
 }) {
   const groups = useMemo(
     () => [
@@ -396,11 +413,11 @@ function SessionsSidebar({
         <LaptopIcon className="size-3.5 text-muted-foreground" />
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" aria-label="Open skills settings" onClick={onOpenSkills}>
+            <Button variant="ghost" size="icon-xs" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}>
               <SettingsIcon />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="right">Skills</TooltipContent>
+          <TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent>
         </Tooltip>
       </div>
     </aside>
@@ -1089,6 +1106,13 @@ export function Thread({
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
+          {active.providerFailure ? (
+            <Alert variant="destructive">
+              <CircleStopIcon />
+              <AlertTitle>{active.providerFailure.message}</AlertTitle>
+              <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
+            </Alert>
+          ) : null}
           {snapshot.thread.filter((item) => item.sessionId === active.id).map((item) => {
             if (item.kind === "checkpoint") {
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
@@ -2048,12 +2072,12 @@ function SidebarRail({
   snapshot,
   onActivate,
   onExpand,
-  onOpenSkills,
+  onOpenProviderSettings,
 }: {
   snapshot: WorkspaceSnapshot
   onActivate: (sessionId: string) => void
   onExpand: () => void
-  onOpenSkills: () => void
+  onOpenProviderSettings: () => void
 }) {
   return (
     <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
@@ -2061,7 +2085,7 @@ function SidebarRail({
       <Separator />
       {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={session.title} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title}</TooltipContent></Tooltip>)}
       <span className="flex-1" />
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Open skills settings" onClick={onOpenSkills}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">Skills</TooltipContent></Tooltip>
+      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent></Tooltip>
     </aside>
   )
 }
@@ -2095,6 +2119,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     forkSession,
     createTerminal,
     listModels,
+    listProviderSecrets,
     listSkills,
     exportAudit,
     loadSessionHistory,
@@ -2131,7 +2156,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const [workspaceError, setWorkspaceError] = useState("")
   const [connectionError, setConnectionError] = useState("")
-  const [surface, setSurface] = useState<"workspace" | "skills" | "audit">("workspace")
+  const [surface, setSurface] = useState<"workspace" | "providers" | "skills" | "audit">("workspace")
+  const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
+  const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
@@ -2173,6 +2200,30 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useEffect(() => {
     if (connected) setConnectionError("")
   }, [connected])
+
+  useEffect(() => {
+    if (surface !== "providers") return
+    if (!connected) {
+      setProviderSecrets([
+        { provider: "anthropic", state: "unavailable", source: "keychain" },
+        { provider: "openai", state: "unavailable", source: "keychain" },
+        { provider: "openrouter", state: "unavailable", source: "keychain" },
+      ])
+      return
+    }
+    let active = true
+    void listProviderSecrets().then(
+      (statuses) => { if (active) setProviderSecrets(statuses) },
+      () => {
+        if (active) setProviderSecrets([
+          { provider: "anthropic", state: "unavailable", source: "keychain" },
+          { provider: "openai", state: "unavailable", source: "keychain" },
+          { provider: "openrouter", state: "unavailable", source: "keychain" },
+        ])
+      },
+    )
+    return () => { active = false }
+  }, [connected, listProviderSecrets, providerRefresh, surface])
 
   useEffect(() => {
     if (surface !== "skills") return
@@ -2222,7 +2273,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
           </div>
         ) : null}
-        {snapshot && surface === "skills" ? (
+        {snapshot && surface === "providers" ? (
+          <ProviderSettings
+            providers={snapshot.machine.providers}
+            secrets={providerSecrets}
+            onBack={() => setSurface("workspace")}
+            onOpenSkills={() => setSurface("skills")}
+            onOpenAudit={() => setSurface("audit")}
+          />
+        ) : snapshot && surface === "skills" ? (
           <SkillBrowser
             skills={skills}
             loading={skillsLoading}
@@ -2242,7 +2301,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : snapshot ? (
           <div className="flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenSkills={() => setSurface("skills")} /> : null}
+            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} /> : null}
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
@@ -2252,7 +2311,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenSkills={() => setSurface("skills")} /></ResizablePanel><ResizableHandle /></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
             </ResizablePanelGroup>

@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from "node:http"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { readFile, realpath } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
-import { basename, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
   createEmptyWorkspace,
@@ -43,6 +43,7 @@ import {
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
+import { createCursorAgentAdapter, createGrokAgentAdapter } from "./acp-factory.js"
 import {
   AgentProviderUnavailableError,
   AgentRegistry,
@@ -71,6 +72,9 @@ import {
   redactErrorDetail,
 } from "./rpc-errors.js"
 import { permissionDecisionFor } from "./permission-policy.js"
+import { ProviderSecretManager } from "./provider-secrets.js"
+import { UsageLedger } from "./usage.js"
+import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import { testEvidence } from "./test-evidence.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -347,6 +351,8 @@ export type DaemonServerOptions = {
   authTimeoutMs?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
+  providerSecrets?: Pick<ProviderSecretManager, "status">
+  usageLedger?: Pick<UsageLedger, "record" | "session" | "close">
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
@@ -410,6 +416,8 @@ export class DomovoiDaemon {
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
+  #providerSecrets: Pick<ProviderSecretManager, "status">
+  #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #workspaceAbort = new AbortController()
@@ -455,12 +463,18 @@ export class DomovoiDaemon {
         manageDirectoryPermissions: options.statePath === undefined,
       },
     )
+    const usagePath = options.store || statePath === ":memory:"
+      ? ":memory:"
+      : join(dirname(statePath), "usage.sqlite")
+    this.#usageLedger = options.usageLedger ?? new UsageLedger(usagePath)
     this.#auditLog = options.auditLog ?? this.#store.auditLog
     this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
         codex: options.agent ?? new CodexAppServerAdapter(),
+        "cursor-agent": createCursorAgentAdapter(),
+        grok: createGrokAgentAdapter(),
         kilo: new KiloSdkAdapter(),
         opencode: new OpenCodeSdkAdapter(),
       },
@@ -473,6 +487,7 @@ export class DomovoiDaemon {
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
+    this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
@@ -634,6 +649,11 @@ export class DomovoiDaemon {
     ))
     try {
       this.#store.close()
+    } catch (error) {
+      failures.push(error)
+    }
+    try {
+      this.#usageLedger.close()
     } catch (error) {
       failures.push(error)
     }
@@ -860,6 +880,8 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "provider.secret.list"
+        || request.method === "session.usage"
         || request.method === "skill.list"
         || request.method === "skill.read"
         || request.method === "audit.query"
@@ -1131,6 +1153,19 @@ export class DomovoiDaemon {
         })
         return
       }
+      if (method === "session.usage") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (!this.#snapshot.sessions.some((session) => session.id === params.sessionId)) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(this.#usageLedger.session(params.sessionId)),
+        })
+        return
+      }
       if (method === "audit.export") {
         if (!this.#auditLog) {
           this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
@@ -1369,6 +1404,15 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(models),
+        })
+        return
+      }
+
+      if (method === "provider.secret.list") {
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(this.#providerSecrets.status()),
         })
         return
       }
@@ -1758,6 +1802,7 @@ export class DomovoiDaemon {
           currentSession.changedFiles = checkpoint.changedFiles.length
           currentSession.state = "idle"
           currentSession.updatedAt = createdAt
+          delete currentSession.providerFailure
           this.#loadedAgentThreads.delete(providerThreadKey(previousRuntime.provider, previousThreadId))
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, nextThreadId))
           if (recoveringFailedThread && previousKey) {
@@ -1789,6 +1834,7 @@ export class DomovoiDaemon {
           })
         } else {
           currentSession.runtime = runtime
+          delete currentSession.providerFailure
         }
         changed = true
       }
@@ -2281,6 +2327,7 @@ export class DomovoiDaemon {
         currentSession.state = "active"
         currentSession.updatedAt = createdAt
         currentSession.activeTurnId = turnId
+        delete currentSession.providerFailure
         this.#snapshot.activeSessionId = currentSession.id
         changed = true
       }
@@ -2444,6 +2491,20 @@ export class DomovoiDaemon {
     if (session.state === "archiving" || session.state === "archived") return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
+    if (event.type === "usage") {
+      try {
+        this.#usageLedger.record({
+          sessionId: session.id,
+          turnId: event.turnId,
+          provider,
+          model: session.runtime.model,
+          usage: event.usage,
+        })
+      } catch (error) {
+        this.#reportError("Domovoi could not persist provider usage", error)
+      }
+      return
+    }
     const createdAt = new Date().toISOString()
     const delta: WorkspaceDelta = {
       sessionId: session.id,
@@ -2696,9 +2757,10 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "turn-completed") {
-      const turn = event.params.turn
-      const failed = turn && typeof turn === "object" && "status" in turn && turn.status === "failed"
+      const { failed, failure } = providerTurnCompletion(event.params)
       session.state = failed ? "failed" : "idle"
+      if (failure) session.providerFailure = failure
+      else delete session.providerFailure
       delete session.activeTurnId
       this.#flushCommandOutputStreams(session.id)
       this.#appendAudit({
@@ -2754,6 +2816,7 @@ export class DomovoiDaemon {
       if (session.runtime.provider !== provider || !session.providerThreadId) continue
       affectedSessionIds.add(session.id)
       session.state = "failed"
+      session.providerFailure = classifyProviderFailure(new Error(reason))
       this.#flushCommandOutputStreams(session.id)
       delete session.activeTurnId
       session.updatedAt = createdAt
