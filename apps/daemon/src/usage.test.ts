@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { describe, expect, it } from "vitest"
 
 import { UsageLedger, normalizeProviderUsage, normalizeUsage } from "./usage.js"
@@ -30,6 +34,19 @@ describe("provider usage telemetry", () => {
       reasoningTokens: 0,
       totalTokens: 14,
       costSource: "unavailable",
+    })
+  })
+
+  it("preserves provider-reported aggregate tokens without inventing a breakdown", () => {
+    expect(normalizeUsage({ totalTokens: 120, cost: { amount: 0.03, currency: "USD" } })).toEqual({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 120,
+      costMicros: 30_000,
+      currency: "USD",
+      costSource: "provider-reported",
     })
   })
 
@@ -107,6 +124,34 @@ describe("provider usage telemetry", () => {
       model: "grok-code",
       usage: normalizeUsage({ cost: { amount: 1, currency: "EUR" } }),
     })).toThrow("mixed currencies")
+  })
+
+  it("persists turn telemetry across ledger restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-"))
+    const path = join(directory, "state.sqlite")
+    try {
+      const first = new UsageLedger(path)
+      first.record({
+        sessionId: "session-1",
+        turnId: "turn-1",
+        provider: "grok",
+        model: "grok-code-fast-1",
+        usage: normalizeUsage({ totalTokens: 120, cost: { amount: 0.03, currency: "USD" } }),
+      })
+      first.close()
+
+      const reopened = new UsageLedger(path)
+      expect(reopened.session("session-1")).toMatchObject({
+        totalTokens: 120,
+        costMicros: 30_000,
+        currency: "USD",
+        reportedCostTurns: 1,
+        byRuntime: [{ provider: "grok", model: "grok-code-fast-1", turns: 1 }],
+      })
+      reopened.close()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   it("normalizes Claude, Codex, and OpenCode-shaped payloads conservatively", () => {

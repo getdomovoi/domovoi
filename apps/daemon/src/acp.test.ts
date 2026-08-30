@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { AcpPeer, AcpPeerHandlers, AcpSessionSetup, AcpUpdate } from "./acp.js"
 import { AcpAgentAdapter } from "./acp.js"
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
+import type { AgentEvent } from "./agents.js"
 
 const runtime: Runtime = {
   provider: "cursor-agent",
@@ -188,15 +189,35 @@ describe("AcpAgentAdapter", () => {
     }])
   })
 
-  it("tolerates usage updates until normalized telemetry owns them", async () => {
+  it("emits ACP aggregate usage without inventing a token breakdown", async () => {
     const { adapter, peer } = createHarness()
+    const events: AgentEvent[] = []
+    peer.prompt.mockImplementation(() => new Promise(() => {}))
+    adapter.onEvent((event) => events.push(event))
     await adapter.connect()
     await adapter.startThread({ cwd: "/repo", runtime })
-    expect(() => peer.handlers?.onUpdate("acp-session", {
+    await adapter.startTurn({ threadId: "acp-session", cwd: "/repo", prompt: "Ship it", runtime })
+    peer.handlers?.onUpdate("acp-session", {
       type: "usage",
       used: 100,
       size: 10_000,
       cost: { amount: 0.01, currency: "USD" },
-    } satisfies AcpUpdate)).not.toThrow()
+    } satisfies AcpUpdate)
+
+    expect(events).toContainEqual({
+      type: "usage",
+      threadId: "acp-session",
+      turnId: "local-turn",
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 100,
+        costMicros: 10_000,
+        currency: "USD",
+        costSource: "provider-reported",
+      },
+    })
   })
 })

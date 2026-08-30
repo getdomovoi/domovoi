@@ -416,7 +416,7 @@ export class DomovoiDaemon {
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status" | "set" | "delete">
-  #usageLedger = new UsageLedger()
+  #usageLedger: UsageLedger
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #workspaceAbort = new AbortController()
@@ -454,6 +454,7 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    this.#usageLedger = new UsageLedger(options.store ? ":memory:" : statePath)
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,
       initialSnapshot,
@@ -644,6 +645,11 @@ export class DomovoiDaemon {
     ))
     try {
       this.#store.close()
+    } catch (error) {
+      failures.push(error)
+    }
+    try {
+      this.#usageLedger.close()
     } catch (error) {
       failures.push(error)
     }
