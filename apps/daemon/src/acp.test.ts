@@ -72,6 +72,18 @@ describe("AcpAgentAdapter", () => {
     expect(peer.setMode).toHaveBeenCalledWith("acp-session", "plan")
   })
 
+  it("omits an unavailable reasoning config when runtime reasoning is none", async () => {
+    const { adapter, peer } = createHarness()
+    await adapter.connect()
+
+    await expect(adapter.startThread({
+      cwd: "/repo",
+      runtime: { ...runtime, reasoning: "none" },
+    })).resolves.toBe("acp-session")
+    expect(peer.setConfig).toHaveBeenCalledOnce()
+    expect(peer.setConfig).toHaveBeenCalledWith("acp-session", "model", "gpt-5.4")
+  })
+
   it("rejects unadvertised modes instead of silently widening permissions", async () => {
     const { adapter, peer } = createHarness()
     peer.setup.modes = ["agent"]
