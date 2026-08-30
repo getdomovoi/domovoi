@@ -144,6 +144,7 @@ export class DomovoiClient extends EventTarget {
         () => {
           this.request("system.hello", {
             client: this.kind,
+            clientId: this.clientId,
             clientVersion: "0.0.1",
             ...(this.#authToken ? { authToken: this.#authToken } : {}),
           }).then(

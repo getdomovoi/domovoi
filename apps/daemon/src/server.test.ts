@@ -32,6 +32,7 @@ import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import type { SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
+import type { AuditLog } from "./audit-log.js"
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -4583,6 +4584,232 @@ describe("DomovoiDaemon", () => {
       releaseStop!()
     }
     await expect(response).resolves.toHaveProperty("result")
+    socket.close()
+  })
+
+  it("serves attributed redacted audit records for authenticated RPC outcomes", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/audit-test"
+    session.providerThreadId = "audit-thread"
+    delete session.activeTurnId
+    const artifact = snapshot.artifacts.find((candidate) => candidate.sessionId === session.id)!
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(), restore: vi.fn(),
+      checkpoint: vi.fn((_path: string, _label: string, signal?: AbortSignal) =>
+        new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        })),
+    } satisfies WorkspaceService
+    let providerEvent: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        providerEvent = listener
+        return () => { providerEvent = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      workspaceService,
+      agents: { "claude-code": agent },
+      agentTimeoutMs: 5,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const intruder = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      intruder.once("open", resolve)
+      intruder.once("error", reject)
+    })
+    const deniedResponse = new Promise<Record<string, any>>((resolve) => {
+      intruder.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    intruder.send(JSON.stringify({ jsonrpc: "2.0", id: 999, method: "workspace.get", params: {} }))
+    await expect(deniedResponse).resolves.toMatchObject({ error: { code: -32_001 } })
+    intruder.close()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: object) => new Promise<Record<string, any>>((resolve) => {
+      id += 1
+      const requestId = id
+      const listener = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, any>
+        if (message.id !== requestId) return
+        socket.off("message", listener)
+        resolve(message)
+      }
+      socket.on("message", listener)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+
+    await expect(rpc("system.hello", {
+      client: "web",
+      clientId: "browser-audit-test",
+      clientVersion: "audit-test",
+      authToken: daemon.authToken,
+    })).resolves.toHaveProperty("result")
+
+    await expect(rpc("annotation.create", {
+      sessionId: session.id,
+      artifactId: artifact.id,
+      anchor: { textQuote: "plan" },
+      body: "Authorization: Bearer must-never-persist",
+      client: "phone",
+    })).resolves.toHaveProperty("result")
+    await expect(rpc("annotation.create", {
+      sessionId: session.id,
+      artifactId: "missing-artifact",
+      anchor: { textQuote: "plan" },
+      body: "api_key=must-never-persist-either",
+      client: "desktop",
+    })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("checkpoint.create", {
+      sessionId: session.id,
+      label: "audit timeout",
+      client: "desktop",
+    })).resolves.toMatchObject({ error: { code: -32603, message: "Checkpoint timed out" } })
+    providerEvent!({
+      type: "approval-requested",
+      requestId: 44,
+      threadId: "audit-thread",
+      itemId: "provider-item-44",
+      command: "deploy --token provider-command-secret",
+      reason: "Authorization: Bearer provider-reason-secret",
+    })
+    providerEvent!({
+      type: "item",
+      phase: "completed",
+      params: {
+        threadId: "audit-thread",
+        item: {
+          id: "provider-tool-1",
+          type: "commandExecution",
+          status: "completed",
+          command: ["echo", "provider-payload-secret"],
+          aggregatedOutput: "provider-output-secret",
+        },
+      },
+    })
+    const queried = await rpc("audit.query", {
+      action: "annotation.create",
+      sessionId: session.id,
+      projectId: snapshot.project!.id,
+      limit: 10,
+    })
+    expect(queried.result).toMatchObject({
+      hasMore: false,
+      entries: [
+        expect.objectContaining({ outcome: "failed" }),
+        expect.objectContaining({
+          actor: { kind: "client", client: "web", clientId: "browser-audit-test" },
+          action: "annotation.create",
+          outcome: "succeeded",
+          sessionId: session.id,
+          projectId: snapshot.project!.id,
+          target: artifact.id,
+        }),
+      ],
+    })
+    const cancelled = await rpc("audit.query", { action: "checkpoint.create", limit: 10 })
+    expect(cancelled.result.entries).toEqual([
+      expect.objectContaining({ outcome: "cancelled", sessionId: session.id }),
+    ])
+    const denied = await rpc("audit.query", { action: "security.authentication", limit: 10 })
+    expect(denied.result.entries).toEqual([
+      expect.objectContaining({ outcome: "denied", actor: { kind: "daemon", component: "authentication" } }),
+    ])
+    await expect(rpc("audit.query", { before: "audit-does-not-exist", limit: 10 }))
+      .resolves.toMatchObject({ error: { code: -32602, message: "Audit cursor does not exist" } })
+    const providerTools = await rpc("audit.query", { action: "provider.tool.completed", limit: 10 })
+    expect(providerTools.result.entries).toEqual([
+      expect.objectContaining({
+        actor: { kind: "provider", provider: "claude-code", providerThreadId: "audit-thread" },
+        outcome: "succeeded",
+        sessionId: session.id,
+        target: "provider-tool-1",
+      }),
+    ])
+    const exported = await rpc("audit.export", { limit: 100 })
+    expect(exported.result.content).not.toContain("must-never-persist")
+    expect(exported.result.content).not.toContain("must-never-persist-either")
+    expect(exported.result.content).not.toContain("provider-command-secret")
+    expect(exported.result.content).not.toContain("provider-reason-secret")
+    expect(exported.result.content).not.toContain("provider-payload-secret")
+    expect(exported.result.content).not.toContain("provider-output-secret")
+    expect(exported.result.content).toContain("annotation.create")
+    expect(exported.result.content).not.toContain('"action":"audit.query"')
+    socket.close()
+  })
+
+  it("cancels overdue audit exports and rejects duplicate in-flight request ids", async () => {
+    const append = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
+      id: `audit-test-${append.mock.calls.length}`,
+      occurredAt: "2026-08-29T12:00:00.000Z",
+      ...input,
+    }))
+    const auditLog = {
+      append,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn((_params, signal) => new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+      })),
+    } satisfies AuditLog
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      auditLog,
+      agentTimeoutMs: 5,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const responses = new Promise<Array<Record<string, any>>>((resolve) => {
+      const collected: Array<Record<string, any>> = []
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, any>
+        if (message.id !== 88) return
+        collected.push(message)
+        if (collected.length === 2) resolve(collected)
+      })
+    })
+    const request = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 88,
+      method: "audit.export",
+      params: { limit: 10 },
+    })
+    socket.send(request)
+    socket.send(request)
+
+    await expect(responses).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ error: { code: -32600, message: "Request id is already in flight" } }),
+      expect.objectContaining({ error: { code: -32603, message: "Audit export timed out" } }),
+    ]))
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "security.duplicate-request-id",
+      outcome: "denied",
+    }))
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "audit.export",
+      outcome: "cancelled",
+    }))
     socket.close()
   })
 })

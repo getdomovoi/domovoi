@@ -19,6 +19,8 @@ import {
   workspaceSnapshotSchema,
   type Annotation,
   type Artifact,
+  type AuditActor,
+  type AuditOutcome,
   type ProviderModel,
   type RpcParams,
   type RpcMethod,
@@ -68,6 +70,7 @@ import {
 } from "./rpc-errors.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { testEvidence } from "./test-evidence.js"
+import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -86,6 +89,15 @@ const sessionResourceMethods = new Set([
   "session.history",
   "session.send",
   "session.setRuntime",
+])
+const unauditedRpcMethods = new Set<RpcMethod>([
+  "workspace.get",
+  "runtime.models",
+  "skill.list",
+  "skill.read",
+  "session.history",
+  "session.evidence",
+  "audit.query",
 ])
 
 class RuntimeValidationError extends Error {}
@@ -327,6 +339,7 @@ export type DaemonServerOptions = {
   providerProbe?: ProviderProbe
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
+  auditLog?: AuditLog
 }
 
 export type DaemonErrorEntry = {
@@ -357,6 +370,8 @@ export class DomovoiDaemon {
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
   #store: WorkspaceStore
+  #auditLog: AuditLog | undefined
+  #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
   #agents: AgentRegistry
   #workspaceService: WorkspaceService
   #connectedAgents = new Set<string>()
@@ -374,6 +389,7 @@ export class DomovoiDaemon {
   #modelCacheTtlMs: number
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
+  #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
   #authTimeoutMs: number
@@ -422,6 +438,7 @@ export class DomovoiDaemon {
         manageDirectoryPermissions: options.statePath === undefined,
       },
     )
+    this.#auditLog = options.auditLog ?? this.#store.auditLog
     this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
       options.agents ?? {
@@ -601,7 +618,93 @@ export class DomovoiDaemon {
   }
 
   #send(socket: WebSocket, payload: unknown): void {
+    this.#completeAudit(socket, payload)
     socket.send(JSON.stringify(payload))
+  }
+
+  #appendAudit(input: AuditAppendInput): void {
+    try {
+      this.#auditLog?.append(input)
+    } catch (error) {
+      this.#reportError("Domovoi could not persist audit entry", error)
+    }
+  }
+
+  #registerAudit(
+    socket: WebSocket,
+    id: string | number | null,
+    method: RpcMethod,
+    params: unknown,
+  ): boolean {
+    if (!this.#auditLog || unauditedRpcMethods.has(method)) return true
+    const values = params && typeof params === "object" ? params as Record<string, unknown> : {}
+    const actor: AuditActor = this.#authenticatedActors.get(socket)
+      ?? { kind: "daemon", component: "rpc" }
+    const sessionId = this.#auditSessionId(values)
+    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId"]
+      .map((key) => values[key])
+      .find((value): value is string => typeof value === "string")
+    const pending = this.#pendingAudits.get(socket) ?? new Map<string, AuditAppendInput>()
+    const key = JSON.stringify(id)
+    if (pending.has(key)) return false
+    pending.set(key, {
+      actor,
+      action: method,
+      outcome: method === "approval.resolve" && values.decision === "deny" ? "denied" : "succeeded",
+      ...(sessionId ? { sessionId } : {}),
+      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      ...(target ? { target } : {}),
+    })
+    this.#pendingAudits.set(socket, pending)
+    return true
+  }
+
+  #auditSessionId(values: Record<string, unknown>): string | undefined {
+    if (typeof values.sessionId === "string") return values.sessionId
+    if (typeof values.approvalId === "string") {
+      return this.#snapshot.approvals.find(({ id }) => id === values.approvalId)?.sessionId
+    }
+    if (typeof values.annotationId === "string") {
+      return this.#snapshot.annotations.find(({ id }) => id === values.annotationId)?.sessionId
+    }
+    if (typeof values.terminalId === "string") return this.#terminals.get(values.terminalId)?.sessionId
+    return undefined
+  }
+
+  #completeAudit(socket: WebSocket, payload: unknown): void {
+    if (!payload || typeof payload !== "object") return
+    const response = payload as { id?: unknown; error?: unknown; result?: unknown }
+    if (response.id === undefined) return
+    const pending = this.#pendingAudits.get(socket)
+    const key = JSON.stringify(response.id)
+    const input = pending?.get(key)
+    if (!input) return
+    pending!.delete(key)
+    const result = "result" in response && response.result && typeof response.result === "object"
+      ? response.result as Record<string, unknown>
+      : undefined
+    const project = result?.project && typeof result.project === "object"
+      ? result.project as Record<string, unknown>
+      : undefined
+    const resultingSessionId = (input.action === "session.create" || input.action === "session.fork")
+      && typeof result?.activeSessionId === "string"
+      ? result.activeSessionId
+      : undefined
+    const responseError = response.error && typeof response.error === "object"
+      ? response.error as Record<string, unknown>
+      : undefined
+    const failureOutcome: AuditOutcome = typeof responseError?.message === "string"
+      && responseError.message.toLowerCase().includes("timed out")
+      ? "cancelled"
+      : "failed"
+    this.#appendAudit({
+      ...input,
+      outcome: response.error === undefined ? input.outcome : failureOutcome,
+      ...(resultingSessionId ? { sessionId: resultingSessionId } : {}),
+      ...(input.action === "project.open" && typeof project?.id === "string"
+        ? { projectId: project.id }
+        : {}),
+    })
   }
 
   #broadcastSnapshot(): void {
@@ -713,6 +816,8 @@ export class DomovoiDaemon {
       return request.method === "runtime.models"
         || request.method === "skill.list"
         || request.method === "skill.read"
+        || request.method === "audit.query"
+        || request.method === "audit.export"
     } catch {
       return false
     }
@@ -882,12 +987,22 @@ export class DomovoiDaemon {
     try {
       input = JSON.parse(raw)
     } catch {
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "rpc" },
+        action: "security.invalid-request",
+        outcome: "failed",
+      })
       this.#error(socket, null, invalidRequest, "Request is not valid JSON")
       return
     }
 
     const requestResult = rpcRequestSchema.safeParse(input)
     if (!requestResult.success) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "rpc" },
+        action: "security.invalid-request",
+        outcome: "failed",
+      })
       this.#error(socket, null, invalidRequest, "Request does not match JSON-RPC 2.0")
       return
     }
@@ -907,22 +1022,90 @@ export class DomovoiDaemon {
 
     if (!this.#authenticatedClients.has(socket)) {
       if (method !== "system.hello") {
+        this.#appendAudit({
+          actor: { kind: "daemon", component: "authentication" },
+          action: "security.authentication",
+          outcome: "denied",
+        })
         this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
         return
       }
       const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
       if (!secureTokenMatch(this.#authToken, supplied)) {
+        this.#appendAudit({
+          actor: { kind: "daemon", component: "authentication" },
+          action: "security.authentication",
+          outcome: "denied",
+        })
         this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
         return
       }
+      const hello = rpcMethods["system.hello"].params.parse(request.params)
       this.#authenticatedClients.add(socket)
+      this.#authenticatedActors.set(socket, {
+        kind: "client",
+        client: hello.client,
+        ...(hello.clientId
+          ? { clientId: hello.clientId }
+          : {}),
+      })
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
     }
 
+    if (!this.#registerAudit(socket, request.id, method, paramsResult.data)) {
+      this.#appendAudit({
+        actor: this.#authenticatedActors.get(socket) ?? { kind: "daemon", component: "rpc" },
+        action: "security.duplicate-request-id",
+        outcome: "denied",
+      })
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: invalidRequest, message: "Request id is already in flight" },
+      }))
+      return
+    }
+
     try {
       let changed = false
+      if (method === "audit.query") {
+        if (!this.#auditLog) {
+          this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
+          return
+        }
+        const params = rpcMethods[method].params.parse(request.params)
+        const result = await withAbortTimeout(
+          async (signal) => this.#auditLog!.query(params, signal),
+          this.#agentTimeoutMs,
+          "Audit query timed out",
+        )
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(result),
+        })
+        return
+      }
+      if (method === "audit.export") {
+        if (!this.#auditLog) {
+          this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
+          return
+        }
+        const params = rpcMethods[method].params.parse(request.params)
+        const result = await withAbortTimeout(
+          async (signal) => this.#auditLog!.export(params, signal),
+          this.#agentTimeoutMs,
+          "Audit export timed out",
+        )
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(result),
+        })
+        return
+      }
       if (method === "terminal.create") {
         const params = rpcMethods[method].params.parse(request.params)
         const session = this.#snapshot.sessions.find(
@@ -2107,6 +2290,12 @@ export class DomovoiDaemon {
 
   async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
     if (event.type === "provider-disconnected") {
+      this.#appendAudit({
+        actor: { kind: "provider", provider },
+        action: "provider.disconnected",
+        outcome: "failed",
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      })
       this.#handleProviderDisconnect(provider, event.reason)
       return
     }
@@ -2225,6 +2414,16 @@ export class DomovoiDaemon {
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => rule.projectId === project.id && rule.command === event.command,
       )
+      this.#appendAudit({
+        actor: { kind: "provider", provider, providerThreadId: threadId },
+        action: "provider.approval-requested",
+        outcome: decision.action === "allow" || (decision.risk === "normal" && matchingRule)
+          ? "succeeded"
+          : "started",
+        sessionId: session.id,
+        projectId: project.id,
+        ...(event.itemId ? { target: event.itemId } : {}),
+      })
       if (decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else if (decision.risk === "normal" && matchingRule) {
@@ -2253,6 +2452,23 @@ export class DomovoiDaemon {
 
     if (event.type === "item") {
       const item = event.params.item
+      const itemRecord = item && typeof item === "object" ? item as Record<string, unknown> : undefined
+      const itemStatus = itemRecord?.status
+      const itemOutcome: AuditOutcome = event.phase === "started"
+        ? "started"
+        : itemStatus === "failed"
+          ? "failed"
+          : itemStatus === "declined"
+            ? "denied"
+            : "succeeded"
+      this.#appendAudit({
+        actor: { kind: "provider", provider, providerThreadId: threadId },
+        action: `provider.tool.${event.phase}`,
+        outcome: itemOutcome,
+        sessionId: session.id,
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
+      })
       if (item && typeof item === "object" && "type" in item && item.type === "commandExecution") {
         const commandItem = item as Record<string, unknown>
         const id = `tool-${String(commandItem.id ?? randomUUID())}`
@@ -2323,6 +2539,13 @@ export class DomovoiDaemon {
       const failed = turn && typeof turn === "object" && "status" in turn && turn.status === "failed"
       session.state = failed ? "failed" : "idle"
       delete session.activeTurnId
+      this.#appendAudit({
+        actor: { kind: "provider", provider, providerThreadId: threadId },
+        action: "provider.turn-completed",
+        outcome: failed ? "failed" : "succeeded",
+        sessionId: session.id,
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      })
     }
 
     session.updatedAt = createdAt
@@ -2972,16 +3195,29 @@ function withAbortTimeout<T>(
   message: string,
 ): Promise<T> {
   const controller = new AbortController()
-  const operationPromise = operation(controller.signal)
   return new Promise((resolvePromise, rejectPromise) => {
     const timeoutError = new OperationTimeoutError(message)
+    const startedAt = Date.now()
     const timer = setTimeout(() => {
       controller.abort(timeoutError)
       rejectPromise(timeoutError)
     }, timeoutMs)
+    let operationPromise: Promise<T>
+    try {
+      operationPromise = operation(controller.signal)
+    } catch (error) {
+      clearTimeout(timer)
+      rejectPromise(error)
+      return
+    }
     operationPromise.then(
       (value) => {
         clearTimeout(timer)
+        if (Date.now() - startedAt > timeoutMs) {
+          controller.abort(timeoutError)
+          rejectPromise(timeoutError)
+          return
+        }
         resolvePromise(value)
       },
       (error: unknown) => {
