@@ -1,4 +1,5 @@
 import type {
+  RpcParams,
   SessionHistoryCategory,
   SessionHistoryEntry,
   SessionHistoryPage,
@@ -6,6 +7,34 @@ import type {
 import { maximumRetainedSessionHistoryItems as retainedHistoryBudget } from "@getdomovoi/protocol"
 
 export const maximumRetainedSessionHistoryItems = retainedHistoryBudget
+
+export type SessionHistoryWindowState = {
+  page: SessionHistoryPage | undefined
+  historyWindowed: boolean
+  historyRefresh: number
+}
+
+export function latestSessionHistoryRequest(
+  categories: readonly SessionHistoryCategory[],
+  query: string,
+): Omit<RpcParams<"session.history">, "sessionId"> {
+  const trimmedQuery = query.trim()
+  return {
+    categories: [...categories],
+    ...(trimmedQuery ? { query: trimmedQuery } : {}),
+    limit: 50,
+  }
+}
+
+export function resetSessionHistoryWindow(
+  current: SessionHistoryWindowState,
+): SessionHistoryWindowState {
+  return {
+    page: undefined,
+    historyWindowed: false,
+    historyRefresh: current.historyRefresh + 1,
+  }
+}
 
 export const sessionHistoryCategories: ReadonlyArray<{
   value: SessionHistoryCategory
@@ -26,7 +55,7 @@ export function mergeOlderHistory(
 ): SessionHistoryPage {
   const currentIds = new Set(current.items.map((item) => item.id))
   const items = [...older.items.filter((item) => !currentIds.has(item.id)), ...current.items]
-    .slice(-maximumRetainedSessionHistoryItems)
+    .slice(0, maximumRetainedSessionHistoryItems)
   return {
     sessionId: current.sessionId,
     items,

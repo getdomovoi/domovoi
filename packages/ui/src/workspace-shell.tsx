@@ -157,8 +157,10 @@ import {
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
 import {
+  latestSessionHistoryRequest,
   maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
+  resetSessionHistoryWindow,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
@@ -1655,11 +1657,7 @@ export function HistoryPanel({
       return
     }
     setLoading(true)
-    void onLoad(sessionId, {
-      categories,
-      ...(query.trim() ? { query: query.trim() } : {}),
-      limit: 50,
-    }).then(
+    void onLoad(sessionId, latestSessionHistoryRequest(categories, query)).then(
       (next) => { if (request === requestRef.current) setPage(next) },
       (cause: unknown) => {
         if (request === requestRef.current) {
@@ -1708,6 +1706,13 @@ export function HistoryPanel({
     } finally {
       if (request === requestRef.current) setLoading(false)
     }
+  }
+
+  const backToLatest = () => {
+    const reset = resetSessionHistoryWindow({ page, historyWindowed, historyRefresh })
+    setPage(reset.page)
+    setHistoryWindowed(reset.historyWindowed)
+    setHistoryRefresh(reset.historyRefresh)
   }
 
   return (
@@ -1760,7 +1765,7 @@ export function HistoryPanel({
             <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
-          {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={() => setHistoryRefresh((current) => current + 1)}>Back to latest</Button> : null}
+          {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
           {page?.hasMore ? <Button className="my-3 self-center" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
           {loading && !page ? <p role="status" className="p-4 text-center font-machine text-[10px] text-faint">Loading history</p> : null}
         </div>

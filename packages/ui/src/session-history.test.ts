@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest"
 import type { SessionHistoryEntry, SessionHistoryPage } from "@getdomovoi/protocol"
 
 import {
+  latestSessionHistoryRequest,
   maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
+  resetSessionHistoryWindow,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
@@ -69,23 +71,65 @@ describe("session history view model", () => {
     expect(sessionHistoryEntryDetail(testEntry)).toBe("one failed")
   })
 
-  it("keeps a bounded DOM window while paging into long histories", () => {
-    const current: SessionHistoryPage = {
+  it("moves a bounded window backward through sequential older pages", () => {
+    let current: SessionHistoryPage = {
       sessionId: "session-one",
-      items: Array.from({ length: 100 }, (_, index) => message(String(index + 200))),
+      items: Array.from({ length: 50 }, (_, index) => message(String(index + 250))),
       hasMore: true,
-      nextCursor: "thread:200",
-    }
-    const older: SessionHistoryPage = {
-      sessionId: "session-one",
-      items: Array.from({ length: 200 }, (_, index) => message(String(index))),
-      hasMore: false,
+      nextCursor: "thread:250",
     }
 
-    const merged = mergeOlderHistory(current, older)
+    const loadOlderPage = (start: number, hasMore: boolean) => {
+      current = mergeOlderHistory(current, {
+        sessionId: "session-one",
+        items: Array.from({ length: 50 }, (_, index) => message(String(start + index))),
+        hasMore,
+        ...(hasMore ? { nextCursor: `thread:${start}` } : {}),
+      })
+    }
 
-    expect(merged.items).toHaveLength(maximumRetainedSessionHistoryItems)
-    expect(merged.items[0]?.sourceId).toBe("100")
-    expect(merged.items.at(-1)?.sourceId).toBe("299")
+    loadOlderPage(200, true)
+    loadOlderPage(150, true)
+    loadOlderPage(100, true)
+    expect(current.items.map((item) => item.sourceId)).toEqual(
+      Array.from({ length: 200 }, (_, index) => String(index + 100)),
+    )
+
+    loadOlderPage(50, true)
+    expect(current.items).toHaveLength(maximumRetainedSessionHistoryItems)
+    expect(current.items[0]?.sourceId).toBe("50")
+    expect(current.items.at(-1)?.sourceId).toBe("249")
+    expect(current).toMatchObject({ hasMore: true, nextCursor: "thread:50" })
+
+    loadOlderPage(0, false)
+    expect(current.items).toHaveLength(maximumRetainedSessionHistoryItems)
+    expect(current.items[0]?.sourceId).toBe("0")
+    expect(current.items.at(-1)?.sourceId).toBe("199")
+    expect(current.hasMore).toBe(false)
+    expect(current.nextCursor).toBeUndefined()
+  })
+
+  it("resets an older window before reloading the latest page", () => {
+    const reset = resetSessionHistoryWindow({
+      page: {
+        sessionId: "session-one",
+        items: Array.from({ length: 200 }, (_, index) => message(String(index))),
+        hasMore: false,
+      },
+      historyWindowed: true,
+      historyRefresh: 4,
+    })
+
+    expect(reset).toEqual({
+      page: undefined,
+      historyWindowed: false,
+      historyRefresh: 5,
+    })
+    expect(latestSessionHistoryRequest(["messages"], " durable history ")).toEqual({
+      categories: ["messages"],
+      query: "durable history",
+      limit: 50,
+    })
+    expect(latestSessionHistoryRequest(["messages"], "")).not.toHaveProperty("before")
   })
 })
