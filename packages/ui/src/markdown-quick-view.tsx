@@ -9,7 +9,8 @@ export const maximumMarkdownCharacters = 32_768
 export const maximumMarkdownLines = 500
 
 export function boundedMarkdownSource(source: string): { source: string; truncated: boolean } {
-  const lines = source.split(/\r?\n/)
+  const normalizedSource = source.replace(/\r\n?/g, "\n")
+  const lines = normalizedSource.split("\n")
   const selected = lines.slice(0, maximumMarkdownLines).map((line) => {
     const boundedIndent = line.replace(/^[ \t]{25,}/, "                        ")
     const boundedQuote = boundedIndent.replace(/^(?:>\s*){13,}/, "> > > > > > > > > > > > ")
@@ -17,7 +18,7 @@ export function boundedMarkdownSource(source: string): { source: string; truncat
   })
   const joined = selected.join("\n")
   const bounded = joined.slice(0, maximumMarkdownCharacters)
-  return { source: bounded, truncated: lines.length > maximumMarkdownLines || joined.length > maximumMarkdownCharacters || bounded !== source }
+  return { source: bounded, truncated: lines.length > maximumMarkdownLines || joined.length > maximumMarkdownCharacters || bounded !== normalizedSource }
 }
 
 export function safeMarkdownUrl(url: string): string {
