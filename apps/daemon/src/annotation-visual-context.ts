@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import type { Dirent } from "node:fs"
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 
 import type { Annotation } from "@getdomovoi/protocol"
 
 export const maximumAnnotationCropBytes = 1_500_000
 export const maximumAnnotationCropDimension = 2048
+export const maximumStoredAnnotationCropFiles = 64
+export const maximumStoredAnnotationCropBytes = 48 * 1_024 * 1_024
+
+const storedCropNamePattern = /^(crop-[a-f0-9]{64})\.(png|jpg|webp)$/
 
 type VisualContext = NonNullable<Annotation["visualContext"]>
 type Bbox = NonNullable<Annotation["anchor"]["bbox"]>
@@ -34,10 +39,28 @@ export interface AnnotationVisualContextReader {
 export class AnnotationVisualContextService implements AnnotationVisualContextReader {
   readonly #root: string
   readonly #renderer: AnnotationCropRenderer | undefined
+  readonly #maximumFileCount: number
+  readonly #maximumTotalBytes: number
+  readonly #protectedRefs: (() => Iterable<string> | Promise<Iterable<string>>) | undefined
+  readonly #removeFile: (path: string) => Promise<void>
+  readonly #reportRetentionOverflow: ((input: { fileCount: number; totalBytes: number }) => void) | undefined
 
-  constructor(options: { root: string; renderer?: AnnotationCropRenderer }) {
+  constructor(options: {
+    root: string
+    renderer?: AnnotationCropRenderer
+    maximumFileCount?: number
+    maximumTotalBytes?: number
+    protectedRefs?: () => Iterable<string> | Promise<Iterable<string>>
+    removeFile?: (path: string) => Promise<void>
+    reportRetentionOverflow?: (input: { fileCount: number; totalBytes: number }) => void
+  }) {
     this.#root = options.root
     this.#renderer = options.renderer
+    this.#maximumFileCount = Math.max(1, options.maximumFileCount ?? maximumStoredAnnotationCropFiles)
+    this.#maximumTotalBytes = Math.max(1, options.maximumTotalBytes ?? maximumStoredAnnotationCropBytes)
+    this.#protectedRefs = options.protectedRefs
+    this.#removeFile = options.removeFile ?? unlink
+    this.#reportRetentionOverflow = options.reportRetentionOverflow
   }
 
   async capture(input: {
@@ -53,8 +76,9 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     if (!this.#renderer) return unavailable(input.artifactRevision, "renderer-unavailable")
     const bbox = boundedBbox(input.bbox)
     if (!bbox) return unavailable(input.artifactRevision, "invalid-capture")
+    let result: Awaited<ReturnType<AnnotationCropRenderer["capture"]>>
     try {
-      const result = await this.#renderer.capture({
+      result = await this.#renderer.capture({
         htmlPath: input.htmlPath,
         bbox,
         network: "disabled",
@@ -62,13 +86,11 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
         maxHeight: maximumAnnotationCropDimension,
         maxBytes: maximumAnnotationCropBytes,
       })
-      if (!result || !validCapture(result)) {
-        return unavailable(input.artifactRevision, "invalid-capture")
-      }
-      return await this.storeUpload({ ...result, artifactRevision: input.artifactRevision })
     } catch {
       return unavailable(input.artifactRevision, "capture-failed")
     }
+    if (!result || !validCapture(result)) return unavailable(input.artifactRevision, "invalid-capture")
+    return await this.storeUpload({ ...result, artifactRevision: input.artifactRevision })
   }
 
   async storeUpload(input: {
@@ -79,30 +101,70 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     height: number
   }): Promise<VisualContext> {
     if (!validCapture(input)) return unavailable(input.artifactRevision, "invalid-capture")
+    const digest = createHash("sha256").update(input.bytes).digest("hex")
+    const ref = `crop-${digest}`
+    const extension = extensionFor(input.mimeType)
+    await mkdir(this.#root, { recursive: true, mode: 0o700 })
     try {
-      const digest = createHash("sha256").update(input.bytes).digest("hex")
-      const ref = `crop-${digest}`
-      const extension = extensionFor(input.mimeType)
-      await mkdir(this.#root, { recursive: true, mode: 0o700 })
+      await writeFile(join(this.#root, `${ref}.${extension}`), input.bytes, {
+        flag: "wx",
+        mode: 0o600,
+      })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+    }
+    await this.#prune(ref)
+    return {
+      status: "available",
+      ref,
+      artifactRevision: input.artifactRevision,
+      mimeType: input.mimeType,
+      width: input.width,
+      height: input.height,
+      byteLength: input.bytes.byteLength,
+    }
+  }
+
+  async #prune(currentRef: string): Promise<void> {
+    const protectedRefs = new Set<string>([currentRef])
+    for (const ref of await this.#protectedRefs?.() ?? []) {
+      if (/^crop-[a-f0-9]{64}$/.test(ref)) protectedRefs.add(ref)
+    }
+    const files: Array<{ name: string; ref: string; size: number; mtimeMs: number }> = []
+    let entries: Dirent<string>[]
+    try {
+      entries = await readdir(this.#root, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+      throw error
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      const match = storedCropNamePattern.exec(entry.name)
+      if (!match) continue
       try {
-        await writeFile(join(this.#root, `${ref}.${extension}`), input.bytes, {
-          flag: "wx",
-          mode: 0o600,
-        })
+        const info = await stat(join(this.#root, entry.name))
+        files.push({ name: entry.name, ref: match[1]!, size: info.size, mtimeMs: info.mtimeMs })
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       }
-      return {
-        status: "available",
-        ref,
-        artifactRevision: input.artifactRevision,
-        mimeType: input.mimeType,
-        width: input.width,
-        height: input.height,
-        byteLength: input.bytes.byteLength,
+    }
+    files.sort((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name))
+    let fileCount = files.length
+    let totalBytes = files.reduce((total, file) => total + file.size, 0)
+    for (const file of files) {
+      if (fileCount <= this.#maximumFileCount && totalBytes <= this.#maximumTotalBytes) break
+      if (protectedRefs.has(file.ref)) continue
+      try {
+        await this.#removeFile(join(this.#root, file.name))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       }
-    } catch {
-      return unavailable(input.artifactRevision, "capture-failed")
+      fileCount -= 1
+      totalBytes -= file.size
+    }
+    if (fileCount > this.#maximumFileCount || totalBytes > this.#maximumTotalBytes) {
+      this.#reportRetentionOverflow?.({ fileCount, totalBytes })
     }
   }
 
