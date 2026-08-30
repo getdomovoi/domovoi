@@ -64,7 +64,7 @@ import {
 } from "./annotation-visual-context.js"
 import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 import { agentPromptWithHandoff } from "./handoff-context.js"
-import { agentPromptWithSkills } from "./skill-context.js"
+import { agentPromptWithSkills, BuildAutoSkillTrustError } from "./skill-context.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -2402,12 +2402,34 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
           return
         }
-        const permissionViolation = buildAutoViolation(
-          session.runtime,
-          this.#agents.require(session.runtime.provider),
-        )
+        const registeredAgent = this.#agents.require(session.runtime.provider)
+        const permissionViolation = buildAutoViolation(session.runtime, registeredAgent)
         if (permissionViolation) {
           this.#error(socket, request.id, invalidParams, permissionViolation)
+          return
+        }
+        const preparedTurn = await prepareAnnotationTurn(
+          this.#snapshot,
+          session.id,
+          agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
+          registeredAgent.capabilities,
+          this.#annotationVisualContext,
+        )
+        let prompt: string
+        try {
+          prompt = await agentPromptWithSkills(
+            this.#skillCatalog ?? new FileSkillCatalog(
+              skillRoots(homedir(), this.#snapshot.project?.path),
+            ),
+            this.#snapshot,
+            preparedTurn.prompt,
+            {
+              requireTrusted: session.runtime.permissionMode === "build" && session.runtime.auto,
+            },
+          )
+        } catch (error) {
+          if (!(error instanceof BuildAutoSkillTrustError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
           return
         }
         const createdAt = new Date().toISOString()
@@ -2458,20 +2480,6 @@ export class DomovoiDaemon {
           }
           this.#loadedAgentThreads.add(loadedThread)
         }
-        const preparedTurn = await prepareAnnotationTurn(
-          this.#snapshot,
-          session.id,
-          agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
-          agent.capabilities,
-          this.#annotationVisualContext,
-        )
-        const prompt = await agentPromptWithSkills(
-          this.#skillCatalog ?? new FileSkillCatalog(
-            skillRoots(homedir(), this.#snapshot.project?.path),
-          ),
-          this.#snapshot,
-          preparedTurn.prompt,
-        )
         let turnId = session.activeTurnId
         try {
           signal?.throwIfAborted()

@@ -3268,6 +3268,176 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("blocks untrusted enabled skills before Build auto starts or steers providers", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const newTurn = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    const steeredTurn = snapshot.sessions.find((candidate) => candidate.id === "session-onboarding")!
+    for (const session of [newTurn, steeredTurn]) {
+      session.runtime = {
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        reasoning: "medium",
+        permissionMode: "build",
+        auto: true,
+      }
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = `provider-${session.id}`
+    }
+    steeredTurn.activeTurnId = "provider-turn-active"
+    const enabledSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user",
+      source: "agents",
+      ...skillSecurityMetadata,
+    }
+    snapshot.skillEnablements = [{
+      projectId: snapshot.project!.id,
+      skillId: enabledSkill.id,
+      enabled: true,
+      contentDigest: enabledSkill.contentDigest,
+      manifest: enabledSkill.manifest,
+      reviewedAt: "2026-08-30T00:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "reviewer" },
+    }]
+    const skillCatalog = {
+      list: vi.fn(async () => [enabledSkill]),
+      read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
+    } satisfies SkillCatalog
+    const agent = {
+      permissionCapabilities: { buildAuto: "pre-execution" as const },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "provider-turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const send = (id: number, sessionId: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "session.send",
+        params: { sessionId, prompt: "Run the audit", client: "desktop" },
+      }))
+    })
+
+    await expect(send(1, newTurn.id)).resolves.toMatchObject({
+      error: { code: -32602, message: expect.stringMatching(/repo-audit.*Disable.*trusted/i) },
+    })
+    await expect(send(2, steeredTurn.id)).resolves.toMatchObject({
+      error: { code: -32602, message: expect.stringMatching(/repo-audit.*Disable.*trusted/i) },
+    })
+    expect(skillCatalog.read).toHaveBeenCalledTimes(2)
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
+  it("keeps reviewed unsigned skills usable in Plan and Build manual", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const plan = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    const manual = snapshot.sessions.find((candidate) => candidate.id === "session-onboarding")!
+    plan.runtime = {
+      provider: "codex", model: "gpt-5.6-sol", reasoning: "medium",
+      permissionMode: "plan", auto: false,
+    }
+    manual.runtime = {
+      provider: "codex", model: "gpt-5.6-sol", reasoning: "medium",
+      permissionMode: "build", auto: false,
+    }
+    for (const session of [plan, manual]) {
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = `provider-${session.id}`
+    }
+    manual.activeTurnId = "provider-turn-active"
+    const enabledSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f", name: "repo-audit", description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md", scope: "user", source: "agents",
+      ...skillSecurityMetadata,
+    }
+    snapshot.skillEnablements = [{
+      projectId: snapshot.project!.id, skillId: enabledSkill.id, enabled: true,
+      contentDigest: enabledSkill.contentDigest, manifest: enabledSkill.manifest,
+      reviewedAt: "2026-08-30T00:00:00.000Z", reviewedBy: { client: "desktop" },
+    }]
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "provider-turn"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const skillCatalog = {
+      list: vi.fn(async () => [enabledSkill]),
+      read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({
+      port: 0, store: new SqliteWorkspaceStore(":memory:", snapshot), agent, skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const send = (id: number, sessionId: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0", id, method: "session.send",
+        params: { sessionId, prompt: "Run the audit", client: "desktop" },
+      }))
+    })
+
+    await expect(send(1, plan.id)).resolves.toHaveProperty("result")
+    await expect(send(2, manual.id)).resolves.toHaveProperty("result")
+    expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining("Audit every change."),
+    }))
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      manual.providerThreadId,
+      "provider-turn-active",
+      expect.stringContaining("Audit every change."),
+    )
+    socket.close()
+  })
+
   it("shares slow agent initialization across timed-out model requests", async () => {
     let finishConnect: (() => void) | undefined
     let finishModels: (() => void) | undefined

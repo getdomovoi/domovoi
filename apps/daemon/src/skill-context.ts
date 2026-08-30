@@ -11,6 +11,19 @@ export const maximumInjectedSkills = 8
 export const maximumInjectedSkillContentLength = 12_000
 export const maximumSkillContextLength = 64_000
 export const maximumReviewedSkillCandidates = 32
+export const maximumBuildAutoSkillTrustErrorLength = 512
+
+export class BuildAutoSkillTrustError extends Error {
+  constructor(skillNames: string[]) {
+    const shown = skillNames.slice(0, 5)
+    const omitted = skillNames.length - shown.length
+    const names = `${shown.join(", ")}${omitted > 0 ? `, and ${omitted} more` : ""}`
+    super(
+      `Build auto blocked by enabled skills without trusted state: ${names}. Disable them or establish a trusted signature/review.`,
+    )
+    this.name = "BuildAutoSkillTrustError"
+  }
+}
 
 type SkillContextSnapshot = Pick<WorkspaceSnapshot, "project" | "skillEnablements">
 
@@ -58,7 +71,6 @@ async function reviewedSkill(
       skill.id !== review.skillId
       || skill.contentDigest !== review.contentDigest
       || !exactManifest(skill.manifest, review.manifest)
-      || skill.trust.state === "blocked"
     ) return undefined
     const bounded = boundedContent(document.content)
     return {
@@ -81,6 +93,7 @@ export async function agentPromptWithSkills(
   catalog: SkillCatalog,
   snapshot: SkillContextSnapshot,
   userPrompt: string,
+  options: { requireTrusted?: boolean } = {},
 ): Promise<string> {
   const projectId = snapshot.project?.id
   if (!projectId) return userPrompt
@@ -89,10 +102,21 @@ export async function agentPromptWithSkills(
     .sort((left, right) => left.skillId.localeCompare(right.skillId))
   if (!reviews.length) return userPrompt
 
-  const loaded = (await Promise.all(
-    reviews.slice(0, maximumReviewedSkillCandidates).map((review) => reviewedSkill(catalog, review)),
-  ))
-    .filter((skill): skill is InjectedSkill => skill !== undefined)
+  const candidates = options.requireTrusted
+    ? reviews
+    : reviews.slice(0, maximumReviewedSkillCandidates)
+  const current = (await Promise.all(
+    candidates.map((review) => reviewedSkill(catalog, review)),
+  )).filter((skill): skill is InjectedSkill => skill !== undefined)
+  if (options.requireTrusted) {
+    const unsafe = current
+      .filter((skill) => skill.trust.state !== "trusted")
+      .map((skill) => skill.name)
+      .sort((left, right) => left.localeCompare(right))
+    if (unsafe.length > 0) throw new BuildAutoSkillTrustError(unsafe)
+  }
+  const loaded = current
+    .filter((skill) => skill.trust.state !== "blocked")
     .sort((left, right) =>
       left.name.localeCompare(right.name)
       || left.path.localeCompare(right.path)
