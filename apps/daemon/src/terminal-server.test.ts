@@ -282,7 +282,9 @@ describe("terminal RPC", () => {
         defaultReasoningEffort: session.runtime.reasoning,
         isDefault: true,
       }]),
-      startThread: vi.fn(async () => "thread-recovered-emergency"),
+      startThread: vi.fn()
+        .mockResolvedValueOnce("thread-discarded-recovery")
+        .mockResolvedValueOnce("thread-recovered-emergency"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async (threadId: string) => {
         if (threadId !== "thread-failed-emergency") return
@@ -378,7 +380,10 @@ describe("terminal RPC", () => {
       runtime: session.runtime,
       client: "desktop",
     })).resolves.toMatchObject({ error: { code: -32603, message: "Internal daemon error" } })
-    expect(agent.startThread).not.toHaveBeenCalled()
+    expect(agent.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: session.workspacePath,
+    }))
+    expect(agent.stopThread).toHaveBeenCalledWith("thread-discarded-recovery")
     await expect(rpc("session.send", {
       sessionId: session.id,
       prompt: "failed recovery must stay quarantined",

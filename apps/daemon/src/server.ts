@@ -1724,48 +1724,33 @@ export class DomovoiDaemon {
             return nextThreadId
           }
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
-          let nextThreadId: string
-          if (recoveringFailedThread) {
+          const nextThreadId = await startNextThread()
+          try {
             checkpoint = await this.#withAbortTimeout(
               (signal) => this.#workspaceService.checkpoint(
                 currentSession.workspacePath!,
-                "before provider recovery",
+                recoveringFailedThread ? "before provider recovery" : "before provider handoff",
                 signal,
               ),
               this.#agentTimeoutMs,
-              "Provider recovery checkpoint timed out",
+              recoveringFailedThread
+                ? "Provider recovery checkpoint timed out"
+                : "Provider handoff checkpoint timed out",
             )
             await withTimeout(
               this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
               this.#agentTimeoutMs,
-              "Failed provider cleanup timed out",
+              recoveringFailedThread
+                ? "Failed provider cleanup timed out"
+                : "Previous provider cleanup timed out",
             )
-            nextThreadId = await startNextThread()
-          } else {
-            nextThreadId = await startNextThread()
+          } catch (error) {
             try {
-              checkpoint = await this.#withAbortTimeout(
-                (signal) => this.#workspaceService.checkpoint(
-                  currentSession.workspacePath!,
-                  "before provider handoff",
-                  signal,
-                ),
-                this.#agentTimeoutMs,
-                "Provider handoff checkpoint timed out",
-              )
-              await withTimeout(
-                this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
-                this.#agentTimeoutMs,
-                "Previous provider cleanup timed out",
-              )
-            } catch (error) {
-              try {
-                await nextAgent.stopThread(nextThreadId)
-              } catch (cleanupError) {
-                this.#reportError("Domovoi could not stop a failed handoff thread", cleanupError)
-              }
-              throw error
+              await nextAgent.stopThread(nextThreadId)
+            } catch (cleanupError) {
+              this.#reportError("Domovoi could not stop a failed handoff thread", cleanupError)
             }
+            throw error
           }
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
