@@ -148,6 +148,13 @@ import {
 } from "./session-history"
 import { SessionEvidencePanel } from "./session-evidence"
 import { MarkdownQuickView } from "./markdown-quick-view"
+import {
+  browserWorkspaceUiStorage,
+  loadWorkspaceUiState,
+  reconcileWorkspaceUiState,
+  saveWorkspaceUiState,
+  type WorkspaceSurface,
+} from "./workspace-persistence"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -2458,11 +2465,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("domovoi.sidebar-collapsed") === "true")
-  const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
+  const [workspaceUi, setWorkspaceUi] = useState(() =>
+    loadWorkspaceUiState(browserWorkspaceUiStorage()),
+  )
+  const { dockCollapsed, layouts, sidebarCollapsed, surface } = workspaceUi
+  const setSidebarCollapsed = (collapsed: boolean) => {
+    setWorkspaceUi((current) => ({ ...current, sidebarCollapsed: collapsed }))
+  }
+  const setDockCollapsed = (collapsed: boolean) => {
+    setWorkspaceUi((current) => ({ ...current, dockCollapsed: collapsed }))
+  }
+  const setSurface = (nextSurface: WorkspaceSurface) => {
+    setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
+  }
   const [workspaceError, setWorkspaceError] = useState("")
   const [connectionError, setConnectionError] = useState("")
-  const [surface, setSurface] = useState<"workspace" | "providers" | "skills" | "audit">("workspace")
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -2497,24 +2514,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const pauseActiveTurns = () => {
     void emergencyStop()
   }
-  const layoutKey = `domovoi.layout.${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
-  const defaultLayout = useMemo(() => {
-    const saved = localStorage.getItem(layoutKey)
-    if (!saved) return undefined
-    try {
-      return JSON.parse(saved) as Record<string, number>
-    } catch {
-      return undefined
-    }
-  }, [layoutKey])
+  const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
+  const defaultLayout = layouts[layoutKey]
 
   useEffect(() => {
-    localStorage.setItem("domovoi.sidebar-collapsed", String(sidebarCollapsed))
-  }, [sidebarCollapsed])
+    if (!snapshot) return
+    setWorkspaceUi((current) => reconcileWorkspaceUiState(current, {
+      projectId: snapshot.project?.id ?? null,
+      activeSessionId: snapshot.activeSessionId,
+      sessionIds: snapshot.sessions.map(({ id }) => id),
+    }))
+  }, [snapshot])
 
   useEffect(() => {
-    localStorage.setItem("domovoi.dock-collapsed", String(dockCollapsed))
-  }, [dockCollapsed])
+    saveWorkspaceUiState(browserWorkspaceUiStorage(), workspaceUi)
+  }, [workspaceUi])
 
   useEffect(() => {
     if (connected) setConnectionError("")
@@ -2644,7 +2658,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               className="min-h-0 min-w-0 flex-1"
               {...(defaultLayout ? { defaultLayout } : {})}
               onLayoutChanged={(layout, meta) => {
-                if (meta.isUserInteraction) localStorage.setItem(layoutKey, JSON.stringify(layout))
+                if (!meta.isUserInteraction) return
+                setWorkspaceUi((current) => ({
+                  ...current,
+                  layouts: { ...current.layouts, [layoutKey]: layout },
+                }))
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
