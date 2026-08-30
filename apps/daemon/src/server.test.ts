@@ -99,7 +99,9 @@ describe("DomovoiDaemon", () => {
     snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
     snapshot.annotations = snapshot.annotations.filter((annotation) => annotation.sessionId !== session.id)
     let watcherOptions: ArtifactWatcherOptions | undefined
-    const watcherStart = vi.fn(async () => {})
+    let releaseWatcherStart!: () => void
+    const watcherStarting = new Promise<void>((resolve) => { releaseWatcherStart = resolve })
+    const watcherStart = vi.fn(() => watcherStarting)
     const watcherStop = vi.fn()
     const store = {
       snapshot: structuredClone(snapshot),
@@ -118,7 +120,14 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
 
-    await daemon.start()
+    const daemonStarting = daemon.start()
+    const startWasNonblocking = await Promise.race([
+      daemonStarting.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
+    ])
+    releaseWatcherStart()
+    await daemonStarting
+    expect(startWasNonblocking).toBe(true)
     expect(watcherStart).toHaveBeenCalledOnce()
     expect(watcherOptions?.root).toBe(scratch)
 
@@ -4448,9 +4457,9 @@ describe("DomovoiDaemon", () => {
 
     const snapshot = await rpc("workspace.get", {})
     const artifact = (snapshot.result as {
-      artifacts: Array<{ id: string; sessionId: string; type: string; revision: number }>
+      artifacts: Array<{ id: string; sessionId: string; type: string; revision: number; path?: string }>
     }).artifacts.find((candidate) => candidate.type === "preview")
-    expect(artifact).toMatchObject({ sessionId, type: "preview" })
+    expect(artifact).toMatchObject({ sessionId, type: "preview", path: "preview.html" })
     expect((snapshot.result as { artifacts: unknown[] }).artifacts).toHaveLength(2)
 
     const accessResponse = await rpc("artifact.authorize", {
