@@ -101,8 +101,12 @@ export class AcpAgentAdapter implements AgentAdapter {
     this.#disconnected = false
     let peer: AcpPeer | undefined
     peer = this.#createPeer({
-      onUpdate: (sessionId, update) => this.#handleUpdate(sessionId, update),
-      onPermission: (request) => this.#requestPermission(request),
+      onUpdate: (sessionId, update) => {
+        if (this.#peer === peer) this.#handleUpdate(sessionId, update)
+      },
+      onPermission: (request) => this.#peer === peer
+        ? this.#requestPermission(request)
+        : Promise.resolve({ cancelled: true }),
       onDisconnect: () => { if (peer) this.#handleDisconnect(peer) },
     })
     this.#peer = peer
