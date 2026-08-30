@@ -6,6 +6,13 @@ import type { SkillSummary } from "@getdomovoi/protocol"
 import { SkillBrowser, SkillSourceContent } from "./skill-browser"
 import { filterSkills, groupSkills } from "./skill-browser-model"
 
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
+
 const skills: SkillSummary[] = [
   {
     id: "skill-111111111111",
@@ -14,6 +21,7 @@ const skills: SkillSummary[] = [
     path: "/home/dev/.agents/skills/design-studio/SKILL.md",
     scope: "user",
     source: "agents",
+    ...skillSecurityMetadata,
   },
   {
     id: "skill-222222222222",
@@ -22,6 +30,7 @@ const skills: SkillSummary[] = [
     path: "/repo/.agents/skills/repo-audit/SKILL.md",
     scope: "project",
     source: "agents",
+    ...skillSecurityMetadata,
   },
 ]
 

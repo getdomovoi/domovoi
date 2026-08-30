@@ -4,6 +4,13 @@ import { demoWorkspace, type SystemEmergencyStoppedNotification, type WorkspaceD
 
 import { DomovoiClient, DomovoiRpcTimeoutError } from "./client"
 
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
+
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
   static readonly OPEN = 1
@@ -821,6 +828,7 @@ describe("DomovoiClient", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user",
         source: "agents",
+        ...skillSecurityMetadata,
       }],
     })
 
@@ -880,6 +888,7 @@ describe("DomovoiClient", () => {
           path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
           scope: "user",
           source: "agents",
+          ...skillSecurityMetadata,
         },
         content: "---\nname: repo-audit\n---\n",
       },

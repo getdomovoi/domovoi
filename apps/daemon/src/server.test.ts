@@ -39,6 +39,13 @@ import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 import { maximumPrintableArtifactDepth } from "./print-artifact.js"
 
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
+
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 
@@ -2575,6 +2582,7 @@ describe("DomovoiDaemon", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user" as const,
         source: "agents" as const,
+        ...skillSecurityMetadata,
       }]),
       read: vi.fn(async (id: string) => ({
         skill: {
@@ -2584,6 +2592,7 @@ describe("DomovoiDaemon", () => {
           path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
           scope: "user" as const,
           source: "agents" as const,
+          ...skillSecurityMetadata,
         },
         content: "---\nname: repo-audit\n---\n",
       })),

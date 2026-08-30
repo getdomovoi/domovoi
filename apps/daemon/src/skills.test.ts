@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
@@ -20,6 +21,149 @@ async function skill(root: string, directory: string, frontmatter: string): Prom
 }
 
 describe("FileSkillCatalog", () => {
+  it("binds declared capabilities and conservative trust state to the skill content", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-manifest-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    const content = [
+      "---",
+      "name: artifact-review",
+      "description: Review generated artifacts.",
+      "domovoi:",
+      "  manifest:",
+      "    version: 1",
+      "    capabilities:",
+      "      - filesystem.read",
+      "      - preview.render",
+      "---",
+      "",
+      "# Instructions",
+      "",
+    ].join("\n")
+    const directory = join(root, "artifact-review")
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, "SKILL.md"), content)
+    const contentDigest = `sha256:${createHash("sha256").update(content).digest("hex")}`
+    await writeFile(join(directory, "SKILL.md.sig"), JSON.stringify({
+      version: 1,
+      contentDigest,
+      algorithm: "ed25519",
+      keyId: "publisher:test-key",
+      value: "ZGVjbGFyZWQtc2lnbmF0dXJl",
+    }))
+
+    const catalog = new FileSkillCatalog([
+      { path: root, scope: "user", source: "domovoi" },
+    ])
+
+    const [discovered] = await catalog.list()
+    expect(discovered).toMatchObject({
+      manifest: {
+        version: 1,
+        capabilities: ["filesystem.read", "preview.render"],
+      },
+      contentDigest,
+      signature: {
+        state: "unverified",
+        algorithm: "ed25519",
+        keyId: "publisher:test-key",
+      },
+      trust: { state: "untrusted", reason: "unverified-signature" },
+    })
+    expect(discovered?.signature).not.toHaveProperty("state", "verified")
+  })
+
+  it("defaults undeclared skills to no capabilities and unsigned untrusted state", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-unsigned-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    await skill(root, "plain", "name: plain\ndescription: Plain instructions.")
+
+    const [discovered] = await new FileSkillCatalog([
+      { path: root, scope: "user", source: "domovoi" },
+    ]).list()
+
+    expect(discovered).toMatchObject({
+      manifest: { version: 1, capabilities: [] },
+      contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+    })
+  })
+
+  it("does not discover malformed or unknown capability manifests", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-capabilities-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    await skill(root, "unknown", [
+      "name: unknown",
+      "description: Unknown privilege.",
+      "domovoi:",
+      "  manifest:",
+      "    version: 1",
+      "    capabilities: [machine.takeover]",
+    ].join("\n"))
+    await skill(root, "duplicate", [
+      "name: duplicate",
+      "description: Duplicate privilege.",
+      "domovoi:",
+      "  manifest:",
+      "    version: 1",
+      "    capabilities: [filesystem.read, filesystem.read]",
+    ].join("\n"))
+
+    await expect(new FileSkillCatalog([
+      { path: root, scope: "user", source: "domovoi" },
+    ]).list()).resolves.toEqual([])
+  })
+
+  it("surfaces malformed signature declarations as blocked instead of trusting or hiding them", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-signature-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    const directory = await skill(
+      root,
+      "bad-signature",
+      "name: bad-signature\ndescription: Malformed publisher evidence.",
+    )
+    await writeFile(join(directory, "SKILL.md.sig"), JSON.stringify({
+      version: 1,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      algorithm: "ed25519",
+      keyId: "publisher:test-key",
+      value: "not_base64!",
+    }))
+
+    const [discovered] = await new FileSkillCatalog([
+      { path: root, scope: "user", source: "domovoi" },
+    ]).list()
+
+    expect(discovered).toMatchObject({
+      signature: { state: "invalid", reason: "malformed" },
+      trust: { state: "blocked", reason: "invalid-signature" },
+    })
+  })
+
+  it("recomputes document metadata so its digest always matches returned content", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-digest-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    const directory = await skill(root, "mutable", "name: mutable\ndescription: Initial instructions.")
+    const catalog = new FileSkillCatalog([
+      { path: root, scope: "user", source: "domovoi" },
+    ])
+    const [listed] = await catalog.list()
+    const changed = "---\nname: mutable\ndescription: Changed instructions.\n---\n\n# Changed\n"
+    await writeFile(join(directory, "SKILL.md"), changed)
+
+    const document = await catalog.read(listed!.id)
+    expect(document.content).toBe(changed)
+    expect(document.skill.contentDigest).toBe(
+      `sha256:${createHash("sha256").update(changed).digest("hex")}`,
+    )
+    expect(document.skill.description).toBe("Changed instructions.")
+  })
+
   it("discovers valid metadata with stable source provenance", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-"))
     scratchDirectories.push(scratch)

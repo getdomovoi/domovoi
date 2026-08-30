@@ -48,6 +48,13 @@ import {
   artifactSchema,
 } from "./index.js"
 
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
+
 describe("workspace protocol", () => {
   it("keeps preview variant metadata bounded and reference-only", () => {
     expect(artifactSchema.parse({
@@ -303,6 +310,7 @@ describe("workspace protocol", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user",
         source: "agents",
+        ...skillSecurityMetadata,
       },
       content: "---\nname: repo-audit\n---\n",
     }).content).toContain("repo-audit")
@@ -314,6 +322,7 @@ describe("workspace protocol", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user",
         source: "agents",
+        ...skillSecurityMetadata,
       },
       content: "x".repeat(128 * 1_024 + 1),
     }).success).toBe(false)
@@ -327,10 +336,12 @@ describe("workspace protocol", () => {
       path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
       scope: "user",
       source: "agents",
+      ...skillSecurityMetadata,
     })).toMatchObject({
       name: "repo-audit",
       scope: "user",
       source: "agents",
+      ...skillSecurityMetadata,
     })
     expect(skillSummarySchema.safeParse({
       id: "skill-4d6f4d6f4d6f",

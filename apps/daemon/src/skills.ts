@@ -1,19 +1,25 @@
 import { createHash } from "node:crypto"
-import { open, readdir, readFile, realpath, stat } from "node:fs/promises"
+import { lstat, open, readdir, readFile, realpath, stat } from "node:fs/promises"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import { parse } from "yaml"
 
 import {
+  skillCapabilityManifestSchema,
+  skillDeclaredSignatureSchema,
+  skillFrontmatterConfigSchema,
   skillSummarySchema,
   skillDocumentSchema,
   type SkillDocument,
   type SkillScope,
+  type SkillSignature,
   type SkillSource,
   type SkillSummary,
+  type SkillTrust,
 } from "@getdomovoi/protocol"
 
 const maxSkillFileBytes = 128 * 1_024
+const maxSignatureFileBytes = 4 * 1_024
 const maxSkillDepth = 4
 const maxSkills = 512
 
@@ -79,9 +85,18 @@ export class FileSkillCatalog implements SkillCatalog {
       if (skillId(canonicalPath) !== id) throw new SkillNotFoundError()
       const file = await handle.stat()
       if (!file.isFile() || file.size > maxSkillFileBytes) throw new SkillNotFoundError()
+      const content = await handle.readFile("utf8")
+      const contentDigest = digest(content)
+      const currentSkill = skillFromContent(content, {
+        id,
+        path: skill.path,
+        scope: skill.scope,
+        source: skill.source,
+      }, contentDigest, await skillSignatureMetadata(skill.path, contentDigest))
+      if (!currentSkill) throw new SkillNotFoundError()
       return skillDocumentSchema.parse({
-        skill,
-        content: await handle.readFile("utf8"),
+        skill: currentSkill,
+        content,
       })
     } catch (error) {
       if (error instanceof SkillNotFoundError) throw error
@@ -171,29 +186,97 @@ async function readSkill(path: string, root: SkillRoot): Promise<SkillSummary | 
     const file = await stat(path)
     if (!file.isFile() || file.size > maxSkillFileBytes) return undefined
     const content = await readFile(path, "utf8")
-    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1]
-    if (!frontmatter) return undefined
-    const metadata = parse(frontmatter, { maxAliasCount: 0 }) as unknown
-    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined
-    const record = metadata as Record<string, unknown>
+    const contentDigest = digest(content)
     const canonicalPath = await realpath(path)
     const canonicalRoot = await realpath(root.path)
     if (root.scope !== "user" && escapesRoot(canonicalRoot, canonicalPath)) {
       return undefined
     }
-    const candidate = {
+    return skillFromContent(content, {
       id: skillId(canonicalPath),
-      name: record.name,
-      description: record.description,
       path: resolve(path),
       scope: root.scope,
       source: root.source,
-    }
-    const parsed = skillSummarySchema.safeParse(candidate)
-    return parsed.success ? parsed.data : undefined
+    }, contentDigest, await skillSignatureMetadata(path, contentDigest))
   } catch {
     return undefined
   }
+}
+
+type SkillIdentity = Pick<SkillSummary, "id" | "path" | "scope" | "source">
+
+function skillFromContent(
+  content: string,
+  identity: SkillIdentity,
+  contentDigest: string,
+  signatureMetadata: { signature: SkillSignature; trust: SkillTrust },
+): SkillSummary | undefined {
+  const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1]
+  if (!frontmatter) return undefined
+  const metadata = parse(frontmatter, { maxAliasCount: 0 }) as unknown
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined
+  const record = metadata as Record<string, unknown>
+  const config = skillFrontmatterConfigSchema.safeParse(record.domovoi ?? {})
+  if (!config.success) return undefined
+  const manifest = skillCapabilityManifestSchema.parse(
+    config.data.manifest ?? { version: 1, capabilities: [] },
+  )
+  const parsed = skillSummarySchema.safeParse({
+    ...identity,
+    name: record.name,
+    description: record.description,
+    manifest,
+    contentDigest,
+    ...signatureMetadata,
+  })
+  return parsed.success ? parsed.data : undefined
+}
+
+async function skillSignatureMetadata(
+  skillPath: string,
+  contentDigest: string,
+): Promise<{ signature: SkillSignature; trust: SkillTrust }> {
+  try {
+    const signaturePath = `${skillPath}.sig`
+    const link = await lstat(signaturePath)
+    if (link.isSymbolicLink() || !link.isFile() || link.size > maxSignatureFileBytes) {
+      return blockedSignature("malformed")
+    }
+    const declaration = skillDeclaredSignatureSchema.safeParse(
+      JSON.parse(await readFile(signaturePath, "utf8")),
+    )
+    if (!declaration.success) return blockedSignature("malformed")
+    if (declaration.data.contentDigest !== contentDigest) {
+      return blockedSignature("verification-failed")
+    }
+    const { algorithm, keyId, value } = declaration.data
+    return {
+      signature: { state: "unverified", algorithm, keyId, value },
+      trust: { state: "untrusted", reason: "unverified-signature" },
+    }
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {
+        signature: { state: "unsigned" },
+        trust: { state: "untrusted", reason: "unsigned" },
+      }
+    }
+    return blockedSignature("malformed")
+  }
+}
+
+function blockedSignature(reason: "malformed" | "verification-failed"): {
+  signature: SkillSignature
+  trust: SkillTrust
+} {
+  return {
+    signature: { state: "invalid", reason },
+    trust: { state: "blocked", reason: "invalid-signature" },
+  }
+}
+
+function digest(content: string): string {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`
 }
 
 function skillId(canonicalPath: string): string {
