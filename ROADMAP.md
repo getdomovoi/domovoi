@@ -121,7 +121,7 @@ workflow without becoming a code editor.
 - [x] Per-project standing approval rules
 - [x] Enforce hard gates that Build auto cannot bypass
 - [x] Add a searchable audit log with redaction and export
-- [ ] Add command-level secret redaction before persistence or display
+- [x] Add command-level secret redaction before persistence or display
 - [ ] Add a global emergency stop that cancels all active tools and providers, not only UI state
 
 ### Preview and review
