@@ -189,6 +189,13 @@ async function scanArtifactFiles(
   return { files: files.sort((left, right) => left.path.localeCompare(right.path)), truncated }
 }
 
+function variantOrderFor(variantId: string): number | undefined {
+  if (/^[a-z]$/.test(variantId)) return variantId.charCodeAt(0) - 97
+  if (!/^(?:0|[1-9][0-9]*)$/.test(variantId)) return undefined
+  const order = Number(variantId)
+  return Number.isSafeInteger(order) && order >= 0 ? order : undefined
+}
+
 function artifactDescriptor(path: string): Pick<ArtifactFileChange, "type" | "mimeType" | "variant"> | undefined {
   const extension = extname(path).toLowerCase()
   if (![".html", ".htm", ".md", ".markdown"].includes(extension)) return undefined
@@ -200,14 +207,15 @@ function artifactDescriptor(path: string): Pick<ArtifactFileChange, "type" | "mi
   const designStudioIndex = segments.findIndex((segment) => segment.toLowerCase() === "design-studio")
   const variantMatch = designStudioIndex >= 0 ? /^variant[-_.]([a-z0-9][a-z0-9_-]*)$/i.exec(stem) : null
   const variantId = variantMatch?.[1]?.toLowerCase()
-  const variant = variantId ? {
+  const variantOrder = variantId ? variantOrderFor(variantId) : undefined
+  const variant = variantId && variantOrder !== undefined ? {
     id: variantId,
     groupId: segments.slice(0, -1).join("/"),
     label: `Variant ${variantId.length === 1 ? variantId.toUpperCase() : variantId}`,
-    order: /^[a-z]$/.test(variantId) ? variantId.charCodeAt(0) - 97 : Number.parseInt(variantId, 10) - 1,
+    order: variantOrder,
   } : undefined
   return extension === ".html" || extension === ".htm"
-    ? { type: "preview", mimeType: "text/html", ...(variant && Number.isSafeInteger(variant.order) && variant.order >= 0 ? { variant } : {}) }
+    ? { type: "preview", mimeType: "text/html", ...(variant ? { variant } : {}) }
     : { type: "plan", mimeType: "text/markdown" }
 }
 

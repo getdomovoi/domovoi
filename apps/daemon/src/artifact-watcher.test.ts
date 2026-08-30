@@ -26,11 +26,19 @@ describe("ArtifactWatcher", () => {
     const watcher = new ArtifactWatcher({ root, onChange: (change) => changes.push(change), watchFactory: () => ({ close: vi.fn() }) })
     await watcher.start()
     await writeFile(join(root, "design-studio", "onboarding", "variant-b.html"), "<h1>B</h1>")
+    await writeFile(join(root, "design-studio", "onboarding", "variant-0.html"), "<h1>Zero</h1>")
+    await writeFile(join(root, "design-studio", "onboarding", "variant-2.html"), "<h1>Two</h1>")
+    await writeFile(join(root, "design-studio", "onboarding", "variant-999999999999999999999999.html"), "<h1>Overflow</h1>")
     await writeFile(join(root, "design-studio", "onboarding", "overview.html"), "<h1>Overview</h1>")
     await watcher.rescan()
     expect(changes.find((change) => change.path.endsWith("variant-b.html"))?.variant).toEqual({
       id: "b", groupId: "design-studio/onboarding", label: "Variant B", order: 1,
     })
+    expect(changes.find((change) => change.path.endsWith("variant-0.html"))?.variant).toEqual({
+      id: "0", groupId: "design-studio/onboarding", label: "Variant 0", order: 0,
+    })
+    expect(changes.find((change) => change.path.endsWith("variant-2.html"))?.variant?.order).toBe(2)
+    expect(changes.find((change) => change.path.endsWith("variant-999999999999999999999999.html"))?.variant).toBeUndefined()
     expect(changes.find((change) => change.path.endsWith("overview.html"))?.variant).toBeUndefined()
   })
   it("emits only new and changed plan or design artifacts", async () => {
