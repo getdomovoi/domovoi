@@ -10,14 +10,23 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentVisualContext } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 
 export type ClaudeUserMessage = {
   type: "user"
-  message: { role: "user"; content: string }
+  message: {
+    role: "user"
+    content: string | Array<
+      | { type: "text"; text: string }
+      | {
+          type: "image"
+          source: { type: "base64"; media_type: AgentVisualContext["mimeType"]; data: string }
+        }
+    >
+  }
   parent_tool_use_id: null
   uuid: string
   session_id: string
@@ -116,6 +125,7 @@ export function claudePermissionFor(runtime: Runtime): {
 
 export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly permissionCapabilities = { buildAuto: "pre-execution" } as const
+  readonly capabilities = { vision: true } as const
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => string
   #sessions = new Map<string, Session>()
@@ -177,24 +187,30 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await this.#openSession(threadId, cwd, runtime, true)
   }
 
-  async startTurn({ threadId, prompt, runtime }: {
+  async startTurn({ threadId, prompt, runtime, visualContexts }: {
     threadId: string
     cwd: string
     prompt: string
     runtime: Runtime
+    visualContexts?: AgentVisualContext[]
   }): Promise<string> {
     const session = this.#requireSession(threadId)
     const turnId = this.#id()
     await this.#applyRuntime(session, runtime)
     session.activeTurnId = turnId
-    session.input.push(userMessage(threadId, turnId, prompt))
+    session.input.push(userMessage(threadId, turnId, prompt, visualContexts))
     return turnId
   }
 
-  async steerTurn(threadId: string, turnId: string, prompt: string): Promise<void> {
+  async steerTurn(
+    threadId: string,
+    turnId: string,
+    prompt: string,
+    visualContexts?: AgentVisualContext[],
+  ): Promise<void> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) throw new Error("Claude turn is no longer active")
-    session.input.push(userMessage(threadId, this.#id(), prompt))
+    session.input.push(userMessage(threadId, this.#id(), prompt, visualContexts))
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -512,10 +528,30 @@ function baseOptions(): ClaudeQueryOptions {
   }
 }
 
-function userMessage(threadId: string, turnId: string, prompt: string): ClaudeUserMessage {
+function userMessage(
+  threadId: string,
+  turnId: string,
+  prompt: string,
+  visualContexts: AgentVisualContext[] = [],
+): ClaudeUserMessage {
   return {
     type: "user",
-    message: { role: "user", content: prompt },
+    message: {
+      role: "user",
+      content: visualContexts.length === 0
+        ? prompt
+        : [
+            { type: "text", text: prompt },
+            ...visualContexts.map((context) => ({
+              type: "image" as const,
+              source: {
+                type: "base64" as const,
+                media_type: context.mimeType,
+                data: Buffer.from(context.bytes).toString("base64"),
+              },
+            })),
+          ],
+    },
     parent_tool_use_id: null,
     uuid: turnId,
     session_id: threadId,

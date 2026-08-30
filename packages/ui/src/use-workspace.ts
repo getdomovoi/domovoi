@@ -336,12 +336,17 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   }, [])
 
   const authorizeArtifact = useCallback(async (
-    artifactId: string,
-    bridgeChannel?: string,
+    input: {
+      sessionId: string
+      artifactId: string
+      revision: number
+      purpose: ArtifactAccess["purpose"]
+      bridgeChannel?: string
+    },
   ): Promise<ArtifactAccess> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.authorizeArtifact(artifactId, bridgeChannel)
+    return client.authorizeArtifact(input)
   }, [])
 
   const createTerminal = useCallback(async (
@@ -422,6 +427,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     variantId?: string
     anchor: Annotation["anchor"]
     body: string
+    visualContextUpload?: RpcParams<"annotation.create">["visualContextUpload"]
   }) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")

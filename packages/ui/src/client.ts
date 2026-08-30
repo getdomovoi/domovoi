@@ -357,12 +357,17 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
-  authorizeArtifact(artifactId: string, bridgeChannel?: string): Promise<ArtifactAccess> {
+  authorizeArtifact(input: {
+    sessionId: string
+    artifactId: string
+    revision: number
+    purpose: ArtifactAccess["purpose"]
+    bridgeChannel?: string
+  }): Promise<ArtifactAccess> {
     return this.request(
       "artifact.authorize",
       {
-        artifactId,
-        ...(bridgeChannel ? { bridgeChannel } : {}),
+        ...input,
         client: this.kind,
       },
       (value) => artifactAuthorizeResultSchema.parse(value),
@@ -431,6 +436,7 @@ export class DomovoiClient extends EventTarget {
     variantId?: string
     anchor: Annotation["anchor"]
     body: string
+    visualContextUpload?: RpcParams<"annotation.create">["visualContextUpload"]
   }): Promise<WorkspaceSnapshot> {
     return this.request("annotation.create", { ...input, client: this.kind })
   }

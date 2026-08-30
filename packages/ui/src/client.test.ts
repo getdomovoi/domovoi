@@ -194,11 +194,14 @@ describe("DomovoiClient", () => {
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
 
-    const authorizing = client.authorizeArtifact("artifact-preview", "preview_channel_123456")
+    const authorizing = client.authorizeArtifact({ sessionId: "session-a", artifactId: "artifact-preview", revision: 2, purpose: "preview", bridgeChannel: "preview_channel_123456" })
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "artifact.authorize",
       params: {
+        sessionId: "session-a",
         artifactId: "artifact-preview",
+        revision: 2,
+        purpose: "preview",
         bridgeChannel: "preview_channel_123456",
         client: "tablet",
       },
@@ -207,7 +210,10 @@ describe("DomovoiClient", () => {
       jsonrpc: "2.0",
       id: 2,
       result: {
+        sessionId: "session-a",
         artifactId: "artifact-preview",
+        revision: 2,
+        purpose: "preview",
         bridgeChannel: "preview_channel_123456",
         expiresAt: 1_800_000_000,
         signature: "a".repeat(43),

@@ -238,6 +238,23 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
   }),
 ])
 
+export const artifactVariantSchema = z.object({
+  id: z.string().min(1).max(128),
+  groupId: z.string().min(1).max(256),
+  label: z.string().min(1).max(120),
+  order: z.number().int().min(0).max(1_023),
+  thumbnail: z.object({
+    path: z.string().min(1).max(1_024).refine((path) => {
+      if (path.startsWith("/") || path.includes("\\") || path.includes("?") || path.includes("#")) return false
+      if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return false
+      const segments = path.split("/")
+      return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..")
+    }, "Thumbnail must be a normalized relative file reference"),
+    mimeType: z.enum(["image/png", "image/webp"]),
+    revision: z.number().int().positive(),
+  }).optional(),
+})
+
 export const artifactSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
@@ -247,6 +264,7 @@ export const artifactSchema = z.object({
   path: z.string().min(1).optional(),
   mimeType: z.string().min(1).optional(),
   content: z.string().optional(),
+  variant: artifactVariantSchema.optional(),
 })
 
 export const annotationAnchorSchema = z.object({
@@ -270,6 +288,29 @@ export const annotationReplySchema = z.object({
   createdAt: z.string().datetime(),
 })
 
+export const annotationVisualContextSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("available"),
+    ref: z.string().regex(/^crop-[a-f0-9]{64}$/),
+    artifactRevision: z.number().int().positive(),
+    mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+    width: z.number().int().positive().max(2048),
+    height: z.number().int().positive().max(2048),
+    byteLength: z.number().int().positive().max(1_500_000),
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    artifactRevision: z.number().int().positive(),
+    reason: z.enum([
+      "missing-bounds",
+      "artifact-unavailable",
+      "renderer-unavailable",
+      "invalid-capture",
+      "capture-failed",
+    ]),
+  }),
+])
+
 export const annotationSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -281,6 +322,7 @@ export const annotationSchema = z.object({
   statusChangedBy: clientKindSchema.optional(),
   statusChangedAt: z.string().datetime().optional(),
   origin: clientKindSchema,
+  visualContext: annotationVisualContextSchema.optional(),
   thread: z.array(annotationReplySchema),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
