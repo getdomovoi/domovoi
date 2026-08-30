@@ -552,18 +552,30 @@ export const helloParamsSchema = z.object({
   authToken: z.string().min(1).optional(),
 })
 
+export const artifactAccessPurposeSchema = z.enum(["preview", "print", "download"])
+
 export const artifactAuthorizeParamsSchema = z.object({
+  sessionId: z.string().min(1),
   artifactId: z.string().min(1),
+  revision: z.number().int().positive(),
+  purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
   client: clientKindSchema,
+}).strict().superRefine((value, context) => {
+  if (value.bridgeChannel && value.purpose !== "preview") {
+    context.addIssue({ code: "custom", path: ["bridgeChannel"], message: "Only preview access may use the bridge" })
+  }
 })
 
 export const artifactAuthorizeResultSchema = z.object({
+  sessionId: z.string().min(1),
   artifactId: z.string().min(1),
+  revision: z.number().int().positive(),
+  purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
   expiresAt: z.number().int().positive(),
   signature: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-})
+}).strict()
 
 const terminalIdSchema = z.string().min(1).max(128)
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
@@ -754,12 +766,39 @@ export const checkpointRestoreParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+export function canonicalBase64DecodedByteLength(value: string): number | undefined {
+  if (value.length === 0 || value.length % 4 !== 0 || !canonicalBase64Pattern.test(value)) return undefined
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
+  const significantIndex = value.length - padding - 1
+  const trailingValue = base64Alphabet.indexOf(value[significantIndex] ?? "")
+  if (trailingValue < 0 || (padding === 2 && (trailingValue & 0x0f) !== 0) || (padding === 1 && (trailingValue & 0x03) !== 0)) {
+    return undefined
+  }
+  return (value.length / 4) * 3 - padding
+}
+
 export const annotationCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
   artifactId: z.string().min(1),
   variantId: z.string().min(1).optional(),
   anchor: annotationAnchorSchema,
   body: z.string().trim().min(1),
+  visualContextUpload: z.object({
+    artifactRevision: z.number().int().positive(),
+    mimeType: z.literal("image/png"),
+    width: z.number().int().positive().max(2048),
+    height: z.number().int().positive().max(2048),
+    data: z.string().min(4).max(2_000_000).refine(
+      (value) => {
+        const decodedBytes = canonicalBase64DecodedByteLength(value)
+        return decodedBytes !== undefined && decodedBytes <= 1_500_000
+      },
+      { message: "Visual context data must be canonical bounded Base64" },
+    ),
+  }).optional(),
   client: clientKindSchema,
 })
 
@@ -890,6 +929,7 @@ export type RpcRequest = z.infer<typeof rpcRequestSchema>
 export type RpcResponse = z.infer<typeof rpcResponseSchema>
 export type RpcNotification = z.infer<typeof rpcNotificationSchema>
 export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>
+export type ArtifactAccessPurpose = z.infer<typeof artifactAccessPurposeSchema>
 export type TerminalSession = z.infer<typeof terminalSessionSchema>
 export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>

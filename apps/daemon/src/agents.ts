@@ -25,8 +25,17 @@ export type AgentPermissionCapabilities = Readonly<{
   buildAuto: "pre-execution" | "unsupported"
 }>
 
+export type AgentCapabilities = Readonly<{ vision: boolean }>
+
+export type AgentVisualContext = {
+  annotationId: string
+  mimeType: "image/png" | "image/jpeg" | "image/webp"
+  bytes: Uint8Array
+}
+
 export interface AgentAdapter {
   readonly permissionCapabilities?: AgentPermissionCapabilities
+  readonly capabilities?: AgentCapabilities
   connect(): Promise<void>
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
@@ -38,8 +47,14 @@ export interface AgentAdapter {
     cwd: string
     prompt: string
     runtime: Runtime
+    visualContexts?: AgentVisualContext[]
   }): Promise<string>
-  steerTurn(threadId: string, turnId: string, prompt: string): Promise<void>
+  steerTurn(
+    threadId: string,
+    turnId: string,
+    prompt: string,
+    visualContexts?: AgentVisualContext[],
+  ): Promise<void>
   resolveApproval(requestId: number, decision: ApprovalDecision): void
   onEvent(listener: (event: AgentEvent) => void): () => void
   close(): Promise<void>

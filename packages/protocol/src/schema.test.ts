@@ -5,6 +5,7 @@ import {
   annotationCreateParamsSchema,
   annotationReplyParamsSchema,
   annotationSetStatusParamsSchema,
+  annotationVisualContextSchema,
   artifactAuthorizeParamsSchema,
   artifactAuthorizeResultSchema,
   approvalResolveParamsSchema,
@@ -31,6 +32,8 @@ import {
   terminalResizeParamsSchema,
   terminalSessionSchema,
   previewBridgePickerMessageSchema,
+  previewBridgeResolveAnchorsMessageSchema,
+  previewBridgeAnchorResolutionsMessageSchema,
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
   sessionArchiveParamsSchema,
@@ -42,9 +45,30 @@ import {
   skillDocumentSchema,
   workspaceSnapshotSchema,
   workspaceDeltaSchema,
+  artifactSchema,
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("keeps preview variant metadata bounded and reference-only", () => {
+    expect(artifactSchema.parse({
+      id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview",
+      revision: 2, path: "design-studio/onboarding/variant-a.html", mimeType: "text/html",
+      variant: { id: "a", groupId: "design-studio/onboarding", label: "Variant A", order: 0,
+        thumbnail: { path: "design-studio/onboarding/variant-a.webp", mimeType: "image/webp", revision: 2 } },
+    }).variant?.id).toBe("a")
+    expect(artifactSchema.safeParse({
+      id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview", revision: 1,
+      variant: { id: "a", groupId: "g", label: "A", order: 0,
+        thumbnail: { path: "data:image/png;base64,AAA", mimeType: "image/png", revision: 1 } },
+    }).success).toBe(false)
+    for (const path of ["/tmp/a.png", "../a.png", "a\\b.png", "https://x/a.png", "a.png?token=x", "a.png#x", "./a.png"]) {
+      expect(artifactSchema.safeParse({
+        id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview", revision: 1,
+        variant: { id: "a", groupId: "g", label: "A", order: 0,
+          thumbnail: { path, mimeType: "image/png", revision: 1 } },
+      }).success, path).toBe(false)
+    }
+  })
   it("keeps provider failures typed, safe, and actionable", () => {
     const failures = [
       ["authentication-expired", "sign-in", "Provider authentication expired", false],
@@ -320,25 +344,41 @@ describe("workspace protocol", () => {
 
   it("validates scoped artifact access capabilities", () => {
     expect(artifactAuthorizeParamsSchema.parse({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       client: "tablet",
     })).toEqual({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       client: "tablet",
     })
     expect(artifactAuthorizeParamsSchema.safeParse({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "short",
       client: "tablet",
     }).success).toBe(false)
     expect(artifactAuthorizeResultSchema.parse({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       expiresAt: 1_800_000_000,
       signature: "a".repeat(43),
     }).signature).toHaveLength(43)
+    expect(artifactAuthorizeParamsSchema.safeParse({
+      sessionId: "session-1", artifactId: "preview-1", revision: 3,
+      purpose: "print", bridgeChannel: "preview_channel_123456", client: "web",
+    }).success).toBe(false)
   })
 
   it("validates interactive terminal operations", () => {
@@ -437,6 +477,24 @@ describe("workspace protocol", () => {
       ...annotation,
       anchor: {},
     }).success).toBe(false)
+    expect(annotationVisualContextSchema.parse({
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 640,
+      height: 320,
+      byteLength: 1024,
+    }).status).toBe("available")
+    expect(annotationVisualContextSchema.safeParse({
+      status: "available",
+      ref: "../../secret",
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 9000,
+      height: 320,
+      byteLength: 1024,
+    }).success).toBe(false)
   })
 
   it("validates annotation mutation requests", () => {
@@ -446,8 +504,31 @@ describe("workspace protocol", () => {
       variantId: "variant-b",
       anchor: { textQuote: "Replay operations" },
       body: "Keep the progress visible.",
+      visualContextUpload: {
+        artifactRevision: 2,
+        mimeType: "image/png",
+        width: 320,
+        height: 48,
+        data: "iVBORw0KGgo=",
+      },
       client: "tablet",
-    }).client).toBe("tablet")
+    }).visualContextUpload?.artifactRevision).toBe(2)
+    for (const data of ["AAA", "A===", "AB==", "AAB=", "AAAA====", "iVBORw0K Ggo=", "iVBORw0KGgo=\n"]) {
+      expect(annotationCreateParamsSchema.safeParse({
+        sessionId: "session-billing",
+        artifactId: "artifact-preview",
+        anchor: { textQuote: "Replay operations" },
+        body: "Invalid crop.",
+        visualContextUpload: {
+          artifactRevision: 2,
+          mimeType: "image/png",
+          width: 1,
+          height: 1,
+          data,
+        },
+        client: "desktop",
+      }).success, data).toBe(false)
+    }
     expect(annotationReplyParamsSchema.parse({
       annotationId: "annotation-1",
       body: "Updated in revision four.",
@@ -482,6 +563,59 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.picker",
       channel: "short",
       active: true,
+    }).success).toBe(false)
+
+    expect(previewBridgeResolveAnchorsMessageSchema.parse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
+      annotations: [{
+        annotationId: "annotation-1",
+        anchor: {
+          cssSelector: "main > section:nth-of-type(2)",
+          textQuote: "Review this migration step",
+          bbox: { x: 24, y: 96, width: 320, height: 48 },
+        },
+      }],
+    }).annotations).toHaveLength(1)
+    expect(previewBridgeAnchorResolutionsMessageSchema.parse({
+      type: "domovoi.preview.anchor-resolutions",
+      channel,
+      artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
+      resolutions: [
+        { annotationId: "annotation-1", status: "resolved", strategy: "text-quote" },
+        { annotationId: "annotation-2", status: "unresolved" },
+      ],
+    }).resolutions[1]).toEqual({ annotationId: "annotation-2", status: "unresolved" })
+    expect(previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
+      annotations: Array.from({ length: 101 }, (_, index) => ({
+        annotationId: `annotation-${index}`,
+        anchor: { textQuote: "Bounded" },
+      })),
+    }).success).toBe(false)
+    expect(previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
+      annotations: [{
+        annotationId: "annotation-1",
+        anchor: { cssSelector: `#${"x".repeat(1_001)}` },
+      }],
+    }).success).toBe(false)
+    expect(previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      requestId: "request_channel_123456",
+      annotations: [{ annotationId: "annotation-1", anchor: { textQuote: "Bounded" } }],
+      unexpected: true,
     }).success).toBe(false)
   })
 

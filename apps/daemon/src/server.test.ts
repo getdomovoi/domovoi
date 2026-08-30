@@ -23,6 +23,7 @@ import {
   DomovoiDaemon,
   hostAuthorityMatches,
   isTestCommandTitle,
+  protectedAnnotationCropRefs,
   sessionHistoryEntries,
   sessionHistoryPage,
   signArtifactAccess,
@@ -35,6 +36,8 @@ import type { SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
+import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
+import { maximumPrintableArtifactDepth } from "./print-artifact.js"
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -61,6 +64,113 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("protects only valid crop references retained by annotations", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.annotations[0]!.visualContext = {
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 1,
+      mimeType: "image/png",
+      width: 1,
+      height: 1,
+      byteLength: 8,
+    }
+    snapshot.annotations[1]!.visualContext = {
+      status: "available",
+      ref: "../../invalid",
+      artifactRevision: 1,
+      mimeType: "image/png",
+      width: 1,
+      height: 1,
+      byteLength: 8,
+    }
+    expect(protectedAnnotationCropRefs(snapshot)).toEqual([`crop-${"a".repeat(64)}`])
+  })
+
+  it("persists provider-independent worktree artifact changes and closes watchers", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-artifact-integration-"))
+    scratchDirectories.push(scratch)
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = scratch
+    delete session.providerThreadId
+    delete session.activeTurnId
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter((annotation) => annotation.sessionId !== session.id)
+    let watcherOptions: ArtifactWatcherOptions | undefined
+    let releaseWatcherStart!: () => void
+    const watcherStarting = new Promise<void>((resolve) => { releaseWatcherStart = resolve })
+    const watcherStart = vi.fn(() => watcherStarting)
+    const watcherStop = vi.fn()
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: {},
+      artifactWatcherFactory: (options) => {
+        watcherOptions = options
+        return { start: watcherStart, stop: watcherStop }
+      },
+    })
+    running.push(daemon)
+
+    const daemonStarting = daemon.start()
+    const startWasNonblocking = await Promise.race([
+      daemonStarting.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
+    ])
+    releaseWatcherStart()
+    await daemonStarting
+    expect(startWasNonblocking).toBe(true)
+    expect(watcherStart).toHaveBeenCalledOnce()
+    expect(watcherOptions?.root).toBe(scratch)
+
+    await mkdir(join(scratch, "design-studio"), { recursive: true })
+    await mkdir(join(scratch, "plans"), { recursive: true })
+    await writeFile(join(scratch, "design-studio", "variant-a.html"), "<h1>Variant A</h1>")
+    await writeFile(join(scratch, "plans", "review-plan.md"), "# Review plan")
+    watcherOptions!.onChange({
+      path: "design-studio/variant-a.html",
+      title: "variant-a.html",
+      type: "preview",
+      mimeType: "text/html",
+      variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 },
+    })
+    watcherOptions!.onChange({
+      path: "plans/review-plan.md",
+      title: "review-plan.md",
+      type: "plan",
+      mimeType: "text/markdown",
+      content: "# Review plan",
+    })
+    await vi.waitFor(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: session.id, path: "design-studio/variant-a.html", type: "preview", revision: 1, variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 } }),
+      expect.objectContaining({ sessionId: session.id, path: "plans/review-plan.md", type: "plan", content: "# Review plan", revision: 1 }),
+    ])))
+
+    watcherOptions!.onChange({
+      path: "design-studio/variant-a.html",
+      title: "variant-a.html",
+      type: "preview",
+      mimeType: "text/html",
+      variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 },
+    })
+    await vi.waitFor(() => expect(store.snapshot.artifacts.find(
+      (artifact) => artifact.path === "design-studio/variant-a.html",
+    )?.revision).toBe(2))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    await daemon.stop()
+    running.splice(running.indexOf(daemon), 1)
+    expect(watcherStop).toHaveBeenCalledOnce()
+  })
+
   it("keeps provider commands raw while redacting every durable and display copy", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-command-redaction-"))
     scratchDirectories.push(scratch)
@@ -1677,42 +1787,30 @@ describe("DomovoiDaemon", () => {
   })
 
   it("scopes artifact access to id, bridge channel, and expiry", () => {
-    const signature = signArtifactAccess(
-      "artifact-secret",
-      "preview-1",
-      "preview_channel_123456",
-      1_800_000_000,
-    )
+    const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", expiresAt: 1_800_000_000 }
+    const signature = signArtifactAccess("artifact-secret", scope)
     expect(signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-1",
-      "preview_channel_123456",
-      1_800_000_000,
+      scope,
       signature,
       1_799_999_999,
     )).toBe(true)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-2",
-      "preview_channel_123456",
-      1_800_000_000,
+      { ...scope, purpose: "print" },
       signature,
       1_799_999_999,
     )).toBe(false)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-1",
-      "preview_channel_changed",
-      1_800_000_000,
+      { ...scope, bridgeChannel: "preview_channel_changed" },
       signature,
       1_799_999_999,
     )).toBe(false)
     expect(artifactAccessMatches(
       "artifact-secret",
-      "preview-1",
-      "preview_channel_123456",
-      1_800_000_000,
+      scope,
       signature,
       1_800_000_001,
     )).toBe(false)
@@ -1816,20 +1914,23 @@ describe("DomovoiDaemon", () => {
       authToken: "remote-daemon-token",
     })
     const accessResponse = await rpc("artifact.authorize", {
+      sessionId: artifact.sessionId,
       artifactId: artifact.id,
+      revision: artifact.revision,
+      purpose: "preview",
       client: "web",
     })
-    const access = accessResponse.result as { expiresAt: number; signature: string }
+    const access = accessResponse.result as { sessionId: string; revision: number; purpose: string; expiresAt: number; signature: string }
     const baseUrl = `http://${address.host}:${address.port}/artifacts/${artifact.id}`
 
     expect((await fetch(baseUrl)).status).toBe(404)
     const authorized = await fetch(
-      `${baseUrl}?expires=${access.expiresAt}&signature=${access.signature}`,
+      `${baseUrl}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${access.signature}`,
     )
     expect(authorized.status).toBe(200)
     await expect(authorized.text()).resolves.toBe("<h1>Remote preview</h1>")
     expect((await fetch(
-      `${baseUrl}?expires=${access.expiresAt}&signature=${"x".repeat(43)}`,
+      `${baseUrl}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${"x".repeat(43)}`,
     )).status).toBe(404)
     socket.close()
   })
@@ -2724,9 +2825,24 @@ describe("DomovoiDaemon", () => {
   })
 
   it("creates, replies to, and resolves anchored annotations", async () => {
+    const cropRef = `crop-${"a".repeat(64)}`
+    const annotationVisualContext = {
+      capture: vi.fn(),
+      storeUpload: vi.fn(async (input: { artifactRevision: number }) => ({
+        status: "available" as const,
+        ref: cropRef,
+        artifactRevision: input.artifactRevision,
+        mimeType: "image/png" as const,
+        width: 4,
+        height: 4,
+        byteLength: 12,
+      })),
+      read: vi.fn(),
+    }
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+      annotationVisualContext,
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -2755,8 +2871,15 @@ describe("DomovoiDaemon", () => {
       sessionId: "session-billing",
       artifactId: "artifact-preview",
       variantId: "variant-c",
-      anchor: { textQuote: "Replay operations" },
+      anchor: { textQuote: "Replay operations", bbox: { x: 10, y: 20, width: 4, height: 4 } },
       body: "Keep the progress visible.",
+      visualContextUpload: {
+        artifactRevision: 2,
+        mimeType: "image/png",
+        width: 4,
+        height: 4,
+        data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]).toString("base64"),
+      },
       client: "tablet",
     })
     const annotations = (created.result as { annotations: Array<{ id: string }> }).annotations
@@ -2767,7 +2890,29 @@ describe("DomovoiDaemon", () => {
       origin: "tablet",
       status: "open",
       thread: [],
+      visualContext: { status: "available", ref: cropRef, artifactRevision: 2 },
     })
+    expect(annotationVisualContext.storeUpload).toHaveBeenCalledWith(expect.objectContaining({
+      artifactRevision: 2,
+      mimeType: "image/png",
+      bytes: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]),
+    }))
+
+    const stale = await rpc("annotation.create", {
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      anchor: { bbox: { x: 10, y: 20, width: 4, height: 4 } },
+      body: "Stale crop.",
+      visualContextUpload: {
+        artifactRevision: 1,
+        mimeType: "image/png",
+        width: 4,
+        height: 4,
+        data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64"),
+      },
+      client: "desktop",
+    })
+    expect(stale).toMatchObject({ error: { code: -32602, message: "Visual context revision is stale" } })
 
     const replied = await rpc("annotation.reply", {
       annotationId,
@@ -4312,18 +4457,24 @@ describe("DomovoiDaemon", () => {
 
     const snapshot = await rpc("workspace.get", {})
     const artifact = (snapshot.result as {
-      artifacts: Array<{ id: string; sessionId: string; type: string }>
+      artifacts: Array<{ id: string; sessionId: string; type: string; revision: number; path?: string }>
     }).artifacts.find((candidate) => candidate.type === "preview")
-    expect(artifact).toMatchObject({ sessionId, type: "preview" })
+    expect(artifact).toMatchObject({ sessionId, type: "preview", path: "preview.html" })
     expect((snapshot.result as { artifacts: unknown[] }).artifacts).toHaveLength(2)
 
     const accessResponse = await rpc("artifact.authorize", {
+      sessionId,
       artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       client: "desktop",
     })
     const access = accessResponse.result as {
+      sessionId: string
       artifactId: string
+      revision: number
+      purpose: string
       bridgeChannel: string
       expiresAt: number
       signature: string
@@ -4336,7 +4487,10 @@ describe("DomovoiDaemon", () => {
     expect(access.signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
 
     await expect(rpc("artifact.authorize", {
+      sessionId,
       artifactId: "missing-preview",
+      revision: 1,
+      purpose: "preview",
       client: "desktop",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Preview artifact does not exist" },
@@ -4358,10 +4512,49 @@ describe("DomovoiDaemon", () => {
     expect(bridgedContent).toContain(artifact!.id)
 
     const signedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
     )
     expect(signedPreview.status).toBe(200)
     expect(await signedPreview.text()).toContain("domovoi.preview.selection")
+
+    const printResponse = await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "print",
+      client: "desktop",
+    })
+    const printAccess = printResponse.result as typeof access
+    const printUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(printAccess.artifactId)}?session=${printAccess.sessionId}&revision=${printAccess.revision}&purpose=print&expires=${printAccess.expiresAt}&signature=${printAccess.signature}`
+    const printable = await fetch(printUrl)
+    expect(printable.status).toBe(200)
+    expect(printable.headers.get("content-security-policy")).toContain("sandbox")
+    expect(await printable.text()).toContain("External resources and active content were removed")
+    expect((await fetch(printUrl.replace(printAccess.signature, access.signature))).status).toBe(404)
+
+    const downloadResponse = await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "download",
+      client: "desktop",
+    })
+    const downloadAccess = downloadResponse.result as typeof access
+    const download = await fetch(`http://${address.host}:${address.port}/artifacts/${encodeURIComponent(downloadAccess.artifactId)}?session=${downloadAccess.sessionId}&revision=${downloadAccess.revision}&purpose=download&expires=${downloadAccess.expiresAt}&signature=${downloadAccess.signature}`)
+    expect(download.headers.get("content-disposition")).toContain("attachment")
+
+    await writeFile(join(worktree, "preview.html"), `<main>${"<div>".repeat(maximumPrintableArtifactDepth + 2)}Plan${"</div>".repeat(maximumPrintableArtifactDepth + 2)}</main>`)
+    const limited = await fetch(printUrl)
+    expect(limited.status).toBe(413)
+    await expect(limited.json()).resolves.toEqual({ error: "artifact_limit" })
+    await unlink(join(worktree, "preview.html"))
+    const missing = await fetch(printUrl)
+    expect(missing.status).toBe(404)
+    await expect(missing.json()).resolves.toEqual({ error: "not_found" })
+    await writeFile(join(worktree, "preview.html"), "<h1>Domovoi preview</h1>")
+
+    await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: artifact!.revision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: artifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
     const invalidBridge = await fetch(
       `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,

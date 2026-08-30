@@ -1,10 +1,11 @@
 import { createServer, type Server as HttpServer } from "node:http"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { readFile, realpath } from "node:fs/promises"
+import { lstat, readFile, realpath, stat } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  canonicalBase64DecodedByteLength,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonShuttingDownErrorCode,
@@ -20,6 +21,7 @@ import {
   workspaceSnapshotSchema,
   type Annotation,
   type Artifact,
+  type ArtifactAccessPurpose,
   type AuditActor,
   type AuditOutcome,
   type ProviderModel,
@@ -56,7 +58,11 @@ import {
   validPreviewBridgeChannel,
   validPreviewParentOrigin,
 } from "./preview-bridge.js"
-import { agentPromptWithAnnotations } from "./annotation-context.js"
+import {
+  AnnotationVisualContextService,
+  type AnnotationVisualContextReader,
+} from "./annotation-visual-context.js"
+import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 import { agentPromptWithHandoff } from "./handoff-context.js"
 import {
   NodePtyTerminalService,
@@ -75,7 +81,14 @@ import { permissionDecisionFor } from "./permission-policy.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
+import {
+  ArtifactWatcher,
+  maximumArtifactFileBytes,
+  type ArtifactFileChange,
+  type SessionArtifactWatcherFactory,
+} from "./artifact-watcher.js"
 import { testEvidence } from "./test-evidence.js"
+import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
   appendDurableOutput,
@@ -334,6 +347,20 @@ export function sessionHistoryPage(
   }
 }
 
+type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
+  AnnotationVisualContextService,
+  "capture" | "storeUpload"
+>
+
+export function protectedAnnotationCropRefs(snapshot: WorkspaceSnapshot): string[] {
+  const refs = new Set<string>()
+  for (const annotation of snapshot.annotations) {
+    const ref = annotation.visualContext?.status === "available" ? annotation.visualContext.ref : undefined
+    if (ref && /^crop-[a-f0-9]{64}$/.test(ref)) refs.add(ref)
+  }
+  return [...refs].sort()
+}
+
 export type DaemonServerOptions = {
   host?: string
   port?: number
@@ -356,6 +383,8 @@ export type DaemonServerOptions = {
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
+  artifactWatcherFactory?: SessionArtifactWatcherFactory
+  annotationVisualContext?: AnnotationVisualContextStore
 }
 
 export type DaemonErrorEntry = {
@@ -429,6 +458,9 @@ export class DomovoiDaemon {
   #stopped = false
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
+  #artifactWatcherFactory: SessionArtifactWatcherFactory
+  #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
+  #annotationVisualContext: AnnotationVisualContextStore
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -455,6 +487,15 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    this.#annotationVisualContext = options.annotationVisualContext
+      ?? new AnnotationVisualContextService({
+        root: join(dirname(statePath), "annotation-crops"),
+        protectedRefs: () => protectedAnnotationCropRefs(this.#snapshot),
+        reportRetentionOverflow: ({ fileCount, totalBytes }) => this.#errorSink({
+          context: "annotation crop retention",
+          detail: `Protected crop retention exceeds bounds (${fileCount} files, ${totalBytes} bytes)`,
+        }),
+      })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,
       initialSnapshot,
@@ -489,6 +530,8 @@ export class DomovoiDaemon {
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
+    this.#artifactWatcherFactory = options.artifactWatcherFactory
+      ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         if (this.#stopping || this.#stopped) return
@@ -519,6 +562,7 @@ export class DomovoiDaemon {
     if (this.#http) throw new Error("Daemon is already running")
 
     await this.#recoverSessionArchives()
+    this.#syncArtifactWatchers()
 
     this.#http = createServer((request, response) => {
       if (request.url === "/healthz") {
@@ -612,6 +656,7 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
     const stopping = this.#finishStop()
     this.#stopPromise = stopping
@@ -988,29 +1033,37 @@ export class DomovoiDaemon {
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
     let artifactId: string
+    let sessionId: string | undefined
+    let revision: number | undefined
+    let purpose: ArtifactAccessPurpose = "preview"
     let bridgeChannel: string | undefined
     let parentOrigin: string | undefined
     let authorized = false
     try {
       const requestUrl = new URL(url, "http://domovoi.local")
       artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
+      sessionId = requestUrl.searchParams.get("session") || undefined
+      const requestedRevision = Number(requestUrl.searchParams.get("revision"))
+      revision = Number.isSafeInteger(requestedRevision) && requestedRevision > 0 ? requestedRevision : undefined
+      const requestedPurpose = requestUrl.searchParams.get("purpose")
+      if (requestedPurpose === "print" || requestedPurpose === "download") purpose = requestedPurpose
+      else if (requestedPurpose !== null && requestedPurpose !== "preview") throw new Error("Invalid artifact purpose")
       bridgeChannel = validPreviewBridgeChannel(requestUrl.searchParams.get("bridge"))
+      if (purpose !== "preview" && bridgeChannel) throw new Error("Derived artifacts cannot use the preview bridge")
       parentOrigin = validPreviewParentOrigin(requestUrl.searchParams.get("parentOrigin"))
       const expiresAt = Number(requestUrl.searchParams.get("expires"))
       const signature = requestUrl.searchParams.get("signature")
-      authorized = artifactAccessMatches(
+      authorized = Boolean(sessionId && revision && artifactAccessMatches(
         this.#artifactSigningSecret,
-        artifactId,
-        bridgeChannel,
-        expiresAt,
+        { sessionId, artifactId, revision, purpose, ...(bridgeChannel ? { bridgeChannel } : {}), expiresAt },
         signature,
-      )
+      ))
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
     }
-    if (!canServeArtifacts(this.host, authorized)) {
+    if (!canServeArtifacts(this.host, authorized) || (purpose !== "preview" && !authorized)) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -1025,7 +1078,12 @@ export class DomovoiDaemon {
     const path = artifact?.path && session?.workspacePath
       ? await resolveInsideReal(session.workspacePath, artifact.path)
       : undefined
-    if (!artifact || artifact.mimeType !== "text/html" || !path) {
+    if (
+      !artifact
+      || artifact.mimeType !== "text/html"
+      || !path
+      || (authorized && (artifact.sessionId !== sessionId || artifact.revision !== revision))
+    ) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -1033,19 +1091,28 @@ export class DomovoiDaemon {
 
     try {
       const content = await readFile(path, "utf8")
+      const derived = purpose === "preview" ? undefined : sanitizePrintableArtifact(content, artifact.title)
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
-        "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`,
+        "content-security-policy": purpose === "preview"
+          ? `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`
+          : "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; sandbox",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
+        ...(purpose === "download" ? { "content-disposition": `attachment; filename="${safeArtifactFilename(artifact.title)}"` } : {}),
       })
       response.end(
-        bridgeChannel && parentOrigin
+        derived ?? (bridgeChannel && parentOrigin
           ? injectPreviewBridge(content, artifact.id, bridgeChannel, parentOrigin)
-          : content,
+          : content),
       )
-    } catch {
+    } catch (error) {
+      if (error instanceof PrintableArtifactError) {
+        response.writeHead(error.kind === "limit" ? 413 : 422, { "content-type": "application/json" })
+        response.end(JSON.stringify({ error: error.kind === "limit" ? "artifact_limit" : "artifact_derivation_failed" }))
+        return
+      }
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
     }
@@ -1365,7 +1432,10 @@ export class DomovoiDaemon {
       if (method === "artifact.authorize") {
         const params = rpcMethods[method].params.parse(request.params)
         const artifact = this.#snapshot.artifacts.find(
-          (candidate) => candidate.id === params.artifactId && candidate.type === "preview",
+          (candidate) => candidate.id === params.artifactId
+            && candidate.sessionId === params.sessionId
+            && candidate.revision === params.revision
+            && candidate.type === "preview",
         )
         if (!artifact || artifact.mimeType !== "text/html" || !artifact.path) {
           this.#error(socket, request.id, invalidParams, "Preview artifact does not exist")
@@ -1376,14 +1446,22 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
+            sessionId: params.sessionId,
             artifactId: params.artifactId,
+            revision: params.revision,
+            purpose: params.purpose,
             ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
             expiresAt,
             signature: signArtifactAccess(
               this.#artifactSigningSecret,
-              params.artifactId,
-              params.bridgeChannel,
-              expiresAt,
+              {
+                sessionId: params.sessionId,
+                artifactId: params.artifactId,
+                revision: params.revision,
+                purpose: params.purpose,
+                ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+                expiresAt,
+              },
             ),
           }),
         })
@@ -1557,6 +1635,56 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Artifact does not belong to the session")
           return
         }
+        if (
+          params.visualContextUpload
+          && params.visualContextUpload.artifactRevision !== artifact.revision
+        ) {
+          this.#error(socket, request.id, invalidParams, "Visual context revision is stale")
+          return
+        }
+        let visualContext: Annotation["visualContext"]
+        if (params.visualContextUpload) {
+          const decodedByteLength = canonicalBase64DecodedByteLength(params.visualContextUpload.data)
+          const bytes = decodedByteLength === undefined
+            ? undefined
+            : Buffer.from(params.visualContextUpload.data, "base64")
+          if (
+            !bytes
+            || bytes.byteLength !== decodedByteLength
+            || bytes.toString("base64") !== params.visualContextUpload.data
+          ) {
+            this.#error(socket, request.id, invalidParams, "Visual context data is invalid")
+            return
+          }
+          visualContext = await this.#annotationVisualContext.storeUpload({
+            artifactRevision: artifact.revision,
+            mimeType: params.visualContextUpload.mimeType,
+            bytes: new Uint8Array(bytes),
+            width: params.visualContextUpload.width,
+            height: params.visualContextUpload.height,
+          })
+        } else if (
+          artifact.type === "preview"
+          && artifact.mimeType === "text/html"
+          && artifact.path
+          && session?.workspacePath
+        ) {
+          const htmlPath = await resolveInsideReal(session.workspacePath, artifact.path)
+          visualContext = htmlPath
+            ? await this.#annotationVisualContext.capture({
+                artifactId: artifact.id,
+                artifactRevision: artifact.revision,
+                htmlPath,
+                ...(params.anchor.bbox ? { bbox: params.anchor.bbox } : {}),
+              })
+            : { status: "unavailable", artifactRevision: artifact.revision, reason: "artifact-unavailable" }
+        } else {
+          visualContext = {
+            status: "unavailable",
+            artifactRevision: artifact.revision,
+            reason: params.anchor.bbox ? "artifact-unavailable" : "missing-bounds",
+          }
+        }
         const createdAt = new Date().toISOString()
         this.#snapshot.annotations.push({
           id: `annotation-${randomUUID()}`,
@@ -1567,6 +1695,7 @@ export class DomovoiDaemon {
           body: params.body,
           status: "open",
           origin: params.client,
+          visualContext,
           thread: [],
           createdAt,
           updatedAt: createdAt,
@@ -2270,17 +2399,22 @@ export class DomovoiDaemon {
           }
           this.#loadedAgentThreads.add(loadedThread)
         }
-        const prompt = agentPromptWithAnnotations(
+        const preparedTurn = await prepareAnnotationTurn(
           this.#snapshot,
           session.id,
           agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
+          agent.capabilities,
+          this.#annotationVisualContext,
         )
+        const prompt = preparedTurn.prompt
         let turnId = session.activeTurnId
         try {
           signal?.throwIfAborted()
           if (turnId) {
             await withTimeout(
-              agent.steerTurn(providerThreadId, turnId, prompt),
+              preparedTurn.visualContexts.length > 0
+                ? agent.steerTurn(providerThreadId, turnId, prompt, preparedTurn.visualContexts)
+                : agent.steerTurn(providerThreadId, turnId, prompt),
               this.#agentTimeoutMs,
               "Agent steering timed out",
             )
@@ -2291,6 +2425,9 @@ export class DomovoiDaemon {
                 cwd: session.workspacePath,
                 prompt,
                 runtime: session.runtime,
+                ...(preparedTurn.visualContexts.length > 0
+                  ? { visualContexts: preparedTurn.visualContexts }
+                  : {}),
               }),
               this.#agentTimeoutMs,
               "Agent turn timed out",
@@ -2444,6 +2581,7 @@ export class DomovoiDaemon {
         changed = true
       }
 
+      if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed) this.#store.save(this.#snapshot)
       this.#send(socket, {
@@ -2735,6 +2873,7 @@ export class DomovoiDaemon {
           if (!path.toLowerCase().endsWith(".html") || !session.workspacePath) continue
           const lexicalPath = resolveInside(session.workspacePath, path)
           if (!lexicalPath || !await resolveInsideReal(session.workspacePath, lexicalPath)) continue
+          const relativePath = relative(resolve(session.workspacePath), lexicalPath).replaceAll("\\", "/")
           const artifactId = `preview-${createHash("sha256")
             .update(`${session.id}:${lexicalPath}`)
             .digest("hex")
@@ -2742,14 +2881,17 @@ export class DomovoiDaemon {
           const existing = this.#snapshot.artifacts.find(
             (artifact) => artifact.id === artifactId,
           )
-          if (existing) existing.revision += 1
+          if (existing) {
+            existing.path = relativePath
+            existing.revision += 1
+          }
           else this.#snapshot.artifacts.push({
             id: artifactId,
             sessionId: session.id,
             title: basename(lexicalPath),
             type: "preview",
             revision: 1,
-            path: lexicalPath,
+            path: relativePath,
             mimeType: "text/html",
           })
         }
@@ -3405,6 +3547,111 @@ export class DomovoiDaemon {
     return true
   }
 
+  #syncArtifactWatchers(): void {
+    const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
+      session.workspacePath && !sessionIsArchiveReadOnly(session)
+        ? [[session.id, resolve(session.workspacePath)] as const]
+        : []
+    ))
+    for (const [sessionId, active] of this.#artifactWatchers) {
+      if (liveSessions.get(sessionId) === active.root) continue
+      active.watcher.stop()
+      this.#artifactWatchers.delete(sessionId)
+    }
+    for (const [sessionId, root] of liveSessions) {
+      if (this.#artifactWatchers.has(sessionId)) continue
+      const watcher = this.#artifactWatcherFactory({
+        root,
+        onChange: (change) => {
+          if (this.#stopping || this.#stopped) return
+          void this.#enqueueMutation(() => this.#recordWorktreeArtifact(sessionId, root, change))
+        },
+        onError: (error) => this.#reportError("Domovoi artifact watcher failed", error),
+      })
+      const entry = { root, watcher }
+      this.#artifactWatchers.set(sessionId, entry)
+      void watcher.start().catch((error: unknown) => {
+        if (this.#artifactWatchers.get(sessionId) !== entry) return
+        watcher.stop()
+        this.#artifactWatchers.delete(sessionId)
+        this.#reportError("Domovoi could not watch session artifacts", error)
+      })
+    }
+  }
+
+  async #recordWorktreeArtifact(
+    sessionId: string,
+    root: string,
+    change: ArtifactFileChange,
+  ): Promise<void> {
+    const session = this.#snapshot.sessions.find((candidate) =>
+      candidate.id === sessionId
+      && candidate.workspacePath
+      && resolve(candidate.workspacePath) === root
+      && !sessionIsArchiveReadOnly(candidate)
+    )
+    if (!session) return
+    const lexicalPath = resolveInside(root, change.path)
+    if (!lexicalPath) return
+    try {
+      const [metadata, resolvedPath, lexicalMetadata] = await Promise.all([
+        stat(lexicalPath),
+        resolveInsideReal(root, lexicalPath),
+        lstat(lexicalPath),
+      ])
+      if (
+        !resolvedPath
+        || !metadata.isFile()
+        || lexicalMetadata.isSymbolicLink()
+        || metadata.size > maximumArtifactFileBytes
+        || (change.content && Buffer.byteLength(change.content, "utf8") > maximumArtifactFileBytes)
+      ) return
+    } catch {
+      return
+    }
+    const fileHash = createHash("sha256")
+      .update(`${sessionId}:${lexicalPath}`)
+      .digest("hex")
+      .slice(0, 16)
+    const artifactId = change.type === "preview"
+      ? `preview-${fileHash}`
+      : `plan-${sessionId}-${fileHash}`
+    const existing = this.#snapshot.artifacts.find((artifact) =>
+      artifact.id === artifactId
+      && artifact.sessionId === sessionId
+      && artifact.type === change.type
+    )
+    if (existing) {
+      existing.title = change.title
+      existing.path = change.path
+      existing.mimeType = change.mimeType
+      if (change.variant === undefined) delete existing.variant
+      else existing.variant = change.variant
+      if (change.content === undefined) delete existing.content
+      else existing.content = change.content
+      existing.revision += 1
+    } else {
+      this.#snapshot.artifacts.push({
+        id: artifactId,
+        sessionId,
+        title: change.title,
+        type: change.type,
+        revision: 1,
+        path: change.path,
+        mimeType: change.mimeType,
+        ...(change.variant === undefined ? {} : { variant: change.variant }),
+        ...(change.content === undefined ? {} : { content: change.content }),
+      })
+    }
+    session.updatedAt = new Date().toISOString()
+    this.#flushAgentState()
+  }
+
+  #closeArtifactWatchers(): void {
+    for (const { watcher } of this.#artifactWatchers.values()) watcher.stop()
+    this.#artifactWatchers.clear()
+  }
+
   #closeSessionTerminals(sessionId: string): void {
     for (const [terminalId, terminal] of this.#terminals) {
       if (terminal.sessionId === sessionId) this.#closeTerminal(terminalId)
@@ -3576,38 +3823,55 @@ export function frameAncestorsFor(origins: Iterable<string>): string {
   return sources.length > 0 ? [...new Set(sources)].join(" ") : "'none'"
 }
 
-function artifactAccessPayload(
-  artifactId: string,
-  bridgeChannel: string | undefined,
-  expiresAt: number,
-): string {
-  return JSON.stringify([artifactId, bridgeChannel ?? null, expiresAt])
+export type ArtifactAccessScope = {
+  sessionId: string
+  artifactId: string
+  revision: number
+  purpose: ArtifactAccessPurpose
+  bridgeChannel?: string
+  expiresAt: number
+}
+
+function artifactAccessPayload(scope: ArtifactAccessScope): string {
+  return JSON.stringify([
+    scope.sessionId,
+    scope.artifactId,
+    scope.revision,
+    scope.purpose,
+    scope.bridgeChannel ?? null,
+    scope.expiresAt,
+  ])
 }
 
 export function signArtifactAccess(
   secret: string,
-  artifactId: string,
-  bridgeChannel: string | undefined,
-  expiresAt: number,
+  scope: ArtifactAccessScope,
 ): string {
   return createHmac("sha256", secret)
-    .update(artifactAccessPayload(artifactId, bridgeChannel, expiresAt))
+    .update(artifactAccessPayload(scope))
     .digest("base64url")
 }
 
 export function artifactAccessMatches(
   secret: string,
-  artifactId: string,
-  bridgeChannel: string | undefined,
-  expiresAt: number,
+  scope: ArtifactAccessScope,
   suppliedSignature: string | null,
   now = Math.floor(Date.now() / 1_000),
 ): boolean {
-  if (!Number.isSafeInteger(expiresAt) || expiresAt < now || typeof suppliedSignature !== "string") {
+  if (
+    !scope.sessionId
+    || !scope.artifactId
+    || !Number.isSafeInteger(scope.revision)
+    || scope.revision < 1
+    || !Number.isSafeInteger(scope.expiresAt)
+    || scope.expiresAt < now
+    || (scope.bridgeChannel && scope.purpose !== "preview")
+    || typeof suppliedSignature !== "string"
+  ) {
     return false
   }
   return secureTokenMatch(
-    signArtifactAccess(secret, artifactId, bridgeChannel, expiresAt),
+    signArtifactAccess(secret, scope),
     suppliedSignature,
   )
 }

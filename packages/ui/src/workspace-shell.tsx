@@ -10,12 +10,14 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   HistoryIcon,
+  DownloadIcon,
   LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MinusIcon,
   PanelLeftCloseIcon,
   PanelRightCloseIcon,
+  PrinterIcon,
   SearchIcon,
   SendIcon,
   SettingsIcon,
@@ -45,6 +47,7 @@ import type {
   ThreadItem,
   WorkspaceSnapshot,
   PreviewBridgePickerMessage,
+  PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
 
@@ -99,7 +102,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "./components/ui/resizable"
-import { ScrollArea } from "./components/ui/scroll-area"
+import { ScrollArea, ScrollBar } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Switch } from "./components/ui/switch"
@@ -111,8 +114,17 @@ import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
-import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
-import { latestArtifactForActiveSession } from "./artifacts"
+import { annotationCaptureUpload } from "./annotation-capture"
+import {
+  anchorResolutionsFor,
+  createPreviewBridgeChannel,
+  mergeAnchorResolutionBatch,
+  previewReadyFor,
+  previewResolveAnchorMessages,
+  previewSelectionFor,
+} from "./preview-bridge"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
@@ -134,6 +146,7 @@ import {
   sessionHistoryEntryTitle,
 } from "./session-history"
 import { SessionEvidencePanel } from "./session-evidence"
+import { MarkdownQuickView } from "./markdown-quick-view"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -143,6 +156,12 @@ const TerminalPane = lazy(async () => {
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
   getRpcToken(): Promise<string>
+  captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{
+    mimeType: "image/png"
+    width: number
+    height: number
+    data: string
+  }>
   minimize(): void
   maximize(): void
   close(): void
@@ -154,6 +173,43 @@ export type WorkspaceShellProps = {
   rpcToken?: string
   windowBridge?: DesktopWindowBridge
   onChangeCredential?: () => void
+}
+
+export function PreviewVariantThumbnail({ url }: { url?: string | undefined }) {
+  const safeUrl = url?.startsWith("blob:") ? url : undefined
+  return safeUrl
+    ? <img className="aspect-video w-full rounded-sm border object-cover" src={safeUrl} alt="" />
+    : <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
+}
+
+export async function capturePreviewThumbnailState({
+  lifecycle,
+  artifactId,
+  revision,
+  capture,
+  sync,
+}: {
+  lifecycle: PreviewThumbnailLifecycle
+  artifactId: string
+  revision: number
+  capture: () => Promise<Parameters<typeof previewThumbnailObjectUrl>[0]>
+  sync: (ready: ReadonlyMap<string, string>) => void
+}): Promise<void> {
+  if (!lifecycle.reserve(artifactId, revision)) return
+  sync(lifecycle.readyUrls())
+  try {
+    const url = previewThumbnailObjectUrl(await capture())
+    if (!url) {
+      lifecycle.fail(artifactId, revision)
+      sync(lifecycle.readyUrls())
+      return
+    }
+    lifecycle.resolve(artifactId, revision, url)
+    sync(lifecycle.readyUrls())
+  } catch {
+    lifecycle.fail(artifactId, revision)
+    sync(lifecycle.readyUrls())
+  }
 }
 
 const statusClass: Record<SessionSummary["state"], string> = {
@@ -1118,10 +1174,10 @@ export function Thread({
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
-              return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3 text-[13px] leading-relaxed">{item.body}</div>
+              return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3"><MarkdownQuickView source={item.body} /></div>
             }
             if (item.kind === "system") {
-              return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>{item.body}</AlertTitle><AlertDescription>{item.detail}</AlertDescription></Alert>
+              return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><CheckIcon /><AlertTitle>{item.operation}: {item.decision}</AlertTitle><AlertDescription>Checkpoint {item.checkpoint} · decided from {item.client}{item.explanation ? ` · ${item.explanation}` : ""}</AlertDescription></Alert>
@@ -1129,7 +1185,7 @@ export function Thread({
             if (item.kind === "tool") {
               return <Alert key={item.id}><TerminalSquareIcon /><AlertTitle>{item.title}</AlertTitle><AlertDescription><Badge variant="outline">{item.status}</Badge>{item.output ? <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-machine text-[10px]">{item.output}</pre> : null}</AlertDescription></Alert>
             }
-            return <div key={item.id} className="flex max-w-2xl gap-3 text-[13px] leading-relaxed"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><p className="m-0">{item.body}</p></div>
+            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
           {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
@@ -1597,12 +1653,19 @@ export function ArtifactDock({
   onCreateAnnotation,
   onLoadSessionHistory,
   onLoadSessionEvidence,
+  captureAnnotation,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   defaultTab: "changes" | "preview"
   rpcUrl: string
-  authorizeArtifact: (artifactId: string, bridgeChannel?: string) => Promise<ArtifactAccess>
+  authorizeArtifact: (input: {
+    sessionId: string
+    artifactId: string
+    revision: number
+    purpose: ArtifactAccess["purpose"]
+    bridgeChannel?: string
+  }) => Promise<ArtifactAccess>
   connected: boolean
   terminalControls: TerminalControls
   onReplyToAnnotation: (annotationId: string, body: string) => Promise<void>
@@ -1612,7 +1675,16 @@ export function ArtifactDock({
     artifactId: string
     anchor: Annotation["anchor"]
     body: string
+    variantId?: string
+    visualContextUpload?: {
+      artifactRevision: number
+      mimeType: "image/png"
+      width: number
+      height: number
+      data: string
+    }
   }) => Promise<void>
+  captureAnnotation?: DesktopWindowBridge["captureAnnotation"]
   onLoadSessionHistory: (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
@@ -1621,40 +1693,78 @@ export function ArtifactDock({
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
-  const preview = previewCandidate?.path && previewCandidate.mimeType === "text/html"
-    ? previewCandidate
-    : undefined
+  const [selectedPreviewId, setSelectedPreviewId] = useState<string | undefined>(previewCandidate?.id)
+  const previewVariants = previewVariantsForActiveSession(snapshot, selectedPreviewId)
+  const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
   const annotations = annotationsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   ))
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
+  const stageContainerRef = useRef<HTMLDivElement>(null)
+  const [stageContainerWidth, setStageContainerWidth] = useState(0)
+  const [deviceWidth, setDeviceWidth] = useState(768)
+  const [compareRequested, setCompareRequested] = useState(false)
+  const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
+  const previewControlLayout = previewControlLayoutFor(stageContainerWidth)
+  const comparePreview = reviewLayout.compare
+    ? previewVariants.find((artifact) => artifact.id !== preview?.id)
+    : undefined
   const [bridgeState, setBridgeState] = useState(() => ({
-    previewId: preview?.id,
+    previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
     channel: createPreviewBridgeChannel(),
   }))
+  const previewKey = preview ? `${preview.id}:${preview.revision}` : undefined
   let bridgeChannel = bridgeState.channel
-  if (bridgeState.previewId !== preview?.id) {
-    const nextBridgeState = { previewId: preview?.id, channel: createPreviewBridgeChannel() }
+  if (bridgeState.previewKey !== previewKey) {
+    const nextBridgeState = { previewKey, channel: createPreviewBridgeChannel() }
     bridgeChannel = nextBridgeState.channel
     setBridgeState(nextBridgeState)
   }
   const [pickerActive, setPickerActive] = useState(false)
   const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
+  const [selectionVisualContext, setSelectionVisualContext] = useState<
+    RpcParams<"annotation.create">["visualContextUpload"]
+  >()
   const [comment, setComment] = useState("")
   const [annotationPending, setAnnotationPending] = useState(false)
   const [annotationError, setAnnotationError] = useState("")
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [previewError, setPreviewError] = useState("")
+  const [derivedArtifactPending, setDerivedArtifactPending] = useState<"print" | "download">()
+  const [derivedArtifactError, setDerivedArtifactError] = useState("")
+  const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
+  const [previewThumbnailUrls, setPreviewThumbnailUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const previewThumbnailLifecycle = useRef(new PreviewThumbnailLifecycle())
+  const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
+    string,
+    "selector" | "text-quote" | "bounding-box" | "unresolved"
+  >>(() => new Map())
+  const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
+  const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
+  const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [activeTab, setActiveTab] = useState<string>(defaultTab)
+  const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
+
+  useEffect(() => {
+    const element = stageContainerRef.current
+    if (!element) return
+    const update = () => setStageContainerWidth(element.getBoundingClientRect().width)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [stageObservationKey])
+
+  useEffect(() => () => previewThumbnailLifecycle.current.clear(), [])
 
   useEffect(() => {
     let active = true
     setPreviewUrl(undefined)
     setPreviewError("")
     if (!preview || !connected) return () => { active = false }
-    void authorizeArtifact(preview.id, bridgeChannel).then(
+    void authorizeArtifact({ sessionId: preview.sessionId, artifactId: preview.id, revision: preview.revision, purpose: "preview", bridgeChannel }).then(
       (access) => {
         if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
       },
@@ -1669,6 +1779,16 @@ export function ArtifactDock({
     return () => { active = false }
   }, [authorizeArtifact, bridgeChannel, connected, preview?.id, preview?.revision, rpcUrl])
 
+  useEffect(() => {
+    let active = true
+    setComparePreviewUrl(undefined)
+    if (!comparePreview || !connected) return () => { active = false }
+    void authorizeArtifact({ sessionId: comparePreview.sessionId, artifactId: comparePreview.id, revision: comparePreview.revision, purpose: "preview" }).then((access) => {
+      if (active) setComparePreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
+    }, () => { if (active) setComparePreviewUrl(undefined) })
+    return () => { active = false }
+  }, [authorizeArtifact, comparePreview?.id, comparePreview?.revision, connected, rpcUrl])
+
   const postPickerState = (active: boolean) => {
     const message: PreviewBridgePickerMessage = {
       type: "domovoi.preview.picker",
@@ -1678,33 +1798,146 @@ export function ArtifactDock({
     previewFrameRef.current?.contentWindow?.postMessage(message, "*")
   }
 
+  const capturePreviewThumbnail = async () => {
+    if (!captureAnnotation || !preview || !previewUrl) return
+    const frame = previewFrameRef.current
+    if (!frame) return
+    const rect = previewThumbnailRect(frame.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight })
+    if (!rect) return
+    await capturePreviewThumbnailState({
+      lifecycle: previewThumbnailLifecycle.current,
+      artifactId: preview.id,
+      revision: preview.revision,
+      capture: () => captureAnnotation(rect),
+      sync: setPreviewThumbnailUrls,
+    })
+  }
+
+  const openDerivedArtifact = async (purpose: "print" | "download") => {
+    if (!preview || !connected || derivedArtifactPending) return
+    const printWindow = purpose === "print" ? window.open("about:blank", "_blank") : null
+    if (printWindow) printWindow.opener = null
+    setDerivedArtifactPending(purpose)
+    setDerivedArtifactError("")
+    try {
+      const access = await authorizeArtifact({ sessionId: preview.sessionId, artifactId: preview.id, revision: preview.revision, purpose })
+      const url = artifactUrlFor(rpcUrl, access)
+      if (purpose === "print") {
+        if (!printWindow) throw new Error("The browser blocked the print view")
+        printWindow.location.replace(url)
+      } else {
+        const anchor = document.createElement("a")
+        anchor.href = url
+        anchor.download = ""
+        anchor.rel = "noopener noreferrer"
+        anchor.click()
+      }
+    } catch (cause) {
+      printWindow?.close()
+      setDerivedArtifactError(cause instanceof Error ? cause.message : "The safe copy could not be prepared")
+    } finally {
+      setDerivedArtifactPending(undefined)
+    }
+  }
+
+  const postNextAnchorResolutionBatch = () => {
+    if (pendingAnchorResolutionBatch.current) return
+    const message = queuedAnchorResolutionBatches.current.shift()
+    if (!message) return
+    pendingAnchorResolutionBatch.current = message
+    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
+  }
+
+  const startAnchorResolutionRequests = () => {
+    if (!preview) return
+    queuedAnchorResolutionBatches.current = previewResolveAnchorMessages(
+      bridgeChannel,
+      preview.id,
+      annotations
+        .filter((annotation) => annotation.artifactId === preview.id)
+        .map((annotation) => ({ annotationId: annotation.id, anchor: annotation.anchor })),
+    )
+    pendingAnchorResolutionBatch.current = undefined
+    setAnchorResolutions(new Map())
+    postNextAnchorResolutionBatch()
+  }
+
   useEffect(() => {
-    const receiveSelection = (event: MessageEvent<unknown>) => {
+    let active = true
+    const receiveSelection = async (event: MessageEvent<unknown>) => {
       if (
-        archiveReadOnly
-        || !pickerActive
-        || !preview
+        !preview
         || event.source !== previewFrameRef.current?.contentWindow
         || event.origin !== "null"
       ) return
+      if (previewReadyFor(event.data, bridgeChannel, preview.id)) {
+        setBridgeReadyKey(previewKey)
+        return
+      }
+      const pendingBatch = pendingAnchorResolutionBatch.current
+      const anchorResolutionMessage = pendingBatch
+        ? anchorResolutionsFor(
+            event.data,
+            bridgeChannel,
+            preview.id,
+            pendingBatch.requestId,
+            pendingBatch.annotations.map((annotation) => annotation.annotationId),
+          )
+        : undefined
+      if (anchorResolutionMessage && pendingBatch) {
+        setAnchorResolutions((current) => mergeAnchorResolutionBatch(
+          current,
+          anchorResolutionMessage.resolutions,
+        ))
+        pendingAnchorResolutionBatch.current = undefined
+        postNextAnchorResolutionBatch()
+        return
+      }
+      if (archiveReadOnly || !pickerActive) return
       const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
       if (!nextSelection) return
       postPickerState(false)
       setPickerActive(false)
+      let visualContextUpload: RpcParams<"annotation.create">["visualContextUpload"]
+      const frame = previewFrameRef.current
+      if (captureAnnotation && nextSelection.anchor.bbox && frame) {
+        const frameRect = frame.getBoundingClientRect()
+        visualContextUpload = await annotationCaptureUpload(
+          captureAnnotation,
+          { left: frameRect.left, top: frameRect.top, width: frameRect.width, height: frameRect.height },
+          nextSelection.anchor.bbox,
+          { width: window.innerWidth, height: window.innerHeight },
+          preview.revision,
+        )
+      }
+      if (!active) return
+      setSelectionVisualContext(visualContextUpload)
       setSelection(nextSelection)
       setComment("")
       setAnnotationError("")
     }
     window.addEventListener("message", receiveSelection)
-    return () => window.removeEventListener("message", receiveSelection)
-  }, [archiveReadOnly, bridgeChannel, pickerActive, preview?.id])
+    return () => {
+      active = false
+      window.removeEventListener("message", receiveSelection)
+    }
+  }, [annotations, archiveReadOnly, bridgeChannel, captureAnnotation, pickerActive, preview?.id, preview?.revision])
 
   useEffect(() => {
     setPickerActive(false)
     setSelection(null)
+    setSelectionVisualContext(undefined)
     setComment("")
     setAnnotationError("")
-  }, [archiveReadOnly, preview?.id])
+    setAnchorResolutions(new Map())
+    setBridgeReadyKey(undefined)
+    pendingAnchorResolutionBatch.current = undefined
+    queuedAnchorResolutionBatches.current = []
+  }, [archiveReadOnly, preview?.id, preview?.revision])
+
+  useEffect(() => {
+    if (bridgeReadyKey === previewKey) startAnchorResolutionRequests()
+  }, [annotations, bridgeReadyKey, previewKey])
 
   const togglePicker = () => {
     if (archiveReadOnly) return
@@ -1726,8 +1959,11 @@ export function ArtifactDock({
         artifactId: selection.artifactId,
         anchor: selection.anchor,
         body,
+        ...(preview?.variant ? { variantId: preview.variant.id } : {}),
+        ...(selectionVisualContext ? { visualContextUpload: selectionVisualContext } : {}),
       })
       setSelection(null)
+      setSelectionVisualContext(undefined)
       setComment("")
     } catch (cause) {
       setAnnotationError(cause instanceof Error ? cause.message : "The annotation could not be saved")
@@ -1757,13 +1993,43 @@ export function ArtifactDock({
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
           {preview ? (
             <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
-              <div className="flex h-10 items-center justify-between border-b px-3">
+              {previewVariants.length > 1 ? (
+                <div className="border-b p-2">
+                  <ScrollArea className="w-full whitespace-nowrap" aria-label="Design variants; use J and K or arrow keys to move">
+                    <div className="flex gap-2 pb-2" onKeyDown={(event) => {
+                      const direction = event.key === "j" || event.key === "ArrowRight" ? 1 : event.key === "k" || event.key === "ArrowLeft" ? -1 : 0
+                      if (!direction) return
+                      event.preventDefault()
+                      const current = Math.max(0, previewVariants.findIndex((artifact) => artifact.id === preview.id))
+                      setSelectedPreviewId(previewVariants[(current + direction + previewVariants.length) % previewVariants.length]?.id)
+                    }}>
+                      {previewVariants.map((artifact) => (
+                        <Button key={artifact.id} variant={artifact.id === preview.id ? "secondary" : "outline"} className="min-h-11 min-w-28 flex-col items-start" aria-current={artifact.id === preview.id ? "true" : undefined} onClick={() => setSelectedPreviewId(artifact.id)}>
+                          <PreviewVariantThumbnail url={previewThumbnailUrls.get(`${artifact.id}:${artifact.revision}`)} />
+                          <span>{artifact.variant?.label ?? artifact.title}</span>
+                          <span className="text-[9px] text-muted-foreground">{artifact.id === preview.id ? "Selected" : `revision ${artifact.revision}`}</span>
+                        </Button>
+                      ))}
+                    </div>
+                    <ScrollBar orientation="horizontal" />
+                  </ScrollArea>
+                </div>
+              ) : null}
+              <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-3 py-1", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
-                <div className="flex items-center gap-2">
+                <div className={cn("flex min-w-0 items-center justify-end gap-2", previewControlLayout.wrap && "flex-wrap", previewControlLayout.fullWidth && "w-full")}>
+                  <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Open sanitized print view" onClick={() => void openDerivedArtifact("print")}><PrinterIcon data-icon="inline-start" />{derivedArtifactPending === "print" ? "Preparing" : "Print view"}</Button>
+                  <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Download sanitized offline HTML copy" onClick={() => void openDerivedArtifact("download")}><DownloadIcon data-icon="inline-start" />{derivedArtifactPending === "download" ? "Preparing" : "Download safe copy"}</Button>
+                  <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
+                    {[390, 768, 1440].map((width) => <ToggleGroupItem key={width} value={String(width)} className="min-h-11 min-w-11" aria-label={`${width} pixel preview`}>{width}</ToggleGroupItem>)}
+                  </ToggleGroup>
+                  {previewVariants.length > 1 ? <Button variant="outline" size="xs" className="min-h-11" aria-pressed={reviewLayout.compare} disabled={stageContainerWidth > 0 && stageContainerWidth < 760} onClick={() => setCompareRequested((value) => !value)}>Compare</Button> : null}
+                  {previewVariants.length > 1 && stageContainerWidth > 0 && stageContainerWidth < 760 ? <span className="sr-only" role="status">Compare is unavailable at this width; showing the selected variant.</span> : null}
                   {!archiveReadOnly ? (
                     <Button
                       variant={pickerActive ? "secondary" : "outline"}
                       size="xs"
+                      className="min-h-11"
                       aria-pressed={pickerActive}
                       onClick={togglePicker}
                     >
@@ -1774,6 +2040,8 @@ export function ArtifactDock({
                   <Badge variant="success">Live</Badge>
                 </div>
               </div>
+              <p className="m-0 border-b px-3 py-1 text-[9px] text-muted-foreground">Safe copies remove scripts, forms, and external assets.</p>
+              {derivedArtifactError ? <Alert variant="destructive" className="m-3 w-auto" aria-live="polite"><CircleStopIcon /><AlertTitle>Safe copy unavailable</AlertTitle><AlertDescription>{derivedArtifactError}</AlertDescription></Alert> : null}
               {previewError ? (
                 <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
                   <CircleStopIcon />
@@ -1781,15 +2049,22 @@ export function ArtifactDock({
                   <AlertDescription>{previewError}</AlertDescription>
                 </Alert>
               ) : (
+                <div ref={stageContainerRef} className="flex min-h-0 flex-1 justify-center gap-3 overflow-auto p-2">
                 <iframe
                   ref={previewFrameRef}
-                  className="min-h-0 flex-1 border-0 bg-background"
+                  className="min-h-0 flex-1 border bg-background"
+                  style={{ width: Math.min(deviceWidth, reviewLayout.compare ? stageContainerWidth / 2 : stageContainerWidth), maxWidth: deviceWidth }}
                   referrerPolicy="no-referrer"
                   sandbox="allow-scripts"
                   src={previewUrl ?? "about:blank"}
                   title={preview.title}
-                  onLoad={() => postPickerState(pickerActive)}
+                  onLoad={() => {
+                    postPickerState(pickerActive)
+                    void capturePreviewThumbnail()
+                  }}
                 />
+                {comparePreview && comparePreviewUrl ? <iframe className="min-h-0 flex-1 border bg-background" style={{ width: Math.min(deviceWidth, stageContainerWidth / 2), maxWidth: deviceWidth }} referrerPolicy="no-referrer" sandbox="allow-scripts" src={comparePreviewUrl} title={`${comparePreview.title} comparison`} /> : null}
+                </div>
               )}
             </div>
           ) : (
@@ -1806,9 +2081,7 @@ export function ArtifactDock({
                   <h2 className="m-0 text-[13px] font-semibold">{plan.title}</h2>
                   <p className="mt-1 font-machine text-[9px] text-faint">revision {plan.revision}</p>
                 </div>
-                <pre className="m-0 whitespace-pre-wrap break-words font-sans text-[12px] leading-relaxed text-muted-foreground">
-                  {plan.content}
-                </pre>
+                <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={() => setActiveTab("preview")} />
               </article>
             </ScrollArea>
           ) : (
@@ -1831,6 +2104,7 @@ export function ArtifactDock({
         <TabsContent value="comments" className="min-h-0">
           <AnnotationComments
             annotations={annotations}
+            anchorResolutions={anchorResolutions}
             readOnly={archiveReadOnly}
             onReply={onReplyToAnnotation}
             onSetStatus={onSetAnnotationStatus}
@@ -1868,6 +2142,7 @@ export function ArtifactDock({
         onOpenChange={(open) => {
           if (open || annotationPending) return
           setSelection(null)
+          setSelectionVisualContext(undefined)
           setComment("")
           setAnnotationError("")
         }}
@@ -1923,11 +2198,13 @@ export function ArtifactDock({
 
 export function AnnotationComments({
   annotations,
+  anchorResolutions = new Map(),
   readOnly,
   onReply,
   onSetStatus,
 }: {
   annotations: Annotation[]
+  anchorResolutions?: ReadonlyMap<string, "selector" | "text-quote" | "bounding-box" | "unresolved">
   readOnly: boolean
   onReply: (annotationId: string, body: string) => Promise<void>
   onSetStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
@@ -1980,6 +2257,7 @@ export function AnnotationComments({
           {annotations.map((annotation) => {
             const pending = pendingId === annotation.id
             const isReplying = replyingTo === annotation.id
+            const anchorResolution = anchorResolutions.get(annotation.id)
             return (
               <Card key={annotation.id} size="sm">
                 <CardHeader>
@@ -1997,7 +2275,25 @@ export function AnnotationComments({
                     {annotation.anchor.textQuote
                       ? `“${annotation.anchor.textQuote}”`
                       : annotation.anchor.cssSelector ?? "Visual selection"}
+                    {anchorResolution ? (
+                      <Badge
+                        variant={anchorResolution === "unresolved" ? "destructive" : "outline"}
+                        className="ml-2"
+                      >
+                        {anchorResolution === "selector" ? "selector anchor" : null}
+                        {anchorResolution === "text-quote" ? "text anchor" : null}
+                        {anchorResolution === "bounding-box" ? "visual anchor" : null}
+                        {anchorResolution === "unresolved" ? "anchor unavailable" : null}
+                      </Badge>
+                    ) : null}
                   </div>
+                  {annotation.visualContext ? (
+                    <p className="m-0 font-machine text-[9px] text-faint">
+                      {annotation.visualContext.status === "available"
+                        ? `visual context · ${annotation.visualContext.width}×${annotation.visualContext.height} · revision ${annotation.visualContext.artifactRevision}`
+                        : `visual context unavailable · ${annotation.visualContext.reason}`}
+                    </p>
+                  ) : null}
                   {annotation.thread.map((threadReply) => (
                     <div key={threadReply.id} className="break-words border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
                       <span className="font-machine text-[9px] text-faint">{threadReply.origin}</span><br />
@@ -2313,7 +2609,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>

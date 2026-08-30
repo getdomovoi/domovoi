@@ -5,7 +5,8 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -14,6 +15,39 @@ const runtime: Runtime = {
   permissionMode: "build",
   auto: false,
 }
+
+describe("PreviewVariantThumbnail", () => {
+  it("renders real cached imagery when available and a truthful fallback otherwise", () => {
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail url="blob:domovoi-thumbnail" />)).toContain("<img")
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).toContain("PREVIEW")
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail url="https://attacker.example/x.png" />)).not.toContain("<img")
+  })
+
+  it.each([
+    ["invalid", async () => ({ mimeType: "image/png" as const, width: 0, height: 1, data: "invalid" })],
+    ["failed", async () => { throw new Error("capture denied") }],
+  ])("removes revoked thumbnail state after %s replacement capture", async (_case, capture) => {
+    const revoke = vi.fn()
+    const lifecycle = new PreviewThumbnailLifecycle(1, revoke)
+    lifecycle.reserve("old-artifact", 1)
+    lifecycle.resolve("old-artifact", 1, "blob:old")
+    const states: ReadonlyMap<string, string>[] = []
+
+    await capturePreviewThumbnailState({
+      lifecycle,
+      artifactId: "new-artifact",
+      revision: 2,
+      capture,
+      sync: (ready) => states.push(new Map(ready)),
+    })
+
+    expect(revoke).toHaveBeenCalledOnce()
+    expect(revoke).toHaveBeenCalledWith("blob:old")
+    expect(states.length).toBeGreaterThanOrEqual(1)
+    expect(states.every((state) => !state.has("old-artifact:1"))).toBe(true)
+    expect(states.at(-1)).toEqual(new Map())
+  })
+})
 
 const providers: ProviderRuntime[] = [
   {
@@ -29,6 +63,20 @@ it("names settings navigation for the surface it opens", () => {
 })
 
 describe("RuntimeControls", () => {
+  it("renders safe Markdown in user, assistant, and system thread bodies", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const sessionId = snapshot.activeSessionId!
+    snapshot.thread.push(
+      { id: "user-md", sessionId, kind: "user", body: "**User note**", createdAt: "2026-08-30T10:00:00.000Z" },
+      { id: "assistant-md", sessionId, kind: "assistant", body: "## Agent plan\n\n`pnpm test`", createdAt: "2026-08-30T10:01:00.000Z" },
+      { id: "system-md", sessionId, kind: "system", body: "**System note** <script>alert(1)</script>", createdAt: "2026-08-30T10:02:00.000Z" },
+    )
+    const markup = renderToStaticMarkup(<Thread snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+    expect(markup).toContain("<strong>User note</strong>")
+    expect(markup).toContain("<h2")
+    expect(markup).toContain("font-machine")
+    expect(markup).not.toContain("<script")
+  })
   it("locks every runtime input while an update is pending", () => {
     const markup = renderToStaticMarkup(
       <RuntimeControls
@@ -404,6 +452,35 @@ describe("provider failure guidance", () => {
 })
 
 describe("archived annotation controls", () => {
+  it("surfaces preserved and unresolved anchor states", () => {
+    const annotations = structuredClone(demoWorkspace.annotations.slice(0, 2))
+    annotations[0]!.visualContext = {
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 320,
+      height: 120,
+      byteLength: 1024,
+    }
+    const markup = renderToStaticMarkup(
+      <AnnotationComments
+        annotations={annotations}
+        anchorResolutions={new Map([
+          [annotations[0]!.id, "text-quote"],
+          [annotations[1]!.id, "unresolved"],
+        ])}
+        readOnly={false}
+        onReply={vi.fn(async () => {})}
+        onSetStatus={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain("text anchor")
+    expect(markup).toContain("anchor unavailable")
+    expect(markup).toContain("visual context · 320×120 · revision 3")
+  })
+
   it("keeps annotations visible while hiding every mutation control", () => {
     const archived = structuredClone(demoWorkspace.sessions[0]!)
     archived.state = "archived"
@@ -431,12 +508,17 @@ describe("archived annotation controls", () => {
     expect(sessionIsArchiveReadOnly({ ...archived, state: "archiving" })).toBe(true)
     expect(sessionIsArchiveReadOnly({ ...archived, state: "idle" })).toBe(false)
 
+    const dockSnapshot = { ...structuredClone(demoWorkspace), activeSessionId: archived.id, sessions: [
+      archived,
+      ...demoWorkspace.sessions.slice(1),
+    ] }
+    dockSnapshot.artifacts.push(
+      { id: "variant-a", sessionId: archived.id, title: "Variant A", type: "preview", revision: 4, path: "design-studio/x/variant-a.html", mimeType: "text/html", variant: { id: "a", groupId: "design-studio/x", label: "Variant A", order: 0 } },
+      { id: "variant-b", sessionId: archived.id, title: "Variant B", type: "preview", revision: 3, path: "design-studio/x/variant-b.html", mimeType: "text/html", variant: { id: "b", groupId: "design-studio/x", label: "Variant B", order: 1 } },
+    )
     const dock = renderToStaticMarkup(
       <ArtifactDock
-        snapshot={{ ...structuredClone(demoWorkspace), activeSessionId: archived.id, sessions: [
-          archived,
-          ...demoWorkspace.sessions.slice(1),
-        ] }}
+        snapshot={dockSnapshot}
         onCollapse={vi.fn()}
         defaultTab="preview"
         rpcUrl="ws://127.0.0.1/rpc"
@@ -459,5 +541,12 @@ describe("archived annotation controls", () => {
       />,
     )
     expect(dock).not.toContain(">Annotate</button>")
+    expect(dock).toContain("Variant A")
+    expect(dock).toContain("Selected")
+    expect(dock).toContain("390 pixel preview")
+    expect(dock).toContain(">Compare</button>")
+    expect(dock).toContain("Print view")
+    expect(dock).toContain("Download safe copy")
+    expect(dock).toContain("Safe copies remove scripts, forms, and external assets")
   })
 })
