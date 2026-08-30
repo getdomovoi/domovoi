@@ -1,19 +1,7 @@
-export type ProviderFailureKind =
-  | "authentication-expired"
-  | "rate-limit"
-  | "quota-exhausted"
-  | "model-unavailable"
-  | "transport"
-  | "unknown"
+import { providerFailureSchema, type ProviderFailure } from "@getdomovoi/protocol"
 
-export type ProviderFailureAction = "sign-in" | "retry" | "check-quota" | "change-model"
-
-export type ProviderFailure = {
-  kind: ProviderFailureKind
-  action: ProviderFailureAction
-  message: string
-  retryable: boolean
-}
+export type ProviderFailureKind = ProviderFailure["kind"]
+export type ProviderFailureAction = ProviderFailure["action"]
 
 export function classifyProviderFailure(error: unknown): ProviderFailure {
   const detail = error instanceof Error ? error.message : ""
@@ -35,11 +23,36 @@ export function classifyProviderFailure(error: unknown): ProviderFailure {
   return failure("unknown", "retry", "Provider request failed", true)
 }
 
+export function providerTurnCompletion(params: Record<string, unknown>): {
+  failed: boolean
+  failure?: ProviderFailure
+} {
+  const turn = params.turn && typeof params.turn === "object"
+    ? params.turn as Record<string, unknown>
+    : undefined
+  const status = typeof params.status === "string" ? params.status : turn?.status
+  if (status !== "failed") return { failed: false }
+
+  const explicit = providerFailureSchema.safeParse(params.failure)
+  if (explicit.success) return { failed: true, failure: explicit.data }
+  const turnError = turn?.error && typeof turn.error === "object"
+    ? turn.error as Record<string, unknown>
+    : undefined
+  const reason = typeof params.reason === "string"
+    ? params.reason
+    : typeof turn?.error === "string"
+      ? turn.error
+      : typeof turnError?.message === "string"
+        ? turnError.message
+      : ""
+  return { failed: true, failure: classifyProviderFailure(new Error(reason)) }
+}
+
 function failure(
   kind: ProviderFailureKind,
   action: ProviderFailureAction,
   message: string,
   retryable: boolean,
 ): ProviderFailure {
-  return { kind, action, message, retryable }
+  return providerFailureSchema.parse({ kind, action, message, retryable })
 }

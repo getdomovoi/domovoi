@@ -15,6 +15,7 @@ import {
   demoWorkspace,
   projectOpenParamsSchema,
   providerModelSchema,
+  providerFailureSchema,
   providerRuntimeSchema,
   helloParamsSchema,
   sessionHistoryPageSchema,
@@ -44,6 +45,40 @@ import {
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("keeps provider failures typed, safe, and actionable", () => {
+    const failures = [
+      ["authentication-expired", "sign-in", "Provider authentication expired", false],
+      ["rate-limit", "retry", "Provider rate limit reached", true],
+      ["quota-exhausted", "check-quota", "Provider quota is exhausted", false],
+      ["model-unavailable", "change-model", "Selected model is unavailable", false],
+    ] as const
+
+    for (const [kind, action, message, retryable] of failures) {
+      expect(providerFailureSchema.parse({ kind, action, message, retryable })).toEqual({
+        kind,
+        action,
+        message,
+        retryable,
+      })
+    }
+    expect(providerFailureSchema.safeParse({
+      kind: "authentication-expired",
+      action: "sign-in",
+      message: "token=super-secret",
+      retryable: false,
+    }).success).toBe(false)
+
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.sessions[0]!.providerFailure = failures[0] && {
+      kind: failures[0][0],
+      action: failures[0][1],
+      message: failures[0][2],
+      retryable: failures[0][3],
+    }
+    expect(workspaceSnapshotSchema.parse(snapshot).sessions[0]!.providerFailure)
+      .toEqual(snapshot.sessions[0]!.providerFailure)
+  })
+
   it("validates fork provenance and unique idempotency keys", () => {
     const snapshot = structuredClone(demoWorkspace)
     const source = snapshot.sessions[0]!

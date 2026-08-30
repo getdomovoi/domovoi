@@ -61,6 +61,15 @@ export const providerModelSchema = z.object({
 })
 export const providerModelsSchema = z.array(providerModelSchema)
 
+export const providerFailureSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("authentication-expired"), action: z.literal("sign-in"), message: z.literal("Provider authentication expired"), retryable: z.literal(false) }),
+  z.object({ kind: z.literal("rate-limit"), action: z.literal("retry"), message: z.literal("Provider rate limit reached"), retryable: z.literal(true) }),
+  z.object({ kind: z.literal("quota-exhausted"), action: z.literal("check-quota"), message: z.literal("Provider quota is exhausted"), retryable: z.literal(false) }),
+  z.object({ kind: z.literal("model-unavailable"), action: z.literal("change-model"), message: z.literal("Selected model is unavailable"), retryable: z.literal(false) }),
+  z.object({ kind: z.literal("transport"), action: z.literal("retry"), message: z.literal("Provider connection failed"), retryable: z.literal(true) }),
+  z.object({ kind: z.literal("unknown"), action: z.literal("retry"), message: z.literal("Provider request failed"), retryable: z.literal(true) }),
+])
+
 export const providerRuntimeStatusSchema = z.enum([
   "ready",
   "auth-required",
@@ -116,6 +125,7 @@ export const sessionSummarySchema = z.object({
   workspacePath: z.string().min(1).optional(),
   providerThreadId: z.string().min(1).optional(),
   activeTurnId: z.string().min(1).optional(),
+  providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
   archiveRequestedAt: z.string().datetime().optional(),
   archiveCheckpoint: z.string().regex(/^[a-f0-9]{40}$/).optional(),
@@ -479,5 +489,6 @@ export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
 export type Annotation = z.infer<typeof annotationSchema>
 export type ProviderModel = z.infer<typeof providerModelSchema>
+export type ProviderFailure = z.infer<typeof providerFailureSchema>
 export type ProviderRuntime = z.infer<typeof providerRuntimeSchema>
 export type WorkspaceSnapshot = z.infer<typeof workspaceSnapshotSchema>

@@ -74,6 +74,7 @@ import {
 import { permissionDecisionFor } from "./permission-policy.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
+import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import { testEvidence } from "./test-evidence.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -1828,6 +1829,7 @@ export class DomovoiDaemon {
           currentSession.changedFiles = checkpoint.changedFiles.length
           currentSession.state = "idle"
           currentSession.updatedAt = createdAt
+          delete currentSession.providerFailure
           this.#loadedAgentThreads.delete(providerThreadKey(previousRuntime.provider, previousThreadId))
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, nextThreadId))
           if (recoveringFailedThread && previousKey) {
@@ -1859,6 +1861,7 @@ export class DomovoiDaemon {
           })
         } else {
           currentSession.runtime = runtime
+          delete currentSession.providerFailure
         }
         changed = true
       }
@@ -2351,6 +2354,7 @@ export class DomovoiDaemon {
         currentSession.state = "active"
         currentSession.updatedAt = createdAt
         currentSession.activeTurnId = turnId
+        delete currentSession.providerFailure
         this.#snapshot.activeSessionId = currentSession.id
         changed = true
       }
@@ -2776,9 +2780,10 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "turn-completed") {
-      const turn = event.params.turn
-      const failed = turn && typeof turn === "object" && "status" in turn && turn.status === "failed"
+      const { failed, failure } = providerTurnCompletion(event.params)
       session.state = failed ? "failed" : "idle"
+      if (failure) session.providerFailure = failure
+      else delete session.providerFailure
       delete session.activeTurnId
       this.#flushCommandOutputStreams(session.id)
       this.#appendAudit({
@@ -2834,6 +2839,7 @@ export class DomovoiDaemon {
       if (session.runtime.provider !== provider || !session.providerThreadId) continue
       affectedSessionIds.add(session.id)
       session.state = "failed"
+      session.providerFailure = classifyProviderFailure(new Error(reason))
       this.#flushCommandOutputStreams(session.id)
       delete session.activeTurnId
       session.updatedAt = createdAt
