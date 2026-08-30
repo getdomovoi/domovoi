@@ -838,6 +838,45 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("fetches only metadata for fleet skill comparison", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const request = client.getSkillInventory()
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "skill.inventory",
+      params: {},
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        machine: { id: "machine-local", name: "devbox", platform: "linux", arch: "x64", version: "0.0.1" },
+        skills: [{
+          id: "skill-4d6f4d6f4d6f",
+          name: "repo-audit",
+          scope: "user",
+          source: "agents",
+          manifest: { version: 1, capabilities: [] },
+          contentDigest: `sha256:${"a".repeat(64)}`,
+          signature: { state: "unsigned" },
+          trust: { state: "untrusted", reason: "unsigned" },
+        }],
+      },
+    })
+    await expect(request).resolves.toMatchObject({ machine: { id: "machine-local" } })
+    expect(socket.sent).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/skill\.(?:install|copy|sync|distribute)/),
+    ]))
+    client.disconnect()
+  })
+
   it("manages provider keychain status without returning secret material", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()

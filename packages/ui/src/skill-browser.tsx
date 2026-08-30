@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
 
-import type { SkillDocument, SkillEnablementReview, SkillSummary } from "@getdomovoi/protocol"
+import type { SkillDocument, SkillEnablementReview, SkillInventorySource, SkillSummary } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -37,6 +37,24 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { cn } from "./lib/utils"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
+import { compareSkillInventories, type SkillFleetCellState } from "./skill-fleet-comparison"
+
+const comparisonLabel: Record<SkillFleetCellState, string> = {
+  same: "Same",
+  different: "Different",
+  missing: "Missing",
+  blocked: "Blocked",
+  untrusted: "Untrusted",
+  unknown: "Unknown",
+  unreachable: "Unreachable",
+}
+
+function comparisonVariant(state: SkillFleetCellState): "success" | "warning" | "destructive" | "secondary" {
+  if (state === "same") return "success"
+  if (state === "blocked") return "destructive"
+  if (state === "different" || state === "missing" || state === "untrusted") return "warning"
+  return "secondary"
+}
 
 export function SkillSourceContent({
   skill,
@@ -76,6 +94,7 @@ export function SkillSourceContent({
 
 export function SkillBrowser({
   skills,
+  inventorySources = [],
   loading,
   error,
   onBack,
@@ -87,6 +106,7 @@ export function SkillBrowser({
   onRetry,
 }: {
   skills: readonly SkillSummary[]
+  inventorySources?: readonly SkillInventorySource[]
   loading: boolean
   error: string
   onBack: () => void
@@ -113,6 +133,7 @@ export function SkillBrowser({
   const [reviewError, setReviewError] = useState("")
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
+  const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
   const selected = skills.find((skill) => skill.id === selectedId) ?? filtered[0] ?? skills[0]
   const selectedReview = selected && projectId
     ? enablements.find((review) => review.projectId === projectId && review.skillId === selected.id)
@@ -124,6 +145,11 @@ export function SkillBrowser({
     && JSON.stringify(selectedReview.manifest) === JSON.stringify(selected.manifest),
   )
   const selectedEnabled = selectedReviewIsCurrent && selectedReview?.enabled === true
+  const selectedComparison = selected
+    ? comparisons.find((row) => (
+        row.name === selected.name && row.scope === selected.scope && row.source === selected.source
+      ))
+    : undefined
 
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
@@ -283,6 +309,25 @@ export function SkillBrowser({
                   </CardContent>
                 </Card>
               </div>
+              <Card className="mt-4">
+                <CardHeader>
+                  <CardTitle>Machine comparison</CardTitle>
+                  <CardDescription>Metadata only. Domovoi never copies, installs, or syncs skills between machines.</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-2">
+                  {selectedComparison ? selectedComparison.machines.map((machine) => (
+                    <div key={machine.machineId} className="flex items-center justify-between gap-3">
+                      <span className="truncate font-machine text-[10.5px]">{machine.machineName}</span>
+                      <Badge variant={comparisonVariant(machine.state)}>{comparisonLabel[machine.state]}</Badge>
+                    </div>
+                  )) : (
+                    <p className="m-0 text-[11px] text-muted-foreground">Unknown until this machine inventory is fetched.</p>
+                  )}
+                  {inventorySources.length === 1 ? (
+                    <p className="m-0 text-[10.5px] text-muted-foreground">Other machines remain unknown until their daemon inventory is provided.</p>
+                  ) : null}
+                </CardContent>
+              </Card>
               <Alert className="mt-4">
                 <FileTextIcon />
                 <AlertTitle>Project review</AlertTitle>

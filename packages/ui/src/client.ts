@@ -28,6 +28,7 @@ import {
   type SessionEvidence,
   type SessionHistoryPage,
   type SkillDocument,
+  type SkillInventory,
   type SkillSummary,
   type SystemEmergencyStopResult,
   type TerminalSession,
@@ -462,6 +463,10 @@ export class DomovoiClient extends EventTarget {
 
   listSkills(): Promise<SkillSummary[]> {
     return this.request("skill.list", {})
+  }
+
+  getSkillInventory(): Promise<SkillInventory> {
+    return this.request("skill.inventory", {})
   }
 
   readSkill(id: string): Promise<SkillDocument> {

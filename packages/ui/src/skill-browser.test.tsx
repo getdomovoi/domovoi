@@ -105,6 +105,43 @@ describe("skill browser", () => {
     expect(markup).toContain("Enablement does not change signature or trust state")
   })
 
+  it("shows metadata-only machine comparison without a distribution action", () => {
+    const metadata = {
+      id: skills[0]!.id,
+      name: skills[0]!.name,
+      scope: skills[0]!.scope,
+      source: skills[0]!.source,
+      manifest: skills[0]!.manifest,
+      contentDigest: skills[0]!.contentDigest,
+      signature: { state: "unsigned" as const },
+      trust: { state: "untrusted" as const, reason: "unsigned" as const },
+    }
+    const markup = renderToStaticMarkup(
+      <SkillBrowser
+        skills={skills}
+        inventorySources={[
+          { state: "available", inventory: { machine: { id: "machine-a", name: "Alpha", platform: "linux", arch: "x64", version: "0.0.1" }, skills: [metadata] } },
+          { state: "unknown", machine: { id: "machine-b", name: "Beta", platform: "darwin", arch: "arm64", version: "0.0.1" } },
+        ]}
+        loading={false}
+        error=""
+        onBack={vi.fn()}
+        onOpenAudit={vi.fn()}
+        onReadSkill={vi.fn()}
+        projectId="project-acme-api"
+        enablements={[]}
+        onSetSkillEnabled={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain("Machine comparison")
+    expect(markup).toContain("Untrusted")
+    expect(markup).toContain("Unknown")
+    expect(markup).toContain("never copies, installs, or syncs skills")
+    expect(markup).not.toMatch(/>Copy<|>Install<|>Sync</)
+  })
+
   it("renders bounded source returned by the daemon", () => {
     const markup = renderToStaticMarkup(
       <SkillSourceContent
