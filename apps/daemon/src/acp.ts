@@ -4,6 +4,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
+import { classifyProviderFailure } from "./provider-failures.js"
 
 export type AcpConfigOption = {
   id: string
@@ -207,10 +208,11 @@ export class AcpAgentAdapter implements AgentAdapter {
           ...(failed ? { reason: boundedStopReason(response.stopReason) } : {}),
         },
       })
-    } catch {
+    } catch (error) {
+      const failure = classifyProviderFailure(error)
       this.#emit({
         type: "turn-completed",
-        params: { threadId, turnId, status: "failed", reason: "Provider request failed" },
+        params: { threadId, turnId, status: "failed", reason: failure.message, failure },
       })
     } finally {
       this.#activeTurns.delete(threadId)
