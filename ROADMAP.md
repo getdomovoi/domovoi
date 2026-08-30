@@ -105,13 +105,13 @@ workflow without becoming a code editor.
 - [x] Claude Code adapter
 - [x] OpenCode adapter
 - [x] Kilo adapter
-- [ ] Cursor Agent adapter
-- [ ] Grok CLI adapter
-- [ ] Provider account and readiness settings from the signed handoff
-- [ ] OS-keychain storage for direct provider API keys and other secrets
-- [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
-- [ ] Token and cost telemetry normalized per turn, session, provider, and model
-- [ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
+- [x] Cursor Agent adapter
+- [x] Grok CLI adapter
+- [x] Provider account and readiness settings from the signed handoff
+- [x] OS-keychain storage for direct provider API keys and other secrets
+- [x] Direct API adapters where they add capabilities unavailable through subscription CLIs
+- [x] Token and cost telemetry normalized per turn, session, provider, and model
+- [x] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
 
 ### Permissions and auditability
