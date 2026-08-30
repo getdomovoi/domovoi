@@ -3565,6 +3565,8 @@ export class DomovoiDaemon {
       existing.title = change.title
       existing.path = change.path
       existing.mimeType = change.mimeType
+      if (change.variant === undefined) delete existing.variant
+      else existing.variant = change.variant
       if (change.content === undefined) delete existing.content
       else existing.content = change.content
       existing.revision += 1
@@ -3577,6 +3579,7 @@ export class DomovoiDaemon {
         revision: 1,
         path: change.path,
         mimeType: change.mimeType,
+        ...(change.variant === undefined ? {} : { variant: change.variant }),
         ...(change.content === undefined ? {} : { content: change.content }),
       })
     }

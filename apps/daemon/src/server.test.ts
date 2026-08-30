@@ -106,6 +106,7 @@ describe("DomovoiDaemon", () => {
       title: "variant-a.html",
       type: "preview",
       mimeType: "text/html",
+      variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 },
     })
     watcherOptions!.onChange({
       path: "plans/review-plan.md",
@@ -115,7 +116,7 @@ describe("DomovoiDaemon", () => {
       content: "# Review plan",
     })
     await vi.waitFor(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sessionId: session.id, path: "design-studio/variant-a.html", type: "preview", revision: 1 }),
+      expect.objectContaining({ sessionId: session.id, path: "design-studio/variant-a.html", type: "preview", revision: 1, variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 } }),
       expect.objectContaining({ sessionId: session.id, path: "plans/review-plan.md", type: "plan", content: "# Review plan", revision: 1 }),
     ])))
 
@@ -124,6 +125,7 @@ describe("DomovoiDaemon", () => {
       title: "variant-a.html",
       type: "preview",
       mimeType: "text/html",
+      variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 },
     })
     await vi.waitFor(() => expect(store.snapshot.artifacts.find(
       (artifact) => artifact.path === "design-studio/variant-a.html",

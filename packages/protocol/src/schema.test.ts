@@ -45,9 +45,23 @@ import {
   skillDocumentSchema,
   workspaceSnapshotSchema,
   workspaceDeltaSchema,
+  artifactSchema,
 } from "./index.js"
 
 describe("workspace protocol", () => {
+  it("keeps preview variant metadata bounded and reference-only", () => {
+    expect(artifactSchema.parse({
+      id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview",
+      revision: 2, path: "design-studio/onboarding/variant-a.html", mimeType: "text/html",
+      variant: { id: "a", groupId: "design-studio/onboarding", label: "Variant A", order: 0,
+        thumbnail: { path: "design-studio/onboarding/variant-a.webp", mimeType: "image/webp", revision: 2 } },
+    }).variant?.id).toBe("a")
+    expect(artifactSchema.safeParse({
+      id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview", revision: 1,
+      variant: { id: "a", groupId: "g", label: "A", order: 0,
+        thumbnail: { path: "data:image/png;base64,AAA", mimeType: "image/png", revision: 1 } },
+    }).success).toBe(false)
+  })
   it("keeps provider failures typed, safe, and actionable", () => {
     const failures = [
       ["authentication-expired", "sign-in", "Provider authentication expired", false],
