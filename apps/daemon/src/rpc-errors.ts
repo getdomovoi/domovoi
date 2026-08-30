@@ -1,11 +1,11 @@
+import { redactDurableText } from "./secret-redaction.js"
+
 export const internalRpcErrorMessage = "Internal daemon error"
 
 const maximumErrorDetailLength = 4_096
 const maximumRawErrorDetailLength = 8_192
 const maximumNestedErrorDepth = 4
 const maximumAggregateErrors = 8
-const redacted = "[REDACTED]"
-
 export class PublicRpcError extends Error {
   constructor(
     readonly code: number,
@@ -17,18 +17,9 @@ export class PublicRpcError extends Error {
 }
 
 export function redactErrorDetail(error: unknown): string {
-  const detail = errorDetail(error).slice(0, maximumRawErrorDetailLength)
-    .replace(/(https?:\/\/)[^\s/:@]+:[^\s/@]+@/giu, `$1${redacted}@`)
-    .replace(
-      /(\b(?:authorization|proxy-authorization)\b["']?\s*[:=]\s*)(?:"(?:bearer\s+)?[^"]*"|'(?:bearer\s+)?[^']*'|(?:bearer\s+)?[^\s,;]+)/giu,
-      `$1${redacted}`,
-    )
-    .replace(/\bbearer\s+[^\s,;]+/giu, `Bearer ${redacted}`)
-    .replace(
-      /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|credentials?|cookie)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
-      `$1${redacted}`,
-    )
-    .replace(/\b(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/gu, redacted)
+  const detail = redactDurableText(
+    errorDetail(error).slice(0, maximumRawErrorDetailLength),
+  ).value
 
   return detail.length <= maximumErrorDetailLength
     ? detail
