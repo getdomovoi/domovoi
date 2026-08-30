@@ -2,12 +2,30 @@ import { describe, expect, it } from "vitest"
 
 import {
   skillCapabilityManifestSchema,
+  skillEnablementReviewSchema,
   skillSignatureSchema,
   skillSummarySchema,
   skillTrustSchema,
 } from "./skills.js"
 
 describe("skill security metadata", () => {
+  it("binds reviewed enablement to project content and client", () => {
+    const review = skillEnablementReviewSchema.parse({
+      projectId: "project-one",
+      skillId: "skill-111111111111",
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      reviewedAt: "2026-08-30T12:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "desktop-one" },
+    })
+
+    expect(review.enabled).toBe(true)
+    expect(skillEnablementReviewSchema.safeParse({
+      ...review,
+      manifest: { version: 1, capabilities: ["filesystem.read", "filesystem.read"] },
+    }).success).toBe(false)
+  })
   it("accepts the bounded capability vocabulary", () => {
     expect(skillCapabilityManifestSchema.parse({
       version: 1,

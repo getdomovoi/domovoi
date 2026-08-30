@@ -13,6 +13,7 @@ import {
   maximumWorkspaceDeltaChunkLength,
   workspaceSnapshotSchema,
   type ProviderModel,
+  type SkillSummary,
 } from "@getdomovoi/protocol"
 
 import {
@@ -32,7 +33,7 @@ import {
 } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
-import type { SkillCatalog } from "./skills.js"
+import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
@@ -2640,6 +2641,155 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(skillCatalog.read).toHaveBeenCalledWith("skill-4d6f4d6f4d6f")
+    socket.close()
+  })
+
+  it("persists exact project skill reviews and audits the client", async () => {
+    const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
+    let currentSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user" as const,
+      source: "agents" as const,
+      ...skillSecurityMetadata,
+    }
+    const skillCatalog = {
+      list: vi.fn(async () => [currentSkill]),
+      read: vi.fn(async (id: string) => {
+        if (id !== currentSkill.id) throw new SkillNotFoundError()
+        return { skill: currentSkill, content: "review me" }
+      }),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => structuredClone(demoWorkspace),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      auditLog,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-reviewer",
+      clientVersion: "0.0.1",
+    })
+    const review = {
+      id: currentSkill.id,
+      enabled: true,
+      contentDigest: currentSkill.contentDigest,
+      manifest: currentSkill.manifest,
+    }
+
+    const enabled = await rpc(2, "skill.setEnabled", review)
+    expect(enabled).toMatchObject({ result: { skillEnablements: [{
+      projectId: demoWorkspace.project!.id,
+      skillId: currentSkill.id,
+      enabled: true,
+      reviewedBy: { client: "desktop", clientId: "desktop-reviewer" },
+    }] } })
+    currentSkill = { ...currentSkill, contentDigest: `sha256:${"b".repeat(64)}` }
+    await expect(rpc(3, "skill.setEnabled", review)).resolves.toMatchObject({
+      error: { code: -32602, message: "Skill content changed; review it again" },
+    })
+    const rereviewed = await rpc(4, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+    })
+    expect(rereviewed).toMatchObject({ result: { skillEnablements: [{
+      contentDigest: currentSkill.contentDigest,
+      enabled: true,
+    }] } })
+    await expect(rpc(5, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+      manifest: { version: 1, capabilities: ["process.execute"] },
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Skill capabilities changed; review them again" },
+    })
+    currentSkill = {
+      ...currentSkill,
+      trust: { state: "blocked", reason: "invalid-signature" },
+    }
+    await expect(rpc(6, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+    })).resolves.toMatchObject({ error: { code: -32602, message: "Blocked skills cannot be enabled" } })
+    await expect(rpc(7, "skill.setEnabled", {
+      ...review,
+      id: "skill-000000000000",
+      contentDigest: currentSkill.contentDigest,
+    })).resolves.toMatchObject({ error: { code: -32602, message: "Skill not found" } })
+    currentSkill = {
+      ...currentSkill,
+      trust: { state: "untrusted", reason: "unsigned" },
+    }
+    const disabled = await rpc(8, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+      enabled: false,
+    })
+    expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
+      action: "skill.setEnabled",
+      projectId: demoWorkspace.project!.id,
+      target: currentSkill.id,
+      detail: expect.stringMatching(/^enabled=(true|false) digest=sha256:/),
+    }))
+    socket.close()
+  })
+
+  it("rejects skill review without an open project", async () => {
+    const skill = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user" as const,
+      source: "agents" as const,
+      ...skillSecurityMetadata,
+    }
+    const skillCatalog = {
+      list: vi.fn(async () => [skill]),
+      read: vi.fn(async (id: string) => {
+        if (id === "skill-000000000000") throw new Error("Skill not found")
+        return { skill, content: "review me" }
+      }),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", skillCatalog })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, skillId = skill.id) => new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "skill.setEnabled",
+        params: {
+          id: skillId,
+          enabled: true,
+          contentDigest: skill.contentDigest,
+          manifest: skill.manifest,
+        },
+      }))
+    })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await expect(rpc(1)).resolves.toMatchObject({ error: { code: -32602, message: "Open a project before reviewing skills" } })
     socket.close()
   })
 

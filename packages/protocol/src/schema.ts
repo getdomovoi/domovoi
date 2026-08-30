@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { skillEnablementReviewsSchema } from "./skills.js"
+
 export const protocolVersion = "0.1.0" as const
 
 export const clientKindSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
@@ -339,6 +341,7 @@ export const workspaceSnapshotSchema = z.object({
   thread: z.array(threadItemSchema),
   artifacts: z.array(artifactSchema),
   annotations: z.array(annotationSchema).default([]),
+  skillEnablements: skillEnablementReviewsSchema.default([]),
   historyTruncated: z.boolean().optional(),
 }).superRefine((snapshot, context) => {
   const aggregates = [
@@ -362,6 +365,19 @@ export const workspaceSnapshotSchema = z.object({
       ids.add(record.id)
     })
   }
+
+  const skillReviewKeys = new Set<string>()
+  snapshot.skillEnablements.forEach((review, index) => {
+    const key = `${review.projectId}:${review.skillId}`
+    if (skillReviewKeys.has(key)) {
+      context.addIssue({
+        code: "custom",
+        message: "Skill enablement must be unique per project and skill",
+        path: ["skillEnablements", index],
+      })
+    }
+    skillReviewKeys.add(key)
+  })
 
   snapshot.annotations.forEach((annotation, annotationIndex) => {
     const replyIds = new Set<string>()
