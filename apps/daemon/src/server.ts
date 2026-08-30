@@ -5,6 +5,7 @@ import { arch, homedir, hostname, platform } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  canonicalBase64DecodedByteLength,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonShuttingDownErrorCode,
@@ -351,6 +352,15 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
   "capture" | "storeUpload"
 >
 
+export function protectedAnnotationCropRefs(snapshot: WorkspaceSnapshot): string[] {
+  const refs = new Set<string>()
+  for (const annotation of snapshot.annotations) {
+    const ref = annotation.visualContext?.status === "available" ? annotation.visualContext.ref : undefined
+    if (ref && /^crop-[a-f0-9]{64}$/.test(ref)) refs.add(ref)
+  }
+  return [...refs].sort()
+}
+
 export type DaemonServerOptions = {
   host?: string
   port?: number
@@ -478,7 +488,14 @@ export class DomovoiDaemon {
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
     this.#annotationVisualContext = options.annotationVisualContext
-      ?? new AnnotationVisualContextService({ root: join(dirname(statePath), "annotation-crops") })
+      ?? new AnnotationVisualContextService({
+        root: join(dirname(statePath), "annotation-crops"),
+        protectedRefs: () => protectedAnnotationCropRefs(this.#snapshot),
+        reportRetentionOverflow: ({ fileCount, totalBytes }) => this.#errorSink({
+          context: "annotation crop retention",
+          detail: `Protected crop retention exceeds bounds (${fileCount} files, ${totalBytes} bytes)`,
+        }),
+      })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,
       initialSnapshot,
@@ -1627,10 +1644,22 @@ export class DomovoiDaemon {
         }
         let visualContext: Annotation["visualContext"]
         if (params.visualContextUpload) {
+          const decodedByteLength = canonicalBase64DecodedByteLength(params.visualContextUpload.data)
+          const bytes = decodedByteLength === undefined
+            ? undefined
+            : Buffer.from(params.visualContextUpload.data, "base64")
+          if (
+            !bytes
+            || bytes.byteLength !== decodedByteLength
+            || bytes.toString("base64") !== params.visualContextUpload.data
+          ) {
+            this.#error(socket, request.id, invalidParams, "Visual context data is invalid")
+            return
+          }
           visualContext = await this.#annotationVisualContext.storeUpload({
             artifactRevision: artifact.revision,
             mimeType: params.visualContextUpload.mimeType,
-            bytes: new Uint8Array(Buffer.from(params.visualContextUpload.data, "base64")),
+            bytes: new Uint8Array(bytes),
             width: params.visualContextUpload.width,
             height: params.visualContextUpload.height,
           })
