@@ -37,6 +37,19 @@ describe("RPC errors", () => {
     expect(detail.length).toBeLessThanOrEqual(4_096)
   })
 
+  it("uses command-copy grammar for flags and cross-platform environment secrets", () => {
+    const detail = redactErrorDetail(new Error([
+      "tool --api-key flag-error-secret",
+      '$env:GITHUB_TOKEN="powershell-error-secret"',
+      "set AZURE_CLIENT_SECRET=cmd-error-secret\r\n",
+    ].join("\n")))
+
+    expect(detail).toContain("--api-key [REDACTED]")
+    expect(detail).toContain('$env:GITHUB_TOKEN="[REDACTED]"')
+    expect(detail).toContain("set AZURE_CLIENT_SECRET=[REDACTED]\r\n")
+    expect(detail).not.toMatch(/flag-error-secret|powershell-error-secret|cmd-error-secret/)
+  })
+
   it("includes bounded and redacted causes and aggregate children", () => {
     const cause = new Error("database refused token=nested-cause-secret")
     cause.stack = "Error: database refused token=nested-cause-secret"
