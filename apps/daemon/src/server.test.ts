@@ -2495,13 +2495,11 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("stores provider keys through status-only keychain RPC", async () => {
+  it("reports provider keychain status without mutation RPC", async () => {
     const providerSecrets = {
       status: vi.fn((): ProviderSecretStatus[] => [
         { provider: "openai" as const, state: "not-set" as const, source: "keychain" as const },
       ]),
-      set: vi.fn(),
-      delete: vi.fn(),
     }
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -2532,24 +2530,6 @@ describe("DomovoiDaemon", () => {
     expect(list).toMatchObject({ result: [{ provider: "openai", state: "not-set", source: "keychain" }] })
     expect(JSON.stringify(list)).not.toContain("secret-value")
 
-    providerSecrets.status.mockReturnValue([
-      { provider: "openai", state: "stored", source: "keychain" },
-    ])
-    const stored = await request(102, "provider.secret.set", {
-      provider: "openai",
-      secret: "secret-value",
-      client: "desktop",
-    })
-    expect(providerSecrets.set).toHaveBeenCalledWith("openai", "secret-value")
-    expect(stored).toMatchObject({ result: { provider: "openai", state: "stored", source: "keychain" } })
-    expect(JSON.stringify(stored)).not.toContain("secret-value")
-
-    const removed = await request(103, "provider.secret.delete", {
-      provider: "openai",
-      client: "desktop",
-    })
-    expect(providerSecrets.delete).toHaveBeenCalledWith("openai")
-    expect(removed).toMatchObject({ result: { provider: "openai", state: "not-set", source: "keychain" } })
     socket.close()
   })
 

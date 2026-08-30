@@ -2135,8 +2135,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     replyToAnnotation,
     sendMessage,
     setRuntime,
-    setProviderSecret,
-    deleteProviderSecret,
     setAnnotationStatus,
     snapshot,
     subscribeTerminal,
@@ -2282,14 +2280,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
-            onSetSecret={async (provider, secret) => {
-              await setProviderSecret(provider, secret)
-              setProviderRefresh((current) => current + 1)
-            }}
-            onDeleteSecret={async (provider) => {
-              await deleteProviderSecret(provider)
-              setProviderRefresh((current) => current + 1)
-            }}
           />
         ) : snapshot && surface === "skills" ? (
           <SkillBrowser

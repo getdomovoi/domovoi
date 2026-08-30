@@ -843,25 +843,10 @@ describe("DomovoiClient", () => {
       { provider: "openai", state: "not-set", source: "keychain" },
     ])
 
-    const storing = client.setProviderSecret("openai", "secret-value")
-    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
-      method: "provider.secret.set",
-      params: { provider: "openai", secret: "secret-value", client: "desktop" },
-    })
-    socket.receive({
-      jsonrpc: "2.0",
-      id: 3,
-      result: { provider: "openai", state: "stored", source: "keychain" },
-    })
-    await expect(storing).resolves.toEqual({ provider: "openai", state: "stored", source: "keychain" })
-
-    const deleting = client.deleteProviderSecret("openai")
-    socket.receive({
-      jsonrpc: "2.0",
-      id: 4,
-      result: { provider: "openai", state: "not-set", source: "keychain" },
-    })
-    await expect(deleting).resolves.toEqual({ provider: "openai", state: "not-set", source: "keychain" })
+    expect(socket.sent).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("provider.secret.set"),
+      expect.stringContaining("provider.secret.delete"),
+    ]))
     client.disconnect()
   })
 
