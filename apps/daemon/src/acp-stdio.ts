@@ -47,29 +47,43 @@ export class StdioAcpPeer implements AcpPeer {
   }
 
   async initialize(): Promise<void> {
+    this.#closing = false
     const process = await this.#spawnFirstAvailable()
     this.#process = process
     process.once("exit", () => {
       if (!this.#closing) this.#handlers.onDisconnect()
     })
-    const stream = ndJsonStream(
-      Writable.toWeb(process.stdin) as WritableStream<Uint8Array>,
-      Readable.toWeb(process.stdout) as ReadableStream<Uint8Array>,
-    )
-    const client: Client = {
-      requestPermission: (request) => this.#requestPermission(request),
-      sessionUpdate: (notification) => this.#sessionUpdate(notification),
+    try {
+      const stream = ndJsonStream(
+        Writable.toWeb(process.stdin) as WritableStream<Uint8Array>,
+        Readable.toWeb(process.stdout) as ReadableStream<Uint8Array>,
+      )
+      const client: Client = {
+        requestPermission: (request) => this.#requestPermission(request),
+        sessionUpdate: (notification) => this.#sessionUpdate(notification),
+      }
+      this.#connection = new ClientSideConnection(() => client, stream)
+      const initialized = await this.#connection.initialize({
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: { name: "Domovoi", version: "0.0.1" },
+      })
+      if (initialized.protocolVersion !== PROTOCOL_VERSION) {
+        throw new Error(`ACP protocol version ${initialized.protocolVersion} is unsupported`)
+      }
+      this.#capabilities = initialized.agentCapabilities
+    } catch (error) {
+      this.#closing = true
+      this.#process = undefined
+      this.#connection = undefined
+      this.#capabilities = undefined
+      try {
+        process.kill()
+      } catch {
+        // Preserve the initialization failure after detaching the child.
+      }
+      throw error
     }
-    this.#connection = new ClientSideConnection(() => client, stream)
-    const initialized = await this.#connection.initialize({
-      protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: {},
-      clientInfo: { name: "Domovoi", version: "0.0.1" },
-    })
-    if (initialized.protocolVersion !== PROTOCOL_VERSION) {
-      throw new Error(`ACP protocol version ${initialized.protocolVersion} is unsupported`)
-    }
-    this.#capabilities = initialized.agentCapabilities
   }
 
   async startSession(cwd: string): Promise<AcpSessionSetup> {
