@@ -3,8 +3,16 @@ type Rect = { left: number; top: number; width: number; height: number }
 export function reservePreviewThumbnail(reserved: Set<string>, artifactId: string, revision: number): boolean {
   const key = `${artifactId}:${revision}`
   if (reserved.has(key)) return false
+  if (reserved.size >= 24) {
+    const oldestKey = reserved.values().next().value as string | undefined
+    if (oldestKey) reserved.delete(oldestKey)
+  }
   reserved.add(key)
   return true
+}
+
+export function releasePreviewThumbnail(reserved: Set<string>, artifactId: string, revision: number): void {
+  reserved.delete(`${artifactId}:${revision}`)
 }
 
 export function previewThumbnailRect(
