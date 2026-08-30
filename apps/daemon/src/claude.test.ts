@@ -177,6 +177,33 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
+  it("sends declared visual context as bounded image content", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "turn-vision")
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Review this annotation",
+      runtime: runtime("build"),
+      visualContexts: [{
+        annotationId: "annotation-1",
+        mimeType: "image/png",
+        bytes: new Uint8Array([137, 80, 78, 71]),
+      }],
+    })
+    const input = await calls[0]!.input[Symbol.asyncIterator]().next()
+    expect(adapter.capabilities).toEqual({ vision: true })
+    expect(input.value?.message.content).toEqual([
+      { type: "text", text: "Review this annotation" },
+      {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: "iVBORw==" },
+      },
+    ])
+  })
+
   it("resumes with worktree context and routes approval decisions", async () => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory, () => "turn-resumed")

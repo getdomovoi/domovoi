@@ -422,6 +422,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     variantId?: string
     anchor: Annotation["anchor"]
     body: string
+    visualContextUpload?: RpcParams<"annotation.create">["visualContextUpload"]
   }) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")

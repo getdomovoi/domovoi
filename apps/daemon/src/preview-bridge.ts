@@ -189,6 +189,7 @@ function select(event){
   const element=event.target;
   const rect=element.getBoundingClientRect();
   const text=textFor(element);
+  setActive(false);
   sendParent({type:"domovoi.preview.selection",channel:channel,artifactId:artifactId,anchor:{cssSelector:selectorFor(element),...(text?{textQuote:text}:{}),bbox:{x:rect.left,y:rect.top,width:rect.width,height:rect.height}},label:element.tagName.toLowerCase()+(text?" · "+text.slice(0,80):"")});
 }
 function setActive(next){

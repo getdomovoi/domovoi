@@ -111,6 +111,7 @@ import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
+import { annotationCaptureUpload } from "./annotation-capture"
 import {
   anchorResolutionMapFor,
   anchorResolutionsFor,
@@ -149,6 +150,12 @@ const TerminalPane = lazy(async () => {
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
   getRpcToken(): Promise<string>
+  captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{
+    mimeType: "image/png"
+    width: number
+    height: number
+    data: string
+  }>
   minimize(): void
   maximize(): void
   close(): void
@@ -1603,6 +1610,7 @@ export function ArtifactDock({
   onCreateAnnotation,
   onLoadSessionHistory,
   onLoadSessionEvidence,
+  captureAnnotation,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
@@ -1618,7 +1626,15 @@ export function ArtifactDock({
     artifactId: string
     anchor: Annotation["anchor"]
     body: string
+    visualContextUpload?: {
+      artifactRevision: number
+      mimeType: "image/png"
+      width: number
+      height: number
+      data: string
+    }
   }) => Promise<void>
+  captureAnnotation?: DesktopWindowBridge["captureAnnotation"]
   onLoadSessionHistory: (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
@@ -1649,6 +1665,9 @@ export function ArtifactDock({
   }
   const [pickerActive, setPickerActive] = useState(false)
   const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
+  const [selectionVisualContext, setSelectionVisualContext] = useState<
+    RpcParams<"annotation.create">["visualContextUpload"]
+  >()
   const [comment, setComment] = useState("")
   const [annotationPending, setAnnotationPending] = useState(false)
   const [annotationError, setAnnotationError] = useState("")
@@ -1702,7 +1721,8 @@ export function ArtifactDock({
   }
 
   useEffect(() => {
-    const receiveSelection = (event: MessageEvent<unknown>) => {
+    let active = true
+    const receiveSelection = async (event: MessageEvent<unknown>) => {
       if (
         !preview
         || event.source !== previewFrameRef.current?.contentWindow
@@ -1723,17 +1743,35 @@ export function ArtifactDock({
       if (!nextSelection) return
       postPickerState(false)
       setPickerActive(false)
+      let visualContextUpload: RpcParams<"annotation.create">["visualContextUpload"]
+      const frame = previewFrameRef.current
+      if (captureAnnotation && nextSelection.anchor.bbox && frame) {
+        const frameRect = frame.getBoundingClientRect()
+        visualContextUpload = await annotationCaptureUpload(
+          captureAnnotation,
+          { left: frameRect.left, top: frameRect.top, width: frameRect.width, height: frameRect.height },
+          nextSelection.anchor.bbox,
+          { width: window.innerWidth, height: window.innerHeight },
+          preview.revision,
+        )
+      }
+      if (!active) return
+      setSelectionVisualContext(visualContextUpload)
       setSelection(nextSelection)
       setComment("")
       setAnnotationError("")
     }
     window.addEventListener("message", receiveSelection)
-    return () => window.removeEventListener("message", receiveSelection)
-  }, [annotations, archiveReadOnly, bridgeChannel, pickerActive, preview?.id])
+    return () => {
+      active = false
+      window.removeEventListener("message", receiveSelection)
+    }
+  }, [annotations, archiveReadOnly, bridgeChannel, captureAnnotation, pickerActive, preview?.id, preview?.revision])
 
   useEffect(() => {
     setPickerActive(false)
     setSelection(null)
+    setSelectionVisualContext(undefined)
     setComment("")
     setAnnotationError("")
     setAnchorResolutions(new Map())
@@ -1763,8 +1801,10 @@ export function ArtifactDock({
         artifactId: selection.artifactId,
         anchor: selection.anchor,
         body,
+        ...(selectionVisualContext ? { visualContextUpload: selectionVisualContext } : {}),
       })
       setSelection(null)
+      setSelectionVisualContext(undefined)
       setComment("")
     } catch (cause) {
       setAnnotationError(cause instanceof Error ? cause.message : "The annotation could not be saved")
@@ -1909,6 +1949,7 @@ export function ArtifactDock({
         onOpenChange={(open) => {
           if (open || annotationPending) return
           setSelection(null)
+          setSelectionVisualContext(undefined)
           setComment("")
           setAnnotationError("")
         }}
@@ -2053,6 +2094,13 @@ export function AnnotationComments({
                       </Badge>
                     ) : null}
                   </div>
+                  {annotation.visualContext ? (
+                    <p className="m-0 font-machine text-[9px] text-faint">
+                      {annotation.visualContext.status === "available"
+                        ? `visual context · ${annotation.visualContext.width}×${annotation.visualContext.height} · revision ${annotation.visualContext.artifactRevision}`
+                        : `visual context unavailable · ${annotation.visualContext.reason}`}
+                    </p>
+                  ) : null}
                   {annotation.thread.map((threadReply) => (
                     <div key={threadReply.id} className="break-words border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
                       <span className="font-machine text-[9px] text-faint">{threadReply.origin}</span><br />
@@ -2368,7 +2416,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => setLauncherMode(snapshot.project ? "session" : "project")} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
           </div>

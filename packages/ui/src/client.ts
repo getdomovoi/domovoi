@@ -431,6 +431,7 @@ export class DomovoiClient extends EventTarget {
     variantId?: string
     anchor: Annotation["anchor"]
     body: string
+    visualContextUpload?: RpcParams<"annotation.create">["visualContextUpload"]
   }): Promise<WorkspaceSnapshot> {
     return this.request("annotation.create", { ...input, client: this.kind })
   }
