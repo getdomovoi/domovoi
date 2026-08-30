@@ -43,6 +43,7 @@ import type {
   SessionHistoryPage,
   SessionSummary,
   SkillSummary,
+  SkillInventorySource,
   SystemEmergencyStopResult,
   ThreadItem,
   WorkspaceSnapshot,
@@ -223,6 +224,13 @@ const statusClass: Record<SessionSummary["state"], string> = {
 }
 
 export const providerSettingsNavigationLabel = "Provider settings"
+
+export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): string {
+  const machine = snapshot?.machine
+  return machine
+    ? JSON.stringify([machine.id, machine.name, machine.platform, machine.arch, machine.version])
+    : "no-machine"
+}
 
 const defaultRuntime: Runtime = {
   provider: "codex",
@@ -2413,6 +2421,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     emergencyStopOutcome,
     emergencyStopPending,
     forkSession,
+    getSkillInventory,
     createTerminal,
     listModels,
     listProviderSecrets,
@@ -2430,6 +2439,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     resolveApproval,
     replyToAnnotation,
     sendMessage,
+    setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
     snapshot,
@@ -2456,9 +2466,22 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const skillMachineKey = skillInventoryRefreshKey(snapshot)
+  const skillMachine = useMemo(() => {
+    if (skillMachineKey === "no-machine") return null
+    const [id, name, platform, arch, version] = JSON.parse(skillMachineKey) as [
+      string,
+      string,
+      WorkspaceSnapshot["machine"]["platform"],
+      string,
+      string,
+    ]
+    return { id, name, platform, arch, version }
+  }, [skillMachineKey])
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
@@ -2525,24 +2548,37 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (surface !== "skills") return
     if (!connected) {
       setSkillsLoading(false)
+      setSkillInventories(skillMachine ? [{
+        state: "unreachable",
+        machine: skillMachine,
+      }] : [])
       setSkillsError("Reconnect to the execution machine to refresh its skill directories.")
       return
     }
     let active = true
     setSkillsLoading(true)
     setSkillsError("")
-    void listSkills().then(
-      (discovered) => {
-        if (active) setSkills(discovered)
+    void Promise.all([listSkills(), getSkillInventory()]).then(
+      ([discovered, inventory]) => {
+        if (active) {
+          setSkills(discovered)
+          setSkillInventories([{ state: "available", inventory }])
+        }
       },
       (cause: unknown) => {
-        if (active) setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
+        if (active) {
+          setSkillInventories(skillMachine ? [{
+            state: connected ? "unknown" : "unreachable",
+            machine: skillMachine,
+          }] : [])
+          setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
+        }
       },
     ).finally(() => {
       if (active) setSkillsLoading(false)
     })
     return () => { active = false }
-  }, [connected, listSkills, skillsRefresh, surface])
+  }, [connected, getSkillInventory, listSkills, skillMachine, skillsRefresh, surface])
 
   useEffect(() => {
     const shell = shellRef.current
@@ -2580,11 +2616,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : snapshot && surface === "skills" ? (
           <SkillBrowser
             skills={skills}
+            inventorySources={skillInventories}
             loading={skillsLoading}
             error={skillsError}
             onBack={() => setSurface("workspace")}
             onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
+            projectId={snapshot.project?.id}
+            enablements={snapshot.skillEnablements}
+            onSetSkillEnabled={setSkillEnabled}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
         ) : snapshot && surface === "audit" ? (

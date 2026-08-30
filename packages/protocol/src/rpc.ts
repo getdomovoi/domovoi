@@ -9,7 +9,14 @@ import {
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
-import { skillDocumentSchema, skillIdSchema, skillSummariesSchema } from "./skills.js"
+import {
+  skillCapabilityManifestSchema,
+  skillContentDigestSchema,
+  skillDocumentSchema,
+  skillIdSchema,
+  skillInventorySchema,
+  skillSummariesSchema,
+} from "./skills.js"
 
 export const requestIdSchema = z.union([
   z.string().min(1).max(512),
@@ -869,9 +876,19 @@ export const rpcMethods = {
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
   "skill.list": { params: z.object({}), result: skillSummariesSchema },
+  "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
     result: skillDocumentSchema,
+  },
+  "skill.setEnabled": {
+    params: z.object({
+      id: skillIdSchema,
+      enabled: z.boolean(),
+      contentDigest: skillContentDigestSchema,
+      manifest: skillCapabilityManifestSchema,
+    }).strict(),
+    result: workspaceSnapshotSchema,
   },
   "runtime.models": {
     params: runtimeModelsParamsSchema,

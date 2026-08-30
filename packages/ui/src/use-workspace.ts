@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { applyWorkspaceDelta } from "./workspace-delta"
@@ -305,6 +305,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.listSkills()
   }, [])
 
+  const getSkillInventory = useCallback(async (): Promise<SkillInventory> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.getSkillInventory()
+  }, [])
+
   const listProviderSecrets = useCallback(async () => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -316,6 +322,16 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     if (!client) throw new Error("Daemon connection is not open")
     return client.readSkill(id)
   }, [])
+
+  const setSkillEnabled = useCallback(async (
+    params: RpcParams<"skill.setEnabled">,
+  ): Promise<WorkspaceSnapshot> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    const next = await client.setSkillEnabled(params)
+    updateSnapshotFrom(client, next)
+    return next
+  }, [updateSnapshotFrom])
 
   const queryAudit = useCallback(async (
     params: AuditQueryParams,
@@ -476,6 +492,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     emergencyStopPending,
     exportAudit,
     forkSession,
+    getSkillInventory,
     listSkills,
     loadSessionHistory,
     loadSessionEvidence,
@@ -492,6 +509,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     replyToAnnotation,
     resolveApproval,
     sendMessage,
+    setSkillEnabled,
     setAnnotationStatus,
     setRuntime,
     snapshot,

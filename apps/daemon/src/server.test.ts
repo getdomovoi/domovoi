@@ -13,6 +13,7 @@ import {
   maximumWorkspaceDeltaChunkLength,
   workspaceSnapshotSchema,
   type ProviderModel,
+  type SkillSummary,
 } from "@getdomovoi/protocol"
 
 import {
@@ -32,12 +33,19 @@ import {
 } from "./server.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
-import type { SkillCatalog } from "./skills.js"
+import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 import { maximumPrintableArtifactDepth } from "./print-artifact.js"
+
+const skillSecurityMetadata = {
+  manifest: { version: 1 as const, capabilities: [] },
+  contentDigest: `sha256:${"a".repeat(64)}`,
+  signature: { state: "unsigned" as const },
+  trust: { state: "untrusted" as const, reason: "unsigned" as const },
+}
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -2575,6 +2583,7 @@ describe("DomovoiDaemon", () => {
         path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
         scope: "user" as const,
         source: "agents" as const,
+        ...skillSecurityMetadata,
       }]),
       read: vi.fn(async (id: string) => ({
         skill: {
@@ -2584,6 +2593,7 @@ describe("DomovoiDaemon", () => {
           path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
           scope: "user" as const,
           source: "agents" as const,
+          ...skillSecurityMetadata,
         },
         content: "---\nname: repo-audit\n---\n",
       })),
@@ -2631,6 +2641,184 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(skillCatalog.read).toHaveBeenCalledWith("skill-4d6f4d6f4d6f")
+
+    const inventoryResponse = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skill.inventory",
+      params: {},
+    }))
+    const inventory = await inventoryResponse
+    expect(inventory).toMatchObject({
+      result: {
+        machine: {
+          id: expect.stringMatching(/^machine-/),
+          name: expect.any(String),
+          platform: expect.any(String),
+          arch: expect.any(String),
+          version: "0.0.1",
+        },
+        skills: [{
+          id: "skill-4d6f4d6f4d6f",
+          name: "repo-audit",
+          signature: { state: "unsigned" },
+          trust: { state: "untrusted", reason: "unsigned" },
+        }],
+      },
+    })
+    expect(JSON.stringify(inventory)).not.toMatch(/SKILL\.md|\/home\/|"content":|signatureValue|installCommand|archive|executable|symlinkTarget/)
+    socket.close()
+  })
+
+  it("persists exact project skill reviews and audits the client", async () => {
+    const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
+    let currentSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user" as const,
+      source: "agents" as const,
+      ...skillSecurityMetadata,
+    }
+    const skillCatalog = {
+      list: vi.fn(async () => [currentSkill]),
+      read: vi.fn(async (id: string) => {
+        if (id !== currentSkill.id) throw new SkillNotFoundError()
+        return { skill: currentSkill, content: "review me" }
+      }),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => structuredClone(demoWorkspace),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      auditLog,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-reviewer",
+      clientVersion: "0.0.1",
+    })
+    const review = {
+      id: currentSkill.id,
+      enabled: true,
+      contentDigest: currentSkill.contentDigest,
+      manifest: currentSkill.manifest,
+    }
+
+    const enabled = await rpc(2, "skill.setEnabled", review)
+    expect(enabled).toMatchObject({ result: { skillEnablements: [{
+      projectId: demoWorkspace.project!.id,
+      skillId: currentSkill.id,
+      enabled: true,
+      reviewedBy: { client: "desktop", clientId: "desktop-reviewer" },
+    }] } })
+    currentSkill = { ...currentSkill, contentDigest: `sha256:${"b".repeat(64)}` }
+    await expect(rpc(3, "skill.setEnabled", review)).resolves.toMatchObject({
+      error: { code: -32602, message: "Skill content changed; review it again" },
+    })
+    const rereviewed = await rpc(4, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+    })
+    expect(rereviewed).toMatchObject({ result: { skillEnablements: [{
+      contentDigest: currentSkill.contentDigest,
+      enabled: true,
+    }] } })
+    await expect(rpc(5, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+      manifest: { version: 1, capabilities: ["process.execute"] },
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Skill capabilities changed; review them again" },
+    })
+    currentSkill = {
+      ...currentSkill,
+      trust: { state: "blocked", reason: "invalid-signature" },
+    }
+    await expect(rpc(6, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+    })).resolves.toMatchObject({ error: { code: -32602, message: "Blocked skills cannot be enabled" } })
+    await expect(rpc(7, "skill.setEnabled", {
+      ...review,
+      id: "skill-000000000000",
+      contentDigest: currentSkill.contentDigest,
+    })).resolves.toMatchObject({ error: { code: -32602, message: "Skill not found" } })
+    currentSkill = {
+      ...currentSkill,
+      trust: { state: "untrusted", reason: "unsigned" },
+    }
+    const disabled = await rpc(8, "skill.setEnabled", {
+      ...review,
+      contentDigest: currentSkill.contentDigest,
+      enabled: false,
+    })
+    expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
+      action: "skill.setEnabled",
+      projectId: demoWorkspace.project!.id,
+      target: currentSkill.id,
+      detail: expect.stringMatching(/^enabled=(true|false) digest=sha256:/),
+    }))
+    socket.close()
+  })
+
+  it("rejects skill review without an open project", async () => {
+    const skill = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user" as const,
+      source: "agents" as const,
+      ...skillSecurityMetadata,
+    }
+    const skillCatalog = {
+      list: vi.fn(async () => [skill]),
+      read: vi.fn(async (id: string) => {
+        if (id === "skill-000000000000") throw new Error("Skill not found")
+        return { skill, content: "review me" }
+      }),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", skillCatalog })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, skillId = skill.id) => new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "skill.setEnabled",
+        params: {
+          id: skillId,
+          enabled: true,
+          contentDigest: skill.contentDigest,
+          manifest: skill.manifest,
+        },
+      }))
+    })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await expect(rpc(1)).resolves.toMatchObject({ error: { code: -32602, message: "Open a project before reviewing skills" } })
     socket.close()
   })
 
@@ -3009,6 +3197,273 @@ describe("DomovoiDaemon", () => {
       prompt: expect.stringContaining('"annotationId":"annotation-migration-machine"'),
     }))
     expect(agent.startTurn.mock.calls[0]![0].prompt).not.toContain("annotation-replay-copy")
+    socket.close()
+  })
+
+  it("reloads reviewed skills for new and steered turns without changing context order", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "provider-thread-billing"
+    snapshot.thread = snapshot.thread.filter((item) => item.id !== "thread-assistant")
+    const enabledSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user",
+      source: "agents",
+      ...skillSecurityMetadata,
+    }
+    snapshot.skillEnablements = [{
+      projectId: snapshot.project!.id,
+      skillId: enabledSkill.id,
+      enabled: true,
+      contentDigest: enabledSkill.contentDigest,
+      manifest: enabledSkill.manifest,
+      reviewedAt: "2026-08-30T00:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "reviewer" },
+    }]
+    const skillCatalog = {
+      list: vi.fn(async () => [enabledSkill]),
+      read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every repository change." })),
+    } satisfies SkillCatalog
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "provider-thread-unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const send = (id: number, prompt: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const onMessage = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", onMessage)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", onMessage)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "session.send",
+        params: { sessionId: session.id, prompt, client: "desktop" },
+      }))
+    })
+
+    await expect(send(1, "Begin the audit")).resolves.toHaveProperty("result")
+    const initialPrompt = agent.startTurn.mock.calls[0]![0].prompt
+    expect(initialPrompt).toContain("Audit every repository change.")
+    expect(initialPrompt.indexOf("<domovoi_skill_context>"))
+      .toBeLessThan(initialPrompt.indexOf("<domovoi_review_context>"))
+    expect(initialPrompt.indexOf("<domovoi_review_context>"))
+      .toBeLessThan(initialPrompt.indexOf("<domovoi_handoff_context>"))
+    expect(initialPrompt.indexOf("<domovoi_handoff_context>"))
+      .toBeLessThan(initialPrompt.lastIndexOf("Begin the audit"))
+
+    await expect(send(2, "Focus on manifests")).resolves.toHaveProperty("result")
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      "provider-thread-billing",
+      "provider-turn-review",
+      expect.stringContaining("Audit every repository change."),
+    )
+    expect(skillCatalog.read).toHaveBeenCalledTimes(2)
+    socket.close()
+  })
+
+  it("blocks untrusted enabled skills before Build auto starts or steers providers", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const newTurn = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    const steeredTurn = snapshot.sessions.find((candidate) => candidate.id === "session-onboarding")!
+    for (const session of [newTurn, steeredTurn]) {
+      session.runtime = {
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        reasoning: "medium",
+        permissionMode: "build",
+        auto: true,
+      }
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = `provider-${session.id}`
+    }
+    steeredTurn.activeTurnId = "provider-turn-active"
+    const enabledSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user",
+      source: "agents",
+      ...skillSecurityMetadata,
+    }
+    snapshot.skillEnablements = [{
+      projectId: snapshot.project!.id,
+      skillId: enabledSkill.id,
+      enabled: true,
+      contentDigest: enabledSkill.contentDigest,
+      manifest: enabledSkill.manifest,
+      reviewedAt: "2026-08-30T00:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "reviewer" },
+    }]
+    const skillCatalog = {
+      list: vi.fn(async () => [enabledSkill]),
+      read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
+    } satisfies SkillCatalog
+    const agent = {
+      permissionCapabilities: { buildAuto: "pre-execution" as const },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "provider-turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const send = (id: number, sessionId: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "session.send",
+        params: { sessionId, prompt: "Run the audit", client: "desktop" },
+      }))
+    })
+
+    await expect(send(1, newTurn.id)).resolves.toMatchObject({
+      error: { code: -32602, message: expect.stringMatching(/repo-audit.*Disable.*trusted/i) },
+    })
+    await expect(send(2, steeredTurn.id)).resolves.toMatchObject({
+      error: { code: -32602, message: expect.stringMatching(/repo-audit.*Disable.*trusted/i) },
+    })
+    expect(skillCatalog.read).toHaveBeenCalledTimes(2)
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
+  it("keeps reviewed unsigned skills usable in Plan and Build manual", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const plan = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    const manual = snapshot.sessions.find((candidate) => candidate.id === "session-onboarding")!
+    plan.runtime = {
+      provider: "codex", model: "gpt-5.6-sol", reasoning: "medium",
+      permissionMode: "plan", auto: false,
+    }
+    manual.runtime = {
+      provider: "codex", model: "gpt-5.6-sol", reasoning: "medium",
+      permissionMode: "build", auto: false,
+    }
+    for (const session of [plan, manual]) {
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = `provider-${session.id}`
+    }
+    manual.activeTurnId = "provider-turn-active"
+    const enabledSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f", name: "repo-audit", description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md", scope: "user", source: "agents",
+      ...skillSecurityMetadata,
+    }
+    snapshot.skillEnablements = [{
+      projectId: snapshot.project!.id, skillId: enabledSkill.id, enabled: true,
+      contentDigest: enabledSkill.contentDigest, manifest: enabledSkill.manifest,
+      reviewedAt: "2026-08-30T00:00:00.000Z", reviewedBy: { client: "desktop" },
+    }]
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "provider-turn"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const skillCatalog = {
+      list: vi.fn(async () => [enabledSkill]),
+      read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
+    } satisfies SkillCatalog
+    const daemon = new DomovoiDaemon({
+      port: 0, store: new SqliteWorkspaceStore(":memory:", snapshot), agent, skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const send = (id: number, sessionId: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0", id, method: "session.send",
+        params: { sessionId, prompt: "Run the audit", client: "desktop" },
+      }))
+    })
+
+    await expect(send(1, plan.id)).resolves.toHaveProperty("result")
+    await expect(send(2, manual.id)).resolves.toHaveProperty("result")
+    expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining("Audit every change."),
+    }))
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      manual.providerThreadId,
+      "provider-turn-active",
+      expect.stringContaining("Audit every change."),
+    )
     socket.close()
   })
 
@@ -4673,11 +5128,12 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = "/worktrees/build-auto"
     session.providerThreadId = "thread-build-auto"
     delete session.activeTurnId
+    const skillInstallCommand = "/usr/bin/bash -lc 'pnpm dlx skills add getdomovoi/design-studio'"
     snapshot.approvalRules.push({
-      id: "rule-publish",
+      id: "rule-skill-install",
       projectId: snapshot.project!.id,
-      operation: "Publish package",
-      command: "pnpm publish",
+      operation: "Install skill",
+      command: skillInstallCommand,
       createdBy: "desktop",
       createdAt: new Date().toISOString(),
     })
@@ -4749,7 +5205,8 @@ describe("DomovoiDaemon", () => {
       requestId: 12,
       threadId: session.providerThreadId,
       turnId: "turn-build-auto",
-      command: "pnpm publish",
+      reason: "Install skill",
+      command: skillInstallCommand,
     })
     const current = await rpc("workspace.get", {})
 
@@ -4759,7 +5216,7 @@ describe("DomovoiDaemon", () => {
       result: {
         approvals: expect.arrayContaining([expect.objectContaining({
           providerRequestId: 12,
-          command: "pnpm publish",
+          command: skillInstallCommand,
           risk: "hard-gate",
         })]),
       },
@@ -4779,6 +5236,24 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
+    const approved = await rpc("approval.resolve", {
+      approvalId,
+      decision: "allow-once",
+      client: "desktop",
+    })
+    expect(agent.resolveApproval).toHaveBeenCalledWith(12, "allow-once")
+    expect(approved).toMatchObject({
+      result: {
+        thread: expect.arrayContaining([expect.objectContaining({
+          kind: "receipt",
+          decision: "allow-once",
+          operation: "Install skill",
+          client: "desktop",
+        })]),
+      },
+    })
+    expect((approved.result as { approvals: Array<{ providerRequestId?: number }> }).approvals)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ providerRequestId: 12 })]))
     socket.close()
   })
 
