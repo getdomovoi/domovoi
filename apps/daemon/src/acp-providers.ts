@@ -21,7 +21,7 @@ export const GROK_ACP_PROVIDER: AcpProviderDefinition = {
   commands: ["grok"],
   launchArgs: ["agent", "stdio"],
   modelArgs: ["models"],
-  modes: { ask: "default", plan: "plan", build: "acceptEdits" },
+  modes: { ask: "default", plan: "plan", build: "default" },
 }
 
 type CatalogEntry = { id?: unknown; name?: unknown; default?: unknown; isDefault?: unknown }
