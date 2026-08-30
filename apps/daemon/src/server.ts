@@ -71,6 +71,13 @@ import {
 import { permissionDecisionFor } from "./permission-policy.js"
 import { testEvidence } from "./test-evidence.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
+import {
+  appendDurableOutput,
+  DurableOutputRedactor,
+  redactDurableCommand,
+  redactDurableOutput,
+  redactDurableText,
+} from "./secret-redaction.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -373,6 +380,7 @@ export class DomovoiDaemon {
   #store: WorkspaceStore
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
+  #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
   #agents: AgentRegistry
   #workspaceService: WorkspaceService
   #connectedAgents = new Set<string>()
@@ -1587,7 +1595,9 @@ export class DomovoiDaemon {
           operation: approval.operation,
           checkpoint: approval.checkpoint,
           client: params.client,
-          ...(params.explanation ? { explanation: params.explanation } : {}),
+          ...(params.explanation
+            ? { explanation: redactDurableText(params.explanation).value }
+            : {}),
           createdAt: new Date().toISOString(),
         })
         this.#snapshot.approvals = this.#snapshot.approvals.filter(
@@ -2359,9 +2369,17 @@ export class DomovoiDaemon {
 
     if (event.type === "command-output") {
       const itemId = `tool-${event.itemId ?? event.turnId ?? randomUUID()}`
+      const streamKey = `${session.id}\u0000${itemId}`
+      const stream = this.#commandOutputRedactors.get(streamKey) ?? {
+        itemId,
+        redactor: new DurableOutputRedactor(),
+      }
+      this.#commandOutputRedactors.set(streamKey, stream)
+      const safeDelta = stream.redactor.push(event.delta)
       const existing = this.#snapshot.thread.find((item) => item.id === itemId)
-      if (existing?.kind === "tool") existing.output = `${existing.output ?? ""}${event.delta}`
-      else {
+      if (existing?.kind === "tool") {
+        if (safeDelta) existing.output = appendDurableOutput(existing.output, safeDelta)
+      } else {
         this.#snapshot.thread.push({
           id: itemId,
           sessionId: session.id,
@@ -2369,16 +2387,18 @@ export class DomovoiDaemon {
           tool: "command",
           status: "running",
           title: "Command output",
-          output: event.delta,
+          ...(safeDelta ? { output: safeDelta } : {}),
           createdAt,
         })
       }
-      delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
-        kind: "tool-output.append" as const,
-        id: itemId,
-        delta: chunk,
-        createdAt,
-      })))
+      if (safeDelta) {
+        delta.operations.push(...workspaceDeltaChunks(safeDelta).map((chunk) => ({
+          kind: "tool-output.append" as const,
+          id: itemId,
+          delta: chunk,
+          createdAt,
+        })))
+      }
     }
 
     if (event.type === "diff-updated") {
@@ -2408,20 +2428,27 @@ export class DomovoiDaemon {
         ...(event.command ? { command: event.command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
       })
+      const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
+      const reasonCopy = redactDurableText(event.reason ?? "Run a command")
+      const directoryCopy = redactDurableText(event.cwd ?? session.workspacePath ?? project.path)
+      const containsSecret = commandCopy.redacted || reasonCopy.redacted || directoryCopy.redacted
       const matchingRule = this.#snapshot.approvalRules.find(
-        (rule) => rule.projectId === project.id && rule.command === event.command,
+        (rule) => !containsSecret
+          && rule.projectId === project.id
+          && rule.command === event.command,
       )
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.approval-requested",
-        outcome: decision.action === "allow" || (decision.risk === "normal" && matchingRule)
+        outcome: !containsSecret
+          && (decision.action === "allow" || (decision.risk === "normal" && matchingRule))
           ? "succeeded"
           : "started",
         sessionId: session.id,
         projectId: project.id,
         ...(event.itemId ? { target: event.itemId } : {}),
       })
-      if (decision.action === "allow") {
+      if (!containsSecret && decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else if (decision.risk === "normal" && matchingRule) {
         this.#agents.require(provider).resolveApproval(event.requestId, "always-project")
@@ -2429,13 +2456,13 @@ export class DomovoiDaemon {
         this.#snapshot.approvals.push({
           id: `approval-${randomUUID()}`,
           sessionId: session.id,
-          risk: decision.risk,
-          operation: event.reason ?? "Run a command",
-          command: event.command ?? "Command details unavailable",
+          risk: containsSecret ? "hard-gate" : decision.risk,
+          operation: reasonCopy.value,
+          command: commandCopy.value,
           machine: this.#snapshot.machine.name,
           agent: `${session.runtime.provider} / ${session.runtime.model}`,
           mode: session.runtime.permissionMode,
-          directory: event.cwd ?? session.workspacePath ?? project.path,
+          directory: directoryCopy.value,
           affects: "Files and processes in the session worktree.",
           network: "No agent network access granted.",
           estimatedDuration: "Unknown",
@@ -2469,9 +2496,16 @@ export class DomovoiDaemon {
       if (item && typeof item === "object" && "type" in item && item.type === "commandExecution") {
         const commandItem = item as Record<string, unknown>
         const id = `tool-${String(commandItem.id ?? randomUUID())}`
+        const streamKey = `${session.id}\u0000${id}`
+        const streamedRemainder = this.#commandOutputRedactors.get(streamKey)?.redactor.flush() ?? ""
+        this.#commandOutputRedactors.delete(streamKey)
         const command = Array.isArray(commandItem.command)
           ? commandItem.command.join(" ")
           : String(commandItem.command ?? "Command")
+        const commandCopy = redactDurableCommand(command).value
+        const outputCopy = typeof commandItem.aggregatedOutput === "string"
+          ? redactDurableOutput(commandItem.aggregatedOutput).value
+          : undefined
         const status = commandItem.status === "failed"
           ? "failed"
           : commandItem.status === "declined"
@@ -2482,9 +2516,10 @@ export class DomovoiDaemon {
         const existing = this.#snapshot.thread.find((threadItem) => threadItem.id === id)
         if (existing?.kind === "tool") {
           existing.status = status
-          existing.title = command
-          if (typeof commandItem.aggregatedOutput === "string") {
-            existing.output = commandItem.aggregatedOutput
+          existing.title = commandCopy
+          if (outputCopy !== undefined) existing.output = outputCopy
+          else if (streamedRemainder) {
+            existing.output = appendDurableOutput(existing.output, streamedRemainder)
           }
         } else {
           this.#snapshot.thread.push({
@@ -2493,9 +2528,9 @@ export class DomovoiDaemon {
             kind: "tool",
             tool: "command",
             status,
-            title: command,
-            ...(typeof commandItem.aggregatedOutput === "string"
-              ? { output: commandItem.aggregatedOutput }
+            title: commandCopy,
+            ...(outputCopy !== undefined || streamedRemainder
+              ? { output: outputCopy ?? streamedRemainder }
               : {}),
             createdAt,
           })
@@ -2536,6 +2571,7 @@ export class DomovoiDaemon {
       const failed = turn && typeof turn === "object" && "status" in turn && turn.status === "failed"
       session.state = failed ? "failed" : "idle"
       delete session.activeTurnId
+      this.#flushCommandOutputStreams(session.id)
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.turn-completed",
@@ -2589,6 +2625,7 @@ export class DomovoiDaemon {
       if (session.runtime.provider !== provider || !session.providerThreadId) continue
       affectedSessionIds.add(session.id)
       session.state = "failed"
+      this.#flushCommandOutputStreams(session.id)
       delete session.activeTurnId
       session.updatedAt = createdAt
       this.#snapshot.thread.push({
@@ -2596,7 +2633,7 @@ export class DomovoiDaemon {
         sessionId: session.id,
         kind: "system",
         body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
-        detail: reason,
+        detail: redactDurableText(reason).value,
         createdAt,
       })
       changed = true
@@ -2611,6 +2648,18 @@ export class DomovoiDaemon {
 
   #providerEpoch(provider: string): number {
     return this.#providerEpochs.get(provider) ?? 0
+  }
+
+  #flushCommandOutputStreams(sessionId: string): void {
+    const prefix = `${sessionId}\u0000`
+    for (const [key, stream] of this.#commandOutputRedactors) {
+      if (!key.startsWith(prefix)) continue
+      const remainder = stream.redactor.flush()
+      this.#commandOutputRedactors.delete(key)
+      if (!remainder) continue
+      const item = this.#snapshot.thread.find((candidate) => candidate.id === stream.itemId)
+      if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
+    }
   }
 
   async #pauseSessions(
@@ -2653,7 +2702,9 @@ export class DomovoiDaemon {
           sessionId: session.id,
           kind: "system",
           body: `Pause failed for ${client}.`,
-          detail: result.reason instanceof Error ? result.reason.message : "Unknown provider error",
+          detail: redactDurableText(
+            result.reason instanceof Error ? result.reason.message : "Unknown provider error",
+          ).value,
           createdAt,
         })
       }
@@ -2957,7 +3008,7 @@ export class DomovoiDaemon {
       id: `system-${randomUUID()}`,
       sessionId: session.id,
       kind: "system",
-      body: `Provider thread quarantined after ${reason}.`,
+      body: `Provider thread quarantined after ${redactDurableText(reason).value}.`,
       detail: "The detached provider thread can no longer publish events into this session.",
       createdAt: session.updatedAt,
     })

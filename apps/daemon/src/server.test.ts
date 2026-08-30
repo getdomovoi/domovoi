@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -59,6 +60,264 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("keeps provider commands raw while redacting every durable and display copy", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-command-redaction-"))
+    scratchDirectories.push(scratch)
+    const statePath = join(scratch, "state.sqlite")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "claude-code"
+    session.workspacePath = "/worktrees/secret-redaction"
+    session.providerThreadId = "thread-secret-redaction"
+    session.activeTurnId = "turn-secret-redaction"
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    snapshot.thread = snapshot.thread.filter((item) => item.sessionId !== session.id)
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      evidence: vi.fn(async () => ({
+        baseCommit: "a".repeat(40),
+        diff: "",
+        diffTruncated: false,
+        totalChangedFiles: 0,
+        files: [],
+        filesTruncated: false,
+      })),
+    } satisfies WorkspaceService
+    const seed = new SqliteWorkspaceStore(statePath, snapshot)
+    seed.close()
+    const legacy = structuredClone(snapshot)
+    legacy.thread.push({
+      id: "legacy-command-copy",
+      sessionId: session.id,
+      kind: "tool",
+      tool: "command",
+      status: "completed",
+      title: "pnpm test --token legacy-display-secret",
+      output: "password=legacy-output-secret",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+    const injected = new DatabaseSync(statePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+    const store = new SqliteWorkspaceStore(statePath, snapshot)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      workspaceService,
+      agents: { "claude-code": agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const notifications: unknown[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { id?: unknown }
+      if (message.id === undefined) notifications.push(message)
+    })
+    let id = 0
+    const rpc = (method: string, params: object) => new Promise<Record<string, any>>((resolve) => {
+      const requestId = ++id
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, any>
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+
+    const approvalEvent = {
+      type: "approval-requested" as const,
+      requestId: 91,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "OPENAI_API_KEY=sk-proj-command-secret pnpm test --token flag-command-secret",
+      reason: "Authorization: Bearer approval-reason-secret",
+      cwd: "https://dev:cwd-password@example.test/repo",
+    }
+    listener!(approvalEvent)
+    const pending = await rpc("workspace.get", {})
+    expect(JSON.stringify(pending.result)).not.toMatch(/legacy-display-secret|legacy-output-secret/)
+    expect(approvalEvent.command).toContain("sk-proj-command-secret")
+    expect(pending.result.approvals).toEqual([
+      expect.objectContaining({
+        providerRequestId: 91,
+        risk: "hard-gate",
+        command: "OPENAI_API_KEY=[REDACTED] pnpm test --token [REDACTED]",
+        operation: "Authorization: [REDACTED]",
+        directory: "https://[REDACTED]@example.test/repo",
+      }),
+    ])
+    const approvalId = pending.result.approvals[0].id as string
+    await expect(rpc("approval.resolve", {
+      approvalId,
+      decision: "always-project",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Hard-gate approvals cannot create standing rules" },
+    })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    expect((await rpc("workspace.get", {})).result.approvalRules).toEqual([])
+    await rpc("approval.resolve", { approvalId, decision: "allow-once", client: "desktop" })
+    expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
+
+    listener!({
+      type: "command-output",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      itemId: "command-redaction",
+      delta: "token=",
+    })
+    listener!({
+      type: "command-output",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      itemId: "command-redaction",
+      delta: "stream-output-secret\r\n",
+    })
+    listener!({
+      type: "item",
+      phase: "completed",
+      params: {
+        threadId: session.providerThreadId,
+        turnId: session.activeTurnId,
+        item: {
+          id: "command-redaction",
+          type: "commandExecution",
+          status: "completed",
+          command: ["pnpm test --api-key", "tool-command-secret"],
+          aggregatedOutput: "password=tool-output-secret\r\n42 tests passed",
+        },
+      },
+    })
+    listener!({
+      type: "command-output",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      itemId: "command-no-aggregate",
+      delta: "safe live line\n",
+    })
+    listener!({
+      type: "command-output",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      itemId: "command-no-aggregate",
+      delta: "token=",
+    })
+    listener!({
+      type: "command-output",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      itemId: "command-no-aggregate",
+      delta: "no-aggregate-stream-secret\r\n",
+    })
+    listener!({
+      type: "item",
+      phase: "completed",
+      params: {
+        threadId: session.providerThreadId,
+        turnId: session.activeTurnId,
+        item: {
+          id: "command-no-aggregate",
+          type: "commandExecution",
+          status: "completed",
+          command: ["pnpm test"],
+        },
+      },
+    })
+    const current = await rpc("workspace.get", {})
+    const serialized = JSON.stringify(current.result)
+    for (const secret of [
+      "sk-proj-command-secret",
+      "flag-command-secret",
+      "approval-reason-secret",
+      "cwd-password",
+      "stream-output-secret",
+      "tool-command-secret",
+      "tool-output-secret",
+      "no-aggregate-stream-secret",
+      "legacy-display-secret",
+      "legacy-output-secret",
+    ]) {
+      expect(serialized).not.toContain(secret)
+      expect(JSON.stringify(notifications)).not.toContain(secret)
+    }
+    expect(current.result.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "tool",
+        title: "pnpm test --api-key [REDACTED]",
+        output: "password=[REDACTED]\r\n42 tests passed",
+      }),
+      expect.objectContaining({
+        kind: "tool",
+        title: "pnpm test",
+        output: "safe live line\ntoken=[REDACTED]\r\n",
+      }),
+    ]))
+    expect(JSON.stringify(notifications)).toContain("safe live line\\n")
+    expect(JSON.stringify(notifications)).toContain("token=[REDACTED]\\r\\n")
+
+    const history = await rpc("session.history", {
+      sessionId: session.id,
+      categories: ["tools", "approvals", "tests"],
+      limit: 50,
+    })
+    const evidence = await rpc("session.evidence", { sessionId: session.id })
+    const exported = await rpc("audit.export", { limit: 500 })
+    for (const response of [history.result, evidence.result, exported.result]) {
+      expect(JSON.stringify(response)).not.toMatch(
+        /sk-proj-command-secret|flag-command-secret|approval-reason-secret|cwd-password|stream-output-secret|tool-command-secret|tool-output-secret|no-aggregate-stream-secret|legacy-display-secret|legacy-output-secret/,
+      )
+    }
+
+    const socketClosed = new Promise<void>((resolve) => socket.once("close", () => resolve()))
+    socket.close()
+    await socketClosed
+    await daemon.stop()
+    running.splice(running.indexOf(daemon), 1)
+    const database = new DatabaseSync(statePath)
+    const rawWorkspace = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+    const rawAudit = database.prepare("SELECT * FROM audit_log").all()
+    database.close()
+    expect(JSON.stringify({ rawWorkspace, rawAudit })).not.toMatch(
+      /sk-proj-command-secret|flag-command-secret|approval-reason-secret|cwd-password|stream-output-secret|tool-command-secret|tool-output-secret|no-aggregate-stream-secret|legacy-display-secret|legacy-output-secret/,
+    )
+    const reopened = new SqliteWorkspaceStore(statePath, snapshot)
+    expect(JSON.stringify(reopened.load())).not.toMatch(
+      /sk-proj-command-secret|flag-command-secret|approval-reason-secret|cwd-password|stream-output-secret|tool-command-secret|tool-output-secret|no-aggregate-stream-secret|legacy-display-secret|legacy-output-secret/,
+    )
+    reopened.close()
+  })
+
   it("returns real Git and recorded test-run evidence without persisting it", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
