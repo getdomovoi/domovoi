@@ -901,6 +901,35 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("submits exact skill review evidence without client spoofing", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const update = client.setSkillEnabled({
+      id: "skill-4d6f4d6f4d6f",
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+    })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.setEnabled",
+      params: {
+        id: "skill-4d6f4d6f4d6f",
+        enabled: true,
+        contentDigest: `sha256:${"a".repeat(64)}`,
+        manifest: { version: 1, capabilities: ["filesystem.read"] },
+      },
+    })
+    expect(socket.sent.at(-1)).not.toContain("clientId")
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(update).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
   it("queries and exports typed audit records with bounded request controls", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()
