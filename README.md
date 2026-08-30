@@ -66,6 +66,9 @@ pnpm test
 pnpm build
 ```
 
+Alpha performance limits and the local/CI budget command are documented in
+[`docs/performance-budgets.md`](docs/performance-budgets.md).
+
 ## Architecture rules
 
 - Daemon owns canonical session state.

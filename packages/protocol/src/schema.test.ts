@@ -22,6 +22,7 @@ import {
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
   maximumWorkspaceDeltaChunkLength,
+  maximumTerminalOutputChunkCharacters,
   runtimeModelsParamsSchema,
   systemPauseAllParamsSchema,
   terminalCloseParamsSchema,
@@ -31,6 +32,7 @@ import {
   terminalOwnershipNotificationSchema,
   terminalResizeParamsSchema,
   terminalSessionSchema,
+  terminalOutputNotificationSchema,
   previewBridgePickerMessageSchema,
   previewBridgeResolveAnchorsMessageSchema,
   previewBridgeAnchorResolutionsMessageSchema,
@@ -56,6 +58,16 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
+  it("bounds terminal output notification payloads", () => {
+    expect(terminalOutputNotificationSchema.safeParse({
+      terminalId: "terminal-1",
+      data: "x".repeat(maximumTerminalOutputChunkCharacters),
+    }).success).toBe(true)
+    expect(terminalOutputNotificationSchema.safeParse({
+      terminalId: "terminal-1",
+      data: "x".repeat(maximumTerminalOutputChunkCharacters + 1),
+    }).success).toBe(false)
+  })
   it("keeps preview variant metadata bounded and reference-only", () => {
     expect(artifactSchema.parse({
       id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview",

@@ -6,7 +6,8 @@ import { randomBytes } from "node:crypto"
 import { DomovoiDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
-import { startOwnedDaemon } from "./owned-daemon.js"
+import { startDesktop, startOwnedDaemon } from "./owned-daemon.js"
+import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { captureAnnotationPng } from "./annotation-capture.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
 import {
@@ -32,6 +33,9 @@ let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 const deepLinks = new DesktopDeepLinkQueue()
+const startupMetrics = new DesktopStartupMetrics({
+  enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
+})
 const desktopFileSystem = { realpath, stat }
 const safeClipboard = new SafeClipboard({
   readText: () => clipboard.readText(),
@@ -98,8 +102,12 @@ function createWindow(): void {
       sandbox: true,
     },
   })
+  startupMetrics.mark("window-created")
 
-  mainWindow.once("ready-to-show", () => mainWindow?.show())
+  mainWindow.once("ready-to-show", () => {
+    startupMetrics.mark("ready-to-show")
+    mainWindow?.show()
+  })
   mainWindow.once("closed", () => {
     if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
     rendererDeepLinkSink = undefined
@@ -224,8 +232,11 @@ if (!hasSingleInstanceLock) {
   })
 
   app.whenReady().then(async () => {
-    await ensureDaemon()
-    createWindow()
+    startupMetrics.mark("app-ready")
+    await startDesktop(createWindow, async () => {
+      await ensureDaemon()
+      startupMetrics.mark("daemon-ready")
+    })
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { SessionHistoryEntry, SessionHistoryPage } from "@getdomovoi/protocol"
 
 import {
+  maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
@@ -66,5 +67,25 @@ describe("session history view model", () => {
 
     expect(sessionHistoryEntryTitle(testEntry)).toBe("pnpm test")
     expect(sessionHistoryEntryDetail(testEntry)).toBe("one failed")
+  })
+
+  it("keeps a bounded DOM window while paging into long histories", () => {
+    const current: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: Array.from({ length: 100 }, (_, index) => message(String(index + 200))),
+      hasMore: true,
+      nextCursor: "thread:200",
+    }
+    const older: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: Array.from({ length: 200 }, (_, index) => message(String(index))),
+      hasMore: false,
+    }
+
+    const merged = mergeOlderHistory(current, older)
+
+    expect(merged.items).toHaveLength(maximumRetainedSessionHistoryItems)
+    expect(merged.items[0]?.sourceId).toBe("100")
+    expect(merged.items.at(-1)?.sourceId).toBe("299")
   })
 })

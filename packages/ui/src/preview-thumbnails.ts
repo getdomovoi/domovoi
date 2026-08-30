@@ -1,3 +1,5 @@
+import { performanceBudgets } from "@getdomovoi/protocol"
+
 type Rect = { left: number; top: number; width: number; height: number }
 
 type ThumbnailEntry = { status: "pending" } | { status: "ready"; url: string }
@@ -7,7 +9,7 @@ export class PreviewThumbnailLifecycle {
   readonly #maximumEntries: number
   readonly #revoke: (url: string) => void
 
-  constructor(maximumEntries = 24, revoke: (url: string) => void = (url) => URL.revokeObjectURL(url)) {
+  constructor(maximumEntries = performanceBudgets.largePreviews.thumbnailCacheEntries, revoke: (url: string) => void = (url) => URL.revokeObjectURL(url)) {
     this.#maximumEntries = Math.max(1, maximumEntries)
     this.#revoke = revoke
   }
@@ -80,7 +82,7 @@ export function previewThumbnailObjectUrl(
   if (capture.width < 1 || capture.height < 1 || capture.width > 320 || capture.height > 180) return undefined
   try {
     const binary = atob(capture.data)
-    if (binary.length < 8 || binary.length > 400_000) return undefined
+    if (binary.length < 8 || binary.length > performanceBudgets.largePreviews.thumbnailDecodedBytes) return undefined
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
     if (![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)) return undefined
     return URL.createObjectURL(new Blob([bytes], { type: capture.mimeType }))

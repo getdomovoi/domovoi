@@ -1,4 +1,4 @@
-import type { Artifact, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { performanceBudgets, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 export function latestArtifactForActiveSession(
   snapshot: WorkspaceSnapshot,
@@ -11,7 +11,7 @@ export function latestArtifactForActiveSession(
   }, undefined)
 }
 
-export const maximumPreviewVariants = 24
+export const maximumPreviewVariants = performanceBudgets.largePreviews.variantItems
 
 export function previewVariantsForActiveSession(
   snapshot: WorkspaceSnapshot,

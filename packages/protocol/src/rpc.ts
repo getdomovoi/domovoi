@@ -1,6 +1,11 @@
 import { z } from "zod"
 
 import {
+  maximumRetainedSessionHistoryItems,
+  maximumTerminalOutputChunkCharacters,
+} from "./performance.js"
+
+import {
   annotationAnchorSchema,
   approvalDecisionSchema,
   clientKindSchema,
@@ -74,7 +79,7 @@ export const rpcNotificationSchema = z.object({
 
 export const maximumWorkspaceDeltaChunkLength = 256 * 1_024
 export const maximumWorkspaceDeltaOperations = 16
-export const maximumSessionHistoryPageItems = 100
+export const maximumSessionHistoryPageItems = maximumRetainedSessionHistoryItems / 2
 export const maximumSessionHistoryQueryLength = 256
 export const maximumAuditQueryPageItems = 100
 export const maximumAuditExportItems = 500
@@ -635,7 +640,7 @@ export const terminalSessionSchema = z.object({
 export const terminalAcceptedSchema = z.object({ accepted: z.literal(true) })
 export const terminalOutputNotificationSchema = z.object({
   terminalId: terminalIdSchema,
-  data: z.string().min(1),
+  data: z.string().min(1).max(maximumTerminalOutputChunkCharacters),
 })
 export const terminalClosedNotificationSchema = z.object({
   terminalId: terminalIdSchema,
