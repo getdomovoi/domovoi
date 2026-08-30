@@ -3,6 +3,9 @@ import type {
   SessionHistoryEntry,
   SessionHistoryPage,
 } from "@getdomovoi/protocol"
+import { maximumRetainedSessionHistoryItems as retainedHistoryBudget } from "@getdomovoi/protocol"
+
+export const maximumRetainedSessionHistoryItems = retainedHistoryBudget
 
 export const sessionHistoryCategories: ReadonlyArray<{
   value: SessionHistoryCategory
@@ -22,9 +25,11 @@ export function mergeOlderHistory(
   older: SessionHistoryPage,
 ): SessionHistoryPage {
   const currentIds = new Set(current.items.map((item) => item.id))
+  const items = [...older.items.filter((item) => !currentIds.has(item.id)), ...current.items]
+    .slice(-maximumRetainedSessionHistoryItems)
   return {
     sessionId: current.sessionId,
-    items: [...older.items.filter((item) => !currentIds.has(item.id)), ...current.items],
+    items,
     hasMore: older.hasMore,
     ...(older.nextCursor ? { nextCursor: older.nextCursor } : {}),
   }

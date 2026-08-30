@@ -1376,6 +1376,28 @@ describe("DomovoiDaemon", () => {
     expect(snapshot.thread).toHaveLength(105)
   })
 
+  it("bounds client thread retention globally and prioritizes the active session", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions[0]!
+    const inactive = snapshot.sessions[1]!
+    snapshot.activeSessionId = active.id
+    snapshot.thread = [active, inactive].flatMap((session) =>
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `${session.id}-message-${index}`,
+        sessionId: session.id,
+        kind: "user" as const,
+        body: `Message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+      })),
+    )
+
+    const clientSnapshot = workspaceSnapshotForClient(snapshot)
+
+    expect(clientSnapshot.thread).toHaveLength(100)
+    expect(clientSnapshot.thread.every((item) => item.sessionId === active.id)).toBe(true)
+    expect(snapshot.thread).toHaveLength(200)
+  })
+
   it("marks client history truncation so fork ancestry remains parseable", () => {
     const snapshot = structuredClone(demoWorkspace)
     const source = snapshot.sessions[0]!

@@ -1,0 +1,37 @@
+{
+  "startup": {
+    "web": { "javascriptBytes": 1250000, "stylesheetBytes": 115000 },
+    "desktop": {
+      "rendererJavascriptBytes": 1250000,
+      "rendererStylesheetBytes": 115000,
+      "mainBytes": 32768,
+      "preloadBytes": 8192
+    }
+  },
+  "memory": {
+    "clientSnapshotThreadItems": 100,
+    "sessionHistoryRetainedItems": 200,
+    "terminalReplayCharacters": 262144
+  },
+  "longThreads": {
+    "historyPageItems": 100,
+    "renderedThreadItems": 100,
+    "markdownCharactersPerItem": 32768,
+    "markdownLinesPerItem": 500
+  },
+  "terminalThroughput": {
+    "outputChunkCharacters": 65536,
+    "batchDelayMilliseconds": 16,
+    "websocketHighWaterBytes": 1048576,
+    "websocketLowWaterBytes": 262144
+  },
+  "largePreviews": {
+    "sourceBytes": 4194304,
+    "printableNodes": 50000,
+    "printableDepth": 64,
+    "renderedStages": 2,
+    "variantItems": 24,
+    "thumbnailCacheEntries": 24,
+    "thumbnailDecodedBytes": 400000
+  }
+}

@@ -157,6 +157,7 @@ import {
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
 import {
+  maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
@@ -1637,6 +1638,8 @@ export function HistoryPanel({
   )
   const [query, setQuery] = useState("")
   const [page, setPage] = useState<SessionHistoryPage>()
+  const [historyWindowed, setHistoryWindowed] = useState(false)
+  const [historyRefresh, setHistoryRefresh] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const requestRef = useRef(0)
@@ -1645,6 +1648,7 @@ export function HistoryPanel({
   useEffect(() => {
     const request = ++requestRef.current
     setPage(undefined)
+    setHistoryWindowed(false)
     setError("")
     if (!sessionId || !connected) {
       setLoading(false)
@@ -1666,7 +1670,7 @@ export function HistoryPanel({
       if (request === requestRef.current) setLoading(false)
     })
     return () => { requestRef.current += 1 }
-  }, [connected, filterKey, onLoad, sessionId])
+  }, [connected, filterKey, historyRefresh, onLoad, sessionId])
 
   const toggleCategory = (category: SessionHistoryCategory) => {
     if (categories.includes(category) && categories.length === 1) return
@@ -1690,9 +1694,13 @@ export function HistoryPanel({
         before: page.nextCursor,
         limit: 50,
       })
-      if (request === requestRef.current) setPage((current) =>
-        current ? mergeOlderHistory(current, older) : older
-      )
+      if (request === requestRef.current) {
+        const currentIds = new Set(page.items.map((item) => item.id))
+        const uniqueItemCount = page.items.length
+          + older.items.filter((item) => !currentIds.has(item.id)).length
+        setHistoryWindowed(uniqueItemCount > maximumRetainedSessionHistoryItems)
+        setPage(mergeOlderHistory(page, older))
+      }
     } catch (cause) {
       if (request === requestRef.current) {
         setError(cause instanceof Error ? cause.message : "Older history could not be loaded")
@@ -1752,6 +1760,7 @@ export function HistoryPanel({
             <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+          {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={() => setHistoryRefresh((current) => current + 1)}>Back to latest</Button> : null}
           {page?.hasMore ? <Button className="my-3 self-center" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
           {loading && !page ? <p role="status" className="p-4 text-center font-machine text-[10px] text-faint">Loading history</p> : null}
         </div>
