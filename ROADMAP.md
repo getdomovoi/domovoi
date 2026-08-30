@@ -97,7 +97,7 @@ workflow without becoming a code editor.
   checkpoints, annotations, and tests
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [x] Add session archive and deliberate cleanup without deleting the source repository
-- [ ] Add explicit fork-with-model beside switch-here behavior
+- [x] Add explicit fork-with-model beside switch-here behavior
 
 ### Providers and credentials
 
