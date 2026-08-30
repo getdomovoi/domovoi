@@ -151,13 +151,13 @@ workflow without becoming a code editor.
 ### Desktop quality
 
 - [x] Shared Claude-handoff workspace and custom window decoration
-- [ ] Persist layout, selected surface, project, and session safely across restarts
-- [ ] Keyboard command palette for navigation and common session actions
-- [ ] Native completion, failure, and approval-needed notifications
-- [ ] OS file dialogs, deep links, clipboard behavior, and external-editor handoff
-- [ ] First-run provider diagnostics and actionable recovery states
-- [ ] Accessibility pass for keyboard, focus, screen readers, reduced motion, contrast, and zoom
-- [ ] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
+- [x] Persist layout, selected surface, project, and session safely across restarts
+- [x] Keyboard command palette for navigation and common session actions
+- [x] Native completion, failure, and approval-needed notifications
+- [x] OS file dialogs, deep links, clipboard behavior, and external-editor handoff
+- [x] First-run provider diagnostics and actionable recovery states
+- [x] Accessibility pass for keyboard, focus, screen readers, reduced motion, contrast, and zoom
+- [x] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
 
 ## Goal 2: add private machine-fleet operation
 
@@ -232,14 +232,27 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
 
 Priority: `P2`. Every install channel must wrap the same immutable release.
 
-- [ ] Establish versioning, compatibility, deprecation, and release-support policy
-- [ ] Publish `@getdomovoi/protocol`, daemon, and CLI packages to npm with provenance
+### Release engineering and semantic versioning
+
+This remains future work. Complete it before any public package or application publish.
+
+- [ ] Add Changesets and require release metadata for every publishable change before any public
+  publish
+- [ ] Make `0.1.0-alpha.1` the first public alpha release
+- [ ] Keep package, app, daemon, protocol, and CLI versions in lockstep through `0.x`, and treat
+  compatibility as one release unit
+- [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
+  GitHub Releases from the same immutable commit
+- [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
+  are stable
+
+### Distribution and packaging
+
+- [ ] Define compatibility, deprecation, and release-support policy
 - [ ] Verify npm artifacts install and run through npm, pnpm, and Bun
 - [ ] Build signed desktop installers for macOS, Windows, and Linux
 - [ ] Add macOS signing/notarization and Windows code signing
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
-- [ ] Add Homebrew formulae from immutable GitHub release artifacts
-- [ ] Add AUR source and binary packages from immutable GitHub release artifacts
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set
 - [ ] Add daemon and desktop update checks with explicit user control
