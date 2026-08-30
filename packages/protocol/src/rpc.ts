@@ -642,11 +642,19 @@ export const emergencyStopOutcomesSchema = z.object({
   turnsStopped: emergencyStopCountSchema,
   terminalsClosed: emergencyStopCountSchema,
   approvalsDenied: emergencyStopCountSchema,
-  queuedTurnsCancelled: emergencyStopCountSchema,
+  mutationsCancelled: emergencyStopCountSchema,
+  providersReset: emergencyStopCountSchema,
 }).strict()
 
 export const emergencyStopFailureSchema = z.object({
-  target: z.enum(["turn", "terminal", "approval", "queued-turn"]),
+  target: z.enum([
+    "turn",
+    "terminal",
+    "approval",
+    "provider",
+    "mutation",
+    "persistence",
+  ]),
   targetId: z.string().trim().min(1).max(512).optional(),
   message: z.string().trim().min(1).max(maximumEmergencyStopFailureMessageLength),
 }).strict()
@@ -659,6 +667,8 @@ export const systemEmergencyStopResultSchema = z.object({
   outcomes: emergencyStopOutcomesSchema,
   failures: z.array(emergencyStopFailureSchema).max(maximumEmergencyStopFailures),
 }).strict()
+
+export const systemEmergencyStoppedNotificationSchema = systemEmergencyStopResultSchema
 
 export const approvalResolveParamsSchema = z
   .object({
@@ -853,6 +863,9 @@ export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNoti
 export type EmergencyStopOutcomes = z.infer<typeof emergencyStopOutcomesSchema>
 export type EmergencyStopFailure = z.infer<typeof emergencyStopFailureSchema>
 export type SystemEmergencyStopResult = z.infer<typeof systemEmergencyStopResultSchema>
+export type SystemEmergencyStoppedNotification = z.infer<
+  typeof systemEmergencyStoppedNotificationSchema
+>
 export type WorkspaceDelta = z.infer<typeof workspaceDeltaSchema>
 export type SessionHistoryCategory = z.infer<typeof sessionHistoryCategorySchema>
 export type SessionHistoryEntry = z.infer<typeof sessionHistoryEntrySchema>

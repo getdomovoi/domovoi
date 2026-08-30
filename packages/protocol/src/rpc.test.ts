@@ -12,6 +12,7 @@ import {
   rpcRequestSchema,
   rpcResponseSchema,
   systemEmergencyStopResultSchema,
+  systemEmergencyStoppedNotificationSchema,
   sessionEvidenceSchema,
   sessionHistoryCategorySchema,
   sessionHistoryPageSchema,
@@ -137,7 +138,8 @@ describe("JSON-RPC envelopes", () => {
         turnsStopped: 2,
         terminalsClosed: 1,
         approvalsDenied: 3,
-        queuedTurnsCancelled: 4,
+        mutationsCancelled: 4,
+        providersReset: 2,
       },
       failures: [{
         target: "terminal",
@@ -151,6 +153,12 @@ describe("JSON-RPC envelopes", () => {
     expect(rpcMethods["system.emergencyStop"].result).not.toBe(
       rpcMethods["system.pauseAll"].result,
     )
+    const notification = rpcNotificationSchema.parse({
+      jsonrpc: "2.0",
+      method: "system.emergencyStopped",
+      params: result,
+    })
+    expect(systemEmergencyStoppedNotificationSchema.parse(notification.params)).toEqual(result)
   })
 
   it("bounds emergency-stop identifiers, counts, and failure detail", () => {
@@ -163,7 +171,8 @@ describe("JSON-RPC envelopes", () => {
         turnsStopped: 0,
         terminalsClosed: 0,
         approvalsDenied: 0,
-        queuedTurnsCancelled: 0,
+        mutationsCancelled: 0,
+        providersReset: 0,
       },
       failures: [],
     }
@@ -187,6 +196,18 @@ describe("JSON-RPC envelopes", () => {
     expect(systemEmergencyStopResultSchema.safeParse({
       ...base,
       failures: [{ target: "approval", message: "x".repeat(513) }],
+    }).success).toBe(false)
+    expect(systemEmergencyStopResultSchema.parse({
+      ...base,
+      failures: [
+        { target: "provider", targetId: "codex", message: "reset failed" },
+        { target: "mutation", targetId: "mutation-1", message: "cancel failed" },
+        { target: "persistence", message: "snapshot save failed" },
+      ],
+    }).failures).toHaveLength(3)
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      failures: [{ target: "queued-turn", message: "legacy target" }],
     }).success).toBe(false)
   })
 
