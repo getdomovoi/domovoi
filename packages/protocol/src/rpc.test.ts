@@ -6,6 +6,7 @@ import {
   auditQueryPageSchema,
   auditQueryParamsSchema,
   demoWorkspace,
+  helloParamsSchema,
   rpcMethods,
   rpcNotificationSchema,
   rpcRequestSchema,
@@ -100,6 +101,21 @@ describe("audit RPC contracts", () => {
       entryCount: 1,
       content: `${JSON.stringify({ id: "not-an-audit-entry" })}\n`,
       hasMore: false,
+    }).success).toBe(false)
+  })
+})
+
+describe("authenticated client identity", () => {
+  it("bounds optional hello client ids", () => {
+    expect(helloParamsSchema.parse({
+      client: "web",
+      clientId: "browser-session-1",
+      clientVersion: "1.0.0",
+    })).toMatchObject({ client: "web", clientId: "browser-session-1" })
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientId: "x".repeat(129),
+      clientVersion: "1.0.0",
     }).success).toBe(false)
   })
 })

@@ -35,8 +35,8 @@ export type AuditAppendInput = {
 
 export interface AuditLog {
   append(input: AuditAppendInput): AuditEntry
-  query(params?: Partial<AuditQueryParams>, signal?: AbortSignal): AuditQueryPage
-  export(params?: Partial<AuditExportParams>, signal?: AbortSignal): AuditExportResult
+  query(params?: Partial<AuditQueryParams>, signal?: AbortSignal): AuditQueryPage | Promise<AuditQueryPage>
+  export(params?: Partial<AuditExportParams>, signal?: AbortSignal): AuditExportResult | Promise<AuditExportResult>
 }
 
 export type SqliteAuditLogOptions = {

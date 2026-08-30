@@ -545,6 +545,7 @@ export const sessionEvidenceSchema = z.object({
 
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
+  clientId: z.string().trim().min(1).max(128).optional(),
   clientVersion: z.string().min(1),
   authToken: z.string().min(1).optional(),
 })

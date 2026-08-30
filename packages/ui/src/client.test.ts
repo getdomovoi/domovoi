@@ -98,7 +98,11 @@ describe("DomovoiClient", () => {
     socket.open()
     expect(JSON.parse(socket.sent[0]!)).toMatchObject({
       method: "system.hello",
-      params: { client: "web", authToken: "secret-token" },
+      params: {
+        client: "web",
+        clientId: client.clientId,
+        authToken: "secret-token",
+      },
     })
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
