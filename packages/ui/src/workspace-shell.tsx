@@ -182,6 +182,36 @@ export function PreviewVariantThumbnail({ url }: { url?: string | undefined }) {
     : <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
 }
 
+export async function capturePreviewThumbnailState({
+  lifecycle,
+  artifactId,
+  revision,
+  capture,
+  sync,
+}: {
+  lifecycle: PreviewThumbnailLifecycle
+  artifactId: string
+  revision: number
+  capture: () => Promise<Parameters<typeof previewThumbnailObjectUrl>[0]>
+  sync: (ready: ReadonlyMap<string, string>) => void
+}): Promise<void> {
+  if (!lifecycle.reserve(artifactId, revision)) return
+  sync(lifecycle.readyUrls())
+  try {
+    const url = previewThumbnailObjectUrl(await capture())
+    if (!url) {
+      lifecycle.fail(artifactId, revision)
+      sync(lifecycle.readyUrls())
+      return
+    }
+    lifecycle.resolve(artifactId, revision, url)
+    sync(lifecycle.readyUrls())
+  } catch {
+    lifecycle.fail(artifactId, revision)
+    sync(lifecycle.readyUrls())
+  }
+}
+
 const statusClass: Record<SessionSummary["state"], string> = {
   active: "bg-success motion-safe:animate-pulse",
   waiting: "bg-warning",
@@ -1773,20 +1803,14 @@ export function ArtifactDock({
     const frame = previewFrameRef.current
     if (!frame) return
     const rect = previewThumbnailRect(frame.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight })
-    if (!rect || !previewThumbnailLifecycle.current.reserve(preview.id, preview.revision)) return
-    try {
-      const url = previewThumbnailObjectUrl(await captureAnnotation(rect))
-      if (!url) {
-        previewThumbnailLifecycle.current.fail(preview.id, preview.revision)
-        return
-      }
-      if (previewThumbnailLifecycle.current.resolve(preview.id, preview.revision, url)) {
-        setPreviewThumbnailUrls(previewThumbnailLifecycle.current.readyUrls())
-      }
-    } catch {
-      previewThumbnailLifecycle.current.fail(preview.id, preview.revision)
-      // Web and denied desktop captures keep the truthful static placeholder.
-    }
+    if (!rect) return
+    await capturePreviewThumbnailState({
+      lifecycle: previewThumbnailLifecycle.current,
+      artifactId: preview.id,
+      revision: preview.revision,
+      capture: () => captureAnnotation(rect),
+      sync: setPreviewThumbnailUrls,
+    })
   }
 
   const openDerivedArtifact = async (purpose: "print" | "download") => {
