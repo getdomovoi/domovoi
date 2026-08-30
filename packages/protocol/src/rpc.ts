@@ -775,6 +775,28 @@ export const annotationSetStatusParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const directApiProviderSchema = z.enum(["anthropic", "openai", "openrouter"])
+export const providerSecretStatusSchema = z.object({
+  provider: directApiProviderSchema,
+  state: z.enum(["stored", "not-set", "unavailable"]),
+  source: z.literal("keychain"),
+}).strict()
+export const providerSecretStatusesSchema = z.array(providerSecretStatusSchema)
+export const providerSecretSetParamsSchema = z.object({
+  provider: directApiProviderSchema,
+  secret: z.string().min(1).max(32_768).refine((secret) => secret.trim().length > 0),
+  client: clientKindSchema,
+}).strict()
+export const providerSecretDeleteParamsSchema = z.object({
+  provider: directApiProviderSchema,
+  client: clientKindSchema,
+}).strict()
+export const providerSecretMutationResultSchema = z.object({
+  provider: directApiProviderSchema,
+  state: z.enum(["stored", "not-set"]),
+  source: z.literal("keychain"),
+}).strict()
+
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
   "artifact.authorize": {
@@ -810,6 +832,18 @@ export const rpcMethods = {
   "runtime.models": {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
+  },
+  "provider.secret.list": {
+    params: z.object({}),
+    result: providerSecretStatusesSchema,
+  },
+  "provider.secret.set": {
+    params: providerSecretSetParamsSchema,
+    result: providerSecretMutationResultSchema,
+  },
+  "provider.secret.delete": {
+    params: providerSecretDeleteParamsSchema,
+    result: providerSecretMutationResultSchema,
   },
   "annotation.create": {
     params: annotationCreateParamsSchema,
