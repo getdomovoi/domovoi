@@ -153,6 +153,17 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.createSession(title, runtime))
   }, [updateSnapshotFrom])
 
+  const forkSession = useCallback(async (
+    input: Omit<RpcParams<"session.fork">, "client">,
+  ) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshotFrom(
+      client,
+      await client.forkSession(input),
+    )
+  }, [updateSnapshotFrom])
+
   const sendMessage = useCallback(async (sessionId: string, prompt: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -351,6 +362,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     createAnnotation,
     createTerminal,
     createSession,
+    forkSession,
     listSkills,
     loadSessionHistory,
     loadSessionEvidence,

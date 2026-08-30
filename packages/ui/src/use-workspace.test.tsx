@@ -12,11 +12,12 @@ import {
 } from "./use-workspace"
 
 function SnapshotProbe() {
-  const { reconnect, snapshot } = useWorkspace("ws://127.0.0.1:47831/rpc", "web")
+  const { forkSession, reconnect, snapshot } = useWorkspace("ws://127.0.0.1:47831/rpc", "web")
   return (
     <span>
       {snapshot?.project?.name ?? "no daemon snapshot"}
       {typeof reconnect === "function" ? " · can reconnect" : ""}
+      {typeof forkSession === "function" ? " · can fork" : ""}
     </span>
   )
 }
@@ -26,6 +27,7 @@ describe("useWorkspace", () => {
     const markup = renderToStaticMarkup(<SnapshotProbe />)
     expect(markup).toContain("no daemon snapshot")
     expect(markup).toContain("can reconnect")
+    expect(markup).toContain("can fork")
   })
 
   it("does not expose a snapshot owned by another connection target", () => {

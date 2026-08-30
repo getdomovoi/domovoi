@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, ThreadItem } from "@getdomovoi/protocol"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, HistoryPanel, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, ProviderReadinessList, RuntimeControls, sessionIsArchiveReadOnly, Thread } from "./workspace-shell"
 
 const runtime: Runtime = {
   provider: "codex",
@@ -31,12 +31,78 @@ describe("RuntimeControls", () => {
         runtime={runtime}
         providers={providers}
         pending
+        forkCheckpointId="thread-checkpoint"
         onChange={vi.fn()}
+        onFork={vi.fn()}
         onListModels={vi.fn(async () => [])}
       />,
     )
 
     expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(6)
+  })
+
+  it("keeps switch-here distinct from a durable checkpoint fork", () => {
+    expect(providerHandoffChoices(false, undefined)).toEqual([
+      { label: "Switch here", variant: "outline", disabled: false },
+      { label: "Fork session", variant: "default", disabled: false },
+    ])
+    expect(providerHandoffChoices(true, undefined).every((choice) => choice.disabled)).toBe(true)
+    expect(providerHandoffChoices(false, "Create a checkpoint first")[1]).toMatchObject({
+      label: "Fork session",
+      disabled: true,
+    })
+  })
+
+  it("reuses one fork request ID after failure for same-provider model choices", async () => {
+    const sameProviderModel = {
+      provider: runtime.provider,
+      id: "gpt-5.6-sol-mini",
+      displayName: "GPT-5.6 Sol Mini",
+      description: "Smaller coding model",
+      supportedReasoningEfforts: ["medium"],
+      defaultReasoningEffort: "medium",
+      isDefault: false,
+    }
+    const createRequestId = vi.fn(() => "fork-request-stable")
+    const choice = openProviderChoice(runtime, sameProviderModel, createRequestId)
+    expect(choice).toMatchObject({ model: sameProviderModel, requestId: "fork-request-stable" })
+    expect(createRequestId).toHaveBeenCalledOnce()
+
+    const onFork = vi.fn()
+      .mockRejectedValueOnce(new Error("timeout"))
+      .mockResolvedValueOnce(undefined)
+    await expect(forkProviderChoice(runtime, choice!, "thread-checkpoint", onFork)).rejects.toThrow("timeout")
+    await expect(forkProviderChoice(runtime, choice!, "thread-checkpoint", onFork)).resolves.toBeUndefined()
+    expect(onFork).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: sameProviderModel.id }),
+      "thread-checkpoint",
+      "fork-request-stable",
+    )
+    expect(onFork).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ model: sameProviderModel.id }),
+      "thread-checkpoint",
+      "fork-request-stable",
+    )
+  })
+
+  it("explains unsafe fork boundaries", () => {
+    const session = structuredClone(demoWorkspace.sessions[0]!)
+    const checkpoint = demoWorkspace.thread.find((item) => item.kind === "checkpoint")
+    session.workspacePath = "/worktrees/session-billing"
+    session.state = "idle"
+    delete session.activeTurnId
+    expect(forkSessionBlockedReason(session, checkpoint)).toBeUndefined()
+    expect(forkSessionBlockedReason({ ...session, state: "active" }, checkpoint)).toBe(
+      "Stop the active turn before forking",
+    )
+    expect(forkSessionBlockedReason({ ...session, state: "waiting" }, checkpoint)).toBe(
+      "Resolve the pending approval before forking",
+    )
+    expect(forkSessionBlockedReason(session, undefined)).toBe(
+      "Create a durable checkpoint before forking",
+    )
   })
 })
 
@@ -196,6 +262,7 @@ describe("Thread", () => {
         connected
         onResolve={vi.fn(async () => {})}
         onSetRuntime={vi.fn(async () => {})}
+        onForkSession={vi.fn(async () => {})}
         onListModels={vi.fn(async () => [])}
         onNewSession={vi.fn()}
         onSend={vi.fn(async () => {})}
@@ -221,6 +288,7 @@ describe("Thread", () => {
         connected
         onResolve={vi.fn(async () => {})}
         onSetRuntime={vi.fn(async () => {})}
+        onForkSession={vi.fn(async () => {})}
         onListModels={vi.fn(async () => [])}
         onNewSession={vi.fn()}
         onSend={vi.fn(async () => {})}

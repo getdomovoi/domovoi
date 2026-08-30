@@ -94,6 +94,15 @@ export const projectSchema = z.object({
   branch: z.string().min(1),
 })
 
+export const sessionForkOriginSchema = z.object({
+  sourceSessionId: z.string().min(1),
+  checkpointId: z.string().min(1),
+  checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  requestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
+  client: clientKindSchema,
+  requestedRuntime: runtimeSchema,
+})
+
 export const sessionSummarySchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -111,6 +120,7 @@ export const sessionSummarySchema = z.object({
   archiveRequestedAt: z.string().datetime().optional(),
   archiveCheckpoint: z.string().regex(/^[a-f0-9]{40}$/).optional(),
   archivedAt: z.string().datetime().optional(),
+  forkedFrom: sessionForkOriginSchema.optional(),
 }).superRefine((session, context) => {
   const archiveState = session.state === "archiving" || session.state === "archived"
   if (!archiveState && (
@@ -277,6 +287,7 @@ export const workspaceSnapshotSchema = z.object({
   thread: z.array(threadItemSchema),
   artifacts: z.array(artifactSchema),
   annotations: z.array(annotationSchema).default([]),
+  historyTruncated: z.boolean().optional(),
 }).superRefine((snapshot, context) => {
   const aggregates = [
     ["sessions", snapshot.sessions],
@@ -343,6 +354,7 @@ export const workspaceSnapshotSchema = z.object({
   }
 
   const sessionIds = new Set(snapshot.sessions.map((session) => session.id))
+  const forkRequestIds = new Set<string>()
   snapshot.sessions.forEach((session, index) => {
     if (session.projectId !== project.id) {
       context.addIssue({
@@ -350,6 +362,42 @@ export const workspaceSnapshotSchema = z.object({
         message: "Session must belong to the workspace project",
         path: ["sessions", index, "projectId"],
       })
+    }
+    if (session.forkedFrom) {
+      const origin = session.forkedFrom
+      if (!sessionIds.has(origin.sourceSessionId) || origin.sourceSessionId === session.id) {
+        context.addIssue({
+          code: "custom",
+          message: "Fork source must reference another existing session",
+          path: ["sessions", index, "forkedFrom", "sourceSessionId"],
+        })
+      }
+      const checkpoint = snapshot.thread.find((item) => item.id === origin.checkpointId)
+      if (checkpoint && (
+        checkpoint.kind !== "checkpoint"
+        || checkpoint.sessionId !== origin.sourceSessionId
+        || checkpoint.commit !== origin.checkpointCommit
+      )) {
+        context.addIssue({
+          code: "custom",
+          message: "Fork checkpoint must belong to the source session",
+          path: ["sessions", index, "forkedFrom", "checkpointId"],
+        })
+      } else if (!checkpoint && !snapshot.historyTruncated) {
+        context.addIssue({
+          code: "custom",
+          message: "Fork checkpoint must exist unless snapshot history is truncated",
+          path: ["sessions", index, "forkedFrom", "checkpointId"],
+        })
+      }
+      if (forkRequestIds.has(origin.requestId)) {
+        context.addIssue({
+          code: "custom",
+          message: "Fork request IDs must be unique",
+          path: ["sessions", index, "forkedFrom", "requestId"],
+        })
+      }
+      forkRequestIds.add(origin.requestId)
     }
   })
   if (snapshot.activeSessionId !== null && !sessionIds.has(snapshot.activeSessionId)) {
@@ -423,6 +471,7 @@ export type Runtime = z.infer<typeof runtimeSchema>
 export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
+export type SessionForkOrigin = z.infer<typeof sessionForkOriginSchema>
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>
 export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>

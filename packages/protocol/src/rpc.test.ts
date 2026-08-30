@@ -274,6 +274,31 @@ describe("session history filters", () => {
   })
 })
 
+describe("session fork RPC", () => {
+  it("exposes an explicit fork-with-model contract", () => {
+    expect(rpcMethods["session.fork"].params.parse({
+      sessionId: "session-source",
+      checkpointId: "checkpoint-source",
+      requestId: "fork-request-1",
+      runtime: demoWorkspace.sessions[0]!.runtime,
+      client: "desktop",
+    })).toMatchObject({ requestId: "fork-request-1" })
+  })
+
+  it.each(["", "x".repeat(129), "fork/request", " fork-request"])(
+    "rejects malformed fork request ID %j",
+    (requestId) => {
+      expect(rpcMethods["session.fork"].params.safeParse({
+        sessionId: "session-source",
+        checkpointId: "checkpoint-source",
+        requestId,
+        runtime: demoWorkspace.sessions[0]!.runtime,
+        client: "desktop",
+      }).success).toBe(false)
+    },
+  )
+})
+
 describe("session evidence", () => {
   const evidence = {
     sessionId: "session-billing",

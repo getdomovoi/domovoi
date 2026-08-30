@@ -82,6 +82,7 @@ const sessionResourceMethods = new Set([
   "session.archive",
   "session.pause",
   "session.evidence",
+  "session.fork",
   "session.history",
   "session.send",
   "session.setRuntime",
@@ -171,7 +172,8 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): Workspa
     retainedBySession.set(item.sessionId, retained + 1)
     return true
   }).reverse()
-  return { ...snapshot, thread }
+  const historyTruncated = thread.length < snapshot.thread.length
+  return { ...snapshot, thread, ...(historyTruncated ? { historyTruncated: true } : {}) }
 }
 
 export function isTestCommandTitle(title: string): boolean {
@@ -1666,6 +1668,214 @@ export class DomovoiDaemon {
           createdAt,
         })
         changed = true
+      }
+
+      if (method === "session.fork") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const existingFork = this.#snapshot.sessions.find(
+          (candidate) => candidate.forkedFrom?.requestId === params.requestId,
+        )
+        if (existingFork) {
+          const sameRuntime = Object.entries(params.runtime).every(
+            ([key, value]) => existingFork.forkedFrom?.requestedRuntime[key as keyof Runtime] === value,
+          )
+          if (
+            existingFork.forkedFrom?.sourceSessionId !== params.sessionId
+            || existingFork.forkedFrom.checkpointId !== params.checkpointId
+            || !sameRuntime
+          ) {
+            this.#error(
+              socket,
+              request.id,
+              invalidParams,
+              "Fork request ID conflicts with an existing fork",
+            )
+            return
+          }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: workspaceSnapshotForClient(this.#snapshot),
+          })
+          return
+        }
+
+        const source = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!source) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (sessionIsArchiveReadOnly(source)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
+        if (source.activeTurnId || source.state === "active") {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Stop the active turn before forking a session",
+          )
+          return
+        }
+        if (source.state === "waiting") {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Wait for the pending session mutation before forking",
+          )
+          return
+        }
+        if (!source.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session is not ready to fork")
+          return
+        }
+        const checkpoint = this.#snapshot.thread.find(
+          (candidate) => candidate.id === params.checkpointId
+            && candidate.sessionId === source.id
+            && candidate.kind === "checkpoint",
+        )
+        if (!checkpoint || checkpoint.kind !== "checkpoint" || !checkpoint.commit) {
+          this.#error(socket, request.id, invalidParams, "Checkpoint is not durable for this session")
+          return
+        }
+        const readiness = this.#snapshot.machine.providers.find(
+          (provider) => provider.id === params.runtime.provider,
+        )
+        if (readiness && (readiness.status !== "ready" || !readiness.sessionCapable)) {
+          this.#error(socket, request.id, invalidParams, "Provider is not ready to fork a session")
+          return
+        }
+        let runtime: Runtime
+        try {
+          runtime = await this.#resolveRuntime(params.runtime)
+        } catch (error) {
+          if (!(error instanceof RuntimeValidationError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        if (!this.#workspaceService.createSessionWorkspaceFromCheckpoint) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Checkpoint forks are not supported by this workspace",
+          )
+          return
+        }
+        const sessionId = `session-fork-${createHash("sha256")
+          .update(params.requestId)
+          .digest("hex")
+          .slice(0, 20)}`
+        const workspace = await withAbortTimeout(
+          (signal) => this.#workspaceService.createSessionWorkspaceFromCheckpoint!(
+            source.workspacePath!,
+            checkpoint.commit!,
+            sessionId,
+            signal,
+          ),
+          this.#agentTimeoutMs,
+          "Fork workspace creation timed out",
+        )
+        const agent = this.#agents.require(runtime.provider)
+        let providerThreadId: string
+        try {
+          providerThreadId = await withLateCleanup(
+            agent.startThread({ cwd: workspace.path, runtime }),
+            this.#agentTimeoutMs,
+            "Fork agent setup timed out",
+            (threadId) => agent.stopThread(threadId),
+            "Domovoi could not stop a late fork thread",
+            (context, error) => this.#reportError(context, error),
+          )
+        } catch (error) {
+          try {
+            await withAbortTimeout(
+              (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
+              this.#agentTimeoutMs,
+              "Fork workspace cleanup timed out",
+            )
+          } catch (cleanupError) {
+            this.#reportError("Domovoi could not remove a failed fork worktree", cleanupError)
+          }
+          throw error
+        }
+        const createdAt = new Date().toISOString()
+        const candidate = structuredClone(this.#snapshot)
+        candidate.sessions.push({
+          id: sessionId,
+          projectId: source.projectId,
+          title: `${source.title} · fork`,
+          state: "idle",
+          runtime,
+          changedFiles: 0,
+          testsPassed: source.testsPassed,
+          testsFailed: source.testsFailed,
+          updatedAt: createdAt,
+          workspacePath: workspace.path,
+          providerThreadId,
+          baseCommit: checkpoint.commit,
+          forkedFrom: {
+            sourceSessionId: source.id,
+            checkpointId: checkpoint.id,
+            checkpointCommit: checkpoint.commit,
+            requestId: params.requestId,
+            client: params.client,
+            requestedRuntime: params.runtime,
+          },
+        })
+        candidate.thread.push({
+          id: `checkpoint-${randomUUID()}`,
+          sessionId,
+          kind: "checkpoint",
+          label: `${checkpoint.commit.slice(0, 8)} · forked checkpoint`,
+          commit: checkpoint.commit,
+          createdAt,
+        })
+        candidate.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId,
+          kind: "system",
+          body: `Forked from ${source.title}.`,
+          detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
+          createdAt,
+        })
+        try {
+          workspaceSnapshotSchema.parse(candidate)
+          this.#store.save(candidate)
+        } catch (error) {
+          try {
+            await withTimeout(
+              agent.stopThread(providerThreadId),
+              this.#agentTimeoutMs,
+              "Failed fork provider cleanup timed out",
+            )
+          } catch (cleanupError) {
+            this.#reportError("Domovoi could not stop a failed fork thread", cleanupError)
+          }
+          try {
+            await withAbortTimeout(
+              (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
+              this.#agentTimeoutMs,
+              "Fork workspace cleanup timed out",
+            )
+          } catch (cleanupError) {
+            this.#reportError("Domovoi could not remove a failed fork worktree", cleanupError)
+          }
+          throw error
+        }
+        this.#snapshot = candidate
+        this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: workspaceSnapshotForClient(this.#snapshot),
+        })
+        this.#broadcastSnapshot()
+        return
       }
 
       if (method === "session.send") {
