@@ -142,6 +142,7 @@ import {
   sessionHistoryEntryTitle,
 } from "./session-history"
 import { SessionEvidencePanel } from "./session-evidence"
+import { MarkdownQuickView } from "./markdown-quick-view"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -1139,10 +1140,10 @@ export function Thread({
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
-              return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3 text-[13px] leading-relaxed">{item.body}</div>
+              return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3"><MarkdownQuickView source={item.body} /></div>
             }
             if (item.kind === "system") {
-              return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>{item.body}</AlertTitle><AlertDescription>{item.detail}</AlertDescription></Alert>
+              return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><CheckIcon /><AlertTitle>{item.operation}: {item.decision}</AlertTitle><AlertDescription>Checkpoint {item.checkpoint} · decided from {item.client}{item.explanation ? ` · ${item.explanation}` : ""}</AlertDescription></Alert>
@@ -1150,7 +1151,7 @@ export function Thread({
             if (item.kind === "tool") {
               return <Alert key={item.id}><TerminalSquareIcon /><AlertTitle>{item.title}</AlertTitle><AlertDescription><Badge variant="outline">{item.status}</Badge>{item.output ? <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-machine text-[10px]">{item.output}</pre> : null}</AlertDescription></Alert>
             }
-            return <div key={item.id} className="flex max-w-2xl gap-3 text-[13px] leading-relaxed"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><p className="m-0">{item.body}</p></div>
+            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
           {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
@@ -1998,9 +1999,7 @@ export function ArtifactDock({
                   <h2 className="m-0 text-[13px] font-semibold">{plan.title}</h2>
                   <p className="mt-1 font-machine text-[9px] text-faint">revision {plan.revision}</p>
                 </div>
-                <pre className="m-0 whitespace-pre-wrap break-words font-sans text-[12px] leading-relaxed text-muted-foreground">
-                  {plan.content}
-                </pre>
+                <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={() => setActiveTab("preview")} />
               </article>
             </ScrollArea>
           ) : (

@@ -35,6 +35,14 @@ describe("latestArtifactForActiveSession", () => {
 
     expect(latestArtifactForActiveSession(snapshot, "plan")).toBeUndefined()
   })
+
+  it("keeps generated HTML canonical when a Markdown plan also exists", () => {
+    const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+    snapshot.activeSessionId = "session-billing"
+    snapshot.artifacts.push({ id: "plan-md", sessionId: "session-billing", title: "Plan", type: "plan", revision: 99, mimeType: "text/markdown", content: "# Plan" })
+    snapshot.artifacts.push({ id: "plan-html", sessionId: "session-billing", title: "Plan preview", type: "preview", revision: 100, mimeType: "text/html", path: "plan-preview.html" })
+    expect(latestArtifactForActiveSession(snapshot, "preview")?.id).toBe("plan-html")
+  })
 })
 
 describe("previewVariantsForActiveSession", () => {

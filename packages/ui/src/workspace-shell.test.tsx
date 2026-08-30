@@ -37,6 +37,20 @@ it("names settings navigation for the surface it opens", () => {
 })
 
 describe("RuntimeControls", () => {
+  it("renders safe Markdown in user, assistant, and system thread bodies", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const sessionId = snapshot.activeSessionId!
+    snapshot.thread.push(
+      { id: "user-md", sessionId, kind: "user", body: "**User note**", createdAt: "2026-08-30T10:00:00.000Z" },
+      { id: "assistant-md", sessionId, kind: "assistant", body: "## Agent plan\n\n`pnpm test`", createdAt: "2026-08-30T10:01:00.000Z" },
+      { id: "system-md", sessionId, kind: "system", body: "**System note** <script>alert(1)</script>", createdAt: "2026-08-30T10:02:00.000Z" },
+    )
+    const markup = renderToStaticMarkup(<Thread snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+    expect(markup).toContain("<strong>User note</strong>")
+    expect(markup).toContain("<h2")
+    expect(markup).toContain("font-machine")
+    expect(markup).not.toContain("<script")
+  })
   it("locks every runtime input while an update is pending", () => {
     const markup = renderToStaticMarkup(
       <RuntimeControls
