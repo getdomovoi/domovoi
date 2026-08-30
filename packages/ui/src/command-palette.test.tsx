@@ -99,6 +99,31 @@ describe("buildWorkspaceCommands", () => {
     expect(callbacks.newSession).toHaveBeenCalledOnce()
     expect(callbacks.setSurface).toHaveBeenCalledWith("skills")
   })
+
+  it("adds desktop worktree actions only when an active path is available", () => {
+    const openInEditor = vi.fn()
+    const copyWorktreePath = vi.fn()
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      activeWorkspacePath: "/worktrees/session-one",
+      openInEditor,
+      copyWorktreePath,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+    })
+
+    expect(commands.map(({ id }) => id)).toContain("open-in-editor")
+    expect(commands.map(({ id }) => id)).toContain("copy-worktree-path")
+    commands.find(({ id }) => id === "open-in-editor")?.run()
+    commands.find(({ id }) => id === "copy-worktree-path")?.run()
+    expect(openInEditor).toHaveBeenCalledOnce()
+    expect(copyWorktreePath).toHaveBeenCalledOnce()
+  })
 })
 
 it("restores focus to the element active before the palette opened", () => {
