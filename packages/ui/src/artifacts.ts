@@ -42,3 +42,7 @@ export function reviewLayoutFor(containerWidth: number, compareRequested: boolea
   const compare = compareRequested && variantCount > 1 && containerWidth >= 760
   return { compare, stages: compare ? 2 : 1 }
 }
+
+export function previewToolbarLayoutFor(containerWidth: number): "wrap" | "inline" {
+  return containerWidth < 720 ? "wrap" : "inline"
+}
