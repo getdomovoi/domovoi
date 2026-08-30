@@ -102,6 +102,19 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const onDelta = (event: Event) => {
       if (active) updateDeltaFrom(client, (event as CustomEvent<WorkspaceDelta>).detail)
     }
+    const onEmergencyStopped = (event: Event) => {
+      if (!active) return
+      const result = (event as CustomEvent<SystemEmergencyStopResult>).detail
+      setWorkspace((current) => applyEmergencyStopResult(
+        clientRef.current,
+        client,
+        current,
+        target,
+        result,
+      ))
+      setEmergencyStopOutcome(result)
+      setEmergencyStopError(null)
+    }
     const onDisconnected = () => {
       if (active) setConnected(false)
     }
@@ -110,6 +123,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     }
     client.addEventListener("snapshot", onSnapshot)
     client.addEventListener("workspace-delta", onDelta)
+    client.addEventListener("emergency-stopped", onEmergencyStopped)
     client.addEventListener("connected", onConnected)
     client.addEventListener("disconnected", onDisconnected)
     client.connect().then(
@@ -127,6 +141,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       active = false
       client.removeEventListener("snapshot", onSnapshot)
       client.removeEventListener("workspace-delta", onDelta)
+      client.removeEventListener("emergency-stopped", onEmergencyStopped)
       client.removeEventListener("connected", onConnected)
       client.removeEventListener("disconnected", onDisconnected)
       client.disconnect()

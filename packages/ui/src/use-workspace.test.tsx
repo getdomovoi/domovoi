@@ -96,7 +96,8 @@ describe("useWorkspace", () => {
         turnsStopped: 1,
         terminalsClosed: 0,
         approvalsDenied: 0,
-        queuedTurnsCancelled: 0,
+        mutationsCancelled: 0,
+        providersReset: 0,
       },
       failures: [],
     }
