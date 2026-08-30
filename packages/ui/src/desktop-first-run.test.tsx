@@ -139,6 +139,44 @@ describe("desktop first-run provider diagnostics", () => {
     expect(desktopFirstRunAvailable("desktop", undefined)).toBe(false)
   })
 
+  it("uses scoped provider credential copy without absolute locality claims", () => {
+    const element = DesktopFirstRunDialog({
+      open: true,
+      connected: true,
+      machine: { name: "devbox", platform: "linux", version: "0.0.1" },
+      providers: [ready],
+      sessions: [],
+      selectedProviderId: "codex",
+      permissionMode: "build",
+      refreshing: false,
+      recoveryError: "",
+      onProviderChange: vi.fn(),
+      onPermissionModeChange: vi.fn(),
+      onRetry: vi.fn(),
+      onCopyGuidance: vi.fn(),
+      onSkip: vi.fn(),
+      onComplete: vi.fn(),
+    })
+    const text: string[] = []
+    const visit = (node: ReactNode): void => {
+      Children.forEach(node, (child) => {
+        if (typeof child === "string" || typeof child === "number") {
+          text.push(String(child))
+          return
+        }
+        if (!isValidElement(child)) return
+        visit((child.props as { children?: ReactNode }).children)
+      })
+    }
+    visit(element)
+    const copy = text.join(" ")
+
+    expect.soft(copy).toContain("Three local setup steps. Provider credentials stay with their CLIs.")
+    expect.soft(copy).not.toMatch(
+      /\b(?:nothing leaves|everything (?:stays|remains) (?:on|within)|all (?:data|traffic|requests) (?:stays|remain) (?:on|within)|(?:fully|entirely|completely) local)\b/i,
+    )
+  })
+
   it("composes the installed Radix Dialog with title, description, and close semantics", () => {
     const element = DesktopFirstRunDialog({
       open: true,

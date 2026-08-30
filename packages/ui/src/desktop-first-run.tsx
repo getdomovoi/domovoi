@@ -390,7 +390,7 @@ export function DesktopFirstRunDialog({
               A good spirit lives in your machines.
             </DialogTitle>
             <DialogDescription className="max-w-[520px] text-[13px] leading-relaxed">
-              Three steps and nothing leaves this computer. You can add remote machines later.
+              Three local setup steps. Provider credentials stay with their CLIs. You can add remote machines later.
             </DialogDescription>
           </DialogHeader>
           <FirstRunSetupSteps
