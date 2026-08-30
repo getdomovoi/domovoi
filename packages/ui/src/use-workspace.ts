@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { Annotation, ApprovalDecision, ArtifactAccess, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillSummary, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient } from "./client"
+import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { applyWorkspaceDelta } from "./workspace-delta"
 
 type WorkspaceSnapshotState = {
@@ -233,6 +233,24 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.readSkill(id)
   }, [])
 
+  const queryAudit = useCallback(async (
+    params: AuditQueryParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<AuditQueryPage> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.queryAudit(params, options)
+  }, [])
+
+  const exportAudit = useCallback(async (
+    params: AuditExportParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<AuditExportResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.exportAudit(params, options)
+  }, [])
+
   const authorizeArtifact = useCallback(async (
     artifactId: string,
     bridgeChannel?: string,
@@ -362,6 +380,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     createAnnotation,
     createTerminal,
     createSession,
+    exportAudit,
     forkSession,
     listSkills,
     loadSessionHistory,
@@ -370,6 +389,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     openProject,
     pauseAll,
     pauseSession,
+    queryAudit,
     readSkill,
     reconnect,
     restoreCheckpoint,

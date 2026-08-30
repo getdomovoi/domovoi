@@ -69,6 +69,7 @@ export function SkillBrowser({
   loading,
   error,
   onBack,
+  onOpenAudit,
   onReadSkill,
   onRetry,
 }: {
@@ -76,6 +77,7 @@ export function SkillBrowser({
   loading: boolean
   error: string
   onBack: () => void
+  onOpenAudit: () => void
   onReadSkill: (id: string) => Promise<SkillDocument>
   onRetry: () => void
 }) {
@@ -113,14 +115,18 @@ export function SkillBrowser({
         </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
         <Button variant="secondary" className="justify-start">Skills</Button>
+        <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
       </aside>
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto w-full max-w-[740px] px-4 py-5 sm:px-8 sm:py-7">
-          <Button variant="ghost" className="mb-3 -ml-2 sm:hidden" onClick={onBack}>
-            <ArrowLeftIcon data-icon="inline-start" />
-            Workspace
-          </Button>
+          <div className="mb-3 -ml-2 flex items-center gap-1 sm:hidden">
+            <Button variant="ghost" className="min-h-11" onClick={onBack}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              Workspace
+            </Button>
+            <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
+          </div>
           <div>
             <h1 className="m-0 text-[17px] font-semibold">Skills</h1>
             <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">

@@ -280,6 +280,7 @@ export const auditEntrySchema = z.object({
   action: auditTextSchema,
   outcome: auditOutcomeSchema,
   sessionId: streamedIdSchema.optional(),
+  projectId: streamedIdSchema.optional(),
   target: auditTextSchema.optional(),
   detail: z.string().max(4_096).optional(),
 }).strict()
@@ -290,6 +291,7 @@ const auditQueryFiltersSchema = z.object({
   actor: auditTextSchema.optional(),
   outcome: auditOutcomeSchema.optional(),
   sessionId: streamedIdSchema.optional(),
+  projectId: streamedIdSchema.optional(),
   before: streamedIdSchema.optional(),
 })
 
@@ -543,6 +545,7 @@ export const sessionEvidenceSchema = z.object({
 
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
+  clientId: z.string().trim().min(1).max(128).optional(),
   clientVersion: z.string().min(1),
   authToken: z.string().min(1).optional(),
 })

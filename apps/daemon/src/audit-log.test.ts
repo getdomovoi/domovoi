@@ -1,8 +1,14 @@
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 
 import { SqliteAuditLog } from "./audit-log.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true }))))
 
 describe("SqliteAuditLog", () => {
   it("redacts secrets before durable storage and uses the same record for export", () => {
@@ -14,6 +20,7 @@ describe("SqliteAuditLog", () => {
       action: "provider.configure secret=action-secret",
       outcome: "succeeded",
       sessionId: "session-1 password=session-secret",
+      projectId: "project-1 token=project-secret",
       target: "https://user:target-secret@example.com",
       detail: "Authorization: Bearer top-secret-token api_key=sk-live-secret-value",
     })
@@ -23,6 +30,7 @@ describe("SqliteAuditLog", () => {
       actor: { clientId: "token=[REDACTED]" },
       action: "provider.configure secret=[REDACTED]",
       sessionId: "session-1 password=[REDACTED]",
+      projectId: "project-1 token=[REDACTED]",
       target: "https://[REDACTED]@example.com",
     })
     const raw = database.prepare("SELECT * FROM audit_log WHERE id = ?").get(stored.id)
@@ -32,6 +40,7 @@ describe("SqliteAuditLog", () => {
     expect(JSON.stringify(raw)).not.toContain("action-secret")
     expect(JSON.stringify(raw)).not.toContain("session-secret")
     expect(JSON.stringify(raw)).not.toContain("target-secret")
+    expect(JSON.stringify(raw)).not.toContain("project-secret")
     const exported = audit.export({ limit: 100 })
     expect(exported.content).toContain("[REDACTED]")
     expect(exported.content).not.toContain("top-secret-token")
@@ -40,6 +49,7 @@ describe("SqliteAuditLog", () => {
     expect(exported.content).not.toContain("action-secret")
     expect(exported.content).not.toContain("session-secret")
     expect(exported.content).not.toContain("target-secret")
+    expect(exported.content).not.toContain("project-secret")
 
     database.close()
   })
@@ -54,6 +64,7 @@ describe("SqliteAuditLog", () => {
       action: "terminal.input",
       outcome: "succeeded",
       sessionId: "session-a",
+      projectId: "project-a",
       target: "terminal-a",
       detail: "ran pnpm test",
     })
@@ -64,6 +75,7 @@ describe("SqliteAuditLog", () => {
       action: "approval.resolve",
       outcome: "denied",
       sessionId: "session-b",
+      projectId: "project-b",
       target: "approval-b",
       detail: "blocked deploy",
     })
@@ -74,6 +86,7 @@ describe("SqliteAuditLog", () => {
       action: "terminal.input",
       outcome: "failed",
       sessionId: "session-a",
+      projectId: "project-a",
       target: "terminal-a",
       detail: "pnpm test failed",
     })
@@ -89,6 +102,10 @@ describe("SqliteAuditLog", () => {
     })
     expect(audit.query({ actor: "web", outcome: "denied", limit: 10 }).entries).toEqual([
       expect.objectContaining({ id: "audit-2" }),
+    ])
+    expect(audit.query({ projectId: "project-a", limit: 10 }).entries.map(({ id }) => id)).toEqual([
+      "audit-3",
+      "audit-1",
     ])
     database.close()
   })
@@ -107,6 +124,30 @@ describe("SqliteAuditLog", () => {
     }
 
     expect(audit.query({ limit: 10 }).entries.map(({ id }) => id)).toEqual(["audit-3", "audit-2"])
+    database.close()
+  })
+
+  it("rejects unknown cursors instead of returning a misleading empty page", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database)
+    audit.append({
+      id: "audit-known",
+      actor: { kind: "daemon", component: "server" },
+      action: "workspace.get",
+      outcome: "succeeded",
+    })
+
+    for (const operation of [
+      () => audit.query({ before: "audit-missing", limit: 10 }),
+      () => audit.export({ before: "audit-missing", limit: 10 }),
+    ]) {
+      try {
+        operation()
+        throw new Error("Expected an unknown audit cursor to fail")
+      } catch (error) {
+        expect(error).toMatchObject({ code: -32602, message: "Audit cursor does not exist" })
+      }
+    }
     database.close()
   })
 
@@ -129,6 +170,52 @@ describe("SqliteAuditLog", () => {
     expect(exported.entryCount).toBeLessThan(500)
     expect(exported.hasMore).toBe(true)
     expect(exported.nextCursor).toBe(JSON.parse(exported.content.trimEnd().split("\n").at(-1)!).id)
+    database.close()
+  })
+
+  it("bounds sanitized input, exports deterministically, and honors cancellation", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database)
+    audit.append({
+      id: `audit-${"i".repeat(600)}`,
+      occurredAt: "2026-08-29T12:00:00.000Z",
+      actor: { kind: "client", client: "desktop", clientId: `token=${"a".repeat(600)}` },
+      action: `terminal.input ${"x".repeat(600)}`,
+      outcome: "succeeded",
+      projectId: `project-${"p".repeat(600)}`,
+      detail: `secret=${"s".repeat(5_000)}`,
+    })
+    const first = audit.export({ limit: 10 })
+    const second = audit.export({ limit: 10 })
+    expect(second).toEqual(first)
+    expect(first.exportedAt).toBe("2026-08-29T12:00:00.000Z")
+    expect(first.content.length).toBeLessThanOrEqual(2_000_000)
+    expect(first.content).not.toContain("s".repeat(100))
+    const controller = new AbortController()
+    controller.abort(new Error("cancel audit"))
+    expect(() => audit.query({ limit: 10 }, controller.signal)).toThrow("cancel audit")
+    expect(() => audit.export({ limit: 10 }, controller.signal)).toThrow("cancel audit")
+    database.close()
+  })
+
+  it("persists redacted entries across a database restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-audit-restart-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    let database = new DatabaseSync(path)
+    new SqliteAuditLog(database).append({
+      id: "audit-restart",
+      occurredAt: "2026-08-29T12:00:00.000Z",
+      actor: { kind: "daemon", component: "server" },
+      action: "session.create",
+      outcome: "succeeded",
+      projectId: "project-restart",
+      detail: "Authorization: Bearer restart-secret",
+    })
+    database.close()
+    database = new DatabaseSync(path)
+    const entries = new SqliteAuditLog(database).query({ projectId: "project-restart", limit: 10 }).entries
+    expect(entries).toEqual([expect.objectContaining({ id: "audit-restart", detail: "Authorization: [REDACTED]" })])
     database.close()
   })
 })

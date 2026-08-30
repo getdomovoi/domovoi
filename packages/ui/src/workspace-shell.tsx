@@ -112,6 +112,7 @@ import { annotationsForActiveSession } from "./annotations"
 import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
 import { latestArtifactForActiveSession } from "./artifacts"
 import { SkillBrowser } from "./skill-browser"
+import { AuditLogView } from "./audit-log-view"
 import {
   providerHandoffDescription,
   preferredSessionProvider,
@@ -2048,11 +2049,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     createTerminal,
     listModels,
     listSkills,
+    exportAudit,
     loadSessionHistory,
     loadSessionEvidence,
     openProject,
     pauseAll,
     pauseSession,
+    queryAudit,
     readSkill,
     reconnect,
     restoreCheckpoint,
@@ -2082,7 +2085,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [dockCollapsed, setDockCollapsed] = useState(() => localStorage.getItem("domovoi.dock-collapsed") === "true")
   const [workspaceError, setWorkspaceError] = useState("")
   const [connectionError, setConnectionError] = useState("")
-  const [surface, setSurface] = useState<"workspace" | "skills">("workspace")
+  const [surface, setSurface] = useState<"workspace" | "skills" | "audit">("workspace")
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
@@ -2182,8 +2185,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             loading={skillsLoading}
             error={skillsError}
             onBack={() => setSurface("workspace")}
+            onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
+          />
+        ) : snapshot && surface === "audit" ? (
+          <AuditLogView
+            connected={connected}
+            onBack={() => setSurface("workspace")}
+            onOpenSkills={() => setSurface("skills")}
+            onQuery={queryAudit}
+            onExport={exportAudit}
           />
         ) : snapshot ? (
           <div className="flex min-h-0 flex-1">

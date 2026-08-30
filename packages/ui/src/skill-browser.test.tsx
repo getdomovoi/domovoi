@@ -46,6 +46,7 @@ describe("skill browser", () => {
         loading={false}
         error=""
         onBack={vi.fn()}
+        onOpenAudit={vi.fn()}
         onReadSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
@@ -58,6 +59,7 @@ describe("skill browser", () => {
     expect(markup).not.toContain("trusted")
     expect(markup).not.toContain("capabilities")
     expect(markup).toContain("View SKILL.md")
+    expect(markup.match(/>Audit log<\/button>/g)).toHaveLength(2)
   })
 
   it("renders bounded source returned by the daemon", () => {
