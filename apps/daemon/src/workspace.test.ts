@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
@@ -138,7 +138,10 @@ describe("GitWorkspaceService", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-fork-"))
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
-    const worktreeRoot = join(scratch, "worktrees")
+    const canonicalWorktreeRoot = join(scratch, "canonical-worktrees")
+    const worktreeRoot = join(scratch, "worktrees-alias")
+    await mkdir(canonicalWorktreeRoot)
+    await symlink(canonicalWorktreeRoot, worktreeRoot, process.platform === "win32" ? "junction" : "dir")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
     await writeFile(join(repositoryPath, "README.md"), "source\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
@@ -159,6 +162,7 @@ describe("GitWorkspaceService", () => {
     const fork = await service.createSessionWorkspaceFromCheckpoint(source.path, checkpoint.commit, "session-fork-request")
     const retry = await service.createSessionWorkspaceFromCheckpoint(source.path, checkpoint.commit, "session-fork-request")
 
+    expect(fork.path).toBe(await realpath(fork.path))
     expect(retry).toEqual(fork)
     expect(fork).toMatchObject({ branch: "domovoi/session-fork-request", baseCommit: checkpoint.commit })
     await expect(readFile(join(fork.path, "README.md"), "utf8")).resolves.toBe("checkpoint state\n")

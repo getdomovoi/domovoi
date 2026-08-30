@@ -331,7 +331,7 @@ export class GitWorkspaceService implements WorkspaceService {
         : ["worktree", "add", "-b", branch, path, checkpointCommit],
       signal,
     )
-    return { path, branch, baseCommit: checkpointCommit }
+    return { path: await realpath(path), branch, baseCommit: checkpointCommit }
   }
 
   async evidence(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence> {
