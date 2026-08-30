@@ -165,7 +165,7 @@ describe("GitWorkspaceService", () => {
     expect(fork.path).toBe(await realpath(fork.path))
     expect(retry).toEqual(fork)
     expect(fork).toMatchObject({ branch: "domovoi/session-fork-request", baseCommit: checkpoint.commit })
-    await expect(readFile(join(fork.path, "README.md"), "utf8")).resolves.toBe("checkpoint state\n")
+    await expect(readFile(join(fork.path, "README.md"), "utf8")).resolves.toMatch(/^checkpoint state\r?\n$/)
     const sourceAfter = await Promise.all([
       execute("git", ["-C", source.path, "rev-parse", "HEAD"]),
       execute("git", ["-C", source.path, "branch", "--show-current"]),
@@ -208,7 +208,7 @@ describe("GitWorkspaceService", () => {
       "session-fork-request",
     )
     expect(reattached).toEqual(fork)
-    await expect(readFile(join(reattached.path, "README.md"), "utf8")).resolves.toBe("checkpoint state\n")
+    await expect(readFile(join(reattached.path, "README.md"), "utf8")).resolves.toMatch(/^checkpoint state\r?\n$/)
     await expect(service.createSessionWorkspaceFromCheckpoint(
       source.path,
       "f".repeat(40),
