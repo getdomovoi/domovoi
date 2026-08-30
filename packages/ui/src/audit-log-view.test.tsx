@@ -76,7 +76,6 @@ describe("audit log view", () => {
       exportedAt: "2026-08-29T18:30:00.000Z",
       entryCount: 1,
       content: `${JSON.stringify(entry)}\n`,
-      hasMore: false,
     })
 
     expect(createObjectURL).toHaveBeenCalledOnce()
