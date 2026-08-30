@@ -1,4 +1,5 @@
 import { cva, type VariantProps } from "class-variance-authority"
+import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
@@ -55,9 +56,14 @@ function EmptyMedia({
   )
 }
 
-function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
+function EmptyTitle({
+  asChild = false,
+  className,
+  ...props
+}: React.ComponentProps<"div"> & { asChild?: boolean }) {
+  const Comp = asChild ? Slot.Root : "div"
   return (
-    <div
+    <Comp
       data-slot="empty-title"
       className={cn(
         "font-heading text-sm font-medium tracking-tight",
@@ -68,7 +74,7 @@ function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-function EmptyDescription({ className, ...props }: React.ComponentProps<"p">) {
+function EmptyDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="empty-description"

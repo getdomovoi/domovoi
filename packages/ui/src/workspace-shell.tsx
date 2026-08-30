@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from "react"
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -251,6 +251,19 @@ const statusClass: Record<SessionSummary["state"], string> = {
   archived: "bg-faint",
 }
 
+export function restoreFocusAfterUpdate(
+  target: { current: { focus(): void } | null },
+  schedule: (callback: () => void) => void = (callback) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => callback())
+    } else {
+      queueMicrotask(callback)
+    }
+  },
+): void {
+  schedule(() => target.current?.focus())
+}
+
 export const providerSettingsNavigationLabel = "Provider settings"
 
 export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): string {
@@ -342,7 +355,10 @@ export function AppBar({
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
         <Badge variant="machine">
-          <span className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
+          <span aria-hidden="true" data-status-dot="" className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
+          <span className="sr-only">
+            {connected ? "Connected to " : "Disconnected from "}{snapshot?.machine.name ?? "daemon"}.
+          </span>
           <span className="hidden sm:inline">{snapshot?.machine.name ?? "daemon"}</span>
         </Badge>
       </div>
@@ -405,7 +421,7 @@ export function emergencyStopAnnouncement(result: SystemEmergencyStopResult): st
   return `Pause all complete: ${summary.join(", ")}.`
 }
 
-function SessionRow({
+export function SessionRow({
   session,
   active,
   onActivate,
@@ -425,8 +441,9 @@ function SessionRow({
       )}
     >
       <span className="flex w-full items-start gap-2">
-        <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", statusClass[session.state])} />
+        <span aria-hidden="true" data-status-dot="" className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", statusClass[session.state])} />
         <span className="line-clamp-2 text-[12.5px] font-medium leading-[1.35]">{session.title}</span>
+        <span className="sr-only">Status: {session.state}</span>
       </span>
       <span className="ml-3.5 flex flex-wrap items-center gap-1">
         <Badge variant="machine">{session.runtime.provider}/{session.runtime.model}</Badge>
@@ -442,18 +459,20 @@ function SessionRow({
   )
 }
 
-function SessionsSidebar({
+export function SessionsSidebar({
   snapshot,
   onCollapse,
   onActivate,
   onNewSession,
   onOpenProviderSettings,
+  collapseButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
   onOpenProviderSettings: () => void
+  collapseButtonRef?: RefObject<HTMLButtonElement | null>
 }) {
   const groups = useMemo(
     () => [
@@ -466,10 +485,10 @@ function SessionsSidebar({
   )
 
   return (
-    <aside className="flex h-full min-w-0 flex-col bg-sidebar">
+    <aside aria-label="Sessions" data-workspace-panel="sessions" className="flex h-full min-w-0 flex-col bg-sidebar">
       <div className="flex h-11 items-center justify-between px-3">
         <span className="text-[9px] uppercase tracking-[0.15em] text-faint">Sessions</span>
-        <Button variant="ghost" size="icon-xs" aria-label="Collapse sessions" onClick={onCollapse}>
+        <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse sessions" onClick={onCollapse}>
           <PanelLeftCloseIcon />
         </Button>
       </div>
@@ -479,7 +498,7 @@ function SessionsSidebar({
         </Button>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
-          <Input className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
+          <Input aria-label="Search sessions, files, and skills" className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
         </div>
       </div>
       <Separator />
@@ -491,11 +510,11 @@ function SessionsSidebar({
             )
             return (
               <section key={group.label} className="flex flex-col gap-1">
-                <div className="flex h-7 items-center gap-2 px-2 text-[9px] uppercase tracking-[0.13em] text-faint">
+                <h2 className="m-0 flex h-7 items-center gap-2 px-2 text-[9px] font-normal uppercase tracking-[0.13em] text-faint">
                   <ChevronDownIcon className="size-3" />
                   {group.label}
                   <span className="font-machine">{sessions.length}</span>
-                </div>
+                </h2>
                 {sessions.map((session) => (
                   <SessionRow
                     key={session.id}
@@ -538,6 +557,7 @@ function ApprovalCard({
   ) => void
 }) {
   const cardRef = useRef<HTMLDivElement>(null)
+  const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
   const [explanation, setExplanation] = useState("")
   useEffect(() => {
@@ -553,6 +573,11 @@ function ApprovalCard({
     ["Network", approval.network],
     ["Est. duration", approval.estimatedDuration],
   ]
+  const closeExplanation = () => {
+    setExplainOpen(false)
+    setExplanation("")
+    restoreFocusAfterUpdate(explainTriggerRef)
+  }
 
   return (
     <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 p-4">
@@ -563,7 +588,7 @@ function ApprovalCard({
       </AlertTitle>
       <AlertDescription className="col-span-full flex flex-col gap-3">
         <p className="text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
-        <code className="rounded-md bg-warn-deep px-3 py-2 font-machine text-[11px] text-warn-foreground">
+        <code className="break-all whitespace-pre-wrap rounded-md bg-warn-deep px-3 py-2 font-machine text-[11px] text-warn-foreground">
           {approval.command}
         </code>
         <dl className="grid grid-cols-[100px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
@@ -585,6 +610,12 @@ function ApprovalCard({
               value={explanation}
               onChange={(event) => setExplanation(event.target.value)}
               onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  closeExplanation()
+                  return
+                }
                 if (event.key === "Enter" && explanation.trim()) {
                   onResolve("deny-explain", explanation.trim())
                 }
@@ -592,7 +623,7 @@ function ApprovalCard({
               placeholder="Explain what should change before retrying"
             />
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setExplainOpen(false)}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
               <Button
                 variant="warning"
                 size="sm"
@@ -605,7 +636,7 @@ function ApprovalCard({
           </div>
         ) : null}
         <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={() => setExplainOpen(true)}>Deny and explain</Button>
+          <Button ref={explainTriggerRef} variant="ghost" size="sm" onClick={() => setExplainOpen(true)}>Deny and explain</Button>
           <Button variant="ghost" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
           <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
           <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
@@ -1065,7 +1096,9 @@ export function Thread({
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">{hasProject ? <BotIcon /> : <FolderOpenIcon />}</EmptyMedia>
-            <EmptyTitle>{hasProject ? "No session is open" : "No project is open"}</EmptyTitle>
+            <EmptyTitle asChild>
+              <h1>{hasProject ? "No session is open" : "No project is open"}</h1>
+            </EmptyTitle>
             <EmptyDescription>
               {hasProject
                 ? "Start a session to create an isolated worktree and talk to an agent."
@@ -1212,8 +1245,8 @@ export function Thread({
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
-      <div className="flex min-h-[76px] items-center justify-between gap-4 border-b px-5 py-3">
-        <div className="min-w-0">
+      <div className="flex min-h-[76px] flex-wrap items-start justify-between gap-4 border-b px-5 py-3">
+        <div className="min-w-0 flex-1">
           <h1 className="m-0 max-w-xl text-[17px] leading-[1.25] font-semibold tracking-[-0.01em]">
             {active.title}
           </h1>
@@ -1226,7 +1259,7 @@ export function Thread({
           </div>
         </div>
         {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : (
-          <div className="flex max-w-[58%] flex-wrap items-center justify-end gap-1.5">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
             <RuntimeControls
               runtime={active.runtime}
               providers={snapshot.machine.providers}
@@ -1307,15 +1340,15 @@ export function Thread({
               }
             }}
           />
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+          <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Badge variant="machine">{snapshot.machine.name}</Badge>
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
               {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="flex items-center gap-2"><span className="font-machine text-[9px] text-faint">⌘ ↵ send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span className="font-machine text-[9px] text-faint">Ctrl/⌘ + Enter send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
       </div>}
@@ -1730,6 +1763,7 @@ export function HistoryPanel({
 export function ArtifactDock({
   snapshot,
   onCollapse,
+  collapseButtonRef,
   defaultTab,
   rpcUrl,
   authorizeArtifact,
@@ -1744,6 +1778,7 @@ export function ArtifactDock({
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
+  collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   rpcUrl: string
   authorizeArtifact: (input: {
@@ -2060,7 +2095,7 @@ export function ArtifactDock({
   }
 
   return (
-    <aside className="flex h-full min-w-0 flex-col bg-sidebar">
+    <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-sidebar">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
         <div className="flex h-11 items-center border-b px-2">
           <TabsList variant="line" className="min-w-0 flex-1 justify-start overflow-x-auto">
@@ -2075,7 +2110,7 @@ export function ArtifactDock({
             <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
-          <Button variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
+          <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
           {preview ? (
@@ -2456,28 +2491,30 @@ function SidebarRail({
   onActivate,
   onExpand,
   onOpenProviderSettings,
+  expandButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
   onActivate: (sessionId: string) => void
   onExpand: () => void
   onOpenProviderSettings: () => void
+  expandButtonRef?: RefObject<HTMLButtonElement | null>
 }) {
   return (
-    <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
+    <aside aria-label="Collapsed sessions" data-workspace-panel="sessions-rail" className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
+      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
       <Separator />
-      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={session.title} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title}</TooltipContent></Tooltip>)}
+      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={`${session.title}. Status: ${session.state}`} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span aria-hidden="true" data-status-dot="" className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title} · {session.state}</TooltipContent></Tooltip>)}
       <span className="flex-1" />
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent></Tooltip>
     </aside>
   )
 }
 
-function DockRail({ onExpand }: { onExpand: () => void }) {
+function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
   const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
   return (
-    <aside className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
+    <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
+      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
       <Separator />
       {items.map((Icon, index) => <Button key={index} variant="ghost" size="icon-sm" aria-label="Artifact dock item" onClick={onExpand}><Icon /></Button>)}
     </aside>
@@ -2537,6 +2574,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribe: subscribeTerminal,
   }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
+  const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
+  const sidebarExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
+  const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
   const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
@@ -2571,10 +2612,22 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
   const setSidebarCollapsed = (collapsed: boolean) => {
+    const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
+      : null
     setWorkspaceUi((current) => ({ ...current, sidebarCollapsed: collapsed }))
+    if ((collapsed && activePanel === "sessions") || (!collapsed && activePanel === "sessions-rail")) {
+      restoreFocusAfterUpdate(collapsed ? sidebarExpandButtonRef : sidebarCollapseButtonRef)
+    }
   }
   const setDockCollapsed = (collapsed: boolean) => {
+    const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
+      : null
     setWorkspaceUi((current) => ({ ...current, dockCollapsed: collapsed }))
+    if ((collapsed && activePanel === "dock") || (!collapsed && activePanel === "dock-rail")) {
+      restoreFocusAfterUpdate(collapsed ? dockExpandButtonRef : dockCollapseButtonRef)
+    }
   }
   const setSurface = (nextSurface: WorkspaceSurface) => {
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
@@ -2911,9 +2964,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         {!connected ? (
-          <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
-            <span className="size-2 shrink-0 rounded-full bg-destructive" />
-            <span>{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
+          <div role="status" aria-live="polite" aria-atomic="true" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
+            <span aria-hidden="true" data-status-dot="" className="size-2 shrink-0 rounded-full bg-destructive" />
+            <span className="min-w-0 flex-1 break-words">{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
             <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
             {onChangeCredential ? <Button variant="outline" size="sm" onClick={onChangeCredential}>Change credential</Button> : null}
             <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
@@ -2958,7 +3011,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : snapshot ? (
           <div className="flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} /> : null}
+            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} expandButtonRef={sidebarExpandButtonRef} /> : null}
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
@@ -2972,18 +3025,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
-            {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}
+            {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>
         ) : (
           <main className="flex min-h-0 flex-1 bg-background">
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon"><DomovoiMark reduced className="size-5" /></EmptyMedia>
-                <EmptyTitle>Connecting to the daemon</EmptyTitle>
+                <EmptyTitle asChild><h1>Connecting to the daemon</h1></EmptyTitle>
                 <EmptyDescription>Domovoi will show workspace state after the execution machine responds.</EmptyDescription>
               </EmptyHeader>
             </Empty>

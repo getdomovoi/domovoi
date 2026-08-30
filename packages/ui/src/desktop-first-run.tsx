@@ -218,7 +218,7 @@ export function FirstRunSetupSteps({
     <div className="mt-6 flex flex-col gap-2.5">
       <Card data-first-run-step="daemon" size="sm" className="gap-0 py-0">
         <CardHeader className="min-h-16 content-center py-3.5">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Badge variant={connected ? "success" : "secondary"} className="size-5.5 px-0 font-machine">1</Badge>
             <div className="min-w-0 flex-1">
               <CardTitle>{connected ? "Local daemon running" : "Local daemon unavailable"}</CardTitle>
@@ -244,7 +244,7 @@ export function FirstRunSetupSteps({
 
       <Card data-first-run-step="provider" size="sm" className="gap-0 py-0">
         <CardHeader className="min-h-16 content-center py-3.5">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Badge variant="secondary" className="size-5.5 px-0 font-machine">2</Badge>
             <div className="min-w-0 flex-1">
               <CardTitle>Connect a coding agent</CardTitle>
@@ -310,7 +310,7 @@ export function FirstRunSetupSteps({
 
       <Card data-first-run-step="permission" size="sm" className="gap-0 py-0">
         <CardHeader className="min-h-16 content-center py-3.5">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Badge variant="secondary" className="size-5.5 px-0 font-machine">3</Badge>
             <div className="min-w-0 flex-1">
               <CardTitle>Choose a permission mode for new projects</CardTitle>
@@ -407,7 +407,7 @@ export function DesktopFirstRunDialog({
             onRetry={onRetry}
             onCopyGuidance={onCopyGuidance}
           />
-          <div className="mt-5 flex items-center gap-3">
+          <div className="mt-5 flex flex-wrap items-center gap-3">
             <p className="m-0 flex-1 text-[11px] leading-relaxed text-faint">
               Provider credentials remain owned by their CLI. Domovoi stores only this setup completion and your defaults.
             </p>

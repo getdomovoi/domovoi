@@ -39,7 +39,7 @@ export function DaemonCredentialPrompt({
           <div className="mb-2 flex size-9 items-center justify-center rounded-md bg-accent text-primary">
             <DomovoiMark reduced className="size-5" />
           </div>
-          <CardTitle>Connect to this daemon</CardTitle>
+          <CardTitle asChild><h1>Connect to this daemon</h1></CardTitle>
           <CardDescription>
             Enter the credential owned by the machine running Domovoi.
           </CardDescription>
