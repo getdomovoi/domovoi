@@ -1661,11 +1661,17 @@ export class DomovoiDaemon {
           return
         }
         const providerChanged = params.runtime.provider !== session.runtime.provider
-        if (providerChanged && (!session.workspacePath || !session.providerThreadId)) {
+        const currentThreadKey = session.providerThreadId
+          ? providerThreadKey(session.runtime.provider, session.providerThreadId)
+          : undefined
+        const recoveringEmergencyThread = currentThreadKey !== undefined
+          && this.#failedEmergencyThreads.has(currentThreadKey)
+        const replacesThread = providerChanged || recoveringEmergencyThread
+        if (replacesThread && (!session.workspacePath || !session.providerThreadId)) {
           this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
           return
         }
-        if (providerChanged && session.activeTurnId) {
+        if (replacesThread && session.activeTurnId) {
           this.#error(socket, request.id, invalidParams, "Stop the active turn before changing providers")
           return
         }
@@ -1684,7 +1690,12 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session no longer exists")
           return
         }
-        if (runtime.provider !== currentSession.runtime.provider) {
+        const previousKey = currentSession.providerThreadId
+          ? providerThreadKey(currentSession.runtime.provider, currentSession.providerThreadId)
+          : undefined
+        const recoveringFailedThread = previousKey !== undefined
+          && this.#failedEmergencyThreads.has(previousKey)
+        if (runtime.provider !== currentSession.runtime.provider || recoveringFailedThread) {
           if (!currentSession.workspacePath || !currentSession.providerThreadId) {
             this.#error(socket, request.id, invalidParams, "Session is not ready for provider handoff")
             return
@@ -1692,50 +1703,69 @@ export class DomovoiDaemon {
           const previousRuntime = currentSession.runtime
           const previousThreadId = currentSession.providerThreadId
           const nextAgent = await this.#ensureAgentConnected(runtime.provider)
-          const pendingThread = nextAgent.startThread({
-            cwd: currentSession.workspacePath,
-            runtime,
-          })
-          const nextThreadId = await withLateCleanup(
-            pendingThread,
-            this.#agentTimeoutMs,
-            "Provider handoff timed out",
-            (threadId) => nextAgent.stopThread(threadId),
-            "Domovoi could not stop a late provider handoff thread",
-            (context, error) => this.#reportError(context, error),
-          )
-          if (signal?.aborted) {
-            await withTimeout(
-              nextAgent.stopThread(nextThreadId),
+          const startNextThread = async () => {
+            signal?.throwIfAborted()
+            const nextThreadId = await withLateCleanup(
+              nextAgent.startThread({ cwd: currentSession.workspacePath!, runtime }),
               this.#agentTimeoutMs,
-              "Cancelled provider handoff cleanup timed out",
+              recoveringFailedThread ? "Provider recovery timed out" : "Provider handoff timed out",
+              (threadId) => nextAgent.stopThread(threadId),
+              "Domovoi could not stop a late replacement provider thread",
+              (context, error) => this.#reportError(context, error),
             )
-            signal.throwIfAborted()
+            if (signal?.aborted) {
+              await withTimeout(
+                nextAgent.stopThread(nextThreadId),
+                this.#agentTimeoutMs,
+                "Cancelled provider replacement cleanup timed out",
+              )
+              signal.throwIfAborted()
+            }
+            return nextThreadId
           }
-          const previousAgent = this.#agents.require(previousRuntime.provider)
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
-          try {
+          let nextThreadId: string
+          if (recoveringFailedThread) {
             checkpoint = await this.#withAbortTimeout(
               (signal) => this.#workspaceService.checkpoint(
                 currentSession.workspacePath!,
-                "before provider handoff",
+                "before provider recovery",
                 signal,
               ),
               this.#agentTimeoutMs,
-              "Provider handoff checkpoint timed out",
+              "Provider recovery checkpoint timed out",
             )
             await withTimeout(
-              previousAgent.stopThread(previousThreadId),
+              this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
               this.#agentTimeoutMs,
-              "Previous provider cleanup timed out",
+              "Failed provider cleanup timed out",
             )
-          } catch (error) {
+            nextThreadId = await startNextThread()
+          } else {
+            nextThreadId = await startNextThread()
             try {
-              await nextAgent.stopThread(nextThreadId)
-            } catch (cleanupError) {
-              this.#reportError("Domovoi could not stop a failed handoff thread", cleanupError)
+              checkpoint = await this.#withAbortTimeout(
+                (signal) => this.#workspaceService.checkpoint(
+                  currentSession.workspacePath!,
+                  "before provider handoff",
+                  signal,
+                ),
+                this.#agentTimeoutMs,
+                "Provider handoff checkpoint timed out",
+              )
+              await withTimeout(
+                this.#agents.require(previousRuntime.provider).stopThread(previousThreadId),
+                this.#agentTimeoutMs,
+                "Previous provider cleanup timed out",
+              )
+            } catch (error) {
+              try {
+                await nextAgent.stopThread(nextThreadId)
+              } catch (cleanupError) {
+                this.#reportError("Domovoi could not stop a failed handoff thread", cleanupError)
+              }
+              throw error
             }
-            throw error
           }
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
@@ -1745,11 +1775,15 @@ export class DomovoiDaemon {
           currentSession.updatedAt = createdAt
           this.#loadedAgentThreads.delete(providerThreadKey(previousRuntime.provider, previousThreadId))
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, nextThreadId))
+          if (recoveringFailedThread && previousKey) {
+            this.#failedEmergencyThreads.delete(previousKey)
+            this.#emergencyBlockedThreads.delete(previousKey)
+          }
           this.#snapshot.thread.push({
             id: `checkpoint-${randomUUID()}`,
             sessionId: currentSession.id,
             kind: "checkpoint",
-            label: `${checkpoint.commit.slice(0, 8)} · before provider handoff`,
+            label: `${checkpoint.commit.slice(0, 8)} · before provider ${recoveringFailedThread ? "recovery" : "handoff"}`,
             commit: checkpoint.commit,
             createdAt,
           })
@@ -1760,8 +1794,12 @@ export class DomovoiDaemon {
             id: `handoff-${randomUUID()}`,
             sessionId: currentSession.id,
             kind: "system",
-            body: `Handed off ${previousRuntime.provider} / ${previousRuntime.model} to ${runtime.provider} / ${runtime.model}.`,
-            detail: `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
+            body: recoveringFailedThread
+              ? `Recovered ${runtime.provider} / ${runtime.model} with a replacement provider thread.`
+              : `Handed off ${previousRuntime.provider} / ${previousRuntime.model} to ${runtime.provider} / ${runtime.model}.`,
+            detail: recoveringFailedThread
+              ? `Checkpoint, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations were preserved. The failed provider thread was quarantined. Hidden reasoning and provider caches did not transfer.`
+              : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
         } else {
@@ -2993,8 +3031,10 @@ export class DomovoiDaemon {
   }
 
   #emergencyFailureMessage(error: unknown, fallback: string): string {
-    return redactDurableText(error instanceof Error ? error.message : fallback).value
-      .slice(0, maximumEmergencyStopFailureMessageLength)
+    const errorMessage = error instanceof Error ? error.message : ""
+    const detail = redactDurableText(errorMessage.trim() ? errorMessage : fallback).value
+    const nonemptyDetail = detail.trim() ? detail : redactDurableText(fallback).value
+    return nonemptyDetail.slice(0, maximumEmergencyStopFailureMessageLength)
   }
 
   async #stopCancelledProviderTurn(
@@ -3614,15 +3654,17 @@ function withAbortTimeout<T>(
   return new Promise((resolvePromise, rejectPromise) => {
     const timeoutError = new OperationTimeoutError(message)
     const startedAt = Date.now()
-    const timer = setTimeout(() => {
-      controller.abort(timeoutError)
-      rejectPromise(timeoutError)
-    }, timeoutMs)
+    let timer: ReturnType<typeof setTimeout>
     let abortFromParent = () => {}
     const cleanup = () => {
       clearTimeout(timer)
       parentSignal?.removeEventListener("abort", abortFromParent)
     }
+    timer = setTimeout(() => {
+      controller.abort(timeoutError)
+      cleanup()
+      rejectPromise(timeoutError)
+    }, timeoutMs)
     abortFromParent = () => {
       const reason = parentSignal?.reason ?? new Error("Operation aborted")
       controller.abort(reason)

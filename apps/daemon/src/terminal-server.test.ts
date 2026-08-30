@@ -270,10 +270,27 @@ describe("terminal RPC", () => {
     snapshot.approvals = []
     let listener: ((event: AgentEvent) => void) | undefined
     const never = () => new Promise<void>(() => {})
+    let failedThreadStopAttempts = 0
     const agent = {
-      connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
-      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
-      stopThread: vi.fn(never), startTurn: vi.fn(async () => "new-turn"),
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        provider: "codex" as const,
+        id: session.runtime.model,
+        displayName: session.runtime.model,
+        description: "Recovery model",
+        supportedReasoningEfforts: [session.runtime.reasoning],
+        defaultReasoningEffort: session.runtime.reasoning,
+        isDefault: true,
+      }]),
+      startThread: vi.fn(async () => "thread-recovered-emergency"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async (threadId: string) => {
+        if (threadId !== "thread-failed-emergency") return
+        failedThreadStopAttempts += 1
+        if (failedThreadStopAttempts === 1) throw new Error("   ")
+        if (failedThreadStopAttempts === 2) throw new Error("provider still running")
+      }),
+      startTurn: vi.fn(async () => "new-turn"),
       steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(never),
       resolveApproval: vi.fn(),
       onEvent: vi.fn((next: (event: AgentEvent) => void) => {
@@ -282,10 +299,16 @@ describe("terminal RPC", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(async () => ({ commit: "f".repeat(40), changedFiles: [] })),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
+      workspaceService,
       agentTimeoutMs: 10,
     })
     running.push(daemon)
@@ -323,6 +346,7 @@ describe("terminal RPC", () => {
         failures: [expect.objectContaining({
           target: "turn",
           targetId: "turn-failed-emergency",
+          message: "Provider reset failed",
         })],
         snapshot: {
           sessions: expect.arrayContaining([expect.objectContaining({
@@ -348,6 +372,54 @@ describe("terminal RPC", () => {
     })
     await expect(rpc("workspace.get", {})).resolves.toMatchObject({ result: { approvals: [] } })
     expect(agent.startTurn).not.toHaveBeenCalled()
+
+    await expect(rpc("session.setRuntime", {
+      sessionId: session.id,
+      runtime: session.runtime,
+      client: "desktop",
+    })).resolves.toMatchObject({ error: { code: -32603, message: "Internal daemon error" } })
+    expect(agent.startThread).not.toHaveBeenCalled()
+    await expect(rpc("session.send", {
+      sessionId: session.id,
+      prompt: "failed recovery must stay quarantined",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Provider thread requires recovery after emergency stop" },
+    })
+
+    const recovered = await rpc("session.setRuntime", {
+      sessionId: session.id,
+      runtime: session.runtime,
+      client: "desktop",
+    })
+    expect(recovered).toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          state: "idle",
+          providerThreadId: "thread-recovered-emergency",
+        })]),
+        thread: expect.arrayContaining([expect.objectContaining({
+          sessionId: session.id,
+          kind: "system",
+          body: expect.stringContaining("Recovered"),
+        })]),
+      },
+    })
+    expect(workspaceService.checkpoint).toHaveBeenCalledWith(
+      session.workspacePath,
+      "before provider recovery",
+      expect.any(AbortSignal),
+    )
+    expect(failedThreadStopAttempts).toBe(3)
+    await expect(rpc("session.send", {
+      sessionId: session.id,
+      prompt: "continue on the replacement thread",
+      client: "desktop",
+    })).resolves.toHaveProperty("result")
+    expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-recovered-emergency",
+    }))
     socket.close()
   })
 
