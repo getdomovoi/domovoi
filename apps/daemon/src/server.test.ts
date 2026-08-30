@@ -35,6 +35,7 @@ import type { SkillCatalog } from "./skills.js"
 import type { WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
+import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -61,6 +62,79 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("persists provider-independent worktree artifact changes and closes watchers", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-artifact-integration-"))
+    scratchDirectories.push(scratch)
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = scratch
+    delete session.providerThreadId
+    delete session.activeTurnId
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter((annotation) => annotation.sessionId !== session.id)
+    let watcherOptions: ArtifactWatcherOptions | undefined
+    const watcherStart = vi.fn(async () => {})
+    const watcherStop = vi.fn()
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: {},
+      artifactWatcherFactory: (options) => {
+        watcherOptions = options
+        return { start: watcherStart, stop: watcherStop }
+      },
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    expect(watcherStart).toHaveBeenCalledOnce()
+    expect(watcherOptions?.root).toBe(scratch)
+
+    await mkdir(join(scratch, "design-studio"), { recursive: true })
+    await mkdir(join(scratch, "plans"), { recursive: true })
+    await writeFile(join(scratch, "design-studio", "variant-a.html"), "<h1>Variant A</h1>")
+    await writeFile(join(scratch, "plans", "review-plan.md"), "# Review plan")
+    watcherOptions!.onChange({
+      path: "design-studio/variant-a.html",
+      title: "variant-a.html",
+      type: "preview",
+      mimeType: "text/html",
+    })
+    watcherOptions!.onChange({
+      path: "plans/review-plan.md",
+      title: "review-plan.md",
+      type: "plan",
+      mimeType: "text/markdown",
+      content: "# Review plan",
+    })
+    await vi.waitFor(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: session.id, path: "design-studio/variant-a.html", type: "preview", revision: 1 }),
+      expect.objectContaining({ sessionId: session.id, path: "plans/review-plan.md", type: "plan", content: "# Review plan", revision: 1 }),
+    ])))
+
+    watcherOptions!.onChange({
+      path: "design-studio/variant-a.html",
+      title: "variant-a.html",
+      type: "preview",
+      mimeType: "text/html",
+    })
+    await vi.waitFor(() => expect(store.snapshot.artifacts.find(
+      (artifact) => artifact.path === "design-studio/variant-a.html",
+    )?.revision).toBe(2))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    await daemon.stop()
+    running.splice(running.indexOf(daemon), 1)
+    expect(watcherStop).toHaveBeenCalledOnce()
+  })
+
   it("keeps provider commands raw while redacting every durable and display copy", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-command-redaction-"))
     scratchDirectories.push(scratch)

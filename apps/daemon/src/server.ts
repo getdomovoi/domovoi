@@ -1,6 +1,6 @@
 import { createServer, type Server as HttpServer } from "node:http"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { readFile, realpath } from "node:fs/promises"
+import { lstat, readFile, realpath, stat } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
@@ -75,6 +75,12 @@ import { permissionDecisionFor } from "./permission-policy.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
+import {
+  ArtifactWatcher,
+  maximumArtifactFileBytes,
+  type ArtifactFileChange,
+  type SessionArtifactWatcherFactory,
+} from "./artifact-watcher.js"
 import { testEvidence } from "./test-evidence.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -356,6 +362,7 @@ export type DaemonServerOptions = {
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
+  artifactWatcherFactory?: SessionArtifactWatcherFactory
 }
 
 export type DaemonErrorEntry = {
@@ -429,6 +436,8 @@ export class DomovoiDaemon {
   #stopped = false
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
+  #artifactWatcherFactory: SessionArtifactWatcherFactory
+  #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -489,6 +498,8 @@ export class DomovoiDaemon {
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
+    this.#artifactWatcherFactory = options.artifactWatcherFactory
+      ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
       agent.onEvent((event) => {
         if (this.#stopping || this.#stopped) return
@@ -519,6 +530,7 @@ export class DomovoiDaemon {
     if (this.#http) throw new Error("Daemon is already running")
 
     await this.#recoverSessionArchives()
+    await this.#syncArtifactWatchers()
 
     this.#http = createServer((request, response) => {
       if (request.url === "/healthz") {
@@ -612,6 +624,7 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
     const stopping = this.#finishStop()
     this.#stopPromise = stopping
@@ -2444,6 +2457,7 @@ export class DomovoiDaemon {
         changed = true
       }
 
+      if (changed) await this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed) this.#store.save(this.#snapshot)
       this.#send(socket, {
@@ -3403,6 +3417,116 @@ export class DomovoiDaemon {
     terminal.process.kill()
     this.#broadcastNotification("terminal.closed", { terminalId })
     return true
+  }
+
+  async #syncArtifactWatchers(): Promise<void> {
+    const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
+      session.workspacePath && !sessionIsArchiveReadOnly(session)
+        ? [[session.id, resolve(session.workspacePath)] as const]
+        : []
+    ))
+    for (const [sessionId, active] of this.#artifactWatchers) {
+      if (liveSessions.get(sessionId) === active.root) continue
+      active.watcher.stop()
+      this.#artifactWatchers.delete(sessionId)
+    }
+    for (const [sessionId, root] of liveSessions) {
+      if (this.#artifactWatchers.has(sessionId)) continue
+      try {
+        await realpath(root)
+      } catch (error) {
+        if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+          this.#reportError("Domovoi could not inspect session artifact path", error)
+        }
+        continue
+      }
+      const watcher = this.#artifactWatcherFactory({
+        root,
+        onChange: (change) => {
+          if (this.#stopping || this.#stopped) return
+          void this.#enqueueMutation(() => this.#recordWorktreeArtifact(sessionId, root, change))
+        },
+        onError: (error) => this.#reportError("Domovoi artifact watcher failed", error),
+      })
+      this.#artifactWatchers.set(sessionId, { root, watcher })
+      try {
+        await watcher.start()
+      } catch (error) {
+        watcher.stop()
+        this.#artifactWatchers.delete(sessionId)
+        this.#reportError("Domovoi could not watch session artifacts", error)
+      }
+    }
+  }
+
+  async #recordWorktreeArtifact(
+    sessionId: string,
+    root: string,
+    change: ArtifactFileChange,
+  ): Promise<void> {
+    const session = this.#snapshot.sessions.find((candidate) =>
+      candidate.id === sessionId
+      && candidate.workspacePath
+      && resolve(candidate.workspacePath) === root
+      && !sessionIsArchiveReadOnly(candidate)
+    )
+    if (!session) return
+    const lexicalPath = resolveInside(root, change.path)
+    if (!lexicalPath) return
+    try {
+      const [metadata, resolvedPath, lexicalMetadata] = await Promise.all([
+        stat(lexicalPath),
+        resolveInsideReal(root, lexicalPath),
+        lstat(lexicalPath),
+      ])
+      if (
+        !resolvedPath
+        || !metadata.isFile()
+        || lexicalMetadata.isSymbolicLink()
+        || metadata.size > maximumArtifactFileBytes
+        || (change.content && Buffer.byteLength(change.content, "utf8") > maximumArtifactFileBytes)
+      ) return
+    } catch {
+      return
+    }
+    const fileHash = createHash("sha256")
+      .update(`${sessionId}:${lexicalPath}`)
+      .digest("hex")
+      .slice(0, 16)
+    const artifactId = change.type === "preview"
+      ? `preview-${fileHash}`
+      : `plan-${sessionId}-${fileHash}`
+    const existing = this.#snapshot.artifacts.find((artifact) =>
+      artifact.id === artifactId
+      && artifact.sessionId === sessionId
+      && artifact.type === change.type
+    )
+    if (existing) {
+      existing.title = change.title
+      existing.path = change.path
+      existing.mimeType = change.mimeType
+      if (change.content === undefined) delete existing.content
+      else existing.content = change.content
+      existing.revision += 1
+    } else {
+      this.#snapshot.artifacts.push({
+        id: artifactId,
+        sessionId,
+        title: change.title,
+        type: change.type,
+        revision: 1,
+        path: change.path,
+        mimeType: change.mimeType,
+        ...(change.content === undefined ? {} : { content: change.content }),
+      })
+    }
+    session.updatedAt = new Date().toISOString()
+    this.#flushAgentState()
+  }
+
+  #closeArtifactWatchers(): void {
+    for (const { watcher } of this.#artifactWatchers.values()) watcher.stop()
+    this.#artifactWatchers.clear()
   }
 
   #closeSessionTerminals(sessionId: string): void {
