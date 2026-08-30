@@ -2430,6 +2430,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     resolveApproval,
     replyToAnnotation,
     sendMessage,
+    setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
     snapshot,
@@ -2585,6 +2586,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
+            projectId={snapshot.project?.id}
+            enablements={snapshot.skillEnablements}
+            onSetSkillEnabled={setSkillEnabled}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
         ) : snapshot && surface === "audit" ? (

@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
 
-import type { SkillDocument, SkillSummary } from "@getdomovoi/protocol"
+import type { SkillDocument, SkillEnablementReview, SkillSummary } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
@@ -71,6 +81,9 @@ export function SkillBrowser({
   onBack,
   onOpenAudit,
   onReadSkill,
+  projectId,
+  enablements,
+  onSetSkillEnabled,
   onRetry,
 }: {
   skills: readonly SkillSummary[]
@@ -79,6 +92,14 @@ export function SkillBrowser({
   onBack: () => void
   onOpenAudit: () => void
   onReadSkill: (id: string) => Promise<SkillDocument>
+  projectId: string | undefined
+  enablements: readonly SkillEnablementReview[]
+  onSetSkillEnabled: (input: {
+    id: string
+    enabled: boolean
+    contentDigest: string
+    manifest: SkillSummary["manifest"]
+  }) => Promise<unknown>
   onRetry: () => void
 }) {
   const [query, setQuery] = useState("")
@@ -87,9 +108,22 @@ export function SkillBrowser({
   const [sourceContent, setSourceContent] = useState("")
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceError, setSourceError] = useState("")
+  const [reviewEnabled, setReviewEnabled] = useState<boolean>()
+  const [reviewPending, setReviewPending] = useState(false)
+  const [reviewError, setReviewError] = useState("")
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const selected = skills.find((skill) => skill.id === selectedId) ?? filtered[0] ?? skills[0]
+  const selectedReview = selected && projectId
+    ? enablements.find((review) => review.projectId === projectId && review.skillId === selected.id)
+    : undefined
+  const selectedReviewIsCurrent = Boolean(
+    selectedReview
+    && selected
+    && selectedReview.contentDigest === selected.contentDigest
+    && JSON.stringify(selectedReview.manifest) === JSON.stringify(selected.manifest),
+  )
+  const selectedEnabled = selectedReviewIsCurrent && selectedReview?.enabled === true
 
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
@@ -104,6 +138,21 @@ export function SkillBrowser({
       (document) => setSourceContent(document.content),
       (cause: unknown) => setSourceError(cause instanceof Error ? cause.message : "SKILL.md could not be read"),
     ).finally(() => setSourceLoading(false))
+  }
+
+  const submitReview = () => {
+    if (!selected || reviewEnabled === undefined) return
+    setReviewPending(true)
+    setReviewError("")
+    void onSetSkillEnabled({
+      id: selected.id,
+      enabled: reviewEnabled,
+      contentDigest: selected.contentDigest,
+      manifest: selected.manifest,
+    }).then(
+      () => setReviewEnabled(undefined),
+      (cause: unknown) => setReviewError(cause instanceof Error ? cause.message : "Skill review failed"),
+    ).finally(() => setReviewPending(false))
   }
 
   return (
@@ -203,6 +252,12 @@ export function SkillBrowser({
                 <Badge variant="outline">{selected.scope} · {skillSourceLabel(selected.source)}</Badge>
               </div>
               <p className="mt-2 text-[12.5px] leading-relaxed text-muted-foreground">{selected.description}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge variant={selectedEnabled ? "default" : "secondary"}>
+                  {selectedEnabled ? "Enabled for this project" : "Not enabled for this project"}
+                </Badge>
+                {selectedReview && !selectedReviewIsCurrent ? <Badge variant="outline">Review is stale</Badge> : null}
+              </div>
               <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <Card>
                   <CardHeader><CardTitle>Source</CardTitle><CardDescription>Discovery provenance</CardDescription></CardHeader>
@@ -216,16 +271,36 @@ export function SkillBrowser({
                   <CardHeader><CardTitle>Location</CardTitle><CardDescription>SKILL.md on the execution machine</CardDescription></CardHeader>
                   <CardContent><code className="block break-all font-machine text-[10.5px]">{selected.path}</code></CardContent>
                 </Card>
+                <Card className="sm:col-span-2">
+                  <CardHeader><CardTitle>Review evidence</CardTitle><CardDescription>Exact content and declared capabilities</CardDescription></CardHeader>
+                  <CardContent className="flex flex-col gap-2 font-machine text-[10.5px]">
+                    <code className="break-all">{selected.contentDigest}</code>
+                    <div className="flex flex-wrap gap-1.5">
+                      {selected.manifest.capabilities.length > 0
+                        ? selected.manifest.capabilities.map((capability) => <Badge key={capability} variant="outline">{capability}</Badge>)
+                        : <span className="text-muted-foreground">No declared capabilities</span>}
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
               <Alert className="mt-4">
                 <FileTextIcon />
-                <AlertTitle>Read-only discovery</AlertTitle>
-                <AlertDescription>Domovoi reports where this skill was found. Installation, enablement, capability review, and fleet distribution are not changed here.</AlertDescription>
+                <AlertTitle>Project review</AlertTitle>
+                <AlertDescription>Enablement does not change signature or trust state. Any content or capability change requires another review.</AlertDescription>
               </Alert>
-              <Button variant="outline" className="mt-4" onClick={() => readSource(selected)}>
-                <FileTextIcon data-icon="inline-start" />
-                View SKILL.md
-              </Button>
+              {reviewError ? <Alert variant="destructive" className="mt-4"><AlertTitle>Review failed</AlertTitle><AlertDescription>{reviewError}</AlertDescription></Alert> : null}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => readSource(selected)}>
+                  <FileTextIcon data-icon="inline-start" />
+                  View SKILL.md
+                </Button>
+                <Button
+                  disabled={!projectId || (selected.trust.state === "blocked" && !selectedEnabled)}
+                  onClick={() => setReviewEnabled(!selectedEnabled)}
+                >
+                  {selectedEnabled ? "Review & disable" : "Review & enable"}
+                </Button>
+              </div>
             </section>
           ) : null}
         </main>
@@ -248,6 +323,23 @@ export function SkillBrowser({
           <DialogFooter><Button variant="outline" onClick={() => setSourceSkill(undefined)}>Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      <AlertDialog open={reviewEnabled !== undefined} onOpenChange={(open) => { if (!open && !reviewPending) setReviewEnabled(undefined) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Review {selected?.name ?? "skill"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              Confirm this exact content digest and capability manifest for {projectId ? "the open project" : "a project"}. This does not grant trust.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {selected ? <div className="flex flex-col gap-2 font-machine text-[10.5px]"><code className="break-all">{selected.contentDigest}</code><span>{selected.manifest.capabilities.join(", ") || "No declared capabilities"}</span></div> : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reviewPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={reviewPending} onClick={submitReview}>
+              {reviewEnabled ? "Enable for project" : "Disable for project"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

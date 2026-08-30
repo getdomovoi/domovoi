@@ -468,6 +468,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("skill.read", { id })
   }
 
+  setSkillEnabled(
+    params: RpcParams<"skill.setEnabled">,
+  ): Promise<WorkspaceSnapshot> {
+    return this.request("skill.setEnabled", params)
+  }
+
   queryAudit(
     params: AuditQueryParams,
     options?: DomovoiRequestOptions,
