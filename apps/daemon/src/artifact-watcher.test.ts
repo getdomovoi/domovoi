@@ -31,6 +31,7 @@ describe("ArtifactWatcher", () => {
     expect(changes).toEqual([])
 
     await writeFile(join(root, "plan-preview.html"), "<h1>Plan</h1>")
+    await writeFile(join(root, "ROADMAP.html"), "<h1>Roadmap</h1>")
     await writeFile(join(root, "design-notes.md"), "# Variant A")
     await writeFile(join(root, "index.html"), "<main>Application code</main>")
     await writeFile(join(root, "README.md"), "# Repository")
@@ -51,6 +52,12 @@ describe("ArtifactWatcher", () => {
         type: "preview",
         mimeType: "text/html",
       },
+      {
+        path: "ROADMAP.html",
+        title: "ROADMAP.html",
+        type: "preview",
+        mimeType: "text/html",
+      },
     ])
 
     await writeFile(join(root, "design-notes.md"), "# Variant B")
@@ -61,7 +68,7 @@ describe("ArtifactWatcher", () => {
     expect(close).toHaveBeenCalledOnce()
     await writeFile(join(root, "design-after-stop.html"), "<h1>Stopped</h1>")
     await watcher.rescan()
-    expect(changes).toHaveLength(3)
+    expect(changes).toHaveLength(4)
   })
 
   it("bounds traversal, symlinks, depth, and file size", async () => {

@@ -39,7 +39,7 @@ type ArtifactFile = ArtifactFileChange & { fingerprint: string }
 type ArtifactScan = { files: ArtifactFile[]; truncated: boolean }
 
 export const maximumArtifactFileBytes = 4 * 1_024 * 1_024
-const artifactName = /(?:^|[-_.])(plan|preview|design|wireframe|mockup|variant|prototype)(?:[-_.]|$)/i
+const artifactName = /(?:^|[-_.])(plan|preview|design|wireframe|mockup|variant|prototype|roadmap)(?:[-_.]|$)/i
 const artifactDirectories = new Set(["artifacts", "previews", "designs", "plans", "plan-preview", "design-studio"])
 const ignoredDirectories = new Set([".git", "node_modules", ".pnpm", "coverage"])
 
