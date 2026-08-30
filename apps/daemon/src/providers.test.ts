@@ -92,6 +92,37 @@ describe("CliProviderProbe", () => {
     expect(run).not.toHaveBeenCalledWith("cursor-agent", expect.anything())
   })
 
+  it("probes OpenCode and Kilo credential readiness without retaining account output", async () => {
+    const run = vi.fn(async (command: string, args: string[]): Promise<CommandResult> => {
+      const key = `${command} ${args.join(" ")}`
+      if (key === "opencode --version") return { exitCode: 0, stdout: "opencode 1.18.23", stderr: "" }
+      if (key === "opencode auth list") {
+        return { exitCode: 0, stdout: "Credentials /home/user/.local/share/opencode/auth.json\n1 credential\nAnthropic personal@example.com", stderr: "" }
+      }
+      if (key === "kilo --version") return { exitCode: 0, stdout: "kilo 1.2.0", stderr: "" }
+      if (key === "kilo auth list") {
+        return { exitCode: 0, stdout: "Credentials /home/user/.local/share/kilo/auth.json\n0 credentials", stderr: "" }
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" })
+    }) satisfies ProviderCommandRunner
+
+    const providers = await new CliProviderProbe(run).inspect()
+
+    expect(providers.find((provider) => provider.id === "opencode")).toEqual({
+      id: "opencode",
+      command: "opencode",
+      status: "ready",
+      version: "1.18.23",
+    })
+    expect(providers.find((provider) => provider.id === "kilo")).toEqual({
+      id: "kilo",
+      command: "kilo",
+      status: "auth-required",
+      version: "1.2.0",
+    })
+    expect(JSON.stringify(providers)).not.toMatch(/personal@example|\/home\/user/)
+  })
+
   it("falls back to cursor-agent and reports failed model probes as signed out", async () => {
     const run = vi.fn(async (command: string, args: string[]): Promise<CommandResult> => {
       const key = `${command} ${args.join(" ")}`
