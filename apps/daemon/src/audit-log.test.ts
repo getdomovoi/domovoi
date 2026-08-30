@@ -127,6 +127,30 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
+  it("rejects unknown cursors instead of returning a misleading empty page", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database)
+    audit.append({
+      id: "audit-known",
+      actor: { kind: "daemon", component: "server" },
+      action: "workspace.get",
+      outcome: "succeeded",
+    })
+
+    for (const operation of [
+      () => audit.query({ before: "audit-missing", limit: 10 }),
+      () => audit.export({ before: "audit-missing", limit: 10 }),
+    ]) {
+      try {
+        operation()
+        throw new Error("Expected an unknown audit cursor to fail")
+      } catch (error) {
+        expect(error).toMatchObject({ code: -32602, message: "Audit cursor does not exist" })
+      }
+    }
+    database.close()
+  })
+
   it("pages exports before their wire-size bound", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database)

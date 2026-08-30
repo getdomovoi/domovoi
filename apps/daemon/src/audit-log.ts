@@ -17,7 +17,7 @@ import {
   type AuditQueryParams,
 } from "@getdomovoi/protocol"
 
-import { redactErrorDetail } from "./rpc-errors.js"
+import { PublicRpcError, redactErrorDetail } from "./rpc-errors.js"
 
 const defaultMaximumEntries = 10_000
 
@@ -148,6 +148,7 @@ export class SqliteAuditLog implements AuditLog {
   query(params: Partial<AuditQueryParams> = {}, signal?: AbortSignal): AuditQueryPage {
     signal?.throwIfAborted()
     const validated = auditQueryParamsSchema.parse(params)
+    this.#assertCursor(validated.before)
     const { rows, hasMore } = this.#select(validated, validated.limit)
     const entries = rows.map(storedAuditEntry)
     const result = auditQueryPageSchema.parse({
@@ -162,6 +163,7 @@ export class SqliteAuditLog implements AuditLog {
   export(params: Partial<AuditExportParams> = {}, signal?: AbortSignal): AuditExportResult {
     signal?.throwIfAborted()
     const validated = auditExportParamsSchema.parse(params)
+    this.#assertCursor(validated.before)
     const selection = this.#select(validated, validated.limit)
     const selectedEntries = selection.rows.map(storedAuditEntry)
     const entries: AuditEntry[] = []
@@ -240,6 +242,12 @@ export class SqliteAuditLog implements AuditLog {
     `)
     const rows = allAuditRows(statement, [...values, limit + 1])
     return { rows: rows.slice(0, limit), hasMore: rows.length > limit }
+  }
+
+  #assertCursor(cursor: string | undefined): void {
+    if (!cursor) return
+    const row = this.#database.prepare("SELECT 1 FROM audit_log WHERE id = ?").get(cursor)
+    if (!row) throw new PublicRpcError(-32602, "Audit cursor does not exist")
   }
 }
 
