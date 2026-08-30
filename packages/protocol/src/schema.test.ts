@@ -51,6 +51,8 @@ describe("workspace protocol", () => {
       ["rate-limit", "retry", "Provider rate limit reached", true],
       ["quota-exhausted", "check-quota", "Provider quota is exhausted", false],
       ["model-unavailable", "change-model", "Selected model is unavailable", false],
+      ["transport", "retry", "Provider connection failed", true],
+      ["unknown", "retry", "Provider request failed", true],
     ] as const
 
     for (const [kind, action, message, retryable] of failures) {

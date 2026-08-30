@@ -179,9 +179,11 @@ const defaultRuntime: Runtime = {
 export function providerFailureActionCopy(failure: ProviderFailure): string {
   switch (failure.action) {
     case "sign-in": return "Open Provider settings and sign in again."
-    case "retry": return failure.kind === "rate-limit"
-      ? "Retry the message after the provider cooldown."
-      : "Retry the message after the provider reconnects."
+    case "retry": {
+      if (failure.kind === "rate-limit") return "Retry the message after the provider cooldown."
+      if (failure.kind === "transport") return "Retry the message after the provider reconnects."
+      return "Retry the message, or review Provider settings if the failure continues."
+    }
     case "check-quota": return "Check the provider quota or billing plan, then retry."
     case "change-model": return "Choose another model in the runtime controls, then retry."
   }
