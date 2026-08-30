@@ -450,6 +450,23 @@ export class DomovoiClient extends EventTarget {
     return this.request("runtime.models", { provider, client: this.kind })
   }
 
+  listProviderSecrets(): Promise<RpcResult<"provider.secret.list">> {
+    return this.request("provider.secret.list", {})
+  }
+
+  setProviderSecret(
+    provider: RpcParams<"provider.secret.set">["provider"],
+    secret: string,
+  ): Promise<RpcResult<"provider.secret.set">> {
+    return this.request("provider.secret.set", { provider, secret, client: this.kind })
+  }
+
+  deleteProviderSecret(
+    provider: RpcParams<"provider.secret.delete">["provider"],
+  ): Promise<RpcResult<"provider.secret.delete">> {
+    return this.request("provider.secret.delete", { provider, client: this.kind })
+  }
+
   listSkills(): Promise<SkillSummary[]> {
     return this.request("skill.list", {})
   }
