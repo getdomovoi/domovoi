@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, opendir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -143,7 +143,7 @@ describe("ArtifactWatcher", () => {
     const root = await scratch("domovoi-artifact-directory-errors")
     for (const name of ["gone", "denied", "safe"]) await mkdir(join(root, name))
     const openDirectory = vi.fn<typeof opendir>(async (path, options) => {
-      const name = String(path).split("/").at(-1)
+      const name = basename(String(path))
       if (name === "gone") throw Object.assign(new Error("gone"), { code: "ENOENT" })
       if (name === "denied") throw Object.assign(new Error("denied"), { code: "EACCES" })
       return opendir(path, options)
@@ -158,7 +158,7 @@ describe("ArtifactWatcher", () => {
       onChange: vi.fn(),
       watchFactory: () => ({ close: vi.fn() }),
       openDirectory: async (path, options) => {
-        if (String(path).endsWith("/broken")) throw Object.assign(new Error("broken"), { code: "EIO" })
+        if (basename(String(path)) === "broken") throw Object.assign(new Error("broken"), { code: "EIO" })
         return opendir(path, options)
       },
     })
