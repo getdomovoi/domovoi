@@ -254,6 +254,23 @@ describe("AcpAgentAdapter", () => {
       runtime,
     })).resolves.toBe("replacement-turn")
 
+    firstPeer.handlers!.onUpdate("acp-session", { type: "text", text: "stale update" })
+    const stalePermission = firstPeer.handlers!.onPermission({
+      sessionId: "acp-session",
+      toolCallId: "stale-tool",
+      title: "Stale permission",
+      options: [{ id: "once", kind: "allow_once" }],
+    })
+    replacementPeer.handlers!.onUpdate("acp-session", { type: "text", text: "current update" })
+
+    await expect(stalePermission).resolves.toEqual({ cancelled: true })
+    expect(events).not.toContainEqual(expect.objectContaining({ delta: "stale update" }))
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      itemId: "stale-tool",
+    }))
+    expect(events).toContainEqual(expect.objectContaining({ delta: "current update" }))
+
     firstPeer.handlers!.onDisconnect()
     await expect(adapter.startThread({ cwd: "/repo", runtime })).resolves.toBe("acp-session")
     expect(replacementPeer.initialize).toHaveBeenCalledOnce()
