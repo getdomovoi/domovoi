@@ -1,3 +1,5 @@
+import { DatabaseSync } from "node:sqlite"
+
 export type ProviderCost = { amount: number; currency: string }
 
 export type NormalizedUsage = {
@@ -24,6 +26,7 @@ export function normalizeUsage(input: {
   cachedInputTokens?: number
   outputTokens?: number
   reasoningTokens?: number
+  totalTokens?: number
   cost?: ProviderCost
 }): NormalizedUsage {
   const inputTokens = input.inputTokens ?? 0
@@ -36,12 +39,17 @@ export function normalizeUsage(input: {
   if (cachedInputTokens > inputTokens) {
     throw new Error("Cached input tokens cannot exceed input tokens")
   }
+  const knownTotal = inputTokens + outputTokens + reasoningTokens
+  const totalTokens = input.totalTokens ?? knownTotal
+  if (!isTokenCount(totalTokens) || totalTokens < knownTotal) {
+    throw new Error("Total tokens must be a non-negative integer at least as large as known tokens")
+  }
   const base = {
     inputTokens,
     cachedInputTokens,
     outputTokens,
     reasoningTokens,
-    totalTokens: inputTokens + outputTokens + reasoningTokens,
+    totalTokens,
   }
   if (!input.cost) return { ...base, costSource: "unavailable" }
   if (!Number.isFinite(input.cost.amount) || input.cost.amount < 0) {
@@ -51,7 +59,7 @@ export function normalizeUsage(input: {
   if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Provider cost currency must be ISO 4217")
   return {
     ...base,
-    costMicros: Math.round(input.cost.amount * 1_000_000),
+    costMicros: safeCostMicros(input.cost.amount),
     currency,
     costSource: "provider-reported",
   }
@@ -85,24 +93,82 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
 }
 
 export class UsageLedger {
-  readonly #turns = new Map<string, TurnUsage>()
+  readonly #database: DatabaseSync
+
+  constructor(path = ":memory:") {
+    this.#database = new DatabaseSync(path)
+    this.#database.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS provider_usage (
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        cached_input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        reasoning_tokens INTEGER NOT NULL,
+        total_tokens INTEGER NOT NULL,
+        cost_source TEXT NOT NULL CHECK (cost_source IN ('provider-reported', 'unavailable')),
+        cost_micros INTEGER,
+        currency TEXT,
+        PRIMARY KEY (session_id, turn_id)
+      );
+      CREATE INDEX IF NOT EXISTS provider_usage_session ON provider_usage(session_id);
+    `)
+  }
 
   record(record: TurnUsage): void {
     const currency = record.usage.currency
     if (currency) {
-      const existing = [...this.#turns.values()].find((candidate) => (
-        candidate.sessionId === record.sessionId
-        && candidate.turnId !== record.turnId
-        && candidate.usage.currency
-        && candidate.usage.currency !== currency
-      ))
+      const existing = this.#database.prepare(`
+        SELECT currency FROM provider_usage
+        WHERE session_id = ? AND turn_id <> ? AND currency IS NOT NULL AND currency <> ?
+        LIMIT 1
+      `).get(record.sessionId, record.turnId, currency)
       if (existing) throw new Error("Cannot aggregate provider costs with mixed currencies")
     }
-    this.#turns.set(turnKey(record.sessionId, record.turnId), structuredClone(record))
+    this.#database.prepare(`
+      INSERT INTO provider_usage (
+        session_id, turn_id, provider, model,
+        input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+        cost_source, cost_micros, currency
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, turn_id) DO UPDATE SET
+        provider = excluded.provider,
+        model = excluded.model,
+        input_tokens = excluded.input_tokens,
+        cached_input_tokens = excluded.cached_input_tokens,
+        output_tokens = excluded.output_tokens,
+        reasoning_tokens = excluded.reasoning_tokens,
+        total_tokens = excluded.total_tokens,
+        cost_source = excluded.cost_source,
+        cost_micros = excluded.cost_micros,
+        currency = excluded.currency
+    `).run(
+      record.sessionId,
+      record.turnId,
+      record.provider,
+      record.model,
+      record.usage.inputTokens,
+      record.usage.cachedInputTokens,
+      record.usage.outputTokens,
+      record.usage.reasoningTokens,
+      record.usage.totalTokens,
+      record.usage.costSource,
+      record.usage.costMicros ?? null,
+      record.usage.currency ?? null,
+    )
   }
 
   session(sessionId: string) {
-    const turns = [...this.#turns.values()].filter((turn) => turn.sessionId === sessionId)
+    const turns = this.#database.prepare(`
+      SELECT
+        session_id, turn_id, provider, model,
+        input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+        cost_source, cost_micros, currency
+      FROM provider_usage WHERE session_id = ? ORDER BY turn_id
+    `).all(sessionId).map(turnUsageFromRow)
     const totals = sumUsage(turns.map((turn) => turn.usage))
     const groups = new Map<string, TurnUsage[]>()
     for (const turn of turns) {
@@ -123,6 +189,10 @@ export class UsageLedger {
       `${left.provider}\0${left.model}`.localeCompare(`${right.provider}\0${right.model}`)
     ))
     return { sessionId, ...totals, byRuntime }
+  }
+
+  close(): void {
+    this.#database.close()
   }
 }
 
@@ -153,8 +223,31 @@ function isTokenCount(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0
 }
 
-function turnKey(sessionId: string, turnId: string): string {
-  return `${sessionId}\0${turnId}`
+function safeCostMicros(amount: number): number {
+  const micros = Math.round(amount * 1_000_000)
+  if (!Number.isSafeInteger(micros)) throw new Error("Provider cost exceeds safe integer range")
+  return micros
+}
+
+function turnUsageFromRow(value: unknown): TurnUsage {
+  const row = value as Record<string, unknown>
+  const usage: NormalizedUsage = {
+    inputTokens: Number(row.input_tokens),
+    cachedInputTokens: Number(row.cached_input_tokens),
+    outputTokens: Number(row.output_tokens),
+    reasoningTokens: Number(row.reasoning_tokens),
+    totalTokens: Number(row.total_tokens),
+    costSource: row.cost_source as NormalizedUsage["costSource"],
+    ...(typeof row.cost_micros === "number" ? { costMicros: row.cost_micros } : {}),
+    ...(typeof row.currency === "string" ? { currency: row.currency } : {}),
+  }
+  return {
+    sessionId: String(row.session_id),
+    turnId: String(row.turn_id),
+    provider: String(row.provider),
+    model: String(row.model),
+    usage,
+  }
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

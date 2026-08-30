@@ -5,6 +5,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
 import { classifyProviderFailure } from "./provider-failures.js"
+import { normalizeUsage } from "./usage.js"
 
 export type AcpConfigOption = {
   id: string
@@ -247,8 +248,18 @@ export class AcpAgentAdapter implements AgentAdapter {
   #handleUpdate(threadId: string, update: AcpUpdate): void {
     const turnId = this.#activeTurns.get(threadId)?.id
     const context = { threadId, ...(turnId ? { turnId } : {}) }
-    if (update.type === "usage") return
-    if (update.type === "text") {
+    if (update.type === "usage") {
+      if (!turnId) return
+      this.#emit({
+        type: "usage",
+        threadId,
+        turnId,
+        usage: normalizeUsage({
+          totalTokens: update.used,
+          ...(update.cost ? { cost: update.cost } : {}),
+        }),
+      })
+    } else if (update.type === "text") {
       this.#emit({ type: "text-delta", ...context, delta: update.text })
     } else if (update.type === "plan") {
       this.#emit({ type: "plan-delta", ...context, delta: update.text })
