@@ -4929,11 +4929,12 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = "/worktrees/build-auto"
     session.providerThreadId = "thread-build-auto"
     delete session.activeTurnId
+    const skillInstallCommand = "pnpm dlx skills add getdomovoi/design-studio"
     snapshot.approvalRules.push({
-      id: "rule-publish",
+      id: "rule-skill-install",
       projectId: snapshot.project!.id,
-      operation: "Publish package",
-      command: "pnpm publish",
+      operation: "Install skill",
+      command: skillInstallCommand,
       createdBy: "desktop",
       createdAt: new Date().toISOString(),
     })
@@ -5005,7 +5006,8 @@ describe("DomovoiDaemon", () => {
       requestId: 12,
       threadId: session.providerThreadId,
       turnId: "turn-build-auto",
-      command: "pnpm publish",
+      reason: "Install skill",
+      command: skillInstallCommand,
     })
     const current = await rpc("workspace.get", {})
 
@@ -5015,7 +5017,7 @@ describe("DomovoiDaemon", () => {
       result: {
         approvals: expect.arrayContaining([expect.objectContaining({
           providerRequestId: 12,
-          command: "pnpm publish",
+          command: skillInstallCommand,
           risk: "hard-gate",
         })]),
       },
@@ -5035,6 +5037,24 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
+    const approved = await rpc("approval.resolve", {
+      approvalId,
+      decision: "allow-once",
+      client: "desktop",
+    })
+    expect(agent.resolveApproval).toHaveBeenCalledWith(12, "allow-once")
+    expect(approved).toMatchObject({
+      result: {
+        thread: expect.arrayContaining([expect.objectContaining({
+          kind: "receipt",
+          decision: "allow-once",
+          operation: "Install skill",
+          client: "desktop",
+        })]),
+      },
+    })
+    expect((approved.result as { approvals: Array<{ providerRequestId?: number }> }).approvals)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ providerRequestId: 12 })]))
     socket.close()
   })
 
