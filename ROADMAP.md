@@ -120,7 +120,7 @@ workflow without becoming a code editor.
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
 - [x] Enforce hard gates that Build auto cannot bypass
-- [ ] Add a searchable audit log with redaction and export
+- [x] Add a searchable audit log with redaction and export
 - [ ] Add command-level secret redaction before persistence or display
 - [ ] Add a global emergency stop that cancels all active tools and providers, not only UI state
 
