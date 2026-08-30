@@ -404,6 +404,25 @@ describe("provider failure guidance", () => {
 })
 
 describe("archived annotation controls", () => {
+  it("surfaces preserved and unresolved anchor states", () => {
+    const annotations = demoWorkspace.annotations.slice(0, 2)
+    const markup = renderToStaticMarkup(
+      <AnnotationComments
+        annotations={annotations}
+        anchorResolutions={new Map([
+          [annotations[0]!.id, "text-quote"],
+          [annotations[1]!.id, "unresolved"],
+        ])}
+        readOnly={false}
+        onReply={vi.fn(async () => {})}
+        onSetStatus={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain("text anchor")
+    expect(markup).toContain("anchor unavailable")
+  })
+
   it("keeps annotations visible while hiding every mutation control", () => {
     const archived = structuredClone(demoWorkspace.sessions[0]!)
     archived.state = "archived"

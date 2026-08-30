@@ -111,7 +111,13 @@ import { artifactUrlFor } from "./artifact-url"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
-import { createPreviewBridgeChannel, previewSelectionFor } from "./preview-bridge"
+import {
+  anchorResolutionMapFor,
+  anchorResolutionsFor,
+  createPreviewBridgeChannel,
+  previewResolveAnchorsMessage,
+  previewSelectionFor,
+} from "./preview-bridge"
 import { latestArtifactForActiveSession } from "./artifacts"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
@@ -1631,12 +1637,13 @@ export function ArtifactDock({
   ))
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const [bridgeState, setBridgeState] = useState(() => ({
-    previewId: preview?.id,
+    previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
     channel: createPreviewBridgeChannel(),
   }))
+  const previewKey = preview ? `${preview.id}:${preview.revision}` : undefined
   let bridgeChannel = bridgeState.channel
-  if (bridgeState.previewId !== preview?.id) {
-    const nextBridgeState = { previewId: preview?.id, channel: createPreviewBridgeChannel() }
+  if (bridgeState.previewKey !== previewKey) {
+    const nextBridgeState = { previewKey, channel: createPreviewBridgeChannel() }
     bridgeChannel = nextBridgeState.channel
     setBridgeState(nextBridgeState)
   }
@@ -1647,6 +1654,10 @@ export function ArtifactDock({
   const [annotationError, setAnnotationError] = useState("")
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [previewError, setPreviewError] = useState("")
+  const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
+    string,
+    "selector" | "text-quote" | "bounding-box" | "unresolved"
+  >>(() => new Map())
   const [activeTab, setActiveTab] = useState<string>(defaultTab)
 
   useEffect(() => {
@@ -1678,15 +1689,36 @@ export function ArtifactDock({
     previewFrameRef.current?.contentWindow?.postMessage(message, "*")
   }
 
+  const postAnchorResolutionRequest = () => {
+    if (!preview) return
+    const message = previewResolveAnchorsMessage(
+      bridgeChannel,
+      preview.id,
+      annotations
+        .filter((annotation) => annotation.artifactId === preview.id)
+        .map((annotation) => ({ annotationId: annotation.id, anchor: annotation.anchor })),
+    )
+    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
+  }
+
   useEffect(() => {
     const receiveSelection = (event: MessageEvent<unknown>) => {
       if (
-        archiveReadOnly
-        || !pickerActive
-        || !preview
+        !preview
         || event.source !== previewFrameRef.current?.contentWindow
         || event.origin !== "null"
       ) return
+      const anchorResolutionMessage = anchorResolutionsFor(event.data, bridgeChannel, preview.id)
+      if (anchorResolutionMessage) {
+        setAnchorResolutions(anchorResolutionMapFor(
+          annotations
+            .filter((annotation) => annotation.artifactId === preview.id)
+            .map((annotation) => annotation.id),
+          anchorResolutionMessage.resolutions,
+        ))
+        return
+      }
+      if (archiveReadOnly || !pickerActive) return
       const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
       if (!nextSelection) return
       postPickerState(false)
@@ -1697,14 +1729,19 @@ export function ArtifactDock({
     }
     window.addEventListener("message", receiveSelection)
     return () => window.removeEventListener("message", receiveSelection)
-  }, [archiveReadOnly, bridgeChannel, pickerActive, preview?.id])
+  }, [annotations, archiveReadOnly, bridgeChannel, pickerActive, preview?.id])
 
   useEffect(() => {
     setPickerActive(false)
     setSelection(null)
     setComment("")
     setAnnotationError("")
-  }, [archiveReadOnly, preview?.id])
+    setAnchorResolutions(new Map())
+  }, [archiveReadOnly, preview?.id, preview?.revision])
+
+  useEffect(() => {
+    if (previewUrl) postAnchorResolutionRequest()
+  }, [annotations, previewUrl])
 
   const togglePicker = () => {
     if (archiveReadOnly) return
@@ -1788,7 +1825,10 @@ export function ArtifactDock({
                   sandbox="allow-scripts"
                   src={previewUrl ?? "about:blank"}
                   title={preview.title}
-                  onLoad={() => postPickerState(pickerActive)}
+                  onLoad={() => {
+                    postPickerState(pickerActive)
+                    postAnchorResolutionRequest()
+                  }}
                 />
               )}
             </div>
@@ -1831,6 +1871,7 @@ export function ArtifactDock({
         <TabsContent value="comments" className="min-h-0">
           <AnnotationComments
             annotations={annotations}
+            anchorResolutions={anchorResolutions}
             readOnly={archiveReadOnly}
             onReply={onReplyToAnnotation}
             onSetStatus={onSetAnnotationStatus}
@@ -1923,11 +1964,13 @@ export function ArtifactDock({
 
 export function AnnotationComments({
   annotations,
+  anchorResolutions = new Map(),
   readOnly,
   onReply,
   onSetStatus,
 }: {
   annotations: Annotation[]
+  anchorResolutions?: ReadonlyMap<string, "selector" | "text-quote" | "bounding-box" | "unresolved">
   readOnly: boolean
   onReply: (annotationId: string, body: string) => Promise<void>
   onSetStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
@@ -1980,6 +2023,7 @@ export function AnnotationComments({
           {annotations.map((annotation) => {
             const pending = pendingId === annotation.id
             const isReplying = replyingTo === annotation.id
+            const anchorResolution = anchorResolutions.get(annotation.id)
             return (
               <Card key={annotation.id} size="sm">
                 <CardHeader>
@@ -1997,6 +2041,17 @@ export function AnnotationComments({
                     {annotation.anchor.textQuote
                       ? `“${annotation.anchor.textQuote}”`
                       : annotation.anchor.cssSelector ?? "Visual selection"}
+                    {anchorResolution ? (
+                      <Badge
+                        variant={anchorResolution === "unresolved" ? "destructive" : "outline"}
+                        className="ml-2"
+                      >
+                        {anchorResolution === "selector" ? "selector anchor" : null}
+                        {anchorResolution === "text-quote" ? "text anchor" : null}
+                        {anchorResolution === "bounding-box" ? "visual anchor" : null}
+                        {anchorResolution === "unresolved" ? "anchor unavailable" : null}
+                      </Badge>
+                    ) : null}
                   </div>
                   {annotation.thread.map((threadReply) => (
                     <div key={threadReply.id} className="break-words border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
