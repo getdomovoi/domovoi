@@ -647,11 +647,7 @@ export class DomovoiDaemon {
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
 
-    if (this.#providerProbe) {
-      this.#providerRefresh = this.#refreshProviderReadiness().catch((error: unknown) => {
-        this.#reportError("Domovoi could not inspect provider runtimes", error)
-      })
-    }
+    if (this.#providerProbe) this.#queueProviderRefresh(true)
 
     return this.address!
   }
@@ -843,6 +839,16 @@ export class DomovoiDaemon {
     })
   }
 
+  #queueProviderRefresh(reportError: boolean): Promise<void> {
+    const previous = this.#providerRefresh ?? Promise.resolve()
+    const refresh = previous.catch(() => {}).then(() => this.#refreshProviderReadiness())
+    const observed = refresh.catch((error: unknown) => {
+      if (reportError) this.#reportError("Domovoi could not inspect provider runtimes", error)
+    })
+    this.#providerRefresh = observed
+    return reportError ? observed : refresh
+  }
+
   #error(socket: WebSocket, id: string | number | null, code: number, message: string): void {
     this.#send(socket, { jsonrpc: "2.0", id, error: { code, message } })
   }
@@ -932,6 +938,7 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
         || request.method === "skill.list"
@@ -1490,6 +1497,26 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(models),
+        })
+        return
+      }
+
+      if (method === "provider.refresh") {
+        if (!this.#providerProbe) {
+          this.#error(socket, request.id, invalidParams, "Provider diagnostics are unavailable")
+          return
+        }
+        try {
+          await this.#queueProviderRefresh(false)
+        } catch (error) {
+          this.#reportError("Domovoi could not refresh provider runtimes", error)
+          this.#error(socket, request.id, internalError, "Provider diagnostics could not be refreshed")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(workspaceSnapshotForClient(this.#snapshot)),
         })
         return
       }

@@ -28,6 +28,7 @@ type ProviderSettingsProps = {
   onBack: () => void
   onOpenSkills: () => void
   onOpenAudit: () => void
+  onResetFirstRun?: () => void
 } & (
   | {
     externalEditor: DesktopExternalEditor
@@ -46,6 +47,7 @@ export function ProviderSettings({
   onBack,
   onOpenSkills,
   onOpenAudit,
+  onResetFirstRun,
   onExternalEditorChange,
 }: ProviderSettingsProps) {
   const [section, setSection] = useState<"providers" | "external-editor">("providers")
@@ -65,6 +67,7 @@ export function ProviderSettings({
         </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
         <Button variant={activeSection === "providers" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("providers")}>Providers</Button>
+        {onResetFirstRun ? <Button variant="ghost" className="justify-start" onClick={onResetFirstRun}>First-run setup</Button> : null}
         {editorCapability ? <Button variant={activeSection === "external-editor" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("external-editor")}>External editor</Button> : null}
         <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
         <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
@@ -78,6 +81,7 @@ export function ProviderSettings({
               Workspace
             </Button>
             <Button variant="ghost" className="min-h-11" onClick={() => setSection("providers")}>Providers</Button>
+            {onResetFirstRun ? <Button variant="ghost" className="min-h-11" onClick={onResetFirstRun}>First-run setup</Button> : null}
             {editorCapability ? <Button variant="ghost" className="min-h-11" onClick={() => setSection("external-editor")}>External editor</Button> : null}
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>

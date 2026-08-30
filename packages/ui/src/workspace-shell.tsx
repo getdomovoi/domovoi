@@ -131,6 +131,21 @@ import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
 import {
+  DesktopFirstRunDialog,
+  desktopFirstRunAvailable,
+  firstRunFailureForProvider,
+  providerFirstRunRecovery,
+} from "./desktop-first-run"
+import {
+  browserDesktopFirstRunStorage,
+  completeDesktopFirstRun,
+  defaultDesktopFirstRunState,
+  loadDesktopFirstRunState,
+  resetDesktopFirstRunState,
+  saveDesktopFirstRunState,
+  type DesktopFirstRunState,
+} from "./desktop-first-run-persistence"
+import {
   providerHandoffDescription,
   preferredSessionProvider,
   providerCanStartSession,
@@ -640,6 +655,8 @@ export function ProviderReadinessList({
 function LauncherDialog({
   mode,
   providers,
+  defaultProviderId,
+  defaultPermissionMode,
   onOpenChange,
   onOpenProject,
   onCreateSession,
@@ -647,6 +664,8 @@ function LauncherDialog({
 }: {
   mode: LauncherMode
   providers: readonly ProviderRuntime[]
+  defaultProviderId?: string
+  defaultPermissionMode: PermissionMode
   onOpenChange: (open: boolean) => void
   onOpenProject: (path: string) => Promise<void>
   onCreateSession: (title: string, runtime: Runtime) => Promise<void>
@@ -655,7 +674,11 @@ function LauncherDialog({
   const [value, setValue] = useState("")
   const [error, setError] = useState("")
   const [pending, setPending] = useState(false)
-  const [runtime, setRuntime] = useState(defaultRuntime)
+  const [runtime, setRuntime] = useState(() => ({
+    ...defaultRuntime,
+    ...(defaultProviderId ? { provider: defaultProviderId } : {}),
+    permissionMode: defaultPermissionMode,
+  }))
   const [models, setModels] = useState<ProviderModel[]>([])
   const [modelsPending, setModelsPending] = useState(false)
   const [modelsError, setModelsError] = useState("")
@@ -674,7 +697,9 @@ function LauncherDialog({
       return
     }
 
-    const provider = preferredSessionProvider(providers)
+    const provider = providers.find((candidate) =>
+      candidate.id === defaultProviderId && providerCanStartSession(candidate)
+    ) ?? preferredSessionProvider(providers)
     if (!provider) {
       setModels([])
       setModelsError("No provider on this machine can start a session")
@@ -682,7 +707,11 @@ function LauncherDialog({
     }
 
     const request = ++modelRequest.current
-    setRuntime({ ...defaultRuntime, provider: provider.id })
+    setRuntime({
+      ...defaultRuntime,
+      provider: provider.id,
+      permissionMode: defaultPermissionMode,
+    })
     setModels([])
     setModelsPending(true)
     setModelsError("")
@@ -702,7 +731,7 @@ function LauncherDialog({
     ).finally(() => {
       if (request === modelRequest.current) setModelsPending(false)
     })
-  }, [mode, onListModels, providerReadinessKey])
+  }, [defaultPermissionMode, defaultProviderId, mode, onListModels, providerReadinessKey])
 
   const selectProvider = (provider: ProviderRuntime) => {
     if (!providerCanStartSession(provider)) return
@@ -2483,6 +2512,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     pauseSession,
     queryAudit,
     readSkill,
+    refreshProviders,
     reconnect,
     restoreCheckpoint,
     resizeTerminal,
@@ -2516,6 +2546,27 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [workspaceUi, setWorkspaceUi] = useState(() =>
     loadWorkspaceUiState(browserWorkspaceUiStorage()),
   )
+  const firstRunEnabled = desktopFirstRunAvailable(clientKind, windowBridge)
+  const [desktopFirstRun, setDesktopFirstRun] = useState<{
+    persisted: DesktopFirstRunState
+    open: boolean
+    selectedProviderId: string
+    permissionMode: PermissionMode
+    refreshing: boolean
+    error: string
+  }>(() => {
+    const persisted = firstRunEnabled
+      ? loadDesktopFirstRunState(browserDesktopFirstRunStorage())
+      : defaultDesktopFirstRunState()
+    return {
+      persisted,
+      open: firstRunEnabled && persisted.status === "pending",
+      selectedProviderId: persisted.status === "complete" ? persisted.providerId : "",
+      permissionMode: persisted.status === "complete" ? persisted.permissionMode : "build",
+      refreshing: false,
+      error: "",
+    }
+  })
   const { dockCollapsed, externalEditor, layouts, sidebarCollapsed, surface } = workspaceUi
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
@@ -2562,6 +2613,73 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setConnectionError("")
     void reconnect().catch((cause: unknown) => {
       setConnectionError(cause instanceof Error ? cause.message : "The daemon could not be reached")
+    })
+  }
+  const retryDesktopFirstRun = () => {
+    if (!firstRunEnabled || desktopFirstRun.refreshing) return
+    setDesktopFirstRun((current) => ({ ...current, refreshing: true, error: "" }))
+    const refresh = async () => {
+      if (!connected) await reconnect()
+      await refreshProviders()
+    }
+    void refresh().catch((cause: unknown) => {
+      setDesktopFirstRun((current) => ({
+        ...current,
+        error: cause instanceof Error ? cause.message : "Provider diagnostics could not be refreshed",
+      }))
+    }).finally(() => {
+      setDesktopFirstRun((current) => ({ ...current, refreshing: false }))
+    })
+  }
+  const copyFirstRunGuidance = (value: string) => {
+    if (!windowBridge) return
+    setDesktopFirstRun((current) => ({ ...current, error: "" }))
+    void copyDesktopText(windowBridge, value).catch((cause: unknown) => {
+      setDesktopFirstRun((current) => ({
+        ...current,
+        error: cause instanceof Error ? cause.message : "Guidance could not be copied",
+      }))
+    })
+  }
+  const completeFirstRun = () => {
+    if (!firstRunEnabled || !connected || !snapshot) return
+    const provider = snapshot.machine.providers.find(
+      (candidate) => candidate.id === desktopFirstRun.selectedProviderId,
+    )
+    if (!provider || !providerFirstRunRecovery(
+      provider,
+      firstRunFailureForProvider(provider.id, snapshot.sessions),
+    ).canComplete) {
+      setDesktopFirstRun((current) => ({
+        ...current,
+        error: "Choose a provider whose diagnostics are ready before finishing setup.",
+      }))
+      return
+    }
+    const completed = completeDesktopFirstRun({
+      providerId: provider.id,
+      permissionMode: desktopFirstRun.permissionMode,
+    })
+    saveDesktopFirstRunState(browserDesktopFirstRunStorage(), completed)
+    setDesktopFirstRun((current) => ({
+      ...current,
+      persisted: completed,
+      open: false,
+      error: "",
+    }))
+  }
+  const resetFirstRun = () => {
+    if (!firstRunEnabled) return
+    resetDesktopFirstRunState(browserDesktopFirstRunStorage())
+    const providers = snapshot?.machine.providers ?? []
+    const provider = preferredSessionProvider(providers) ?? providers[0]
+    setDesktopFirstRun({
+      persisted: defaultDesktopFirstRunState(),
+      open: true,
+      selectedProviderId: provider?.id ?? "",
+      permissionMode: "build",
+      refreshing: false,
+      error: "",
     })
   }
   const pauseActiveTurns = () => {
@@ -2619,6 +2737,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useEffect(() => {
     notificationTrackerRef.current = new WorkspaceNotificationTracker()
   }, [clientKind, rpcUrl])
+
+  useEffect(() => {
+    if (!firstRunEnabled || !snapshot) return
+    const providers = snapshot.machine.providers
+    setDesktopFirstRun((current) => {
+      if (providers.some((provider) => provider.id === current.selectedProviderId)) return current
+      const persistedProviderId = current.persisted.status === "complete"
+        ? current.persisted.providerId
+        : undefined
+      const provider = providers.find((candidate) => candidate.id === persistedProviderId)
+        ?? preferredSessionProvider(providers)
+        ?? providers[0]
+      const selectedProviderId = provider?.id ?? ""
+      return selectedProviderId === current.selectedProviderId
+        ? current
+        : { ...current, selectedProviderId }
+    })
+  }, [firstRunEnabled, snapshot])
 
   useEffect(() => {
     if (!windowBridge) return
@@ -2790,6 +2926,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
+            {...(firstRunEnabled ? { onResetFirstRun: resetFirstRun } : {})}
             {...(windowBridge ? {
               externalEditor,
               onExternalEditorChange: (editor: DesktopExternalEditor) => {
@@ -2865,6 +3002,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         {snapshot ? <LauncherDialog
           mode={launcherMode}
           providers={snapshot.machine.providers}
+          {...(desktopFirstRun.persisted.status === "complete"
+            ? { defaultProviderId: desktopFirstRun.persisted.providerId }
+            : {})}
+          defaultPermissionMode={desktopFirstRun.persisted.status === "complete"
+            ? desktopFirstRun.persisted.permissionMode
+            : "build"}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
           onOpenProject={openProject}
           onCreateSession={createSession}
@@ -2877,6 +3020,35 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
         />
+        {firstRunEnabled ? (
+          <DesktopFirstRunDialog
+            open={desktopFirstRun.open}
+            connected={connected}
+            {...(snapshot ? {
+              machine: {
+                name: snapshot.machine.name,
+                platform: snapshot.machine.platform,
+                version: snapshot.machine.version,
+              },
+            } : {})}
+            providers={snapshot?.machine.providers ?? []}
+            sessions={snapshot?.sessions ?? []}
+            selectedProviderId={desktopFirstRun.selectedProviderId}
+            permissionMode={desktopFirstRun.permissionMode}
+            refreshing={desktopFirstRun.refreshing}
+            recoveryError={desktopFirstRun.error}
+            onProviderChange={(selectedProviderId) => {
+              setDesktopFirstRun((current) => ({ ...current, selectedProviderId, error: "" }))
+            }}
+            onPermissionModeChange={(permissionMode) => {
+              setDesktopFirstRun((current) => ({ ...current, permissionMode }))
+            }}
+            onRetry={retryDesktopFirstRun}
+            onCopyGuidance={copyFirstRunGuidance}
+            onSkip={() => setDesktopFirstRun((current) => ({ ...current, open: false }))}
+            onComplete={completeFirstRun}
+          />
+        ) : null}
       </div>
     </TooltipProvider>
   )

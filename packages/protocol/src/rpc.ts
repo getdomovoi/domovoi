@@ -894,6 +894,10 @@ export const rpcMethods = {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
   },
+  "provider.refresh": {
+    params: z.object({ client: clientKindSchema }).strict(),
+    result: workspaceSnapshotSchema,
+  },
   "provider.secret.list": {
     params: z.object({}),
     result: providerSecretStatusesSchema,
