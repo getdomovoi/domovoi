@@ -4459,13 +4459,19 @@ describe("DomovoiDaemon", () => {
       { ...snapshot.approvals[0]!, id: "approval-billing", sessionId: session.id, providerRequestId: 11 },
       { ...snapshot.approvals[0]!, id: "approval-other", sessionId: snapshot.sessions[1]!.id, providerRequestId: 12 },
     ]
+    let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
       steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => { throw new Error("turn already completed") }),
-      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const workspaceService = {
       inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
@@ -4525,6 +4531,13 @@ describe("DomovoiDaemon", () => {
     const otherSession = store.snapshot.sessions[1]!
     await rpc("terminal.create", { terminalId: "billing-terminal", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "billing-client" })
     await rpc("terminal.create", { terminalId: "other-terminal", sessionId: otherSession.id, cols: 80, rows: 24, client: "desktop", clientId: "other-client" })
+    listener!({
+      type: "command-output",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      itemId: "archive-output",
+      delta: "token=archive-buffer-secret",
+    })
 
     const archived = await rpc("session.archive", { sessionId: session.id, client: "desktop" })
     expect(archived).toMatchObject({ result: { sessions: expect.arrayContaining([
@@ -4538,6 +4551,10 @@ describe("DomovoiDaemon", () => {
     expect(terminalProcesses.get(otherSession.workspacePath!)?.kill).not.toHaveBeenCalled()
     expect(workspaceService.checkpoint).toHaveBeenCalledWith(session.workspacePath, "before session archive", expect.any(AbortSignal))
     expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith(session.workspacePath, expect.any(AbortSignal))
+    expect(store.snapshot.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "tool-archive-output", output: "token=[REDACTED]" }),
+    ]))
+    expect(JSON.stringify(store.snapshot)).not.toContain("archive-buffer-secret")
     const durable = {
       thread: store.snapshot.thread.filter((item) => item.sessionId === session.id).length,
       artifacts: store.snapshot.artifacts.filter((item) => item.sessionId === session.id).length,
