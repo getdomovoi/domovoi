@@ -1,12 +1,19 @@
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 import { ArrowLeftIcon } from "lucide-react"
+import { useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
+import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  desktopExternalActionLabel,
+  isDesktopExternalEditor,
+  type DesktopExternalEditor,
+} from "./desktop-platform.js"
 import { providerDisplayName, providerStatusLabel } from "./runtime.js"
 
 export type ProviderSecretStatus = {
@@ -18,16 +25,22 @@ export type ProviderSecretStatus = {
 export function ProviderSettings({
   providers,
   secrets,
+  externalEditor,
   onBack,
   onOpenSkills,
   onOpenAudit,
+  onExternalEditorChange,
 }: {
   providers: readonly ProviderRuntime[]
   secrets: readonly ProviderSecretStatus[]
+  externalEditor: DesktopExternalEditor
   onBack: () => void
   onOpenSkills: () => void
   onOpenAudit: () => void
+  onExternalEditorChange: (editor: DesktopExternalEditor) => void
 }) {
+  const [section, setSection] = useState<"providers" | "external-editor">("providers")
+
   return (
     <div className="flex min-h-0 flex-1">
       <aside className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
@@ -36,7 +49,8 @@ export function ProviderSettings({
           Workspace
         </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
-        <Button variant="secondary" className="justify-start">Providers</Button>
+        <Button variant={section === "providers" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("providers")}>Providers</Button>
+        <Button variant={section === "external-editor" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("external-editor")}>External editor</Button>
         <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
         <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
       </aside>
@@ -48,10 +62,15 @@ export function ProviderSettings({
               <ArrowLeftIcon data-icon="inline-start" />
               Workspace
             </Button>
+            <Button variant="ghost" className="min-h-11" onClick={() => setSection("providers")}>Providers</Button>
+            <Button variant="ghost" className="min-h-11" onClick={() => setSection("external-editor")}>External editor</Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
           </div>
 
+          {section === "external-editor" ? (
+            <ExternalEditorSettings editor={externalEditor} onEditorChange={onExternalEditorChange} />
+          ) : <>
           <h1 className="m-0 text-[17px] font-semibold">Providers on this machine</h1>
           <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
             Subscription CLIs own their credentials. Direct API keys stay in the OS keychain on the machine that runs the agent and never pass through a client or relay.
@@ -113,9 +132,70 @@ export function ProviderSettings({
               </CardContent>
             </Card>
           </section>
+          </>}
         </main>
       </ScrollArea>
     </div>
+  )
+}
+
+const externalEditorOptions: readonly { value: DesktopExternalEditor; label: string }[] = [
+  { value: "system", label: "System" },
+  { value: "vscode", label: "VS Code" },
+  { value: "vscode-insiders", label: "VS Code Insiders" },
+  { value: "cursor", label: "Cursor" },
+  { value: "zed", label: "Zed" },
+]
+
+export function ExternalEditorSettings({
+  editor,
+  onEditorChange,
+}: {
+  editor: DesktopExternalEditor
+  onEditorChange: (editor: DesktopExternalEditor) => void
+}) {
+  return (
+    <>
+      <h1 className="m-0 text-[17px] font-semibold">External editor</h1>
+      <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
+        Choose the local application Domovoi uses for worktree handoff.
+      </p>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Worktree handoff</CardTitle>
+          <CardDescription>The preference stays on this desktop and applies to session-header and command-palette actions.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Field orientation="responsive">
+            <FieldContent>
+              <FieldLabel id="external-editor-label">Preferred application</FieldLabel>
+              <FieldDescription>
+                {editor === "system"
+                  ? "Uses the operating system file association. Workspace actions say Open externally."
+                  : `Workspace actions say ${desktopExternalActionLabel(editor)}.`}
+              </FieldDescription>
+            </FieldContent>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              value={editor}
+              aria-labelledby="external-editor-label"
+              className="flex-wrap justify-start"
+              onValueChange={(value) => {
+                if (isDesktopExternalEditor(value)) onEditorChange(value)
+              }}
+            >
+              {externalEditorOptions.map((option) => (
+                <ToggleGroupItem key={option.value} value={option.value}>
+                  {option.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </Field>
+        </CardContent>
+      </Card>
+    </>
   )
 }
 

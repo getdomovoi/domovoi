@@ -7,6 +7,7 @@ import {
   restoreCommandPaletteFocus,
   type WorkspaceCommand,
 } from "./command-palette"
+import { openDesktopPath, type DesktopWindowBridge } from "./desktop-platform"
 
 describe("commandPaletteShortcut", () => {
   it("uses Command+K on macOS and Ctrl+K on Windows and Linux", () => {
@@ -101,7 +102,13 @@ describe("buildWorkspaceCommands", () => {
   })
 
   it("adds desktop worktree actions only when an active path is available", () => {
-    const openInEditor = vi.fn()
+    const openExternal = vi.fn(async () => true)
+    const desktopBridge = { openExternal } as unknown as DesktopWindowBridge
+    const openInEditor = vi.fn(() => openDesktopPath(
+      desktopBridge,
+      "/worktrees/session-one",
+      "cursor",
+    ))
     const copyWorktreePath = vi.fn()
     const commands = buildWorkspaceCommands({
       connected: true,
@@ -109,6 +116,7 @@ describe("buildWorkspaceCommands", () => {
       hasProject: true,
       activeWorkspacePath: "/worktrees/session-one",
       openInEditor,
+      externalEditor: "cursor",
       copyWorktreePath,
       openProject: vi.fn(),
       newSession: vi.fn(),
@@ -119,10 +127,34 @@ describe("buildWorkspaceCommands", () => {
 
     expect(commands.map(({ id }) => id)).toContain("open-in-editor")
     expect(commands.map(({ id }) => id)).toContain("copy-worktree-path")
+    expect(commands.find(({ id }) => id === "open-in-editor")?.label).toBe("Open in Cursor")
     commands.find(({ id }) => id === "open-in-editor")?.run()
     commands.find(({ id }) => id === "copy-worktree-path")?.run()
     expect(openInEditor).toHaveBeenCalledOnce()
+    expect(openExternal).toHaveBeenCalledWith({
+      editor: "cursor",
+      path: "/worktrees/session-one",
+    })
     expect(copyWorktreePath).toHaveBeenCalledOnce()
+  })
+
+  it("labels a system handoff as Open externally", () => {
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      activeWorkspacePath: "/worktrees/session-one",
+      openInEditor: vi.fn(),
+      externalEditor: "system",
+      copyWorktreePath: vi.fn(),
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+    })
+
+    expect(commands.find(({ id }) => id === "open-in-editor")?.label).toBe("Open externally")
   })
 })
 

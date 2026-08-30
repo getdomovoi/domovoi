@@ -25,17 +25,19 @@ describe("workspace UI persistence", () => {
   it("round-trips only versioned non-secret navigation and layout state", () => {
     const storage = memoryStorage()
     const state = {
-      version: 1,
+      version: 2,
       sidebarCollapsed: true,
       dockCollapsed: false,
       surface: "skills",
       projectId: "project-1",
       sessionId: "session-1",
+      externalEditor: "cursor",
       layouts: {
         "rail.dock": { thread: 68, dock: 32 },
       },
       rpcToken: "must-not-persist",
       providerApiKey: "must-not-persist",
+      editorToken: "also-must-not-persist",
     } as WorkspaceUiState & Record<string, unknown>
 
     saveWorkspaceUiState(storage, state)
@@ -43,21 +45,64 @@ describe("workspace UI persistence", () => {
     const raw = storage.getItem("domovoi.workspace-ui")!
     expect(raw).not.toContain("must-not-persist")
     expect(loadWorkspaceUiState(storage)).toEqual({
-      version: 1,
+      version: 2,
       sidebarCollapsed: true,
       dockCollapsed: false,
       surface: "skills",
       projectId: "project-1",
       sessionId: "session-1",
+      externalEditor: "cursor",
       layouts: {
         "rail.dock": { thread: 68, dock: 32 },
       },
     })
   })
 
+  it.each(["vscode", "cursor", "zed"] as const)(
+    "restores the validated %s preference after restart without persisting secrets",
+    (externalEditor) => {
+      const storage = memoryStorage()
+      saveWorkspaceUiState(storage, {
+        ...defaultWorkspaceUiState(),
+        externalEditor,
+        editorToken: "token=secret",
+      } as WorkspaceUiState & Record<string, unknown>)
+
+      expect(storage.getItem("domovoi.workspace-ui")).not.toContain("token=secret")
+      expect(loadWorkspaceUiState(storage).externalEditor).toBe(externalEditor)
+    },
+  )
+
+  it("migrates version 1 state and reconciles invalid editor values to system", () => {
+    const versionOne = JSON.stringify({
+      version: 1,
+      sidebarCollapsed: true,
+      dockCollapsed: false,
+      surface: "skills",
+      projectId: "project-1",
+      sessionId: "session-1",
+      layouts: {},
+    })
+    expect(loadWorkspaceUiState(memoryStorage(versionOne))).toMatchObject({
+      version: 2,
+      surface: "skills",
+      externalEditor: "system",
+    })
+
+    const invalidEditor = JSON.stringify({
+      ...defaultWorkspaceUiState(),
+      surface: "skills",
+      externalEditor: "../../token.txt?token=secret",
+    })
+    expect(loadWorkspaceUiState(memoryStorage(invalidEditor))).toMatchObject({
+      surface: "skills",
+      externalEditor: "system",
+    })
+  })
+
   it.each([
     ["invalid JSON", "{"],
-    ["unknown version", JSON.stringify({ ...defaultWorkspaceUiState(), version: 2 })],
+    ["unknown version", JSON.stringify({ ...defaultWorkspaceUiState(), version: 3 })],
     ["unknown surface", JSON.stringify({ ...defaultWorkspaceUiState(), surface: "terminal" })],
     ["invalid identifiers", JSON.stringify({ ...defaultWorkspaceUiState(), projectId: "" })],
     ["invalid layout", JSON.stringify({ ...defaultWorkspaceUiState(), layouts: { "sidebar.dock": { thread: Number.NaN } } })],

@@ -358,7 +358,7 @@ describe("checkpointBlockedReason", () => {
 })
 
 describe("Thread", () => {
-  it("keeps the signed Open in editor action in the session header", () => {
+  it("names the signed session-header action for the selected editor", () => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
     active.workspacePath = "/worktrees/session-billing"
@@ -377,10 +377,11 @@ describe("Thread", () => {
         onPauseSession={vi.fn(async () => {})}
         onArchiveSession={vi.fn(async () => {})}
         onOpenExternal={vi.fn(async () => {})}
+        externalEditor="cursor"
       />,
     )
 
-    expect(markup).toContain(">Open in editor</button>")
+    expect(markup).toContain(">Open in Cursor</button>")
   })
 
   it("offers a signed archive confirmation describing retained history and cleanup", () => {

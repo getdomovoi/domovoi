@@ -23,6 +23,7 @@ import {
   CommandShortcut,
 } from "./components/ui/command"
 import type { WorkspaceSurface } from "./workspace-persistence"
+import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
 
 export type CommandPalettePlatform = "darwin" | "linux" | "win32"
 
@@ -87,6 +88,7 @@ export function buildWorkspaceCommands({
   openProject,
   newSession,
   openInEditor,
+  externalEditor,
   pauseAll,
   reconnect,
   setSurface,
@@ -99,6 +101,7 @@ export function buildWorkspaceCommands({
   openProject: () => void
   newSession: () => void
   openInEditor?: (() => void) | undefined
+  externalEditor?: DesktopExternalEditor | undefined
   pauseAll: () => void
   reconnect: () => void
   setSurface: (surface: WorkspaceSurface) => void
@@ -107,7 +110,7 @@ export function buildWorkspaceCommands({
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
     { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, disabled: !connected || !hasProject, restoreFocus: false, run: newSession },
     ...(activeWorkspacePath && openInEditor && copyWorktreePath ? [
-      { id: "open-in-editor", label: "Open in editor", section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, run: openInEditor },
+      { id: "open-in-editor", label: desktopExternalActionLabel(externalEditor ?? "system"), section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, run: openInEditor },
       { id: "copy-worktree-path", label: "Copy worktree path", section: "Session" as const, keywords: ["clipboard", "folder"], icon: ClipboardIcon, run: copyWorktreePath },
     ] : []),
     { id: "pause-all", label: "Pause all", section: "Session", keywords: ["stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },

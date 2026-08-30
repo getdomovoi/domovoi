@@ -2,7 +2,12 @@ import type { ProviderRuntime } from "@getdomovoi/protocol"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
-import { ProviderSettings, providerAccountAction, providerAccountCommand } from "./provider-settings.js"
+import {
+  ExternalEditorSettings,
+  ProviderSettings,
+  providerAccountAction,
+  providerAccountCommand,
+} from "./provider-settings.js"
 
 const providers: ProviderRuntime[] = [
   {
@@ -61,6 +66,8 @@ describe("ProviderSettings", () => {
         onBack={vi.fn()}
         onOpenSkills={vi.fn()}
         onOpenAudit={vi.fn()}
+        externalEditor="cursor"
+        onExternalEditorChange={vi.fn()}
       />,
     )
 
@@ -83,6 +90,27 @@ describe("ProviderSettings", () => {
     expect(markup).not.toContain('type="password"')
     expect(markup).not.toMatch(/>Store<\/button|>Replace<\/button|>Remove<\/button/)
     expect(markup).not.toMatch(/sk-|secret@example|key ending/i)
+    expect(markup).toContain(">External editor</button>")
+  })
+
+  it("uses the installed single-choice primitive for every allowlisted editor", () => {
+    const markup = renderToStaticMarkup(
+      <ExternalEditorSettings editor="cursor" onEditorChange={vi.fn()} />,
+    )
+    const systemMarkup = renderToStaticMarkup(
+      <ExternalEditorSettings editor="system" onEditorChange={vi.fn()} />,
+    )
+
+    expect(markup).toContain("External editor")
+    expect(markup).toContain('role="radiogroup"')
+    expect(markup).toContain('data-state="on"')
+    expect(markup).toContain(">System</button>")
+    expect(markup).toContain(">VS Code</button>")
+    expect(markup).toContain(">Cursor</button>")
+    expect(markup).toContain(">Zed</button>")
+    expect(systemMarkup).toContain("Open externally")
+    expect(systemMarkup).not.toContain("Open in editor")
+    expect(markup).not.toMatch(/token|secret|password/i)
   })
 
   it("returns clear account actions for each readiness state", () => {
