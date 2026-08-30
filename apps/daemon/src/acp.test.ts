@@ -60,6 +60,26 @@ function createHarness() {
 }
 
 describe("AcpAgentAdapter", () => {
+  it("closes a failed peer and creates a fresh peer on retry", async () => {
+    const failedPeer = new FakePeer()
+    failedPeer.initialize.mockRejectedValueOnce(new Error("initialize failed"))
+    const retryPeer = new FakePeer()
+    const createPeer = vi.fn()
+      .mockReturnValueOnce(failedPeer)
+      .mockReturnValueOnce(retryPeer)
+    const adapter = new AcpAgentAdapter({
+      definition: CURSOR_ACP_PROVIDER,
+      createPeer,
+      listModels: async () => [],
+    })
+
+    await expect(adapter.connect()).rejects.toThrow("initialize failed")
+    expect(failedPeer.close).toHaveBeenCalledOnce()
+    await expect(adapter.connect()).resolves.toBeUndefined()
+    expect(retryPeer.initialize).toHaveBeenCalledOnce()
+    expect(createPeer).toHaveBeenCalledTimes(2)
+  })
+
   it("negotiates model, reasoning, and the provider's safe mode", async () => {
     const { adapter, peer } = createHarness()
     await adapter.connect()

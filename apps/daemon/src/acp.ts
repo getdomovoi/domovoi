@@ -99,12 +99,23 @@ export class AcpAgentAdapter implements AgentAdapter {
   async connect(): Promise<void> {
     if (this.#peer) return
     this.#disconnected = false
-    this.#peer = this.#createPeer({
+    const peer = this.#createPeer({
       onUpdate: (sessionId, update) => this.#handleUpdate(sessionId, update),
       onPermission: (request) => this.#requestPermission(request),
       onDisconnect: () => this.#handleDisconnect(),
     })
-    await this.#peer.initialize()
+    this.#peer = peer
+    try {
+      await peer.initialize()
+    } catch (error) {
+      if (this.#peer === peer) this.#peer = undefined
+      try {
+        await peer.close()
+      } catch {
+        // Preserve the initialization failure; the failed peer is already detached.
+      }
+      throw error
+    }
   }
 
   listModels(): Promise<ProviderModel[]> {
