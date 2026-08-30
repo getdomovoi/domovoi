@@ -460,12 +460,17 @@ describe("archived annotation controls", () => {
     expect(sessionIsArchiveReadOnly({ ...archived, state: "archiving" })).toBe(true)
     expect(sessionIsArchiveReadOnly({ ...archived, state: "idle" })).toBe(false)
 
+    const dockSnapshot = { ...structuredClone(demoWorkspace), activeSessionId: archived.id, sessions: [
+      archived,
+      ...demoWorkspace.sessions.slice(1),
+    ] }
+    dockSnapshot.artifacts.push(
+      { id: "variant-a", sessionId: archived.id, title: "Variant A", type: "preview", revision: 4, path: "design-studio/x/variant-a.html", mimeType: "text/html", variant: { id: "a", groupId: "design-studio/x", label: "Variant A", order: 0 } },
+      { id: "variant-b", sessionId: archived.id, title: "Variant B", type: "preview", revision: 3, path: "design-studio/x/variant-b.html", mimeType: "text/html", variant: { id: "b", groupId: "design-studio/x", label: "Variant B", order: 1 } },
+    )
     const dock = renderToStaticMarkup(
       <ArtifactDock
-        snapshot={{ ...structuredClone(demoWorkspace), activeSessionId: archived.id, sessions: [
-          archived,
-          ...demoWorkspace.sessions.slice(1),
-        ] }}
+        snapshot={dockSnapshot}
         onCollapse={vi.fn()}
         defaultTab="preview"
         rpcUrl="ws://127.0.0.1/rpc"
@@ -488,5 +493,9 @@ describe("archived annotation controls", () => {
       />,
     )
     expect(dock).not.toContain(">Annotate</button>")
+    expect(dock).toContain("Variant A")
+    expect(dock).toContain("Selected")
+    expect(dock).toContain("390 pixel preview")
+    expect(dock).toContain(">Compare</button>")
   })
 })

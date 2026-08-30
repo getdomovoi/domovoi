@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { latestArtifactForActiveSession } from "./artifacts"
+import { latestArtifactForActiveSession, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 
 describe("latestArtifactForActiveSession", () => {
   it("returns the newest matching artifact for the active session", () => {
@@ -34,5 +34,24 @@ describe("latestArtifactForActiveSession", () => {
     snapshot.activeSessionId = null
 
     expect(latestArtifactForActiveSession(snapshot, "plan")).toBeUndefined()
+  })
+})
+
+describe("previewVariantsForActiveSession", () => {
+  it("groups, orders, and bounds only explicit variants", () => {
+    const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+    snapshot.activeSessionId = "session-billing"
+    snapshot.artifacts = Array.from({ length: 30 }, (_, index) => ({
+      id: `variant-${index}`, sessionId: "session-billing", title: `Variant ${index}`,
+      type: "preview" as const, revision: 1, path: `design-studio/x/variant-${index}.html`, mimeType: "text/html",
+      variant: { id: `${index}`, groupId: "design-studio/x", label: `Variant ${index}`, order: 29 - index },
+    }))
+    expect(previewVariantsForActiveSession(snapshot, "variant-0")).toHaveLength(24)
+    expect(previewVariantsForActiveSession(snapshot, "variant-0")[0]?.variant?.order).toBe(0)
+  })
+
+  it("falls back from compare when the container is narrow", () => {
+    expect(reviewLayoutFor(700, true, 2)).toEqual({ compare: false, stages: 1 })
+    expect(reviewLayoutFor(900, true, 2)).toEqual({ compare: true, stages: 2 })
   })
 })

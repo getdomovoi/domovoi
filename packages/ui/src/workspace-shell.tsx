@@ -99,7 +99,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "./components/ui/resizable"
-import { ScrollArea } from "./components/ui/scroll-area"
+import { ScrollArea, ScrollBar } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Switch } from "./components/ui/switch"
@@ -119,7 +119,7 @@ import {
   previewResolveAnchorsMessage,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession } from "./artifacts"
+import { latestArtifactForActiveSession, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
@@ -1626,6 +1626,7 @@ export function ArtifactDock({
     artifactId: string
     anchor: Annotation["anchor"]
     body: string
+    variantId?: string
     visualContextUpload?: {
       artifactRevision: number
       mimeType: "image/png"
@@ -1643,15 +1644,23 @@ export function ArtifactDock({
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
-  const preview = previewCandidate?.path && previewCandidate.mimeType === "text/html"
-    ? previewCandidate
-    : undefined
+  const [selectedPreviewId, setSelectedPreviewId] = useState<string | undefined>(previewCandidate?.id)
+  const previewVariants = previewVariantsForActiveSession(snapshot, selectedPreviewId)
+  const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
   const annotations = annotationsForActiveSession(snapshot)
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   ))
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
+  const stageContainerRef = useRef<HTMLDivElement>(null)
+  const [stageContainerWidth, setStageContainerWidth] = useState(0)
+  const [deviceWidth, setDeviceWidth] = useState(768)
+  const [compareRequested, setCompareRequested] = useState(false)
+  const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
+  const comparePreview = reviewLayout.compare
+    ? previewVariants.find((artifact) => artifact.id !== preview?.id)
+    : undefined
   const [bridgeState, setBridgeState] = useState(() => ({
     previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
     channel: createPreviewBridgeChannel(),
@@ -1673,11 +1682,22 @@ export function ArtifactDock({
   const [annotationError, setAnnotationError] = useState("")
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [previewError, setPreviewError] = useState("")
+  const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
   const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
     string,
     "selector" | "text-quote" | "bounding-box" | "unresolved"
   >>(() => new Map())
   const [activeTab, setActiveTab] = useState<string>(defaultTab)
+
+  useEffect(() => {
+    const element = stageContainerRef.current
+    if (!element) return
+    const update = () => setStageContainerWidth(element.getBoundingClientRect().width)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [preview?.id])
 
   useEffect(() => {
     let active = true
@@ -1698,6 +1718,16 @@ export function ArtifactDock({
     )
     return () => { active = false }
   }, [authorizeArtifact, bridgeChannel, connected, preview?.id, preview?.revision, rpcUrl])
+
+  useEffect(() => {
+    let active = true
+    setComparePreviewUrl(undefined)
+    if (!comparePreview || !connected) return () => { active = false }
+    void authorizeArtifact(comparePreview.id).then((access) => {
+      if (active) setComparePreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
+    }, () => { if (active) setComparePreviewUrl(undefined) })
+    return () => { active = false }
+  }, [authorizeArtifact, comparePreview?.id, comparePreview?.revision, connected, rpcUrl])
 
   const postPickerState = (active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -1801,6 +1831,7 @@ export function ArtifactDock({
         artifactId: selection.artifactId,
         anchor: selection.anchor,
         body,
+        ...(preview?.variant ? { variantId: preview.variant.id } : {}),
         ...(selectionVisualContext ? { visualContextUpload: selectionVisualContext } : {}),
       })
       setSelection(null)
@@ -1834,9 +1865,36 @@ export function ArtifactDock({
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
           {preview ? (
             <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
+              {previewVariants.length > 1 ? (
+                <div className="border-b p-2">
+                  <ScrollArea className="w-full whitespace-nowrap" aria-label="Design variants; use J and K or arrow keys to move">
+                    <div className="flex gap-2 pb-2" onKeyDown={(event) => {
+                      const direction = event.key === "j" || event.key === "ArrowRight" ? 1 : event.key === "k" || event.key === "ArrowLeft" ? -1 : 0
+                      if (!direction) return
+                      event.preventDefault()
+                      const current = Math.max(0, previewVariants.findIndex((artifact) => artifact.id === preview.id))
+                      setSelectedPreviewId(previewVariants[(current + direction + previewVariants.length) % previewVariants.length]?.id)
+                    }}>
+                      {previewVariants.map((artifact) => (
+                        <Button key={artifact.id} variant={artifact.id === preview.id ? "secondary" : "outline"} className="min-h-11 min-w-28 flex-col items-start" aria-current={artifact.id === preview.id ? "true" : undefined} onClick={() => setSelectedPreviewId(artifact.id)}>
+                          <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
+                          <span>{artifact.variant?.label ?? artifact.title}</span>
+                          <span className="text-[9px] text-muted-foreground">{artifact.id === preview.id ? "Selected" : `revision ${artifact.revision}`}</span>
+                        </Button>
+                      ))}
+                    </div>
+                    <ScrollBar orientation="horizontal" />
+                  </ScrollArea>
+                </div>
+              ) : null}
               <div className="flex h-10 items-center justify-between border-b px-3">
                 <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className="flex items-center gap-2">
+                  <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
+                    {[390, 768, 1440].map((width) => <ToggleGroupItem key={width} value={String(width)} className="min-h-11 min-w-11" aria-label={`${width} pixel preview`}>{width}</ToggleGroupItem>)}
+                  </ToggleGroup>
+                  {previewVariants.length > 1 ? <Button variant="outline" size="xs" className="min-h-11" aria-pressed={reviewLayout.compare} disabled={stageContainerWidth > 0 && stageContainerWidth < 760} onClick={() => setCompareRequested((value) => !value)}>Compare</Button> : null}
+                  {previewVariants.length > 1 && stageContainerWidth > 0 && stageContainerWidth < 760 ? <span className="sr-only" role="status">Compare is unavailable at this width; showing the selected variant.</span> : null}
                   {!archiveReadOnly ? (
                     <Button
                       variant={pickerActive ? "secondary" : "outline"}
@@ -1858,9 +1916,11 @@ export function ArtifactDock({
                   <AlertDescription>{previewError}</AlertDescription>
                 </Alert>
               ) : (
+                <div ref={stageContainerRef} className="flex min-h-0 flex-1 justify-center gap-3 overflow-auto p-2">
                 <iframe
                   ref={previewFrameRef}
-                  className="min-h-0 flex-1 border-0 bg-background"
+                  className="min-h-0 flex-1 border bg-background"
+                  style={{ width: Math.min(deviceWidth, reviewLayout.compare ? stageContainerWidth / 2 : stageContainerWidth), maxWidth: deviceWidth }}
                   referrerPolicy="no-referrer"
                   sandbox="allow-scripts"
                   src={previewUrl ?? "about:blank"}
@@ -1870,6 +1930,8 @@ export function ArtifactDock({
                     postAnchorResolutionRequest()
                   }}
                 />
+                {comparePreview && comparePreviewUrl ? <iframe className="min-h-0 flex-1 border bg-background" style={{ width: Math.min(deviceWidth, stageContainerWidth / 2), maxWidth: deviceWidth }} referrerPolicy="no-referrer" sandbox="allow-scripts" src={comparePreviewUrl} title={`${comparePreview.title} comparison`} /> : null}
+                </div>
               )}
             </div>
           ) : (
