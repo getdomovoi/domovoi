@@ -31,6 +31,8 @@ import {
   terminalResizeParamsSchema,
   terminalSessionSchema,
   previewBridgePickerMessageSchema,
+  previewBridgeResolveAnchorsMessageSchema,
+  previewBridgeAnchorResolutionsMessageSchema,
   previewBridgeSelectionMessageSchema,
   sessionActivateParamsSchema,
   sessionArchiveParamsSchema,
@@ -482,6 +484,54 @@ describe("workspace protocol", () => {
       type: "domovoi.preview.picker",
       channel: "short",
       active: true,
+    }).success).toBe(false)
+
+    expect(previewBridgeResolveAnchorsMessageSchema.parse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      annotations: [{
+        annotationId: "annotation-1",
+        anchor: {
+          cssSelector: "main > section:nth-of-type(2)",
+          textQuote: "Review this migration step",
+          bbox: { x: 24, y: 96, width: 320, height: 48 },
+        },
+      }],
+    }).annotations).toHaveLength(1)
+    expect(previewBridgeAnchorResolutionsMessageSchema.parse({
+      type: "domovoi.preview.anchor-resolutions",
+      channel,
+      artifactId: "artifact-preview",
+      resolutions: [
+        { annotationId: "annotation-1", status: "resolved", strategy: "text-quote" },
+        { annotationId: "annotation-2", status: "unresolved" },
+      ],
+    }).resolutions[1]).toEqual({ annotationId: "annotation-2", status: "unresolved" })
+    expect(previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      annotations: Array.from({ length: 101 }, (_, index) => ({
+        annotationId: `annotation-${index}`,
+        anchor: { textQuote: "Bounded" },
+      })),
+    }).success).toBe(false)
+    expect(previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      annotations: [{
+        annotationId: "annotation-1",
+        anchor: { cssSelector: `#${"x".repeat(1_001)}` },
+      }],
+    }).success).toBe(false)
+    expect(previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      annotations: [{ annotationId: "annotation-1", anchor: { textQuote: "Bounded" } }],
+      unexpected: true,
     }).success).toBe(false)
   })
 
