@@ -405,7 +405,16 @@ describe("provider failure guidance", () => {
 
 describe("archived annotation controls", () => {
   it("surfaces preserved and unresolved anchor states", () => {
-    const annotations = demoWorkspace.annotations.slice(0, 2)
+    const annotations = structuredClone(demoWorkspace.annotations.slice(0, 2))
+    annotations[0]!.visualContext = {
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 320,
+      height: 120,
+      byteLength: 1024,
+    }
     const markup = renderToStaticMarkup(
       <AnnotationComments
         annotations={annotations}
@@ -421,6 +430,7 @@ describe("archived annotation controls", () => {
 
     expect(markup).toContain("text anchor")
     expect(markup).toContain("anchor unavailable")
+    expect(markup).toContain("visual context · 320×120 · revision 3")
   })
 
   it("keeps annotations visible while hiding every mutation control", () => {

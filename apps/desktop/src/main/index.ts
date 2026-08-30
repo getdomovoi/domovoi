@@ -5,6 +5,7 @@ import { DomovoiDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, dialog, ipcMain } from "electron"
 
 import { startOwnedDaemon } from "./owned-daemon.js"
+import { captureAnnotationPng } from "./annotation-capture.js"
 
 let mainWindow: BrowserWindow | undefined
 let localDaemon: DomovoiDaemon | undefined
@@ -53,6 +54,17 @@ ipcMain.on("window:maximize", () => {
 })
 ipcMain.on("window:close", () => mainWindow?.close())
 ipcMain.handle("domovoi:rpc-token", () => rpcToken)
+ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error("Annotation capture sender is not authorized")
+  }
+  return captureAnnotationPng(mainWindow.webContents, rect as {
+    x: number
+    y: number
+    width: number
+    height: number
+  })
+})
 
 app.whenReady().then(async () => {
   await ensureDaemon()

@@ -270,6 +270,29 @@ export const annotationReplySchema = z.object({
   createdAt: z.string().datetime(),
 })
 
+export const annotationVisualContextSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("available"),
+    ref: z.string().regex(/^crop-[a-f0-9]{64}$/),
+    artifactRevision: z.number().int().positive(),
+    mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+    width: z.number().int().positive().max(2048),
+    height: z.number().int().positive().max(2048),
+    byteLength: z.number().int().positive().max(1_500_000),
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    artifactRevision: z.number().int().positive(),
+    reason: z.enum([
+      "missing-bounds",
+      "artifact-unavailable",
+      "renderer-unavailable",
+      "invalid-capture",
+      "capture-failed",
+    ]),
+  }),
+])
+
 export const annotationSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -281,6 +304,7 @@ export const annotationSchema = z.object({
   statusChangedBy: clientKindSchema.optional(),
   statusChangedAt: z.string().datetime().optional(),
   origin: clientKindSchema,
+  visualContext: annotationVisualContextSchema.optional(),
   thread: z.array(annotationReplySchema),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

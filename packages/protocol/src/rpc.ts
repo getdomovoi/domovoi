@@ -760,6 +760,13 @@ export const annotationCreateParamsSchema = z.object({
   variantId: z.string().min(1).optional(),
   anchor: annotationAnchorSchema,
   body: z.string().trim().min(1),
+  visualContextUpload: z.object({
+    artifactRevision: z.number().int().positive(),
+    mimeType: z.literal("image/png"),
+    width: z.number().int().positive().max(2048),
+    height: z.number().int().positive().max(2048),
+    data: z.string().min(1).max(2_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  }).optional(),
   client: clientKindSchema,
 })
 

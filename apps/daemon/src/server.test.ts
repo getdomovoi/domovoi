@@ -2798,9 +2798,24 @@ describe("DomovoiDaemon", () => {
   })
 
   it("creates, replies to, and resolves anchored annotations", async () => {
+    const cropRef = `crop-${"a".repeat(64)}`
+    const annotationVisualContext = {
+      capture: vi.fn(),
+      storeUpload: vi.fn(async (input: { artifactRevision: number }) => ({
+        status: "available" as const,
+        ref: cropRef,
+        artifactRevision: input.artifactRevision,
+        mimeType: "image/png" as const,
+        width: 4,
+        height: 4,
+        byteLength: 12,
+      })),
+      read: vi.fn(),
+    }
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
+      annotationVisualContext,
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -2829,8 +2844,15 @@ describe("DomovoiDaemon", () => {
       sessionId: "session-billing",
       artifactId: "artifact-preview",
       variantId: "variant-c",
-      anchor: { textQuote: "Replay operations" },
+      anchor: { textQuote: "Replay operations", bbox: { x: 10, y: 20, width: 4, height: 4 } },
       body: "Keep the progress visible.",
+      visualContextUpload: {
+        artifactRevision: 2,
+        mimeType: "image/png",
+        width: 4,
+        height: 4,
+        data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]).toString("base64"),
+      },
       client: "tablet",
     })
     const annotations = (created.result as { annotations: Array<{ id: string }> }).annotations
@@ -2841,7 +2863,29 @@ describe("DomovoiDaemon", () => {
       origin: "tablet",
       status: "open",
       thread: [],
+      visualContext: { status: "available", ref: cropRef, artifactRevision: 2 },
     })
+    expect(annotationVisualContext.storeUpload).toHaveBeenCalledWith(expect.objectContaining({
+      artifactRevision: 2,
+      mimeType: "image/png",
+      bytes: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]),
+    }))
+
+    const stale = await rpc("annotation.create", {
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      anchor: { bbox: { x: 10, y: 20, width: 4, height: 4 } },
+      body: "Stale crop.",
+      visualContextUpload: {
+        artifactRevision: 1,
+        mimeType: "image/png",
+        width: 4,
+        height: 4,
+        data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64"),
+      },
+      client: "desktop",
+    })
+    expect(stale).toMatchObject({ error: { code: -32602, message: "Visual context revision is stale" } })
 
     const replied = await rpc("annotation.reply", {
       annotationId,

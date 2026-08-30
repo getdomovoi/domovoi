@@ -5,6 +5,7 @@ import {
   annotationCreateParamsSchema,
   annotationReplyParamsSchema,
   annotationSetStatusParamsSchema,
+  annotationVisualContextSchema,
   artifactAuthorizeParamsSchema,
   artifactAuthorizeResultSchema,
   approvalResolveParamsSchema,
@@ -439,6 +440,24 @@ describe("workspace protocol", () => {
       ...annotation,
       anchor: {},
     }).success).toBe(false)
+    expect(annotationVisualContextSchema.parse({
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 640,
+      height: 320,
+      byteLength: 1024,
+    }).status).toBe("available")
+    expect(annotationVisualContextSchema.safeParse({
+      status: "available",
+      ref: "../../secret",
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 9000,
+      height: 320,
+      byteLength: 1024,
+    }).success).toBe(false)
   })
 
   it("validates annotation mutation requests", () => {
@@ -448,8 +467,15 @@ describe("workspace protocol", () => {
       variantId: "variant-b",
       anchor: { textQuote: "Replay operations" },
       body: "Keep the progress visible.",
+      visualContextUpload: {
+        artifactRevision: 2,
+        mimeType: "image/png",
+        width: 320,
+        height: 48,
+        data: "iVBORw0KGgo=",
+      },
       client: "tablet",
-    }).client).toBe("tablet")
+    }).visualContextUpload?.artifactRevision).toBe(2)
     expect(annotationReplyParamsSchema.parse({
       annotationId: "annotation-1",
       body: "Updated in revision four.",

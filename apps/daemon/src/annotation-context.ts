@@ -15,6 +15,7 @@ export function agentPromptWithAnnotations(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
   userPrompt: string,
+  visualDeliveries: ReadonlyMap<string, "image-attached" | "provider-text-fallback" | "crop-unavailable"> = new Map(),
 ): string {
   const reviewItems = snapshot.annotations
     .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
@@ -38,6 +39,21 @@ export function agentPromptWithAnnotations(
           ...(annotation.anchor.bbox ? { bbox: annotation.anchor.bbox } : {}),
         },
         comment: { body: truncate(annotation.body, 2_000), origin: annotation.origin },
+        ...(annotation.visualContext ? {
+          visualContext: annotation.visualContext.status === "available"
+            ? {
+                status: annotation.visualContext.status,
+                artifactRevision: annotation.visualContext.artifactRevision,
+                mimeType: annotation.visualContext.mimeType,
+                width: annotation.visualContext.width,
+                height: annotation.visualContext.height,
+                delivery: visualDeliveries.get(annotation.id) ?? "crop-unavailable",
+              }
+            : {
+                ...annotation.visualContext,
+                delivery: "crop-unavailable" as const,
+              },
+        } : {}),
         replies: annotation.thread.slice(-10).map((reply) => ({
           body: truncate(reply.body, 1_000),
           origin: reply.origin,

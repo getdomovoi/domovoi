@@ -38,6 +38,7 @@ describe("injectPreviewBridge", () => {
     expect(injected).toContain("MAX_ANCHORS=100")
     expect(injected).toContain("MAX_CANDIDATES=1500")
     expect(injected).toContain("const isSafePreviewSelector=")
+    expect(injected).toContain("setActive(false);")
     const script = injected.match(/<script data-domovoi-preview-bridge>([\s\S]*?)<\/script>/)?.[1]
     expect(script).toBeDefined()
     expect(() => new Function(script!)).not.toThrow()

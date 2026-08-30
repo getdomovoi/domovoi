@@ -56,7 +56,11 @@ import {
   validPreviewBridgeChannel,
   validPreviewParentOrigin,
 } from "./preview-bridge.js"
-import { agentPromptWithAnnotations } from "./annotation-context.js"
+import {
+  AnnotationVisualContextService,
+  type AnnotationVisualContextReader,
+} from "./annotation-visual-context.js"
+import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 import { agentPromptWithHandoff } from "./handoff-context.js"
 import {
   NodePtyTerminalService,
@@ -340,6 +344,11 @@ export function sessionHistoryPage(
   }
 }
 
+type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
+  AnnotationVisualContextService,
+  "capture" | "storeUpload"
+>
+
 export type DaemonServerOptions = {
   host?: string
   port?: number
@@ -363,6 +372,7 @@ export type DaemonServerOptions = {
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
+  annotationVisualContext?: AnnotationVisualContextStore
 }
 
 export type DaemonErrorEntry = {
@@ -438,6 +448,7 @@ export class DomovoiDaemon {
   #errorSink: DaemonErrorSink
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
+  #annotationVisualContext: AnnotationVisualContextStore
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -464,6 +475,8 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    this.#annotationVisualContext = options.annotationVisualContext
+      ?? new AnnotationVisualContextService({ root: join(dirname(statePath), "annotation-crops") })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,
       initialSnapshot,
@@ -1570,6 +1583,44 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Artifact does not belong to the session")
           return
         }
+        if (
+          params.visualContextUpload
+          && params.visualContextUpload.artifactRevision !== artifact.revision
+        ) {
+          this.#error(socket, request.id, invalidParams, "Visual context revision is stale")
+          return
+        }
+        let visualContext: Annotation["visualContext"]
+        if (params.visualContextUpload) {
+          visualContext = await this.#annotationVisualContext.storeUpload({
+            artifactRevision: artifact.revision,
+            mimeType: params.visualContextUpload.mimeType,
+            bytes: new Uint8Array(Buffer.from(params.visualContextUpload.data, "base64")),
+            width: params.visualContextUpload.width,
+            height: params.visualContextUpload.height,
+          })
+        } else if (
+          artifact.type === "preview"
+          && artifact.mimeType === "text/html"
+          && artifact.path
+          && session?.workspacePath
+        ) {
+          const htmlPath = await resolveInsideReal(session.workspacePath, artifact.path)
+          visualContext = htmlPath
+            ? await this.#annotationVisualContext.capture({
+                artifactId: artifact.id,
+                artifactRevision: artifact.revision,
+                htmlPath,
+                ...(params.anchor.bbox ? { bbox: params.anchor.bbox } : {}),
+              })
+            : { status: "unavailable", artifactRevision: artifact.revision, reason: "artifact-unavailable" }
+        } else {
+          visualContext = {
+            status: "unavailable",
+            artifactRevision: artifact.revision,
+            reason: params.anchor.bbox ? "artifact-unavailable" : "missing-bounds",
+          }
+        }
         const createdAt = new Date().toISOString()
         this.#snapshot.annotations.push({
           id: `annotation-${randomUUID()}`,
@@ -1580,6 +1631,7 @@ export class DomovoiDaemon {
           body: params.body,
           status: "open",
           origin: params.client,
+          visualContext,
           thread: [],
           createdAt,
           updatedAt: createdAt,
@@ -2283,17 +2335,22 @@ export class DomovoiDaemon {
           }
           this.#loadedAgentThreads.add(loadedThread)
         }
-        const prompt = agentPromptWithAnnotations(
+        const preparedTurn = await prepareAnnotationTurn(
           this.#snapshot,
           session.id,
           agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
+          agent.capabilities,
+          this.#annotationVisualContext,
         )
+        const prompt = preparedTurn.prompt
         let turnId = session.activeTurnId
         try {
           signal?.throwIfAborted()
           if (turnId) {
             await withTimeout(
-              agent.steerTurn(providerThreadId, turnId, prompt),
+              preparedTurn.visualContexts.length > 0
+                ? agent.steerTurn(providerThreadId, turnId, prompt, preparedTurn.visualContexts)
+                : agent.steerTurn(providerThreadId, turnId, prompt),
               this.#agentTimeoutMs,
               "Agent steering timed out",
             )
@@ -2304,6 +2361,9 @@ export class DomovoiDaemon {
                 cwd: session.workspacePath,
                 prompt,
                 runtime: session.runtime,
+                ...(preparedTurn.visualContexts.length > 0
+                  ? { visualContexts: preparedTurn.visualContexts }
+                  : {}),
               }),
               this.#agentTimeoutMs,
               "Agent turn timed out",
