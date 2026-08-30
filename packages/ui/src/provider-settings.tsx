@@ -1,4 +1,3 @@
-import { useState } from "react"
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 import { ArrowLeftIcon } from "lucide-react"
 
@@ -6,7 +5,6 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { providerDisplayName, providerStatusLabel } from "./runtime.js"
@@ -23,16 +21,12 @@ export function ProviderSettings({
   onBack,
   onOpenSkills,
   onOpenAudit,
-  onSetSecret,
-  onDeleteSecret,
 }: {
   providers: readonly ProviderRuntime[]
   secrets: readonly ProviderSecretStatus[]
   onBack: () => void
   onOpenSkills: () => void
   onOpenAudit: () => void
-  onSetSecret: (provider: ProviderSecretStatus["provider"], secret: string) => Promise<void> | void
-  onDeleteSecret: (provider: ProviderSecretStatus["provider"]) => Promise<void> | void
 }) {
   return (
     <div className="flex min-h-0 flex-1">
@@ -114,12 +108,7 @@ export function ProviderSettings({
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 {secrets.map((secret) => (
-                  <ProviderKeyRow
-                    key={secret.provider}
-                    status={secret}
-                    onSet={onSetSecret}
-                    onDelete={onDeleteSecret}
-                  />
+                  <ProviderKeyRow key={secret.provider} status={secret} />
                 ))}
               </CardContent>
             </Card>
@@ -130,61 +119,23 @@ export function ProviderSettings({
   )
 }
 
-function ProviderKeyRow({
-  status,
-  onSet,
-  onDelete,
-}: {
-  status: ProviderSecretStatus
-  onSet: (provider: ProviderSecretStatus["provider"], secret: string) => Promise<void> | void
-  onDelete: (provider: ProviderSecretStatus["provider"]) => Promise<void> | void
-}) {
-  const [value, setValue] = useState("")
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState("")
+function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
   const label = directProviderName(status.provider)
-
-  const save = async () => {
-    if (!value.trim() || pending || status.state === "unavailable") return
-    setPending(true)
-    setError("")
-    try {
-      await onSet(status.provider, value)
-      setValue("")
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Key could not be stored")
-    } finally {
-      setPending(false)
-    }
-  }
 
   return (
     <Field>
-      <div className="flex flex-wrap items-end gap-2">
+      <div className="flex flex-wrap items-start gap-3">
         <span className="min-w-32 flex-1">
-          <FieldLabel htmlFor={`provider-key-${status.provider}`}>{label}</FieldLabel>
+          <FieldLabel>{label}</FieldLabel>
           <FieldDescription>
             {status.state === "stored" ? "Stored" : status.state === "unavailable" ? "Keychain unavailable" : "Not set"}
           </FieldDescription>
         </span>
-        <Input
-          id={`provider-key-${status.provider}`}
-          type="password"
-          autoComplete="off"
-          aria-label={`${label} API key`}
-          className="min-w-48 flex-[2]"
-          disabled={status.state === "unavailable" || pending}
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-        />
-        <Button variant="outline" size="sm" disabled={!value.trim() || pending || status.state === "unavailable"} onClick={() => void save()}>
-          {pending ? "Saving…" : status.state === "stored" ? "Replace" : "Store"}
-        </Button>
-        {status.state === "stored" ? (
-          <Button variant="ghost" size="sm" disabled={pending} onClick={() => void onDelete(status.provider)}>Remove</Button>
-        ) : null}
+        <span className="min-w-64 flex-[2] text-[10px] leading-relaxed text-muted-foreground">
+          Run <code className="font-machine">domovoid secret set {status.provider}</code> locally on the execution machine.
+          {status.state === "stored" ? <><br />Delete with <code className="font-machine">domovoid secret delete {status.provider}</code>.</> : null}
+        </span>
       </div>
-      {error ? <FieldDescription className="text-destructive">{error}</FieldDescription> : null}
     </Field>
   )
 }

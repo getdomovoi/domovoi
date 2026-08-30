@@ -352,7 +352,7 @@ export type DaemonServerOptions = {
   authTimeoutMs?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
-  providerSecrets?: Pick<ProviderSecretManager, "status" | "set" | "delete">
+  providerSecrets?: Pick<ProviderSecretManager, "status">
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
@@ -416,7 +416,7 @@ export class DomovoiDaemon {
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
-  #providerSecrets: Pick<ProviderSecretManager, "status" | "set" | "delete">
+  #providerSecrets: Pick<ProviderSecretManager, "status">
   #usageLedger: UsageLedger
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
@@ -1410,36 +1410,6 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(this.#providerSecrets.status()),
-        })
-        return
-      }
-
-      if (method === "provider.secret.set") {
-        const params = rpcMethods[method].params.parse(request.params)
-        this.#providerSecrets.set(params.provider, params.secret)
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({
-            provider: params.provider,
-            state: "stored",
-            source: "keychain",
-          }),
-        })
-        return
-      }
-
-      if (method === "provider.secret.delete") {
-        const params = rpcMethods[method].params.parse(request.params)
-        this.#providerSecrets.delete(params.provider)
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({
-            provider: params.provider,
-            state: "not-set",
-            source: "keychain",
-          }),
         })
         return
       }

@@ -61,8 +61,6 @@ describe("ProviderSettings", () => {
         onBack={vi.fn()}
         onOpenSkills={vi.fn()}
         onOpenAudit={vi.fn()}
-        onSetSecret={vi.fn()}
-        onDeleteSecret={vi.fn()}
       />,
     )
 
@@ -80,6 +78,10 @@ describe("ProviderSettings", () => {
     expect(markup).toContain("OS keychain")
     expect(markup).toContain("OpenRouter")
     expect(markup).toContain("Keychain unavailable")
+    expect(markup).toContain("domovoid secret set openai")
+    expect(markup).toContain("domovoid secret delete anthropic")
+    expect(markup).not.toContain('type="password"')
+    expect(markup).not.toMatch(/>Store<\/button|>Replace<\/button|>Remove<\/button/)
     expect(markup).not.toMatch(/sk-|secret@example|key ending/i)
   })
 

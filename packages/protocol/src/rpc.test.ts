@@ -108,6 +108,11 @@ describe("audit RPC contracts", () => {
 })
 
 describe("provider secret RPC contracts", () => {
+  it("does not expose secret mutation methods over RPC", () => {
+    expect(Object.keys(rpcMethods)).not.toContain("provider.secret.set")
+    expect(Object.keys(rpcMethods)).not.toContain("provider.secret.delete")
+  })
+
   it("returns status-only keychain records", () => {
     expect(rpcMethods["provider.secret.list"].result.parse([
       { provider: "openai", state: "stored", source: "keychain" },
@@ -119,23 +124,6 @@ describe("provider secret RPC contracts", () => {
     ]).success).toBe(false)
   })
 
-  it("bounds key writes and only accepts supported providers", () => {
-    expect(rpcMethods["provider.secret.set"].params.parse({
-      provider: "anthropic",
-      secret: "key",
-      client: "desktop",
-    })).toMatchObject({ provider: "anthropic" })
-    expect(rpcMethods["provider.secret.set"].params.safeParse({
-      provider: "xai",
-      secret: "key",
-      client: "desktop",
-    }).success).toBe(false)
-    expect(rpcMethods["provider.secret.set"].params.safeParse({
-      provider: "openai",
-      secret: " ",
-      client: "desktop",
-    }).success).toBe(false)
-  })
 })
 
 describe("session usage RPC contracts", () => {

@@ -782,20 +782,6 @@ export const providerSecretStatusSchema = z.object({
   source: z.literal("keychain"),
 }).strict()
 export const providerSecretStatusesSchema = z.array(providerSecretStatusSchema)
-export const providerSecretSetParamsSchema = z.object({
-  provider: directApiProviderSchema,
-  secret: z.string().min(1).max(32_768).refine((secret) => secret.trim().length > 0),
-  client: clientKindSchema,
-}).strict()
-export const providerSecretDeleteParamsSchema = z.object({
-  provider: directApiProviderSchema,
-  client: clientKindSchema,
-}).strict()
-export const providerSecretMutationResultSchema = z.object({
-  provider: directApiProviderSchema,
-  state: z.enum(["stored", "not-set"]),
-  source: z.literal("keychain"),
-}).strict()
 const usageTotalsSchema = z.object({
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
@@ -855,14 +841,6 @@ export const rpcMethods = {
   "provider.secret.list": {
     params: z.object({}),
     result: providerSecretStatusesSchema,
-  },
-  "provider.secret.set": {
-    params: providerSecretSetParamsSchema,
-    result: providerSecretMutationResultSchema,
-  },
-  "provider.secret.delete": {
-    params: providerSecretDeleteParamsSchema,
-    result: providerSecretMutationResultSchema,
   },
   "session.usage": {
     params: z.object({ sessionId: z.string().min(1) }).strict(),
