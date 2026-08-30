@@ -243,12 +243,12 @@ function redact(value: unknown, maximumLength: number): RedactedText {
     )
     output = replace(
       output,
-      /(eyJ[A-Za-z0-9_-]{3,}(?:\.[A-Za-z0-9_-]*){0,2})$/gu,
+      /(eyJ[A-Za-z0-9_-]{1,}(?:\.[A-Za-z0-9_-]*){0,2})$/gu,
       replacement,
     )
     output = replace(
       output,
-      /((?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{3,})$/gu,
+      /((?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{1,})$/gu,
       replacement,
     )
   }
