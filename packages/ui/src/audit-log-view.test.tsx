@@ -3,7 +3,13 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { AuditEntry, AuditQueryPage } from "@getdomovoi/protocol"
 
-import { AuditLogView, auditActorLabel, auditExportFilename, collectAuditExport } from "./audit-log-view"
+import {
+  AuditLogView,
+  auditActorLabel,
+  auditExportFilename,
+  collectAuditExport,
+  downloadAuditExport,
+} from "./audit-log-view"
 
 const entry: AuditEntry = {
   id: "audit-111111111111",
@@ -54,6 +60,34 @@ describe("audit log view", () => {
     expect(auditExportFilename("2026-08-29T18:30:00.000Z")).toBe(
       "domovoi-audit-2026-08-29T18-30-00-000Z.jsonl",
     )
+  })
+
+  it("keeps the export blob alive until the browser handles the click", async () => {
+    vi.useFakeTimers()
+    const click = vi.fn()
+    vi.stubGlobal("document", {
+      createElement: vi.fn(() => ({ click })),
+    })
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:audit-export")
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {})
+
+    downloadAuditExport({
+      format: "jsonl",
+      exportedAt: "2026-08-29T18:30:00.000Z",
+      entryCount: 1,
+      content: `${JSON.stringify(entry)}\n`,
+      hasMore: false,
+    })
+
+    expect(createObjectURL).toHaveBeenCalledOnce()
+    expect(click).toHaveBeenCalledOnce()
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+    await vi.runAllTimersAsync()
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:audit-export")
+
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it("drains stable export cursors instead of silently downloading one page", async () => {
