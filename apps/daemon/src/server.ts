@@ -20,6 +20,7 @@ import {
   workspaceSnapshotSchema,
   type Annotation,
   type Artifact,
+  type ArtifactAccessPurpose,
   type AuditActor,
   type AuditOutcome,
   type ProviderModel,
@@ -86,6 +87,7 @@ import {
   type SessionArtifactWatcherFactory,
 } from "./artifact-watcher.js"
 import { testEvidence } from "./test-evidence.js"
+import { safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
   appendDurableOutput,
@@ -1014,29 +1016,37 @@ export class DomovoiDaemon {
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
     let artifactId: string
+    let sessionId: string | undefined
+    let revision: number | undefined
+    let purpose: ArtifactAccessPurpose = "preview"
     let bridgeChannel: string | undefined
     let parentOrigin: string | undefined
     let authorized = false
     try {
       const requestUrl = new URL(url, "http://domovoi.local")
       artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
+      sessionId = requestUrl.searchParams.get("session") || undefined
+      const requestedRevision = Number(requestUrl.searchParams.get("revision"))
+      revision = Number.isSafeInteger(requestedRevision) && requestedRevision > 0 ? requestedRevision : undefined
+      const requestedPurpose = requestUrl.searchParams.get("purpose")
+      if (requestedPurpose === "print" || requestedPurpose === "download") purpose = requestedPurpose
+      else if (requestedPurpose !== null && requestedPurpose !== "preview") throw new Error("Invalid artifact purpose")
       bridgeChannel = validPreviewBridgeChannel(requestUrl.searchParams.get("bridge"))
+      if (purpose !== "preview" && bridgeChannel) throw new Error("Derived artifacts cannot use the preview bridge")
       parentOrigin = validPreviewParentOrigin(requestUrl.searchParams.get("parentOrigin"))
       const expiresAt = Number(requestUrl.searchParams.get("expires"))
       const signature = requestUrl.searchParams.get("signature")
-      authorized = artifactAccessMatches(
+      authorized = Boolean(sessionId && revision && artifactAccessMatches(
         this.#artifactSigningSecret,
-        artifactId,
-        bridgeChannel,
-        expiresAt,
+        { sessionId, artifactId, revision, purpose, ...(bridgeChannel ? { bridgeChannel } : {}), expiresAt },
         signature,
-      )
+      ))
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
     }
-    if (!canServeArtifacts(this.host, authorized)) {
+    if (!canServeArtifacts(this.host, authorized) || (purpose !== "preview" && !authorized)) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -1051,7 +1061,12 @@ export class DomovoiDaemon {
     const path = artifact?.path && session?.workspacePath
       ? await resolveInsideReal(session.workspacePath, artifact.path)
       : undefined
-    if (!artifact || artifact.mimeType !== "text/html" || !path) {
+    if (
+      !artifact
+      || artifact.mimeType !== "text/html"
+      || !path
+      || (authorized && (artifact.sessionId !== sessionId || artifact.revision !== revision))
+    ) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -1059,17 +1074,21 @@ export class DomovoiDaemon {
 
     try {
       const content = await readFile(path, "utf8")
+      const derived = purpose === "preview" ? undefined : sanitizePrintableArtifact(content, artifact.title)
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
-        "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`,
+        "content-security-policy": purpose === "preview"
+          ? `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`
+          : "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; sandbox",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
         "cache-control": "no-store",
+        ...(purpose === "download" ? { "content-disposition": `attachment; filename="${safeArtifactFilename(artifact.title)}"` } : {}),
       })
       response.end(
-        bridgeChannel && parentOrigin
+        derived ?? (bridgeChannel && parentOrigin
           ? injectPreviewBridge(content, artifact.id, bridgeChannel, parentOrigin)
-          : content,
+          : content),
       )
     } catch {
       response.writeHead(404, { "content-type": "application/json" })
@@ -1391,7 +1410,10 @@ export class DomovoiDaemon {
       if (method === "artifact.authorize") {
         const params = rpcMethods[method].params.parse(request.params)
         const artifact = this.#snapshot.artifacts.find(
-          (candidate) => candidate.id === params.artifactId && candidate.type === "preview",
+          (candidate) => candidate.id === params.artifactId
+            && candidate.sessionId === params.sessionId
+            && candidate.revision === params.revision
+            && candidate.type === "preview",
         )
         if (!artifact || artifact.mimeType !== "text/html" || !artifact.path) {
           this.#error(socket, request.id, invalidParams, "Preview artifact does not exist")
@@ -1402,14 +1424,22 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
+            sessionId: params.sessionId,
             artifactId: params.artifactId,
+            revision: params.revision,
+            purpose: params.purpose,
             ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
             expiresAt,
             signature: signArtifactAccess(
               this.#artifactSigningSecret,
-              params.artifactId,
-              params.bridgeChannel,
-              expiresAt,
+              {
+                sessionId: params.sessionId,
+                artifactId: params.artifactId,
+                revision: params.revision,
+                purpose: params.purpose,
+                ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+                expiresAt,
+              },
             ),
           }),
         })
@@ -3763,38 +3793,55 @@ export function frameAncestorsFor(origins: Iterable<string>): string {
   return sources.length > 0 ? [...new Set(sources)].join(" ") : "'none'"
 }
 
-function artifactAccessPayload(
-  artifactId: string,
-  bridgeChannel: string | undefined,
-  expiresAt: number,
-): string {
-  return JSON.stringify([artifactId, bridgeChannel ?? null, expiresAt])
+export type ArtifactAccessScope = {
+  sessionId: string
+  artifactId: string
+  revision: number
+  purpose: ArtifactAccessPurpose
+  bridgeChannel?: string
+  expiresAt: number
+}
+
+function artifactAccessPayload(scope: ArtifactAccessScope): string {
+  return JSON.stringify([
+    scope.sessionId,
+    scope.artifactId,
+    scope.revision,
+    scope.purpose,
+    scope.bridgeChannel ?? null,
+    scope.expiresAt,
+  ])
 }
 
 export function signArtifactAccess(
   secret: string,
-  artifactId: string,
-  bridgeChannel: string | undefined,
-  expiresAt: number,
+  scope: ArtifactAccessScope,
 ): string {
   return createHmac("sha256", secret)
-    .update(artifactAccessPayload(artifactId, bridgeChannel, expiresAt))
+    .update(artifactAccessPayload(scope))
     .digest("base64url")
 }
 
 export function artifactAccessMatches(
   secret: string,
-  artifactId: string,
-  bridgeChannel: string | undefined,
-  expiresAt: number,
+  scope: ArtifactAccessScope,
   suppliedSignature: string | null,
   now = Math.floor(Date.now() / 1_000),
 ): boolean {
-  if (!Number.isSafeInteger(expiresAt) || expiresAt < now || typeof suppliedSignature !== "string") {
+  if (
+    !scope.sessionId
+    || !scope.artifactId
+    || !Number.isSafeInteger(scope.revision)
+    || scope.revision < 1
+    || !Number.isSafeInteger(scope.expiresAt)
+    || scope.expiresAt < now
+    || (scope.bridgeChannel && scope.purpose !== "preview")
+    || typeof suppliedSignature !== "string"
+  ) {
     return false
   }
   return secureTokenMatch(
-    signArtifactAccess(secret, artifactId, bridgeChannel, expiresAt),
+    signArtifactAccess(secret, scope),
     suppliedSignature,
   )
 }

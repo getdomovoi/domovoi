@@ -9,6 +9,9 @@ export function artifactUrlFor(
   url.protocol = url.protocol === "wss:" ? "https:" : "http:"
   url.pathname = `/artifacts/${encodeURIComponent(access.artifactId)}`
   url.search = new URLSearchParams({
+    session: access.sessionId,
+    revision: String(access.revision),
+    purpose: access.purpose,
     ...(access.bridgeChannel ? { bridge: access.bridgeChannel } : {}),
     ...(access.bridgeChannel && parentOrigin ? { parentOrigin } : {}),
     expires: String(access.expiresAt),

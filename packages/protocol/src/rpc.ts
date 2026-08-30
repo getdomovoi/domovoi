@@ -552,18 +552,30 @@ export const helloParamsSchema = z.object({
   authToken: z.string().min(1).optional(),
 })
 
+export const artifactAccessPurposeSchema = z.enum(["preview", "print", "download"])
+
 export const artifactAuthorizeParamsSchema = z.object({
+  sessionId: z.string().min(1),
   artifactId: z.string().min(1),
+  revision: z.number().int().positive(),
+  purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
   client: clientKindSchema,
+}).strict().superRefine((value, context) => {
+  if (value.bridgeChannel && value.purpose !== "preview") {
+    context.addIssue({ code: "custom", path: ["bridgeChannel"], message: "Only preview access may use the bridge" })
+  }
 })
 
 export const artifactAuthorizeResultSchema = z.object({
+  sessionId: z.string().min(1),
   artifactId: z.string().min(1),
+  revision: z.number().int().positive(),
+  purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
   expiresAt: z.number().int().positive(),
   signature: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-})
+}).strict()
 
 const terminalIdSchema = z.string().min(1).max(128)
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
@@ -897,6 +909,7 @@ export type RpcRequest = z.infer<typeof rpcRequestSchema>
 export type RpcResponse = z.infer<typeof rpcResponseSchema>
 export type RpcNotification = z.infer<typeof rpcNotificationSchema>
 export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>
+export type ArtifactAccessPurpose = z.infer<typeof artifactAccessPurposeSchema>
 export type TerminalSession = z.infer<typeof terminalSessionSchema>
 export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>

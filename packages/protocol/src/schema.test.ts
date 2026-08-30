@@ -344,25 +344,41 @@ describe("workspace protocol", () => {
 
   it("validates scoped artifact access capabilities", () => {
     expect(artifactAuthorizeParamsSchema.parse({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       client: "tablet",
     })).toEqual({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       client: "tablet",
     })
     expect(artifactAuthorizeParamsSchema.safeParse({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "short",
       client: "tablet",
     }).success).toBe(false)
     expect(artifactAuthorizeResultSchema.parse({
+      sessionId: "session-1",
       artifactId: "preview-1",
+      revision: 3,
+      purpose: "preview",
       bridgeChannel: "preview_channel_123456",
       expiresAt: 1_800_000_000,
       signature: "a".repeat(43),
     }).signature).toHaveLength(43)
+    expect(artifactAuthorizeParamsSchema.safeParse({
+      sessionId: "session-1", artifactId: "preview-1", revision: 3,
+      purpose: "print", bridgeChannel: "preview_channel_123456", client: "web",
+    }).success).toBe(false)
   })
 
   it("validates interactive terminal operations", () => {
