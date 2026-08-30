@@ -126,7 +126,7 @@ import {
   previewResolveAnchorMessages,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
@@ -159,7 +159,7 @@ import {
 import type { TerminalControls } from "./terminal-pane"
 import {
   latestSessionHistoryRequest,
-  maximumRetainedSessionHistoryItems,
+  historyWindowedAfterMerge,
   mergeOlderHistory,
   resetSessionHistoryWindow,
   sessionHistoryCategories,
@@ -1700,10 +1700,7 @@ export function HistoryPanel({
         limit: 50,
       })
       if (request === requestRef.current) {
-        const currentIds = new Set(page.items.map((item) => item.id))
-        const uniqueItemCount = page.items.length
-          + older.items.filter((item) => !currentIds.has(item.id)).length
-        setHistoryWindowed(uniqueItemCount > maximumRetainedSessionHistoryItems)
+        setHistoryWindowed((current) => historyWindowedAfterMerge(current, page, older))
         setPage(mergeOlderHistory(page, older))
       }
     } catch (cause) {
@@ -1851,9 +1848,11 @@ export function ArtifactDock({
   const [compareRequested, setCompareRequested] = useState(false)
   const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
   const previewControlLayout = previewControlLayoutFor(stageContainerWidth)
-  const comparePreview = reviewLayout.compare
-    ? previewVariants.find((artifact) => artifact.id !== preview?.id)
-    : undefined
+  const reviewStages = previewStagesForReview(previewVariants, preview, reviewLayout.stages)
+  const comparisonStages = reviewStages.slice(1)
+  const comparisonStageKey = comparisonStages
+    .map((artifact) => `${artifact.sessionId}:${artifact.id}:${artifact.revision}`)
+    .join(",")
   const [bridgeState, setBridgeState] = useState(() => ({
     previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
     channel: createPreviewBridgeChannel(),
@@ -1877,7 +1876,9 @@ export function ArtifactDock({
   const [previewError, setPreviewError] = useState("")
   const [derivedArtifactPending, setDerivedArtifactPending] = useState<"print" | "download">()
   const [derivedArtifactError, setDerivedArtifactError] = useState("")
-  const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
+  const [comparisonStageUrls, setComparisonStageUrls] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  )
   const [previewThumbnailUrls, setPreviewThumbnailUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
   const previewThumbnailLifecycle = useRef(new PreviewThumbnailLifecycle())
   const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
@@ -1924,13 +1925,28 @@ export function ArtifactDock({
 
   useEffect(() => {
     let active = true
-    setComparePreviewUrl(undefined)
-    if (!comparePreview || !connected) return () => { active = false }
-    void authorizeArtifact({ sessionId: comparePreview.sessionId, artifactId: comparePreview.id, revision: comparePreview.revision, purpose: "preview" }).then((access) => {
-      if (active) setComparePreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
-    }, () => { if (active) setComparePreviewUrl(undefined) })
+    setComparisonStageUrls(new Map())
+    if (!comparisonStages.length || !connected) return () => { active = false }
+    const authorizeComparisonStages = async () => {
+      const entries: Array<readonly [string, string]> = []
+      await Promise.all(comparisonStages.map(async (artifact) => {
+        try {
+          const access = await authorizeArtifact({
+            sessionId: artifact.sessionId,
+            artifactId: artifact.id,
+            revision: artifact.revision,
+            purpose: "preview",
+          })
+          entries.push([artifact.id, artifactUrlFor(rpcUrl, access, window.location.origin)])
+        } catch {
+          // Keep failed comparison stages sandboxed and blank.
+        }
+      }))
+      if (active) setComparisonStageUrls(new Map(entries))
+    }
+    void authorizeComparisonStages()
     return () => { active = false }
-  }, [authorizeArtifact, comparePreview?.id, comparePreview?.revision, connected, rpcUrl])
+  }, [authorizeArtifact, comparisonStageKey, connected, rpcUrl])
 
   const postPickerState = (active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -2192,21 +2208,27 @@ export function ArtifactDock({
                   <AlertDescription>{previewError}</AlertDescription>
                 </Alert>
               ) : (
-                <div ref={stageContainerRef} className="flex min-h-0 flex-1 justify-center gap-3 overflow-auto p-2">
-                <iframe
-                  ref={previewFrameRef}
-                  className="min-h-0 flex-1 border bg-background"
-                  style={{ width: Math.min(deviceWidth, reviewLayout.compare ? stageContainerWidth / 2 : stageContainerWidth), maxWidth: deviceWidth }}
-                  referrerPolicy="no-referrer"
-                  sandbox="allow-scripts"
-                  src={previewUrl ?? "about:blank"}
-                  title={preview.title}
-                  onLoad={() => {
-                    postPickerState(pickerActive)
-                    void capturePreviewThumbnail()
-                  }}
-                />
-                {comparePreview && comparePreviewUrl ? <iframe className="min-h-0 flex-1 border bg-background" style={{ width: Math.min(deviceWidth, stageContainerWidth / 2), maxWidth: deviceWidth }} referrerPolicy="no-referrer" sandbox="allow-scripts" src={comparePreviewUrl} title={`${comparePreview.title} comparison`} /> : null}
+                <div
+                  ref={stageContainerRef}
+                  className="grid min-h-0 flex-1 gap-3 overflow-auto p-2"
+                  style={{ gridTemplateColumns: previewStageGridColumns(reviewLayout.stages) }}
+                >
+                {reviewStages.map((artifact, index) => (
+                  <iframe
+                    key={artifact.id}
+                    ref={index === 0 ? previewFrameRef : undefined}
+                    className="min-h-0 w-full justify-self-center border bg-background"
+                    style={{ maxWidth: deviceWidth }}
+                    referrerPolicy="no-referrer"
+                    sandbox="allow-scripts"
+                    src={index === 0 ? previewUrl ?? "about:blank" : comparisonStageUrls.get(artifact.id) ?? "about:blank"}
+                    title={index === 0 ? artifact.title : `${artifact.title} comparison`}
+                    onLoad={index === 0 ? () => {
+                      postPickerState(pickerActive)
+                      void capturePreviewThumbnail()
+                    } : undefined}
+                  />
+                ))}
                 </div>
               )}
             </div>

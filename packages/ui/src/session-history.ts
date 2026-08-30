@@ -64,6 +64,18 @@ export function mergeOlderHistory(
   }
 }
 
+export function historyWindowedAfterMerge(
+  historyWindowed: boolean,
+  current: SessionHistoryPage,
+  older: SessionHistoryPage,
+): boolean {
+  if (historyWindowed) return true
+  const currentIds = new Set(current.items.map((item) => item.id))
+  const uniqueItemCount = current.items.length
+    + older.items.filter((item) => !currentIds.has(item.id)).length
+  return uniqueItemCount > maximumRetainedSessionHistoryItems
+}
+
 export function sessionHistoryEntryTitle(entry: SessionHistoryEntry): string {
   if (entry.category === "messages") return entry.role === "system" ? "System note" : entry.role
   if (entry.category === "tools" || entry.category === "tests") return entry.title
