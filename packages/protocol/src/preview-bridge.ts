@@ -41,6 +41,7 @@ export const previewBridgeResolveAnchorsMessageSchema = z.object({
   type: z.literal("domovoi.preview.resolve-anchors"),
   channel: previewBridgeChannelSchema,
   artifactId: z.string().min(1).max(256),
+  requestId: previewBridgeChannelSchema,
   annotations: z.array(previewBridgeAnnotationAnchorSchema).max(100),
 }).strict()
 
@@ -60,6 +61,7 @@ export const previewBridgeAnchorResolutionsMessageSchema = z.object({
   type: z.literal("domovoi.preview.anchor-resolutions"),
   channel: previewBridgeChannelSchema,
   artifactId: z.string().min(1).max(256),
+  requestId: previewBridgeChannelSchema,
   resolutions: z.array(previewBridgeAnchorResolutionSchema).max(100),
 }).strict()
 
