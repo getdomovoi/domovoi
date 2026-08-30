@@ -78,6 +78,7 @@ const invalidParams = -32602
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const maximumTerminalBufferLength = 256 * 1_024
+const preAuthAuditWindowMs = 60_000
 const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
@@ -390,6 +391,7 @@ export class DomovoiDaemon {
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
+  #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
   #authTimeoutMs: number
@@ -628,6 +630,17 @@ export class DomovoiDaemon {
     } catch (error) {
       this.#reportError("Domovoi could not persist audit entry", error)
     }
+  }
+
+  #appendPreAuthAudit(kind: "authentication" | "invalid-request"): void {
+    const now = Date.now()
+    if ((this.#preAuthAuditDeadlines.get(kind) ?? 0) > now) return
+    this.#preAuthAuditDeadlines.set(kind, now + preAuthAuditWindowMs)
+    this.#appendAudit({
+      actor: { kind: "daemon", component: kind === "authentication" ? kind : "rpc" },
+      action: `security.${kind}`,
+      outcome: kind === "authentication" ? "denied" : "failed",
+    })
   }
 
   #registerAudit(
@@ -987,22 +1000,14 @@ export class DomovoiDaemon {
     try {
       input = JSON.parse(raw)
     } catch {
-      this.#appendAudit({
-        actor: { kind: "daemon", component: "rpc" },
-        action: "security.invalid-request",
-        outcome: "failed",
-      })
+      this.#appendPreAuthAudit("invalid-request")
       this.#error(socket, null, invalidRequest, "Request is not valid JSON")
       return
     }
 
     const requestResult = rpcRequestSchema.safeParse(input)
     if (!requestResult.success) {
-      this.#appendAudit({
-        actor: { kind: "daemon", component: "rpc" },
-        action: "security.invalid-request",
-        outcome: "failed",
-      })
+      this.#appendPreAuthAudit("invalid-request")
       this.#error(socket, null, invalidRequest, "Request does not match JSON-RPC 2.0")
       return
     }
@@ -1022,25 +1027,17 @@ export class DomovoiDaemon {
 
     if (!this.#authenticatedClients.has(socket)) {
       if (method !== "system.hello") {
-        this.#appendAudit({
-          actor: { kind: "daemon", component: "authentication" },
-          action: "security.authentication",
-          outcome: "denied",
-        })
+        this.#appendPreAuthAudit("authentication")
         this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
         return
       }
       const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
       if (!secureTokenMatch(this.#authToken, supplied)) {
-        this.#appendAudit({
-          actor: { kind: "daemon", component: "authentication" },
-          action: "security.authentication",
-          outcome: "denied",
-        })
+        this.#appendPreAuthAudit("authentication")
         this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
         return
       }
-      const hello = rpcMethods["system.hello"].params.parse(request.params)
+      const hello = paramsResult.data as RpcParams<"system.hello">
       this.#authenticatedClients.add(socket)
       this.#authenticatedActors.set(socket, {
         kind: "client",

@@ -166,6 +166,7 @@ export function AuditLogView({
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState("")
   const requestRef = useRef(0)
+  const loadControllerRef = useRef<AbortController | undefined>(undefined)
   const exportControllerRef = useRef<AbortController | undefined>(undefined)
   const filters = useMemo(() => ({
     ...(query.trim() ? { query: query.trim() } : {}),
@@ -175,6 +176,8 @@ export function AuditLogView({
   const filterKey = JSON.stringify(filters)
 
   useEffect(() => {
+    loadControllerRef.current?.abort()
+    loadControllerRef.current = undefined
     if (!connected) {
       setPage(undefined)
       setLoading(false)
@@ -197,16 +200,23 @@ export function AuditLogView({
     })
     return () => {
       controller.abort()
+      loadControllerRef.current?.abort()
+      loadControllerRef.current = undefined
       requestRef.current += 1
     }
   }, [connected, filterKey, onQuery])
 
-  useEffect(() => () => exportControllerRef.current?.abort(), [])
+  useEffect(() => () => {
+    loadControllerRef.current?.abort()
+    exportControllerRef.current?.abort()
+  }, [])
 
   const loadOlder = async () => {
     if (!page?.hasMore || !page.nextCursor || loading) return
     const request = ++requestRef.current
     const controller = new AbortController()
+    loadControllerRef.current?.abort()
+    loadControllerRef.current = controller
     setLoading(true)
     setError("")
     try {
@@ -220,6 +230,7 @@ export function AuditLogView({
         setError(cause instanceof Error ? cause.message : "Older audit entries could not be loaded")
       }
     } finally {
+      if (loadControllerRef.current === controller) loadControllerRef.current = undefined
       if (request === requestRef.current) setLoading(false)
     }
   }
@@ -267,10 +278,13 @@ export function AuditLogView({
 
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto flex w-full max-w-[900px] flex-col px-4 py-5 sm:px-8 sm:py-7">
-          <Button variant="ghost" className="mb-3 -ml-2 self-start sm:hidden" onClick={onBack}>
-            <ArrowLeftIcon data-icon="inline-start" />
-            Workspace
-          </Button>
+          <div className="mb-3 -ml-2 flex items-center gap-1 self-start sm:hidden">
+            <Button variant="ghost" className="min-h-11" onClick={onBack}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              Workspace
+            </Button>
+            <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
+          </div>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h1 className="m-0 text-[17px] font-semibold">Audit log</h1>

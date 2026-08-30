@@ -4703,6 +4703,7 @@ describe("DomovoiDaemon", () => {
         },
       },
     })
+    await rpc("workspace.get", {})
     const queried = await rpc("audit.query", {
       action: "annotation.create",
       sessionId: session.id,
@@ -4811,5 +4812,48 @@ describe("DomovoiDaemon", () => {
       outcome: "cancelled",
     }))
     socket.close()
+  })
+
+  it("bounds unauthenticated audit writes across reconnects", async () => {
+    const append = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
+      id: `audit-pre-auth-${append.mock.calls.length}`,
+      occurredAt: "2026-08-29T12:00:00.000Z",
+      ...input,
+    }))
+    const auditLog = {
+      append,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn(() => ({
+        format: "jsonl" as const,
+        exportedAt: "2026-08-29T12:00:00.000Z",
+        entryCount: 0,
+        content: "",
+        hasMore: false,
+      })),
+    } satisfies AuditLog
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", auditLog })
+    running.push(daemon)
+    const address = await daemon.start()
+
+    for (let connection = 0; connection < 2; connection += 1) {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      const replies = new Promise<void>((resolve) => {
+        let count = 0
+        socket.on("message", () => {
+          count += 1
+          if (count === 20) resolve()
+        })
+      })
+      for (let request = 0; request < 20; request += 1) socket.send("not-json")
+      await replies
+      socket.close()
+    }
+
+    expect(append.mock.calls.filter(([entry]) => entry.action === "security.invalid-request"))
+      .toHaveLength(1)
   })
 })
