@@ -7,6 +7,7 @@ import {
   AuditLogView,
   auditActorLabel,
   auditExportFilename,
+  cancelAuditExport,
   collectAuditExport,
   downloadAuditExport,
 } from "./audit-log-view"
@@ -88,6 +89,16 @@ describe("audit log view", () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it("aborts and clears an active export controller", () => {
+    const controller = new AbortController()
+    const holder = { current: controller as AbortController | undefined }
+
+    cancelAuditExport(holder)
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(holder.current).toBeUndefined()
   })
 
   it("drains stable export cursors instead of silently downloading one page", async () => {

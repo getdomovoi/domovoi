@@ -31,6 +31,7 @@ const outcomes = ["all", "started", "succeeded", "failed", "denied", "cancelled"
 type OutcomeFilter = (typeof outcomes)[number]
 type AuditExportFilters = Omit<AuditExportParams, "before" | "format" | "limit">
 type AuditDownload = Pick<AuditExportResult, "format" | "exportedAt" | "entryCount" | "content">
+type AbortControllerHolder = { current: AbortController | undefined }
 
 const maximumAuditDownloadPages = 20
 const maximumAuditDownloadBytes = 20_000_000
@@ -54,6 +55,12 @@ export function downloadAuditExport(result: AuditDownload): void {
   anchor.download = auditExportFilename(result.exportedAt)
   anchor.click()
   setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+export function cancelAuditExport(holder: AbortControllerHolder): void {
+  const controller = holder.current
+  holder.current = undefined
+  controller?.abort(new DOMException("Audit export cancelled", "AbortError"))
 }
 
 export async function collectAuditExport(
@@ -179,6 +186,7 @@ export function AuditLogView({
     loadControllerRef.current?.abort()
     loadControllerRef.current = undefined
     if (!connected) {
+      cancelAuditExport(exportControllerRef)
       setPage(undefined)
       setLoading(false)
       setError("Reconnect to the execution machine to read its audit log.")
@@ -208,7 +216,7 @@ export function AuditLogView({
 
   useEffect(() => () => {
     loadControllerRef.current?.abort()
-    exportControllerRef.current?.abort()
+    cancelAuditExport(exportControllerRef)
   }, [])
 
   const loadOlder = async () => {
@@ -258,7 +266,7 @@ export function AuditLogView({
 
   const toggleExport = () => {
     if (exporting) {
-      exportControllerRef.current?.abort(new DOMException("Audit export cancelled", "AbortError"))
+      cancelAuditExport(exportControllerRef)
       return
     }
     void exportLog()
