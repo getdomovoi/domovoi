@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest"
 import type { SessionHistoryEntry, SessionHistoryPage } from "@getdomovoi/protocol"
 
 import {
+  latestSessionHistoryRequest,
+  historyWindowedAfterMerge,
+  maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
+  resetSessionHistoryWindow,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
@@ -66,5 +70,86 @@ describe("session history view model", () => {
 
     expect(sessionHistoryEntryTitle(testEntry)).toBe("pnpm test")
     expect(sessionHistoryEntryDetail(testEntry)).toBe("one failed")
+  })
+
+  it("moves a bounded window backward through sequential older pages", () => {
+    let current: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: Array.from({ length: 50 }, (_, index) => message(String(index + 250))),
+      hasMore: true,
+      nextCursor: "thread:250",
+    }
+
+    const loadOlderPage = (start: number, hasMore: boolean) => {
+      current = mergeOlderHistory(current, {
+        sessionId: "session-one",
+        items: Array.from({ length: 50 }, (_, index) => message(String(start + index))),
+        hasMore,
+        ...(hasMore ? { nextCursor: `thread:${start}` } : {}),
+      })
+    }
+
+    loadOlderPage(200, true)
+    loadOlderPage(150, true)
+    loadOlderPage(100, true)
+    expect(current.items.map((item) => item.sourceId)).toEqual(
+      Array.from({ length: 200 }, (_, index) => String(index + 100)),
+    )
+
+    loadOlderPage(50, true)
+    expect(current.items).toHaveLength(maximumRetainedSessionHistoryItems)
+    expect(current.items[0]?.sourceId).toBe("50")
+    expect(current.items.at(-1)?.sourceId).toBe("249")
+    expect(current).toMatchObject({ hasMore: true, nextCursor: "thread:50" })
+
+    loadOlderPage(0, false)
+    expect(current.items).toHaveLength(maximumRetainedSessionHistoryItems)
+    expect(current.items[0]?.sourceId).toBe("0")
+    expect(current.items.at(-1)?.sourceId).toBe("199")
+    expect(current.hasMore).toBe(false)
+    expect(current.nextCursor).toBeUndefined()
+  })
+
+  it("keeps a truncated history window marked after an overlap-only page", () => {
+    const current: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: Array.from(
+        { length: maximumRetainedSessionHistoryItems },
+        (_, index) => message(String(index)),
+      ),
+      hasMore: true,
+      nextCursor: "thread:0",
+    }
+    const overlapping: SessionHistoryPage = {
+      sessionId: "session-one",
+      items: current.items.slice(0, 50),
+      hasMore: false,
+    }
+
+    expect(historyWindowedAfterMerge(true, current, overlapping)).toBe(true)
+  })
+
+  it("resets an older window before reloading the latest page", () => {
+    const reset = resetSessionHistoryWindow({
+      page: {
+        sessionId: "session-one",
+        items: Array.from({ length: 200 }, (_, index) => message(String(index))),
+        hasMore: false,
+      },
+      historyWindowed: true,
+      historyRefresh: 4,
+    })
+
+    expect(reset).toEqual({
+      page: undefined,
+      historyWindowed: false,
+      historyRefresh: 5,
+    })
+    expect(latestSessionHistoryRequest(["messages"], " durable history ")).toEqual({
+      categories: ["messages"],
+      query: "durable history",
+      limit: 50,
+    })
+    expect(latestSessionHistoryRequest(["messages"], "")).not.toHaveProperty("before")
   })
 })

@@ -9,6 +9,7 @@ export type TerminalSpawnOptions = {
 }
 
 export type TerminalProcess = Pick<IPty, "kill" | "onData" | "onExit" | "process" | "resize" | "write">
+  & Partial<Pick<IPty, "pause" | "resume">>
 
 export interface TerminalService {
   spawn(options: TerminalSpawnOptions): TerminalProcess

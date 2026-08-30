@@ -1,4 +1,4 @@
-import type { Artifact, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { maximumRenderedPreviewStages, performanceBudgets, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 export function latestArtifactForActiveSession(
   snapshot: WorkspaceSnapshot,
@@ -11,7 +11,7 @@ export function latestArtifactForActiveSession(
   }, undefined)
 }
 
-export const maximumPreviewVariants = 24
+export const maximumPreviewVariants = performanceBudgets.largePreviews.variantItems
 
 export function previewVariantsForActiveSession(
   snapshot: WorkspaceSnapshot,
@@ -42,8 +42,23 @@ export function previewVariantsForActiveSession(
 }
 
 export function reviewLayoutFor(containerWidth: number, compareRequested: boolean, variantCount: number) {
-  const compare = compareRequested && variantCount > 1 && containerWidth >= 760
-  return { compare, stages: compare ? 2 : 1 }
+  const availableStages = Math.min(maximumRenderedPreviewStages, variantCount)
+  const compare = compareRequested && availableStages > 1 && containerWidth >= 760
+  return { compare, stages: compare ? availableStages : 1 }
+}
+
+export function previewStagesForReview(
+  variants: readonly Artifact[],
+  selected: Artifact | undefined,
+  stageCount: number,
+): Artifact[] {
+  if (!selected) return []
+  return [selected, ...variants.filter((artifact) => artifact.id !== selected.id)]
+    .slice(0, Math.max(1, Math.floor(stageCount)))
+}
+
+export function previewStageGridColumns(stageCount: number): string {
+  return `repeat(${Math.max(1, Math.floor(stageCount))}, minmax(0, 1fr))`
 }
 
 export function previewToolbarLayoutFor(containerWidth: number): "wrap" | "inline" {

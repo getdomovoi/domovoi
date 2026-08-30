@@ -457,6 +457,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("runtime.models", { provider, client: this.kind })
   }
 
+  refreshProviders(): Promise<WorkspaceSnapshot> {
+    return this.request("provider.refresh", { client: this.kind })
+  }
+
   listProviderSecrets(): Promise<RpcResult<"provider.secret.list">> {
     return this.request("provider.secret.list", {})
   }

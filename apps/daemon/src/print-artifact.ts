@@ -1,8 +1,10 @@
 import { defaultTreeAdapter, html, parse, serialize, type DefaultTreeAdapterTypes } from "parse5"
 
-export const maximumPrintableArtifactBytes = 4 * 1_024 * 1_024
-export const maximumPrintableArtifactNodes = 50_000
-export const maximumPrintableArtifactDepth = 64
+import { performanceBudgets } from "@getdomovoi/protocol"
+
+export const maximumPrintableArtifactBytes = performanceBudgets.largePreviews.sourceBytes
+export const maximumPrintableArtifactNodes = performanceBudgets.largePreviews.printableNodes
+export const maximumPrintableArtifactDepth = performanceBudgets.largePreviews.printableDepth
 
 export type PrintableArtifactErrorCode = "source-size" | "tree-depth" | "tree-nodes" | "output-size" | "derivation"
 

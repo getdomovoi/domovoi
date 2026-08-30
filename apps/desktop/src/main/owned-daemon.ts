@@ -6,3 +6,11 @@ export async function startOwnedDaemon<T extends OwnedDaemon>(daemon: T): Promis
   await daemon.start()
   return daemon
 }
+
+export async function startDesktop(
+  createWindow: () => void,
+  startDaemon: () => Promise<void>,
+): Promise<void> {
+  createWindow()
+  await startDaemon()
+}

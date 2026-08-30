@@ -20,6 +20,7 @@ function SnapshotProbe() {
     emergencyStopOutcome,
     emergencyStopPending,
     forkSession,
+    refreshProviders,
     reconnect,
     snapshot,
   } = useWorkspace("ws://127.0.0.1:47831/rpc", "web")
@@ -28,6 +29,7 @@ function SnapshotProbe() {
       {snapshot?.project?.name ?? "no daemon snapshot"}
       {typeof reconnect === "function" ? " · can reconnect" : ""}
       {typeof forkSession === "function" ? " · can fork" : ""}
+      {typeof refreshProviders === "function" ? " · can refresh providers" : ""}
       {typeof emergencyStop === "function" ? " · can emergency stop" : ""}
       {!emergencyStopPending && !emergencyStopOutcome && !emergencyStopError
         ? " · emergency stop idle"
@@ -42,6 +44,7 @@ describe("useWorkspace", () => {
     expect(markup).toContain("no daemon snapshot")
     expect(markup).toContain("can reconnect")
     expect(markup).toContain("can fork")
+    expect(markup).toContain("can refresh providers")
     expect(markup).toContain("can emergency stop")
     expect(markup).toContain("emergency stop idle")
   })

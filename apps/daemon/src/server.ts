@@ -5,12 +5,14 @@ import { arch, homedir, hostname, platform } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  boundedClientThread,
   canonicalBase64DecodedByteLength,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonShuttingDownErrorCode,
   demoWorkspace,
   maximumSessionHistoryPageItems,
+  maximumTerminalReplayCharacters,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
@@ -90,6 +92,8 @@ import {
   type SessionArtifactWatcherFactory,
 } from "./artifact-watcher.js"
 import { testEvidence } from "./test-evidence.js"
+import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
+import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -105,7 +109,6 @@ const methodNotFound = -32601
 const invalidParams = -32602
 const internalError = -32603
 const maximumAuthenticationFailures = 3
-const maximumTerminalBufferLength = 256 * 1_024
 const preAuthAuditWindowMs = 60_000
 const sessionResourceMethods = new Set([
   "annotation.create",
@@ -207,13 +210,7 @@ export function workspaceDeltaChunks(value: string): string[] {
 }
 
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
-  const retainedBySession = new Map<string, number>()
-  const thread = snapshot.thread.toReversed().filter((item) => {
-    const retained = retainedBySession.get(item.sessionId) ?? 0
-    if (retained >= maximumSessionHistoryPageItems) return false
-    retainedBySession.set(item.sessionId, retained + 1)
-    return true
-  }).reverse()
+  const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
   return { ...snapshot, thread, ...(historyTruncated ? { historyTruncated: true } : {}) }
 }
@@ -406,6 +403,8 @@ type ActiveTerminal = {
   cwd: string
   buffer: string
   owner: TerminalOwner
+  output: TerminalOutputBatcher
+  outputBackpressure: TerminalOutputBackpressure
   disposeData: () => void
   disposeExit: () => void
 }
@@ -647,11 +646,7 @@ export class DomovoiDaemon {
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
 
-    if (this.#providerProbe) {
-      this.#providerRefresh = this.#refreshProviderReadiness().catch((error: unknown) => {
-        this.#reportError("Domovoi could not inspect provider runtimes", error)
-      })
-    }
+    if (this.#providerProbe) this.#queueProviderRefresh(true)
 
     return this.address!
   }
@@ -829,6 +824,16 @@ export class DomovoiDaemon {
     }
   }
 
+  #maximumAuthenticatedClientBufferedBytes(): number {
+    let maximum = 0
+    for (const client of this.#websocket?.clients ?? []) {
+      if (client.readyState === WebSocket.OPEN && this.#authenticatedClients.has(client)) {
+        maximum = Math.max(maximum, client.bufferedAmount)
+      }
+    }
+    return maximum
+  }
+
   async #refreshProviderReadiness(): Promise<void> {
     const sessionProviders = new Set(this.#agents.providers())
     const providers = (await this.#providerProbe!.inspect()).map((provider) => ({
@@ -841,6 +846,16 @@ export class DomovoiDaemon {
       this.#store.save(this.#snapshot)
       this.#broadcastSnapshot()
     })
+  }
+
+  #queueProviderRefresh(reportError: boolean): Promise<void> {
+    const previous = this.#providerRefresh ?? Promise.resolve()
+    const refresh = previous.catch(() => {}).then(() => this.#refreshProviderReadiness())
+    const observed = refresh.catch((error: unknown) => {
+      if (reportError) this.#reportError("Domovoi could not inspect provider runtimes", error)
+    })
+    this.#providerRefresh = observed
+    return reportError ? observed : refresh
   }
 
   #error(socket: WebSocket, id: string | number | null, code: number, message: string): void {
@@ -932,6 +947,7 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
         || request.method === "skill.list"
@@ -1098,7 +1114,7 @@ export class DomovoiDaemon {
     }
 
     try {
-      const content = await readFile(path, "utf8")
+      const content = await readBoundedArtifactContent(path)
       const derived = purpose === "preview" ? undefined : sanitizePrintableArtifact(content, artifact.title)
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -1116,6 +1132,11 @@ export class DomovoiDaemon {
           : content),
       )
     } catch (error) {
+      if (error instanceof ArtifactContentLimitError) {
+        response.writeHead(413, { "content-type": "application/json" })
+        response.end(JSON.stringify({ error: "artifact_limit" }))
+        return
+      }
       if (error instanceof PrintableArtifactError) {
         response.writeHead(error.kind === "limit" ? 413 : 422, { "content-type": "application/json" })
         response.end(JSON.stringify({ error: error.kind === "limit" ? "artifact_limit" : "artifact_derivation_failed" }))
@@ -1304,6 +1325,18 @@ export class DomovoiDaemon {
           cols: params.cols,
           rows: params.rows,
         })
+        let output: TerminalOutputBatcher
+        const outputBackpressure = new TerminalOutputBackpressure(
+          process,
+          () => this.#maximumAuthenticatedClientBufferedBytes(),
+          undefined,
+          undefined,
+          () => output.resume(params.terminalId),
+        )
+        output = new TerminalOutputBatcher((terminalId, data) => {
+          this.#broadcastNotification("terminal.output", { terminalId, data })
+          return outputBackpressure.observe()
+        })
         const activeTerminal: ActiveTerminal = {
           sessionId: session.id,
           process,
@@ -1313,6 +1346,8 @@ export class DomovoiDaemon {
           cwd: session.workspacePath,
           buffer: "",
           owner: { client: params.client, clientId: params.clientId },
+          output,
+          outputBackpressure,
           disposeData: () => {},
           disposeExit: () => {},
         }
@@ -1320,17 +1355,16 @@ export class DomovoiDaemon {
         const dataDisposable = process.onData((data) => {
           const active = this.#terminals.get(params.terminalId)
           if (active?.process === process) {
-            active.buffer = `${active.buffer}${data}`.slice(-maximumTerminalBufferLength)
+            active.buffer = `${active.buffer}${data}`.slice(-maximumTerminalReplayCharacters)
+            active.output.push(params.terminalId, data)
           }
-          this.#broadcastNotification("terminal.output", {
-            terminalId: params.terminalId,
-            data,
-          })
         })
         const exitDisposable = process.onExit(({ exitCode, signal }) => {
           const active = this.#terminals.get(params.terminalId)
           if (!active || active.process !== process) return
           this.#terminals.delete(params.terminalId)
+          active.output.flush(params.terminalId)
+          active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
           this.#broadcastNotification("terminal.closed", {
@@ -1490,6 +1524,26 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(models),
+        })
+        return
+      }
+
+      if (method === "provider.refresh") {
+        if (!this.#providerProbe) {
+          this.#error(socket, request.id, invalidParams, "Provider diagnostics are unavailable")
+          return
+        }
+        try {
+          await this.#queueProviderRefresh(false)
+        } catch (error) {
+          this.#reportError("Domovoi could not refresh provider runtimes", error)
+          this.#error(socket, request.id, internalError, "Provider diagnostics could not be refreshed")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(workspaceSnapshotForClient(this.#snapshot)),
         })
         return
       }
@@ -3641,6 +3695,8 @@ export class DomovoiDaemon {
     this.#terminals.delete(terminalId)
     terminal.disposeData()
     terminal.disposeExit()
+    terminal.output.flush(terminalId)
+    terminal.outputBackpressure.dispose()
     terminal.process.kill()
     this.#broadcastNotification("terminal.closed", { terminalId })
     return true

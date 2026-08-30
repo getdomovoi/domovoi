@@ -1,12 +1,13 @@
 import type { ComponentPropsWithoutRef } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { performanceBudgets } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
 import { cn } from "./lib/utils"
 
-export const maximumMarkdownCharacters = 32_768
-export const maximumMarkdownLines = 500
+export const maximumMarkdownCharacters = performanceBudgets.longThreads.markdownCharactersPerItem
+export const maximumMarkdownLines = performanceBudgets.longThreads.markdownLinesPerItem
 
 export function boundedMarkdownSource(source: string): { source: string; truncated: boolean } {
   const normalizedSource = source.replace(/\r\n?/g, "\n")
