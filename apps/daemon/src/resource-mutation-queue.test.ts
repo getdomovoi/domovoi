@@ -9,6 +9,32 @@ function deferred() {
 }
 
 describe("ResourceMutationQueue", () => {
+  it("aborts running work, rejects queued work, and admits a fresh generation", async () => {
+    const queue = new ResourceMutationQueue()
+    const running = deferred()
+    const started = deferred()
+    const cancelled = vi.fn()
+    const queued = vi.fn(async () => {})
+
+    const active = queue.enqueue("session-a", async (signal) => {
+      signal.addEventListener("abort", running.resolve, { once: true })
+      started.resolve()
+      await running.promise
+      signal.throwIfAborted()
+    })
+    await started.promise
+    const waiting = queue.enqueue("session-a", queued, { onCancelled: cancelled })
+
+    expect(queue.cancelAll(new Error("Emergency stop requested"))).toBe(2)
+    await Promise.all([active, waiting])
+    expect(queued).not.toHaveBeenCalled()
+    expect(cancelled).toHaveBeenCalledOnce()
+
+    const fresh = vi.fn(async () => {})
+    await queue.enqueue("session-a", fresh)
+    expect(fresh).toHaveBeenCalledOnce()
+  })
+
   it("keeps mutations ordered within one resource", async () => {
     const queue = new ResourceMutationQueue()
     const first = deferred()
