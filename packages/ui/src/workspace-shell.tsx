@@ -155,6 +155,12 @@ import {
   saveWorkspaceUiState,
   type WorkspaceSurface,
 } from "./workspace-persistence"
+import {
+  buildWorkspaceCommands,
+  commandPaletteShortcut,
+  CommandPalette,
+  type CommandPalettePlatform,
+} from "./command-palette"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -287,6 +293,8 @@ export function AppBar({
   bridge,
   onOpenProject,
   onPauseAll,
+  onOpenCommands,
+  commandShortcut,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -296,6 +304,8 @@ export function AppBar({
   bridge?: DesktopWindowBridge | undefined
   onOpenProject: () => void
   onPauseAll: () => void
+  onOpenCommands?: (() => void) | undefined
+  commandShortcut?: string | undefined
 }) {
   const emergencyStopMessage = emergencyStopError
     ? `Pause all failed: ${emergencyStopError}`
@@ -322,6 +332,13 @@ export function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
+        {onOpenCommands ? (
+          <Button variant="ghost" size="sm" aria-label="Open command palette" onClick={onOpenCommands}>
+            <SearchIcon data-icon="inline-start" />
+            <span className="hidden md:inline">Commands</span>
+            {commandShortcut ? <kbd className="hidden font-machine text-[9px] text-muted-foreground lg:inline">{commandShortcut}</kbd> : null}
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
@@ -2464,11 +2481,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribe: subscribeTerminal,
   }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
   const shellRef = useRef<HTMLDivElement>(null)
+  const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [workspaceUi, setWorkspaceUi] = useState(() =>
     loadWorkspaceUiState(browserWorkspaceUiStorage()),
   )
   const { dockCollapsed, layouts, sidebarCollapsed, surface } = workspaceUi
+  const commandPlatform: CommandPalettePlatform = windowBridge?.platform
+    ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
   const setSidebarCollapsed = (collapsed: boolean) => {
     setWorkspaceUi((current) => ({ ...current, sidebarCollapsed: collapsed }))
   }
@@ -2514,8 +2535,38 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const pauseActiveTurns = () => {
     void emergencyStop()
   }
+  const openCommandPalette = () => {
+    commandPaletteFocusRef.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    setCommandPaletteOpen(true)
+  }
+  const workspaceCommands = buildWorkspaceCommands({
+    connected,
+    emergencyStopPending,
+    hasProject: Boolean(snapshot?.project),
+    openProject: () => setLauncherMode("project"),
+    newSession: () => setLauncherMode(snapshot?.project ? "session" : "project"),
+    pauseAll: pauseActiveTurns,
+    reconnect: reconnectDaemon,
+    setSurface,
+  })
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!commandPaletteShortcut(event, commandPlatform)) return
+      event.preventDefault()
+      if (commandPaletteOpen) {
+        setCommandPaletteOpen(false)
+      } else {
+        openCommandPalette()
+      }
+    }
+    globalThis.addEventListener("keydown", onKeyDown)
+    return () => globalThis.removeEventListener("keydown", onKeyDown)
+  }, [commandPaletteOpen, commandPlatform])
 
   useEffect(() => {
     if (!snapshot) return
@@ -2609,7 +2660,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} onPauseAll={pauseActiveTurns} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={() => setLauncherMode("project")} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         {!connected ? (
           <div role="status" className="flex shrink-0 items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
             <span className="size-2 shrink-0 rounded-full bg-destructive" />
@@ -2700,6 +2751,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           onCreateSession={createSession}
           onListModels={listModels}
         /> : null}
+        <CommandPalette
+          open={commandPaletteOpen}
+          platform={commandPlatform}
+          commands={workspaceCommands}
+          onOpenChange={setCommandPaletteOpen}
+          restoreFocusTo={commandPaletteFocusRef.current}
+        />
       </div>
     </TooltipProvider>
   )
