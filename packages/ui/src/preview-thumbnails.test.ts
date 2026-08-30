@@ -1,27 +1,31 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
-import { previewThumbnailRect, releasePreviewThumbnail, reservePreviewThumbnail } from "./preview-thumbnails"
+import { PreviewThumbnailLifecycle, previewThumbnailRect } from "./preview-thumbnails"
 
 describe("preview thumbnails", () => {
-  it("captures each artifact revision at most once", () => {
-    const reserved = new Set<string>()
-    expect(reservePreviewThumbnail(reserved, "artifact-a", 2)).toBe(true)
-    expect(reservePreviewThumbnail(reserved, "artifact-a", 2)).toBe(false)
-    expect(reservePreviewThumbnail(reserved, "artifact-a", 3)).toBe(true)
-  })
+  it("unifies pending and ready entries under one bounded lifecycle", () => {
+    const revoke = vi.fn()
+    const lifecycle = new PreviewThumbnailLifecycle(24, revoke)
+    expect(lifecycle.reserve("artifact-a", 2)).toBe(true)
+    expect(lifecycle.reserve("artifact-a", 2)).toBe(false)
+    expect(lifecycle.resolve("artifact-a", 2, "blob:a2")).toBe(true)
+    expect(lifecycle.readyUrls()).toEqual(new Map([["artifact-a:2", "blob:a2"]]))
+    expect(lifecycle.readyUrls()).toEqual(new Map([["artifact-a:2", "blob:a2"]]))
+    expect(revoke).not.toHaveBeenCalled()
 
-  it("allows retry after failure and caps retained reservations", () => {
-    const reserved = new Set<string>()
-    expect(reservePreviewThumbnail(reserved, "failed", 1)).toBe(true)
-    releasePreviewThumbnail(reserved, "failed", 1)
-    expect(reservePreviewThumbnail(reserved, "failed", 1)).toBe(true)
-    releasePreviewThumbnail(reserved, "failed", 1)
-    for (let revision = 1; revision <= 30; revision += 1) {
-      expect(reservePreviewThumbnail(reserved, "artifact", revision)).toBe(true)
+    for (let revision = 3; revision <= 26; revision += 1) {
+      expect(lifecycle.reserve("artifact", revision)).toBe(true)
     }
-    expect(reserved.size).toBe(24)
-    expect(reserved.has("artifact:1")).toBe(false)
-    expect(reserved.has("artifact:30")).toBe(true)
+    expect(lifecycle.size).toBe(24)
+    expect(revoke).toHaveBeenCalledOnce()
+    expect(revoke).toHaveBeenCalledWith("blob:a2")
+
+    expect(lifecycle.resolve("artifact-a", 2, "blob:stale")).toBe(false)
+    expect(revoke).toHaveBeenCalledWith("blob:stale")
+    lifecycle.fail("artifact", 4)
+    expect(lifecycle.reserve("artifact", 4)).toBe(true)
+    lifecycle.clear()
+    expect(lifecycle.size).toBe(0)
   })
 
   it("bounds captures to a small visible preview", () => {

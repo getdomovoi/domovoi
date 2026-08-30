@@ -1,18 +1,65 @@
 type Rect = { left: number; top: number; width: number; height: number }
 
-export function reservePreviewThumbnail(reserved: Set<string>, artifactId: string, revision: number): boolean {
-  const key = `${artifactId}:${revision}`
-  if (reserved.has(key)) return false
-  if (reserved.size >= 24) {
-    const oldestKey = reserved.values().next().value as string | undefined
-    if (oldestKey) reserved.delete(oldestKey)
-  }
-  reserved.add(key)
-  return true
-}
+type ThumbnailEntry = { status: "pending" } | { status: "ready"; url: string }
 
-export function releasePreviewThumbnail(reserved: Set<string>, artifactId: string, revision: number): void {
-  reserved.delete(`${artifactId}:${revision}`)
+export class PreviewThumbnailLifecycle {
+  readonly #entries = new Map<string, ThumbnailEntry>()
+  readonly #maximumEntries: number
+  readonly #revoke: (url: string) => void
+
+  constructor(maximumEntries = 24, revoke: (url: string) => void = (url) => URL.revokeObjectURL(url)) {
+    this.#maximumEntries = Math.max(1, maximumEntries)
+    this.#revoke = revoke
+  }
+
+  get size(): number {
+    return this.#entries.size
+  }
+
+  reserve(artifactId: string, revision: number): boolean {
+    const key = `${artifactId}:${revision}`
+    if (this.#entries.has(key)) return false
+    while (this.#entries.size >= this.#maximumEntries) this.#evictOldest()
+    this.#entries.set(key, { status: "pending" })
+    return true
+  }
+
+  resolve(artifactId: string, revision: number, url: string): boolean {
+    const key = `${artifactId}:${revision}`
+    const entry = this.#entries.get(key)
+    if (entry?.status !== "pending") {
+      this.#revoke(url)
+      return false
+    }
+    this.#entries.set(key, { status: "ready", url })
+    return true
+  }
+
+  fail(artifactId: string, revision: number): void {
+    const key = `${artifactId}:${revision}`
+    if (this.#entries.get(key)?.status === "pending") this.#entries.delete(key)
+  }
+
+  readyUrls(): ReadonlyMap<string, string> {
+    return new Map(
+      [...this.#entries].flatMap(([key, entry]) => entry.status === "ready" ? [[key, entry.url]] : []),
+    )
+  }
+
+  clear(): void {
+    for (const entry of this.#entries.values()) {
+      if (entry.status === "ready") this.#revoke(entry.url)
+    }
+    this.#entries.clear()
+  }
+
+  #evictOldest(): void {
+    const oldestKey = this.#entries.keys().next().value as string | undefined
+    if (!oldestKey) return
+    const entry = this.#entries.get(oldestKey)
+    this.#entries.delete(oldestKey)
+    if (entry?.status === "ready") this.#revoke(entry.url)
+  }
 }
 
 export function previewThumbnailRect(

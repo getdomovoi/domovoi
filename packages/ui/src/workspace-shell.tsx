@@ -123,8 +123,8 @@ import {
   previewResolveAnchorMessages,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
-import { previewThumbnailObjectUrl, previewThumbnailRect, releasePreviewThumbnail, reservePreviewThumbnail } from "./preview-thumbnails"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageObservationKey, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
@@ -1706,8 +1706,7 @@ export function ArtifactDock({
   const [derivedArtifactError, setDerivedArtifactError] = useState("")
   const [comparePreviewUrl, setComparePreviewUrl] = useState<string>()
   const [previewThumbnailUrls, setPreviewThumbnailUrls] = useState<ReadonlyMap<string, string>>(() => new Map())
-  const reservedPreviewThumbnails = useRef(new Set<string>())
-  const allocatedPreviewThumbnailUrls = useRef(new Set<string>())
+  const previewThumbnailLifecycle = useRef(new PreviewThumbnailLifecycle())
   const [anchorResolutions, setAnchorResolutions] = useState<ReadonlyMap<
     string,
     "selector" | "text-quote" | "bounding-box" | "unresolved"
@@ -1716,6 +1715,7 @@ export function ArtifactDock({
   const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [activeTab, setActiveTab] = useState<string>(defaultTab)
+  const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
 
   useEffect(() => {
     const element = stageContainerRef.current
@@ -1725,12 +1725,9 @@ export function ArtifactDock({
     const observer = new ResizeObserver(update)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [preview?.id])
+  }, [stageObservationKey])
 
-  useEffect(() => () => {
-    for (const url of allocatedPreviewThumbnailUrls.current) URL.revokeObjectURL(url)
-    allocatedPreviewThumbnailUrls.current.clear()
-  }, [])
+  useEffect(() => () => previewThumbnailLifecycle.current.clear(), [])
 
   useEffect(() => {
     let active = true
@@ -1776,30 +1773,18 @@ export function ArtifactDock({
     const frame = previewFrameRef.current
     if (!frame) return
     const rect = previewThumbnailRect(frame.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight })
-    if (!rect || !reservePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)) return
+    if (!rect || !previewThumbnailLifecycle.current.reserve(preview.id, preview.revision)) return
     try {
       const url = previewThumbnailObjectUrl(await captureAnnotation(rect))
       if (!url) {
-        releasePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)
+        previewThumbnailLifecycle.current.fail(preview.id, preview.revision)
         return
       }
-      allocatedPreviewThumbnailUrls.current.add(url)
-      setPreviewThumbnailUrls((current) => {
-        const next = new Map(current)
-        if (next.size >= 24) {
-          const oldestKey = next.keys().next().value as string | undefined
-          const oldestUrl = oldestKey ? next.get(oldestKey) : undefined
-          if (oldestKey) next.delete(oldestKey)
-          if (oldestUrl) {
-            URL.revokeObjectURL(oldestUrl)
-            allocatedPreviewThumbnailUrls.current.delete(oldestUrl)
-          }
-          if (oldestKey) reservedPreviewThumbnails.current.delete(oldestKey)
-        }
-        return next.set(`${preview.id}:${preview.revision}`, url)
-      })
+      if (previewThumbnailLifecycle.current.resolve(preview.id, preview.revision, url)) {
+        setPreviewThumbnailUrls(previewThumbnailLifecycle.current.readyUrls())
+      }
     } catch {
-      releasePreviewThumbnail(reservedPreviewThumbnails.current, preview.id, preview.revision)
+      previewThumbnailLifecycle.current.fail(preview.id, preview.revision)
       // Web and denied desktop captures keep the truthful static placeholder.
     }
   }

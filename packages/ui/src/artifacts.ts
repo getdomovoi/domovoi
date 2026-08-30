@@ -54,3 +54,7 @@ export function previewControlLayoutFor(containerWidth: number): { wrap: boolean
   const wrap = containerWidth < 720
   return { wrap, fullWidth: wrap }
 }
+
+export function previewStageObservationKey(previewId: string | undefined, previewError: string): string {
+  return `${previewId ?? "none"}:${previewError ? "hidden" : "rendered"}`
+}
