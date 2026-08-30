@@ -24,16 +24,19 @@ describe("audit RPC contracts", () => {
     action: "terminal.input",
     outcome: "succeeded",
     sessionId: "session-1",
+    projectId: "project-1",
     target: "terminal-1",
     detail: "command accepted",
   } as const
 
   it("bounds searchable audit filters and page cursors", () => {
-    expect(auditQueryParamsSchema.parse({ query: "terminal", limit: 25 })).toEqual({
+    expect(auditQueryParamsSchema.parse({ query: "terminal", projectId: "project-1", limit: 25 })).toEqual({
       query: "terminal",
+      projectId: "project-1",
       limit: 25,
     })
     expect(auditQueryParamsSchema.safeParse({ query: "x".repeat(513) }).success).toBe(false)
+    expect(auditQueryParamsSchema.safeParse({ projectId: "x".repeat(513) }).success).toBe(false)
     expect(auditEntrySchema.parse(entry)).toEqual(entry)
     expect(auditEntrySchema.parse({
       ...entry,
