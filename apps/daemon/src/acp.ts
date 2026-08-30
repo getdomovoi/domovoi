@@ -79,7 +79,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   readonly #activeTurns = new Map<string, ActiveTurn>()
   readonly #pendingPermissions = new Map<number, PendingPermission>()
   #nextPermissionId = 1
-  #peer?: AcpPeer
+  #peer: AcpPeer | undefined
   #disconnected = false
 
   constructor(input: {
@@ -146,7 +146,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     return turnId
   }
 
-  async steerTurn(): Promise<void> {
+  async steerTurn(_threadId: string, _turnId: string, _prompt: string): Promise<void> {
     throw new Error(`${this.#definition.id} does not support mid-turn steering`)
   }
 
@@ -243,20 +243,21 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   #handleUpdate(threadId: string, update: AcpUpdate): void {
     const turnId = this.#activeTurns.get(threadId)?.id
+    const context = { threadId, ...(turnId ? { turnId } : {}) }
     if (update.type === "usage") return
     if (update.type === "text") {
-      this.#emit({ type: "text-delta", threadId, turnId, delta: update.text })
+      this.#emit({ type: "text-delta", ...context, delta: update.text })
     } else if (update.type === "plan") {
-      this.#emit({ type: "plan-delta", threadId, turnId, delta: update.text })
+      this.#emit({ type: "plan-delta", ...context, delta: update.text })
     } else if (update.type === "command") {
-      this.#emit({ type: "command-output", threadId, turnId, itemId: update.toolCallId, delta: update.output })
+      this.#emit({ type: "command-output", ...context, itemId: update.toolCallId, delta: update.output })
     } else if (update.type === "diff") {
-      this.#emit({ type: "diff-updated", threadId, turnId, diff: update.diff })
+      this.#emit({ type: "diff-updated", ...context, diff: update.diff })
     } else {
       this.#emit({
         type: "item",
         phase: update.phase,
-        params: { threadId, turnId, item: { id: update.toolCallId, title: update.title } },
+        params: { ...context, item: { id: update.toolCallId, title: update.title } },
       })
     }
   }
