@@ -45,14 +45,24 @@ const definitions: ProviderDefinition[] = [
     authArgs: ["status"],
     authStatus: textAuthStatus,
   },
-  { id: "opencode", commands: ["opencode"] },
+  {
+    id: "opencode",
+    commands: ["opencode"],
+    authArgs: ["auth", "list"],
+    authStatus: credentialListAuthStatus,
+  },
   {
     id: "grok",
     commands: ["grok"],
     authArgs: ["models"],
     authStatus: modelProbeAuthStatus,
   },
-  { id: "kilo", commands: ["kilo"] },
+  {
+    id: "kilo",
+    commands: ["kilo"],
+    authArgs: ["auth", "list"],
+    authStatus: credentialListAuthStatus,
+  },
 ]
 
 export class CliProviderProbe implements ProviderProbe {
@@ -105,6 +115,13 @@ export class CliProviderProbe implements ProviderProbe {
 
 function modelProbeAuthStatus(result: CommandResult): ProviderDetection["status"] {
   if (result.exitCode === 0 && result.stdout.trim()) return "ready"
+  return textAuthStatus(result)
+}
+
+function credentialListAuthStatus(result: CommandResult): ProviderDetection["status"] {
+  const output = `${result.stdout}\n${result.stderr}`
+  if (/\b0 credentials?\b/i.test(output)) return "auth-required"
+  if (/\b[1-9]\d* credentials?\b/i.test(output)) return "ready"
   return textAuthStatus(result)
 }
 
