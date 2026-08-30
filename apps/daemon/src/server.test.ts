@@ -2451,6 +2451,8 @@ describe("DomovoiDaemon", () => {
     const providerProbe = {
       inspect: vi.fn(async () => [
         { id: "claude-code", command: "claude", status: "ready" as const, version: "2.1.247" },
+        { id: "cursor-agent", command: "agent", status: "ready" as const, version: "2026.08.1" },
+        { id: "grok", command: "grok", status: "auth-required" as const, version: "0.18.0" },
         { id: "opencode", command: "opencode", status: "missing" as const },
       ]),
     }
@@ -2482,6 +2484,8 @@ describe("DomovoiDaemon", () => {
         machine: {
           providers: [
             { id: "claude-code", command: "claude", status: "ready", version: "2.1.247", sessionCapable: true },
+            { id: "cursor-agent", command: "agent", status: "ready", version: "2026.08.1", sessionCapable: true },
+            { id: "grok", command: "grok", status: "auth-required", version: "0.18.0", sessionCapable: true },
             { id: "opencode", command: "opencode", status: "missing", sessionCapable: true },
           ],
         },
