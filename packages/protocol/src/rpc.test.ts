@@ -138,6 +138,35 @@ describe("provider secret RPC contracts", () => {
   })
 })
 
+describe("session usage RPC contracts", () => {
+  it("keeps token and reported-cost totals attributable to a runtime", () => {
+    expect(rpcMethods["session.usage"].result.parse({
+      sessionId: "session-1",
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      reasoningTokens: 1,
+      totalTokens: 15,
+      costMicros: 12_000,
+      currency: "USD",
+      reportedCostTurns: 1,
+      unavailableCostTurns: 0,
+      byRuntime: [{
+        provider: "claude-code",
+        model: "claude-opus",
+        inputTokens: 10,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        reasoningTokens: 1,
+        totalTokens: 15,
+        costMicros: 12_000,
+        currency: "USD",
+        turns: 1,
+      }],
+    }).byRuntime[0]).toMatchObject({ provider: "claude-code", model: "claude-opus" })
+  })
+})
+
 describe("authenticated client identity", () => {
   it("bounds optional hello client ids", () => {
     expect(helloParamsSchema.parse({

@@ -73,6 +73,7 @@ import {
 } from "./rpc-errors.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
+import { UsageLedger } from "./usage.js"
 import { testEvidence } from "./test-evidence.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -97,6 +98,7 @@ const sessionResourceMethods = new Set([
   "session.archive",
   "session.pause",
   "session.evidence",
+  "session.usage",
   "session.fork",
   "session.history",
   "session.send",
@@ -414,6 +416,7 @@ export class DomovoiDaemon {
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status" | "set" | "delete">
+  #usageLedger = new UsageLedger()
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #workspaceAbort = new AbortController()
@@ -868,6 +871,7 @@ export class DomovoiDaemon {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
         || request.method === "provider.secret.list"
+        || request.method === "session.usage"
         || request.method === "skill.list"
         || request.method === "skill.read"
         || request.method === "audit.query"
@@ -1136,6 +1140,19 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(result),
+        })
+        return
+      }
+      if (method === "session.usage") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (!this.#snapshot.sessions.some((session) => session.id === params.sessionId)) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(this.#usageLedger.session(params.sessionId)),
         })
         return
       }
@@ -2491,6 +2508,16 @@ export class DomovoiDaemon {
     if (session.state === "archiving" || session.state === "archived") return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
+    if (event.type === "usage") {
+      this.#usageLedger.record({
+        sessionId: session.id,
+        turnId: event.turnId,
+        provider,
+        model: session.runtime.model,
+        usage: event.usage,
+      })
+      return
+    }
     const createdAt = new Date().toISOString()
     const delta: WorkspaceDelta = {
       sessionId: session.id,

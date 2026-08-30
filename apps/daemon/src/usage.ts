@@ -57,6 +57,33 @@ export function normalizeUsage(input: {
   }
 }
 
+export function normalizeProviderUsage(payload: unknown): NormalizedUsage | undefined {
+  const root = record(payload)
+  const usage = record(root?.usage) ?? record(root?.tokens)
+  if (!root || !usage) return undefined
+  const cache = record(usage.cache)
+  const inputTokens = counter(usage.input_tokens ?? usage.inputTokens ?? usage.input)
+  const cachedInputTokens = counter(
+    usage.cache_read_input_tokens ?? usage.cachedInputTokens ?? cache?.read,
+  )
+  const outputTokens = counter(usage.output_tokens ?? usage.outputTokens ?? usage.output)
+  const reasoningTokens = counter(
+    usage.reasoning_tokens ?? usage.reasoningTokens ?? usage.reasoning,
+  )
+  const rawCost = root.total_cost_usd ?? root.cost_usd ?? root.cost
+  const cost = typeof rawCost === "number" ? { amount: rawCost, currency: "USD" } : undefined
+  if ([inputTokens, cachedInputTokens, outputTokens, reasoningTokens].every((value) => value === undefined) && !cost) {
+    return undefined
+  }
+  return normalizeUsage({
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cost ? { cost } : {}),
+  })
+}
+
 export class UsageLedger {
   readonly #turns = new Map<string, TurnUsage>()
 
@@ -128,4 +155,12 @@ function isTokenCount(value: number): boolean {
 
 function turnKey(sessionId: string, turnId: string): string {
   return `${sessionId}\0${turnId}`
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined
+}
+
+function counter(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }

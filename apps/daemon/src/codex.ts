@@ -4,6 +4,7 @@ import { createInterface } from "node:readline"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { normalizeProviderUsage } from "./usage.js"
 
 export type { AgentAdapter, AgentEvent } from "./agents.js"
 
@@ -451,6 +452,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
         params,
       })
     } else if (message.method === "turn/completed") {
+      const usage = normalizeProviderUsage(params.turn ?? params)
+      if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
+        this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
+      }
       this.#emit({ type: "turn-completed", params })
     }
   }

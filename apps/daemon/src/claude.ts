@@ -11,6 +11,7 @@ import {
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 
@@ -30,6 +31,8 @@ export type ClaudeSdkMessage = {
   event?: unknown
   message?: unknown
   tool_use_result?: unknown
+  usage?: unknown
+  total_cost_usd?: unknown
 }
 
 type ClaudePermissionContext = {
@@ -365,6 +368,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return
     }
     if (message.type === "result") {
+      const usage = normalizeProviderUsage(message)
+      if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
       const failed = message.is_error === true || message.subtype !== "success"
       this.#emit({
         type: "turn-completed",

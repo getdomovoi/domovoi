@@ -8,6 +8,7 @@ import {
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
@@ -408,6 +409,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const info = asRecord(properties.info)
       if (info?.role === "assistant" && typeof info.id === "string") {
         session.assistantMessageIds.add(info.id)
+        const usage = normalizeProviderUsage(info)
+        if (usage) this.#emit({ type: "usage", threadId: sessionId, turnId, usage })
       }
       return
     }
