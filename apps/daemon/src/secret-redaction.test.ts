@@ -126,6 +126,14 @@ describe("durable secret redaction", () => {
       expect(result.value).not.toContain(visibleFragment)
       expect(result.value.length).toBeLessThanOrEqual(maximumDurableTextLength)
     }
+
+    const url = "https://user:crossing-url-password@example.test"
+    const urlFragment = "https://user:crossing-url-pass"
+    const urlPrefix = `${"a".repeat(maximumDurableTextLength - urlFragment.length - 1)} `
+    const crossingUrl = redactDurableText(`${urlPrefix}${url}`)
+    expect(crossingUrl.truncated).toBe(true)
+    expect(crossingUrl.value).not.toContain("crossing-url-pass")
+    expect(crossingUrl.value).toContain("https://[REDACTED]")
   })
 
   it("streams safe complete LF and CRLF records without delay", () => {
