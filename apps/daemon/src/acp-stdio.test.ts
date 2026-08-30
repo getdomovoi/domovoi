@@ -1,8 +1,69 @@
-import { describe, expect, it } from "vitest"
+import type { ChildProcessWithoutNullStreams } from "node:child_process"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
 
-import { mapAcpSessionSetup, mapAcpUpdate } from "./acp-stdio.js"
+import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
+import { describe, expect, it, vi } from "vitest"
+
+import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
+import { mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
+
+function fakeAcpProcess(response: (id: number) => object) {
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(),
+  })
+  let input = ""
+  child.stdin.on("data", (chunk) => {
+    input += chunk.toString()
+    const newline = input.indexOf("\n")
+    if (newline === -1) return
+    const request = JSON.parse(input.slice(0, newline)) as { id: number }
+    child.stdout.write(`${JSON.stringify(response(request.id))}\n`)
+  })
+  child.kill.mockImplementation(() => {
+    child.emit("exit", 1, null)
+    return true
+  })
+  return child
+}
 
 describe("ACP stdio mapping", () => {
+  it.each([
+    ["initialize rejection", (id: number) => ({
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32_000, message: "initialize failed" },
+    })],
+    ["protocol version mismatch", (id: number) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION + 1, agentCapabilities: {} },
+    })],
+  ])("terminates and clears the child after %s", async (_name, response) => {
+    const child = fakeAcpProcess(response)
+    const onDisconnect = vi.fn()
+    const peer = new StdioAcpPeer({
+      definition: CURSOR_ACP_PROVIDER,
+      handlers: {
+        onUpdate: vi.fn(),
+        onPermission: vi.fn(),
+        onDisconnect,
+      },
+      spawnProcess: () => {
+        queueMicrotask(() => child.emit("spawn"))
+        return child as unknown as ChildProcessWithoutNullStreams
+      },
+    })
+
+    await expect(peer.initialize()).rejects.toThrow()
+    expect(child.kill).toHaveBeenCalledOnce()
+    expect(onDisconnect).not.toHaveBeenCalled()
+    await expect(peer.startSession("/repo")).rejects.toThrow("not initialized")
+  })
+
   it("maps advertised session modes and grouped config values", () => {
     expect(mapAcpSessionSetup({
       sessionId: "session-1",
