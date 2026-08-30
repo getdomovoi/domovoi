@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   DurableOutputRedactor,
   maximumDurableCommandLength,
+  maximumDurableTextLength,
   maximumStreamingOutputBufferLength,
   redactDurableCommand,
   redactDurableOutput,
@@ -87,6 +88,25 @@ describe("durable secret redaction", () => {
       redacted: false,
       truncated: false,
     })
+  })
+
+  it("redacts complete comma and escaped-quote assignment values", () => {
+    const input = String.raw`TOKEN=left,right {"token":"left\"right-secret","safe":"visible"}`
+    const result = redactDurableText(input)
+
+    expect(result.value).toBe(
+      String.raw`TOKEN=[REDACTED] {"token":"[REDACTED]","safe":"visible"}`,
+    )
+    expect(result.value).not.toMatch(/left|right-secret/)
+  })
+
+  it("does not retain a JWT fragment crossing the durable bound", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJib3VuZGFyeSJ9.signatureSecret"
+    const result = redactDurableText(`${"a".repeat(maximumDurableTextLength - 8)}${jwt}`)
+
+    expect(result.truncated).toBe(true)
+    expect(result.value.length).toBeLessThanOrEqual(maximumDurableTextLength)
+    expect(result.value).not.toContain("eyJhbG")
   })
 
   it("streams safe complete LF and CRLF records without delay", () => {

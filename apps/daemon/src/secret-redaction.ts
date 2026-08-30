@@ -14,8 +14,13 @@ export type RedactedText = {
 }
 
 const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
+const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
 const assignment = new RegExp(
-  String.raw`((?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&|}\r\n]+)`,
+  String.raw`((?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
+  "giu",
+)
+const structuredAssignment = new RegExp(
+  String.raw`(["']?\b${sensitiveName}\b["']?\s*:\s*)(${quotedValue}|[^\s,;&|}\r\n]+)`,
   "giu",
 )
 const secretFlag = new RegExp(
@@ -175,7 +180,14 @@ function redact(value: unknown, maximumLength: number): RedactedText {
       return next
     })
 
-  let output = bounded.value
+  // A truncated final record may end inside an otherwise recognizable secret.
+  // Drop that incomplete record before pattern matching instead of retaining a
+  // credential fragment whose terminator fell beyond the work bound.
+  const boundedWithoutIncompleteRecord = bounded.truncated
+    ? bounded.value.replace(/[^\r\n]*$/u, "")
+    : bounded.value
+  if (boundedWithoutIncompleteRecord !== bounded.value) changed = true
+  let output = boundedWithoutIncompleteRecord
   output = replace(
     output,
     /(https?:\/\/)[^\s/:@]+:[^\s/@]+@/giu,
@@ -192,6 +204,12 @@ function redact(value: unknown, maximumLength: number): RedactedText {
     `$1${replacement}`,
   )
   output = replace(output, assignment, (...args) => {
+    const prefix = args[1] ?? ""
+    const secret = args[2] ?? ""
+    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
+    return `${prefix}${quote}${replacement}${quote}`
+  })
+  output = replace(output, structuredAssignment, (...args) => {
     const prefix = args[1] ?? ""
     const secret = args[2] ?? ""
     const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
