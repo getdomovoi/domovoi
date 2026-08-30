@@ -824,6 +824,47 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("manages provider keychain status without returning secret material", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const listing = client.listProviderSecrets()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ method: "provider.secret.list", params: {} })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: [{ provider: "openai", state: "not-set", source: "keychain" }],
+    })
+    await expect(listing).resolves.toEqual([
+      { provider: "openai", state: "not-set", source: "keychain" },
+    ])
+
+    const storing = client.setProviderSecret("openai", "secret-value")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "provider.secret.set",
+      params: { provider: "openai", secret: "secret-value", client: "desktop" },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      result: { provider: "openai", state: "stored", source: "keychain" },
+    })
+    await expect(storing).resolves.toEqual({ provider: "openai", state: "stored", source: "keychain" })
+
+    const deleting = client.deleteProviderSecret("openai")
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 4,
+      result: { provider: "openai", state: "not-set", source: "keychain" },
+    })
+    await expect(deleting).resolves.toEqual({ provider: "openai", state: "not-set", source: "keychain" })
+    client.disconnect()
+  })
+
   it("reads skill source by discovered ID", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()
