@@ -37,6 +37,8 @@ describe("injectPreviewBridge", () => {
     expect(injected).toContain('type:"domovoi.preview.anchor-resolutions"')
     expect(injected).toContain("MAX_ANCHORS=100")
     expect(injected).toContain("MAX_CANDIDATES=1500")
+    expect(injected).toContain("MAX_TEXT_QUOTE=2000")
+    expect(injected).toContain(".slice(0,MAX_TEXT_QUOTE)")
     expect(injected).toContain("const isSafePreviewSelector=")
     expect(injected).toContain("setActive(false);")
     const script = injected.match(/<script data-domovoi-preview-bridge>([\s\S]*?)<\/script>/)?.[1]

@@ -104,6 +104,7 @@ const artifactId=${scriptLiteral(artifactId)};
 const parentOrigin=${scriptLiteral(parentOrigin)};
 const MAX_ANCHORS=100;
 const MAX_CANDIDATES=1500;
+const MAX_TEXT_QUOTE=2000;
 const resolveAnnotationAnchor=${resolveAnnotationAnchor.toString()};
 const isSafePreviewSelector=${isSafePreviewSelector.toString()};
 let active=false;
@@ -127,7 +128,7 @@ function selectorFor(element){
   }
   return parts.join(" > ");
 }
-function textFor(element){return (element.innerText||element.textContent||"").replace(/\\s+/g," ").trim().slice(0,280)}
+function textFor(element){return (element.innerText||element.textContent||"").replace(/\\s+/g," ").trim().slice(0,MAX_TEXT_QUOTE)}
 function candidateFor(element){
   const rect=element.getBoundingClientRect();
   return {value:element,text:textFor(element),bbox:{x:rect.left,y:rect.top,width:rect.width,height:rect.height}};
@@ -156,7 +157,7 @@ function validAnchor(anchor){
   return Boolean(anchor.cssSelector||anchor.textQuote||bbox);
 }
 function resolveAnchors(message){
-  if(message.artifactId!==artifactId||!Array.isArray(message.annotations)||message.annotations.length>MAX_ANCHORS)return;
+  if(message.artifactId!==artifactId||typeof message.requestId!=="string"||message.requestId.length<16||message.requestId.length>128||!Array.isArray(message.annotations)||message.annotations.length>MAX_ANCHORS)return;
   const candidates=anchorCandidates();
   const resolutions=message.annotations.map(function(item){
     if(!item||typeof item.annotationId!=="string"||item.annotationId.length<1||item.annotationId.length>256)return null;
@@ -174,7 +175,7 @@ function resolveAnchors(message){
       ? {annotationId:item.annotationId,status:"resolved",strategy:result.strategy}
       : {annotationId:item.annotationId,status:"unresolved"};
   }).filter(Boolean);
-  sendParent({type:"domovoi.preview.anchor-resolutions",channel:channel,artifactId:artifactId,resolutions:resolutions});
+  sendParent({type:"domovoi.preview.anchor-resolutions",channel:channel,artifactId:artifactId,requestId:message.requestId,resolutions:resolutions});
 }
 function draw(element){
   const rect=element.getBoundingClientRect();
