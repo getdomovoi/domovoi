@@ -8,6 +8,7 @@ export type ArtifactFileChange = {
   type: "plan" | "preview"
   mimeType: "text/markdown" | "text/html"
   content?: string
+  variant?: { id: string; groupId: string; label: string; order: number }
 }
 
 export type ArtifactWatchSubscription = { close(): void }
@@ -188,7 +189,7 @@ async function scanArtifactFiles(
   return { files: files.sort((left, right) => left.path.localeCompare(right.path)), truncated }
 }
 
-function artifactDescriptor(path: string): Pick<ArtifactFileChange, "type" | "mimeType"> | undefined {
+function artifactDescriptor(path: string): Pick<ArtifactFileChange, "type" | "mimeType" | "variant"> | undefined {
   const extension = extname(path).toLowerCase()
   if (![".html", ".htm", ".md", ".markdown"].includes(extension)) return undefined
   const segments = path.split("/")
@@ -196,8 +197,17 @@ function artifactDescriptor(path: string): Pick<ArtifactFileChange, "type" | "mi
   if (!artifactName.test(stem) && !segments.slice(0, -1).some((segment) => artifactDirectories.has(segment.toLowerCase()))) {
     return undefined
   }
+  const designStudioIndex = segments.findIndex((segment) => segment.toLowerCase() === "design-studio")
+  const variantMatch = designStudioIndex >= 0 ? /^variant[-_.]([a-z0-9][a-z0-9_-]*)$/i.exec(stem) : null
+  const variantId = variantMatch?.[1]?.toLowerCase()
+  const variant = variantId ? {
+    id: variantId,
+    groupId: segments.slice(0, -1).join("/"),
+    label: `Variant ${variantId.length === 1 ? variantId.toUpperCase() : variantId}`,
+    order: /^[a-z]$/.test(variantId) ? variantId.charCodeAt(0) - 97 : Number.parseInt(variantId, 10) - 1,
+  } : undefined
   return extension === ".html" || extension === ".htm"
-    ? { type: "preview", mimeType: "text/html" }
+    ? { type: "preview", mimeType: "text/html", ...(variant && Number.isSafeInteger(variant.order) && variant.order >= 0 ? { variant } : {}) }
     : { type: "plan", mimeType: "text/markdown" }
 }
 
@@ -205,7 +215,7 @@ async function inspectArtifactFile(
   realRoot: string,
   lexicalPath: string,
   pathFromRoot: string,
-  descriptor: Pick<ArtifactFileChange, "type" | "mimeType">,
+  descriptor: Pick<ArtifactFileChange, "type" | "mimeType" | "variant">,
   maximumFileBytes: number,
 ): Promise<ArtifactFile | undefined> {
   if (!pathFromRoot || pathFromRoot.startsWith("../") || isAbsolute(pathFromRoot)) return undefined

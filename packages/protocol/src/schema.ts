@@ -238,6 +238,18 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
   }),
 ])
 
+export const artifactVariantSchema = z.object({
+  id: z.string().min(1).max(128),
+  groupId: z.string().min(1).max(256),
+  label: z.string().min(1).max(120),
+  order: z.number().int().min(0).max(1_023),
+  thumbnail: z.object({
+    path: z.string().min(1).max(1_024).refine((path) => !path.startsWith("data:"), "Thumbnail must be a file reference"),
+    mimeType: z.enum(["image/png", "image/webp"]),
+    revision: z.number().int().positive(),
+  }).optional(),
+})
+
 export const artifactSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
@@ -247,6 +259,7 @@ export const artifactSchema = z.object({
   path: z.string().min(1).optional(),
   mimeType: z.string().min(1).optional(),
   content: z.string().optional(),
+  variant: artifactVariantSchema.optional(),
 })
 
 export const annotationAnchorSchema = z.object({

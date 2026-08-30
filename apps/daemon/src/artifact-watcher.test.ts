@@ -19,6 +19,20 @@ async function scratch(name: string): Promise<string> {
 }
 
 describe("ArtifactWatcher", () => {
+  it("describes only recognized design-studio variants", async () => {
+    const root = await scratch("domovoi-artifact-variants")
+    await mkdir(join(root, "design-studio", "onboarding"), { recursive: true })
+    const changes: ArtifactFileChange[] = []
+    const watcher = new ArtifactWatcher({ root, onChange: (change) => changes.push(change), watchFactory: () => ({ close: vi.fn() }) })
+    await watcher.start()
+    await writeFile(join(root, "design-studio", "onboarding", "variant-b.html"), "<h1>B</h1>")
+    await writeFile(join(root, "design-studio", "onboarding", "overview.html"), "<h1>Overview</h1>")
+    await watcher.rescan()
+    expect(changes.find((change) => change.path.endsWith("variant-b.html"))?.variant).toEqual({
+      id: "b", groupId: "design-studio/onboarding", label: "Variant B", order: 1,
+    })
+    expect(changes.find((change) => change.path.endsWith("overview.html"))?.variant).toBeUndefined()
+  })
   it("emits only new and changed plan or design artifacts", async () => {
     const root = await scratch("domovoi-artifact-watcher")
     await writeFile(join(root, "existing-plan.md"), "# Existing")
