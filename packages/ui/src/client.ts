@@ -450,6 +450,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("runtime.models", { provider, client: this.kind })
   }
 
+  listProviderSecrets(): Promise<RpcResult<"provider.secret.list">> {
+    return this.request("provider.secret.list", {})
+  }
+
   listSkills(): Promise<SkillSummary[]> {
     return this.request("skill.list", {})
   }

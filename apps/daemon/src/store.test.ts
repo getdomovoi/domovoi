@@ -139,6 +139,12 @@ describe("SqliteWorkspaceStore", () => {
     const changed = structuredClone(demoWorkspace)
     changed.machine.name = "workstation"
     changed.sessions[0]!.runtime.model = "gpt-5.6-sol"
+    changed.sessions[0]!.providerFailure = {
+      kind: "authentication-expired",
+      action: "sign-in",
+      message: "Provider authentication expired",
+      retryable: false,
+    }
     changed.approvalRules.push({
       id: "rule-1",
       projectId: changed.project!.id,

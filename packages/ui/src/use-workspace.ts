@@ -305,6 +305,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.listSkills()
   }, [])
 
+  const listProviderSecrets = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.listProviderSecrets()
+  }, [])
+
   const readSkill = useCallback(async (id: string): Promise<SkillDocument> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -468,6 +474,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     loadSessionHistory,
     loadSessionEvidence,
     listModels,
+    listProviderSecrets,
     openProject,
     pauseAll,
     pauseSession,

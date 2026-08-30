@@ -107,6 +107,54 @@ describe("audit RPC contracts", () => {
   })
 })
 
+describe("provider secret RPC contracts", () => {
+  it("does not expose secret mutation methods over RPC", () => {
+    expect(Object.keys(rpcMethods)).not.toContain("provider.secret.set")
+    expect(Object.keys(rpcMethods)).not.toContain("provider.secret.delete")
+  })
+
+  it("returns status-only keychain records", () => {
+    expect(rpcMethods["provider.secret.list"].result.parse([
+      { provider: "openai", state: "stored", source: "keychain" },
+    ])).toEqual([
+      { provider: "openai", state: "stored", source: "keychain" },
+    ])
+    expect(rpcMethods["provider.secret.list"].result.safeParse([
+      { provider: "openai", state: "stored", source: "keychain", secret: "forbidden" },
+    ]).success).toBe(false)
+  })
+
+})
+
+describe("session usage RPC contracts", () => {
+  it("keeps token and reported-cost totals attributable to a runtime", () => {
+    expect(rpcMethods["session.usage"].result.parse({
+      sessionId: "session-1",
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      reasoningTokens: 1,
+      totalTokens: 15,
+      costMicros: 12_000,
+      currency: "USD",
+      reportedCostTurns: 1,
+      unavailableCostTurns: 0,
+      byRuntime: [{
+        provider: "claude-code",
+        model: "claude-opus",
+        inputTokens: 10,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        reasoningTokens: 1,
+        totalTokens: 15,
+        costMicros: 12_000,
+        currency: "USD",
+        turns: 1,
+      }],
+    }).byRuntime[0]).toMatchObject({ provider: "claude-code", model: "claude-opus" })
+  })
+})
+
 describe("authenticated client identity", () => {
   it("bounds optional hello client ids", () => {
     expect(helloParamsSchema.parse({

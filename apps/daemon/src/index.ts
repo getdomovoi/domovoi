@@ -6,8 +6,13 @@ import { DomovoiDaemon } from "./server.js"
 import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { parseDaemonEnvironment } from "./config.js"
+import { ProviderSecretManager } from "./provider-secrets.js"
+import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 
 const help = `Usage: domovoid [options]
+       domovoid secret status
+       domovoid secret set <anthropic|openai|openrouter>
+       domovoid secret delete <anthropic|openai|openrouter>
 
 Options:
   -h, --help       Show this help
@@ -33,6 +38,15 @@ async function main() {
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     ) as { version: string }
     process.stdout.write(`${manifest.version}\n`)
+    return
+  }
+  if (args[0] === "secret") {
+    process.exitCode = await runProviderSecretCommand(args, {
+      manager: new ProviderSecretManager(),
+      readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
     return
   }
   if (args.length > 0) {

@@ -775,6 +775,33 @@ export const annotationSetStatusParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const directApiProviderSchema = z.enum(["anthropic", "openai", "openrouter"])
+export const providerSecretStatusSchema = z.object({
+  provider: directApiProviderSchema,
+  state: z.enum(["stored", "not-set", "unavailable"]),
+  source: z.literal("keychain"),
+}).strict()
+export const providerSecretStatusesSchema = z.array(providerSecretStatusSchema)
+const usageTotalsSchema = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  reasoningTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  costMicros: z.number().int().nonnegative(),
+  currency: z.string().length(3).optional(),
+}).strict()
+export const sessionUsageSchema = usageTotalsSchema.extend({
+  sessionId: z.string().min(1),
+  reportedCostTurns: z.number().int().nonnegative(),
+  unavailableCostTurns: z.number().int().nonnegative(),
+  byRuntime: z.array(usageTotalsSchema.extend({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    turns: z.number().int().nonnegative(),
+  }).strict()),
+}).strict()
+
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
   "artifact.authorize": {
@@ -810,6 +837,14 @@ export const rpcMethods = {
   "runtime.models": {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
+  },
+  "provider.secret.list": {
+    params: z.object({}),
+    result: providerSecretStatusesSchema,
+  },
+  "session.usage": {
+    params: z.object({ sessionId: z.string().min(1) }).strict(),
+    result: sessionUsageSchema,
   },
   "annotation.create": {
     params: annotationCreateParamsSchema,
