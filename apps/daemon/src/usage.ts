@@ -1,3 +1,4 @@
+import { chmodSync, existsSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
 
 export type ProviderCost = { amount: number; currency: string }
@@ -78,9 +79,10 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
   const reasoningTokens = counter(
     usage.reasoning_tokens ?? usage.reasoningTokens ?? usage.reasoning,
   )
+  const totalTokens = counter(usage.total_tokens ?? usage.totalTokens ?? usage.total)
   const rawCost = root.total_cost_usd ?? root.cost_usd ?? root.cost
   const cost = typeof rawCost === "number" ? { amount: rawCost, currency: "USD" } : undefined
-  if ([inputTokens, cachedInputTokens, outputTokens, reasoningTokens].every((value) => value === undefined) && !cost) {
+  if ([inputTokens, cachedInputTokens, outputTokens, reasoningTokens, totalTokens].every((value) => value === undefined) && !cost) {
     return undefined
   }
   return normalizeUsage({
@@ -88,14 +90,17 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(cost ? { cost } : {}),
   })
 }
 
 export class UsageLedger {
   readonly #database: DatabaseSync
+  readonly #path: string
 
   constructor(path = ":memory:") {
+    this.#path = path
     this.#database = new DatabaseSync(path)
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
@@ -116,6 +121,7 @@ export class UsageLedger {
       );
       CREATE INDEX IF NOT EXISTS provider_usage_session ON provider_usage(session_id);
     `)
+    this.#restrictFilePermissions()
   }
 
   record(record: TurnUsage): void {
@@ -159,6 +165,7 @@ export class UsageLedger {
       record.usage.costMicros ?? null,
       record.usage.currency ?? null,
     )
+    this.#restrictFilePermissions()
   }
 
   session(sessionId: string) {
@@ -193,6 +200,13 @@ export class UsageLedger {
 
   close(): void {
     this.#database.close()
+  }
+
+  #restrictFilePermissions(): void {
+    if (this.#path === ":memory:" || process.platform === "win32") return
+    for (const path of [this.#path, `${this.#path}-wal`, `${this.#path}-shm`]) {
+      if (existsSync(path)) chmodSync(path, 0o600)
+    }
   }
 }
 

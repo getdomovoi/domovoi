@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from "node:http"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { readFile, realpath } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
-import { basename, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
   createEmptyWorkspace,
@@ -99,7 +99,6 @@ const sessionResourceMethods = new Set([
   "session.archive",
   "session.pause",
   "session.evidence",
-  "session.usage",
   "session.fork",
   "session.history",
   "session.send",
@@ -353,6 +352,7 @@ export type DaemonServerOptions = {
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
+  usageLedger?: Pick<UsageLedger, "record" | "session" | "close">
   skillCatalog?: SkillCatalog
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
@@ -417,7 +417,7 @@ export class DomovoiDaemon {
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status">
-  #usageLedger: UsageLedger
+  #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #workspaceAbort = new AbortController()
@@ -455,7 +455,6 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
-    this.#usageLedger = new UsageLedger(options.store ? ":memory:" : statePath)
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,
       initialSnapshot,
@@ -464,6 +463,10 @@ export class DomovoiDaemon {
         manageDirectoryPermissions: options.statePath === undefined,
       },
     )
+    const usagePath = options.store || statePath === ":memory:"
+      ? ":memory:"
+      : join(dirname(statePath), "usage.sqlite")
+    this.#usageLedger = options.usageLedger ?? new UsageLedger(usagePath)
     this.#auditLog = options.auditLog ?? this.#store.auditLog
     this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
@@ -2489,13 +2492,17 @@ export class DomovoiDaemon {
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
     if (event.type === "usage") {
-      this.#usageLedger.record({
-        sessionId: session.id,
-        turnId: event.turnId,
-        provider,
-        model: session.runtime.model,
-        usage: event.usage,
-      })
+      try {
+        this.#usageLedger.record({
+          sessionId: session.id,
+          turnId: event.turnId,
+          provider,
+          model: session.runtime.model,
+          usage: event.usage,
+        })
+      } catch (error) {
+        this.#reportError("Domovoi could not persist provider usage", error)
+      }
       return
     }
     const createdAt = new Date().toISOString()

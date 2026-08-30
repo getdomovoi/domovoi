@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -317,6 +317,70 @@ describe("DomovoiDaemon", () => {
       /sk-proj-command-secret|flag-command-secret|approval-reason-secret|cwd-password|stream-output-secret|tool-command-secret|tool-output-secret|no-aggregate-stream-secret|legacy-display-secret|legacy-output-secret/,
     )
     reopened.close()
+  })
+
+  it("reports usage persistence failures without dropping later provider events", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-usage-failure"
+    session.activeTurnId = "turn-usage-failure"
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const errorSink = vi.fn()
+    const daemon = new DomovoiDaemon({
+      store,
+      agents: { codex: agent },
+      usageLedger: {
+        record: vi.fn(() => { throw new Error("usage database unavailable") }),
+        session: vi.fn(),
+        close: vi.fn(),
+      },
+      errorSink,
+    })
+    running.push(daemon)
+
+    listener!({
+      type: "usage",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      usage: {
+        inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, reasoningTokens: 0,
+        totalTokens: 2, costSource: "unavailable",
+      },
+    })
+    listener!({
+      type: "text-delta",
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      delta: "still delivered",
+    })
+
+    await vi.waitFor(() => expect(store.snapshot.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "assistant", body: "still delivered" }),
+    ])))
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "Domovoi could not persist provider usage",
+      detail: expect.stringContaining("usage database unavailable"),
+    }))
   })
 
   it("returns real Git and recorded test-run evidence without persisting it", async () => {
@@ -2243,15 +2307,21 @@ describe("DomovoiDaemon", () => {
       prompt: "Run independently",
       client: "desktop",
     })
+    const usage = rpc("session.usage", { sessionId: first.id })
     const responsiveness = await Promise.race([
       unrelated.then(() => "responsive" as const),
       new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
     ])
+    const usageResponsiveness = await Promise.race([
+      usage.then(() => "responsive" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+    ])
     expect(agent.steerTurn).not.toHaveBeenCalled()
     releaseFirstTurn!("turn-first")
-    await Promise.all([firstTurn, queuedSameSession, unrelated])
+    await Promise.all([firstTurn, queuedSameSession, unrelated, usage])
 
     expect(responsiveness).toBe("responsive")
+    expect(usageResponsiveness).toBe("responsive")
     expect(agent.steerTurn).toHaveBeenCalledWith(
       "thread-first",
       "turn-first",
@@ -2320,6 +2390,21 @@ describe("DomovoiDaemon", () => {
       },
     })
     socket.close()
+  })
+
+  it("creates a separate usage database after preparing a new state directory", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-usage-init-"))
+    scratchDirectories.push(scratch)
+    const stateDirectory = join(scratch, "new-state")
+    const daemon = new DomovoiDaemon({ port: 0, statePath: join(stateDirectory, "state.sqlite") })
+    running.push(daemon)
+
+    await access(join(stateDirectory, "state.sqlite"))
+    await access(join(stateDirectory, "usage.sqlite"))
+    if (process.platform !== "win32") {
+      expect((await stat(stateDirectory)).mode & 0o777).toBe(0o700)
+      expect((await stat(join(stateDirectory, "usage.sqlite"))).mode & 0o777).toBe(0o600)
+    }
   })
 
   it("returns stable internal errors and logs only redacted diagnostics", async () => {

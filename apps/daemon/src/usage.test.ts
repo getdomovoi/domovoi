@@ -163,6 +163,19 @@ describe("provider usage telemetry", () => {
       tokens: { input: 12, output: 4, reasoning: 2, cache: { read: 3 } },
       cost: 0.01,
     })).toMatchObject({ inputTokens: 12, cachedInputTokens: 3, reasoningTokens: 2 })
+    expect(normalizeProviderUsage({ usage: { total_tokens: 144 } })).toEqual({
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 144,
+      costSource: "unavailable",
+    })
+    expect(normalizeProviderUsage({ usage: { totalTokens: 145 } })).toMatchObject({ totalTokens: 145 })
+    expect(normalizeProviderUsage({ tokens: { total: 146 } })).toMatchObject({ totalTokens: 146 })
+    expect(() => normalizeProviderUsage({ usage: { input_tokens: 10, total_tokens: 9 } })).toThrow(
+      "at least as large as known tokens",
+    )
     expect(normalizeProviderUsage({ message: "no counters" })).toBeUndefined()
   })
 })
