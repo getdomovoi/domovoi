@@ -744,6 +744,7 @@ export class DomovoiDaemon {
     const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
+      ?? (method === "skill.setEnabled" && typeof values.id === "string" ? values.id : undefined)
     const pending = this.#pendingAudits.get(socket) ?? new Map<string, AuditAppendInput>()
     const key = JSON.stringify(id)
     if (pending.has(key)) return false
@@ -754,6 +755,9 @@ export class DomovoiDaemon {
       ...(sessionId ? { sessionId } : {}),
       ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
       ...(target ? { target } : {}),
+      ...(method === "skill.setEnabled"
+        ? { detail: `enabled=${values.enabled === true} digest=${String(values.contentDigest ?? "")}` }
+        : {}),
     })
     this.#pendingAudits.set(socket, pending)
     return true
@@ -1523,6 +1527,60 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, error.message)
         }
         return
+      }
+
+      if (method === "skill.setEnabled") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const project = this.#snapshot.project
+        if (!project) {
+          this.#error(socket, request.id, invalidParams, "Open a project before reviewing skills")
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (!actor || actor.kind !== "client") {
+          this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
+          return
+        }
+        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
+          skillRoots(homedir(), project.path),
+        )
+        let current
+        try {
+          current = (await catalog.read(params.id)).skill
+        } catch (error) {
+          if (!(error instanceof SkillNotFoundError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        if (params.enabled && current.trust.state === "blocked") {
+          this.#error(socket, request.id, invalidParams, "Blocked skills cannot be enabled")
+          return
+        }
+        if (current.contentDigest !== params.contentDigest) {
+          this.#error(socket, request.id, invalidParams, "Skill content changed; review it again")
+          return
+        }
+        if (JSON.stringify(current.manifest) !== JSON.stringify(params.manifest)) {
+          this.#error(socket, request.id, invalidParams, "Skill capabilities changed; review them again")
+          return
+        }
+        const review = {
+          projectId: project.id,
+          skillId: current.id,
+          enabled: params.enabled,
+          contentDigest: current.contentDigest,
+          manifest: current.manifest,
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: {
+            client: actor.client,
+            ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          },
+        }
+        this.#snapshot.skillEnablements = this.#snapshot.skillEnablements.filter(
+          (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
+        )
+        this.#snapshot.skillEnablements.push(review)
+        changed = true
       }
 
       if (method === "session.history") {

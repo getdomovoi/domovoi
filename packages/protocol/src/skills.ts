@@ -87,6 +87,23 @@ export const skillDocumentSchema = z.object({
   content: z.string().max(128 * 1_024),
 })
 
+const skillReviewClientSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
+
+export const skillEnablementReviewSchema = z.object({
+  projectId: z.string().trim().min(1).max(512),
+  skillId: skillIdSchema,
+  enabled: z.boolean(),
+  contentDigest: skillContentDigestSchema,
+  manifest: skillCapabilityManifestSchema,
+  reviewedAt: z.string().datetime({ offset: true }),
+  reviewedBy: z.object({
+    client: skillReviewClientSchema,
+    clientId: z.string().trim().min(1).max(128).optional(),
+  }).strict(),
+}).strict()
+
+export const skillEnablementReviewsSchema = z.array(skillEnablementReviewSchema).max(2_048)
+
 export type SkillScope = z.infer<typeof skillScopeSchema>
 export type SkillSource = z.infer<typeof skillSourceSchema>
 export type SkillCapability = z.infer<typeof skillCapabilitySchema>
@@ -95,3 +112,4 @@ export type SkillSignature = z.infer<typeof skillSignatureSchema>
 export type SkillTrust = z.infer<typeof skillTrustSchema>
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 export type SkillDocument = z.infer<typeof skillDocumentSchema>
+export type SkillEnablementReview = z.infer<typeof skillEnablementReviewSchema>

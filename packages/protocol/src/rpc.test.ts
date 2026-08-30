@@ -20,6 +20,14 @@ import {
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
+  it("requires exact reviewed skill content for enablement", () => {
+    expect(rpcMethods["skill.setEnabled"].params.parse({
+      id: "skill-111111111111",
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+    })).toEqual(expect.objectContaining({ enabled: true }))
+  })
   const entry = {
     id: "audit-1",
     occurredAt: "2026-08-29T12:00:00.000Z",
