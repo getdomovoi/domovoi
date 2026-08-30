@@ -168,9 +168,11 @@ import {
 } from "./desktop-notifications"
 import {
   copyDesktopText,
+  desktopExternalActionLabel,
   enqueueDesktopDeepLink,
   openDesktopPath,
   openProjectFromDesktop,
+  type DesktopExternalEditor,
   type DesktopWindowBridge,
 } from "./desktop-platform"
 
@@ -995,6 +997,7 @@ export function Thread({
   onPauseSession,
   onArchiveSession,
   onOpenExternal,
+  externalEditor = "system",
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -1013,6 +1016,7 @@ export function Thread({
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
+  externalEditor?: DesktopExternalEditor | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -1207,7 +1211,7 @@ export function Thread({
             {active.workspacePath && onOpenExternal ? (
               <Button variant="outline" size="sm" onClick={() => void openExternal()}>
                 <ExternalLinkIcon data-icon="inline-start" />
-                Open in editor
+                {desktopExternalActionLabel(externalEditor)}
               </Button>
             ) : null}
           </div>
@@ -2512,7 +2516,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [workspaceUi, setWorkspaceUi] = useState(() =>
     loadWorkspaceUiState(browserWorkspaceUiStorage()),
   )
-  const { dockCollapsed, layouts, sidebarCollapsed, surface } = workspaceUi
+  const { dockCollapsed, externalEditor, layouts, sidebarCollapsed, surface } = workspaceUi
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
   const setSidebarCollapsed = (collapsed: boolean) => {
@@ -2576,7 +2580,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const openActiveWorkspaceInEditor = () => {
     if (!windowBridge || !activeWorkspacePath) return
     setWorkspaceError("")
-    void openDesktopPath(windowBridge, activeWorkspacePath).catch((cause: unknown) => {
+    void openDesktopPath(windowBridge, activeWorkspacePath, externalEditor).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
     })
   }
@@ -2598,6 +2602,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       activeWorkspacePath,
       copyWorktreePath: copyActiveWorkspacePath,
       openInEditor: openActiveWorkspaceInEditor,
+      externalEditor,
     } : {}),
     connected,
     emergencyStopPending,
@@ -2782,9 +2787,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <ProviderSettings
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
+            externalEditor={externalEditor}
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
+            onExternalEditorChange={(editor) => {
+              setWorkspaceUi((current) => ({ ...current, externalEditor: editor }))
+            }}
           />
         ) : snapshot && surface === "skills" ? (
           <SkillBrowser
@@ -2825,7 +2834,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /></ResizablePanel><ResizableHandle /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} /> : null}

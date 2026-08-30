@@ -1,3 +1,5 @@
+import { isDesktopExternalEditor, type DesktopExternalEditor } from "./desktop-platform"
+
 export const workspaceUiStorageKey = "domovoi.workspace-ui"
 
 export type WorkspaceSurface = "workspace" | "providers" | "skills" | "audit"
@@ -7,12 +9,13 @@ const layoutKeys = new Set(["sidebar.dock", "sidebar.rail", "rail.dock", "rail.r
 const panelIds = new Set(["sessions", "thread", "dock"])
 
 export type WorkspaceUiState = {
-  version: 1
+  version: 2
   sidebarCollapsed: boolean
   dockCollapsed: boolean
   surface: WorkspaceSurface
   projectId: string | null
   sessionId: string | null
+  externalEditor: DesktopExternalEditor
   layouts: Record<string, Record<string, number>>
 }
 
@@ -24,12 +27,13 @@ export type WorkspaceUiDaemonTruth = {
 
 export function defaultWorkspaceUiState(): WorkspaceUiState {
   return {
-    version: 1,
+    version: 2,
     sidebarCollapsed: false,
     dockCollapsed: false,
     surface: "workspace",
     projectId: null,
     sessionId: null,
+    externalEditor: "system",
     layouts: {},
   }
 }
@@ -71,7 +75,7 @@ function parseLayouts(value: unknown): WorkspaceUiState["layouts"] | undefined {
 }
 
 export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefined {
-  if (!isRecord(value) || value.version !== 1) return undefined
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return undefined
   if (typeof value.sidebarCollapsed !== "boolean" || typeof value.dockCollapsed !== "boolean") {
     return undefined
   }
@@ -82,12 +86,15 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
   const layouts = parseLayouts(value.layouts)
   if (!layouts) return undefined
   return {
-    version: 1,
+    version: 2,
     sidebarCollapsed: value.sidebarCollapsed,
     dockCollapsed: value.dockCollapsed,
     surface: value.surface as WorkspaceSurface,
     projectId: value.projectId,
     sessionId: value.sessionId,
+    externalEditor: value.version === 2 && isDesktopExternalEditor(value.externalEditor)
+      ? value.externalEditor
+      : "system",
     layouts,
   }
 }

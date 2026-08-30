@@ -6,6 +6,14 @@ export type DesktopDirectoryResult =
 
 export type DesktopExternalEditor = "system" | "vscode" | "vscode-insiders" | "cursor" | "zed"
 
+const desktopExternalEditors = new Set<DesktopExternalEditor>([
+  "system",
+  "vscode",
+  "vscode-insiders",
+  "cursor",
+  "zed",
+])
+
 export type DesktopOpenExternalRequest = {
   editor: DesktopExternalEditor
   path: string
@@ -56,8 +64,24 @@ export async function copyDesktopText(bridge: DesktopWindowBridge, value: string
   if (!await bridge.writeClipboardText(value)) throw new Error("Clipboard text could not be copied")
 }
 
-export async function openDesktopPath(bridge: DesktopWindowBridge, path: string): Promise<void> {
-  if (!await bridge.openExternal({ editor: "system", path })) {
+export function isDesktopExternalEditor(value: unknown): value is DesktopExternalEditor {
+  return typeof value === "string" && desktopExternalEditors.has(value as DesktopExternalEditor)
+}
+
+export function desktopExternalActionLabel(editor: DesktopExternalEditor): string {
+  if (editor === "system") return "Open externally"
+  if (editor === "vscode") return "Open in VS Code"
+  if (editor === "vscode-insiders") return "Open in VS Code Insiders"
+  if (editor === "cursor") return "Open in Cursor"
+  return "Open in Zed"
+}
+
+export async function openDesktopPath(
+  bridge: DesktopWindowBridge,
+  path: string,
+  editor: DesktopExternalEditor,
+): Promise<void> {
+  if (!await bridge.openExternal({ editor, path })) {
     throw new Error("External editor could not open the worktree")
   }
 }

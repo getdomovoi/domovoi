@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   copyDesktopText,
+  desktopExternalActionLabel,
   enqueueDesktopDeepLink,
   openDesktopPath,
   openProjectFromDesktop,
@@ -56,10 +57,18 @@ describe("enqueueDesktopDeepLink", () => {
 })
 
 describe("desktop clipboard and editor actions", () => {
+  it("never describes the system file association as an editor", () => {
+    expect(desktopExternalActionLabel("system")).toBe("Open externally")
+    expect(desktopExternalActionLabel("system")).not.toContain("editor")
+    expect(desktopExternalActionLabel("vscode")).toBe("Open in VS Code")
+    expect(desktopExternalActionLabel("cursor")).toBe("Open in Cursor")
+    expect(desktopExternalActionLabel("zed")).toBe("Open in Zed")
+  })
+
   it("copies bounded text and opens an allowlisted system target", async () => {
     const target = bridge()
     await expect(copyDesktopText(target, "/worktrees/session-one")).resolves.toBeUndefined()
-    await expect(openDesktopPath(target, "/worktrees/session-one")).resolves.toBeUndefined()
+    await expect(openDesktopPath(target, "/worktrees/session-one", "system")).resolves.toBeUndefined()
     expect(target.writeClipboardText).toHaveBeenCalledWith("/worktrees/session-one")
     expect(target.openExternal).toHaveBeenCalledWith({
       editor: "system",
@@ -67,12 +76,26 @@ describe("desktop clipboard and editor actions", () => {
     })
   })
 
+  it.each(["vscode", "cursor", "zed"] as const)(
+    "routes a validated %s preference to the isolated desktop bridge",
+    async (editor) => {
+      const target = bridge()
+
+      await expect(openDesktopPath(target, "/worktrees/session-one", editor)).resolves.toBeUndefined()
+
+      expect(target.openExternal).toHaveBeenCalledWith({
+        editor,
+        path: "/worktrees/session-one",
+      })
+    },
+  )
+
   it("turns denied platform results into actionable fixed failures", async () => {
     await expect(copyDesktopText(bridge({
       writeClipboardText: vi.fn(async () => false),
     }), "text")).rejects.toThrow("Clipboard text could not be copied")
     await expect(openDesktopPath(bridge({
       openExternal: vi.fn(async () => false),
-    }), "/worktrees/session-one")).rejects.toThrow("External editor could not open the worktree")
+    }), "/worktrees/session-one", "cursor")).rejects.toThrow("External editor could not open the worktree")
   })
 })
