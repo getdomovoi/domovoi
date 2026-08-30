@@ -28,6 +28,7 @@ import {
   type SessionHistoryPage,
   type SkillDocument,
   type SkillSummary,
+  type SystemEmergencyStopResult,
   type TerminalSession,
   type TerminalOwnershipNotification,
   type WorkspaceSnapshot,
@@ -326,6 +327,10 @@ export class DomovoiClient extends EventTarget {
 
   pauseAll(): Promise<WorkspaceSnapshot> {
     return this.request("system.pauseAll", { client: this.kind })
+  }
+
+  emergencyStop(): Promise<SystemEmergencyStopResult> {
+    return this.request("system.emergencyStop", { client: this.kind })
   }
 
   pauseSession(sessionId: string): Promise<WorkspaceSnapshot> {
