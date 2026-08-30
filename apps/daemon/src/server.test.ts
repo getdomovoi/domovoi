@@ -3171,6 +3171,103 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("reloads reviewed skills for new and steered turns without changing context order", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "provider-thread-billing"
+    snapshot.thread = snapshot.thread.filter((item) => item.id !== "thread-assistant")
+    const enabledSkill: SkillSummary = {
+      id: "skill-4d6f4d6f4d6f",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user",
+      source: "agents",
+      ...skillSecurityMetadata,
+    }
+    snapshot.skillEnablements = [{
+      projectId: snapshot.project!.id,
+      skillId: enabledSkill.id,
+      enabled: true,
+      contentDigest: enabledSkill.contentDigest,
+      manifest: enabledSkill.manifest,
+      reviewedAt: "2026-08-30T00:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "reviewer" },
+    }]
+    const skillCatalog = {
+      list: vi.fn(async () => [enabledSkill]),
+      read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every repository change." })),
+    } satisfies SkillCatalog
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "provider-thread-unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "provider-turn-review"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const send = (id: number, prompt: string) => new Promise<Record<string, unknown>>((resolve) => {
+      const onMessage = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", onMessage)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", onMessage)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "session.send",
+        params: { sessionId: session.id, prompt, client: "desktop" },
+      }))
+    })
+
+    await expect(send(1, "Begin the audit")).resolves.toHaveProperty("result")
+    const initialPrompt = agent.startTurn.mock.calls[0]![0].prompt
+    expect(initialPrompt).toContain("Audit every repository change.")
+    expect(initialPrompt.indexOf("<domovoi_skill_context>"))
+      .toBeLessThan(initialPrompt.indexOf("<domovoi_review_context>"))
+    expect(initialPrompt.indexOf("<domovoi_review_context>"))
+      .toBeLessThan(initialPrompt.indexOf("<domovoi_handoff_context>"))
+    expect(initialPrompt.indexOf("<domovoi_handoff_context>"))
+      .toBeLessThan(initialPrompt.lastIndexOf("Begin the audit"))
+
+    await expect(send(2, "Focus on manifests")).resolves.toHaveProperty("result")
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      "provider-thread-billing",
+      "provider-turn-review",
+      expect.stringContaining("Audit every repository change."),
+    )
+    expect(skillCatalog.read).toHaveBeenCalledTimes(2)
+    socket.close()
+  })
+
   it("shares slow agent initialization across timed-out model requests", async () => {
     let finishConnect: (() => void) | undefined
     let finishModels: (() => void) | undefined

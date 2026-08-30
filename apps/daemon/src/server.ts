@@ -64,6 +64,7 @@ import {
 } from "./annotation-visual-context.js"
 import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 import { agentPromptWithHandoff } from "./handoff-context.js"
+import { agentPromptWithSkills } from "./skill-context.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -2464,7 +2465,13 @@ export class DomovoiDaemon {
           agent.capabilities,
           this.#annotationVisualContext,
         )
-        const prompt = preparedTurn.prompt
+        const prompt = await agentPromptWithSkills(
+          this.#skillCatalog ?? new FileSkillCatalog(
+            skillRoots(homedir(), this.#snapshot.project?.path),
+          ),
+          this.#snapshot,
+          preparedTurn.prompt,
+        )
         let turnId = session.activeTurnId
         try {
           signal?.throwIfAborted()
