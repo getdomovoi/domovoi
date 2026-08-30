@@ -20,6 +20,13 @@ import {
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
+  it("exposes skill inventory without a distribution RPC", () => {
+    expect(rpcMethods["skill.inventory"].params.parse({})).toEqual({})
+    expect(Object.keys(rpcMethods).filter((method) => (
+      method.startsWith("skill.") && /install|copy|sync|distribut/i.test(method)
+    ))).toEqual([])
+  })
+
   it("requires exact reviewed skill content for enablement", () => {
     expect(rpcMethods["skill.setEnabled"].params.parse({
       id: "skill-111111111111",
