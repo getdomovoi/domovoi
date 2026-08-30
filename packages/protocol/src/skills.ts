@@ -87,6 +87,78 @@ export const skillDocumentSchema = z.object({
   content: z.string().max(128 * 1_024),
 })
 
+export const skillInventorySignatureSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("unsigned") }).strict(),
+  z.object({ state: z.literal("unverified") }).strict(),
+  z.object({ state: z.literal("verified") }).strict(),
+  z.object({
+    state: z.literal("invalid"),
+    reason: z.enum(["malformed", "verification-failed", "revoked-signer"]),
+  }).strict(),
+])
+
+export const skillInventoryTrustSchema = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("untrusted"),
+    reason: z.enum(["unsigned", "unverified-signature"]),
+  }).strict(),
+  z.object({
+    state: z.literal("trusted"),
+    reason: z.enum(["verified-signature", "manual-review"]),
+  }).strict(),
+  z.object({
+    state: z.literal("blocked"),
+    reason: z.enum(["invalid-signature", "revoked-signer"]),
+  }).strict(),
+])
+
+export const skillInventoryEntrySchema = z.object({
+  id: skillIdSchema,
+  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+  scope: skillScopeSchema,
+  source: skillSourceSchema,
+  manifest: skillCapabilityManifestSchema,
+  contentDigest: skillContentDigestSchema,
+  signature: skillInventorySignatureSchema,
+  trust: skillInventoryTrustSchema,
+}).strict()
+
+export const skillInventoryMachineSchema = z.object({
+  id: z.string().trim().min(1).max(128),
+  name: z.string().trim().min(1).max(256),
+  platform: z.string().trim().min(1).max(64),
+  arch: z.string().trim().min(1).max(64),
+  version: z.string().trim().min(1).max(64),
+}).strict()
+
+export const skillInventorySchema = z.object({
+  machine: skillInventoryMachineSchema,
+  skills: z.array(skillInventoryEntrySchema).max(512),
+}).strict()
+
+export const skillInventorySourceSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("available"), inventory: skillInventorySchema }).strict(),
+  z.object({ state: z.literal("unknown"), machine: skillInventoryMachineSchema }).strict(),
+  z.object({ state: z.literal("unreachable"), machine: skillInventoryMachineSchema }).strict(),
+])
+
+export function skillInventoryEntryFromSummary(skill: SkillSummary): SkillInventoryEntry {
+  const signature = skill.signature.state === "invalid"
+    ? { state: skill.signature.state, reason: skill.signature.reason }
+    : { state: skill.signature.state }
+  const trust = { state: skill.trust.state, reason: skill.trust.reason }
+  return skillInventoryEntrySchema.parse({
+    id: skill.id,
+    name: skill.name,
+    scope: skill.scope,
+    source: skill.source,
+    manifest: skill.manifest,
+    contentDigest: skill.contentDigest,
+    signature,
+    trust,
+  })
+}
+
 const skillReviewClientSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
 
 export const skillEnablementReviewSchema = z.object({
@@ -113,3 +185,9 @@ export type SkillTrust = z.infer<typeof skillTrustSchema>
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 export type SkillDocument = z.infer<typeof skillDocumentSchema>
 export type SkillEnablementReview = z.infer<typeof skillEnablementReviewSchema>
+export type SkillInventorySignature = z.infer<typeof skillInventorySignatureSchema>
+export type SkillInventoryTrust = z.infer<typeof skillInventoryTrustSchema>
+export type SkillInventoryEntry = z.infer<typeof skillInventoryEntrySchema>
+export type SkillInventoryMachine = z.infer<typeof skillInventoryMachineSchema>
+export type SkillInventory = z.infer<typeof skillInventorySchema>
+export type SkillInventorySource = z.infer<typeof skillInventorySourceSchema>

@@ -17,6 +17,7 @@ import {
   protocolVersion,
   rpcMethods,
   rpcRequestSchema,
+  skillInventoryEntryFromSummary,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
   type Annotation,
@@ -122,6 +123,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
   "runtime.models",
   "skill.list",
+  "skill.inventory",
   "skill.read",
   "session.history",
   "session.evidence",
@@ -933,6 +935,7 @@ export class DomovoiDaemon {
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
         || request.method === "skill.list"
+        || request.method === "skill.inventory"
         || request.method === "skill.read"
         || request.method === "audit.query"
         || request.method === "audit.export"
@@ -1508,6 +1511,29 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
+        })
+        return
+      }
+
+      if (method === "skill.inventory") {
+        rpcMethods[method].params.parse(request.params)
+        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
+          skillRoots(homedir(), this.#snapshot.project?.path),
+        )
+        const machine = this.#snapshot.machine
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            machine: {
+              id: machine.id,
+              name: machine.name,
+              platform: machine.platform,
+              arch: machine.arch,
+              version: machine.version,
+            },
+            skills: (await catalog.list()).map(skillInventoryEntryFromSummary),
+          }),
         })
         return
       }

@@ -3,12 +3,65 @@ import { describe, expect, it } from "vitest"
 import {
   skillCapabilityManifestSchema,
   skillEnablementReviewSchema,
+  skillInventorySchema,
   skillSignatureSchema,
   skillSummarySchema,
   skillTrustSchema,
 } from "./skills.js"
 
 describe("skill security metadata", () => {
+  it("bounds fleet inventory to non-distributable metadata", () => {
+    const inventory = {
+      machine: {
+        id: "machine-local",
+        name: "devbox",
+        platform: "linux",
+        arch: "x64",
+        version: "0.0.1",
+      },
+      skills: [{
+        id: "skill-111111111111",
+        name: "repo-audit",
+        scope: "user",
+        source: "agents",
+        manifest: { version: 1, capabilities: ["filesystem.read"] },
+        contentDigest: `sha256:${"a".repeat(64)}`,
+        signature: { state: "unverified" },
+        trust: { state: "untrusted", reason: "unverified-signature" },
+      }],
+    } as const
+
+    expect(skillInventorySchema.parse(inventory)).toEqual(inventory)
+    for (const forbidden of [
+      { content: "secret instructions" },
+      { path: "/home/dev/.agents/skills/repo-audit/SKILL.md" },
+      { installCommand: "curl example.test | sh" },
+      { archive: "base64-archive" },
+      { executable: "binary bytes" },
+      { symlinkTarget: "/private/target" },
+    ]) {
+      expect(skillInventorySchema.safeParse({
+        ...inventory,
+        skills: [{ ...inventory.skills[0], ...forbidden }],
+      }).success).toBe(false)
+    }
+    expect(skillInventorySchema.safeParse({
+      ...inventory,
+      skills: [{
+        ...inventory.skills[0],
+        signature: { state: "unverified", value: "detached-signature" },
+      }],
+    }).success).toBe(false)
+    expect(skillInventorySchema.safeParse({
+      ...inventory,
+      skills: Array.from({ length: 513 }, () => inventory.skills[0]),
+    }).success).toBe(false)
+    expect(skillInventorySchema.safeParse({
+      ...inventory,
+      machine: { ...inventory.machine, name: "x".repeat(257) },
+    }).success).toBe(false)
+  })
+
   it("binds reviewed enablement to project content and client", () => {
     const review = skillEnablementReviewSchema.parse({
       projectId: "project-one",

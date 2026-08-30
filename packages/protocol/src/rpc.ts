@@ -14,6 +14,7 @@ import {
   skillContentDigestSchema,
   skillDocumentSchema,
   skillIdSchema,
+  skillInventorySchema,
   skillSummariesSchema,
 } from "./skills.js"
 
@@ -875,6 +876,7 @@ export const rpcMethods = {
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
   "skill.list": { params: z.object({}), result: skillSummariesSchema },
+  "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
     result: skillDocumentSchema,

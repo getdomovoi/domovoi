@@ -2641,6 +2641,35 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(skillCatalog.read).toHaveBeenCalledWith("skill-4d6f4d6f4d6f")
+
+    const inventoryResponse = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "skill.inventory",
+      params: {},
+    }))
+    const inventory = await inventoryResponse
+    expect(inventory).toMatchObject({
+      result: {
+        machine: {
+          id: expect.stringMatching(/^machine-/),
+          name: expect.any(String),
+          platform: expect.any(String),
+          arch: expect.any(String),
+          version: "0.0.1",
+        },
+        skills: [{
+          id: "skill-4d6f4d6f4d6f",
+          name: "repo-audit",
+          signature: { state: "unsigned" },
+          trust: { state: "untrusted", reason: "unsigned" },
+        }],
+      },
+    })
+    expect(JSON.stringify(inventory)).not.toMatch(/SKILL\.md|\/home\/|"content":|signatureValue|installCommand|archive|executable|symlinkTarget/)
     socket.close()
   })
 
