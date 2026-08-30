@@ -59,6 +59,12 @@ export interface WorkspaceService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace>
+  createSessionWorkspaceFromCheckpoint?(
+    sourceWorktreePath: string,
+    checkpointCommit: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace>
   removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void>
   archiveSessionWorkspace?(worktreePath: string, signal?: AbortSignal): Promise<void>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
@@ -265,6 +271,67 @@ export class GitWorkspaceService implements WorkspaceService {
     await mkdir(this.worktreeRoot, { recursive: true })
     await git(repository.root, ["worktree", "add", "-b", branch, path, repository.head], signal)
     return { path, branch, baseCommit: repository.head }
+  }
+
+  async createSessionWorkspaceFromCheckpoint(
+    sourceWorktreePath: string,
+    checkpointCommit: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
+    if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
+    if (!/^[a-f0-9]{40}$/.test(checkpointCommit)) throw new Error("Checkpoint commit is invalid")
+    let durableCommit: string
+    try {
+      durableCommit = await git(sourceWorktreePath, [
+        "rev-parse",
+        `refs/domovoi/checkpoints/${checkpointCommit}^{commit}`,
+      ], signal)
+    } catch {
+      signal?.throwIfAborted()
+      throw new Error("Commit is not a Domovoi checkpoint")
+    }
+    if (durableCommit !== checkpointCommit) throw new Error("Commit is not a Domovoi checkpoint")
+
+    const path = join(this.worktreeRoot, sessionId)
+    const branch = `domovoi/${sessionId}`
+    try {
+      const existingPath = await realpath(path)
+      const [existingBranch, existingCommit] = await Promise.all([
+        git(existingPath, ["branch", "--show-current"], signal),
+        git(existingPath, ["rev-parse", "HEAD"], signal),
+      ])
+      if (existingBranch !== branch || existingCommit !== checkpointCommit) {
+        throw new Error("Fork request conflicts with an existing session worktree")
+      }
+      return { path: existingPath, branch, baseCommit: checkpointCommit }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+
+    const repository = await this.inspect(sourceWorktreePath, signal)
+    await mkdir(this.worktreeRoot, { recursive: true })
+    let existingBranchCommit: string | undefined
+    try {
+      existingBranchCommit = await git(
+        repository.root,
+        ["rev-parse", `refs/heads/${branch}^{commit}`],
+        signal,
+      )
+    } catch {
+      signal?.throwIfAborted()
+    }
+    if (existingBranchCommit && existingBranchCommit !== checkpointCommit) {
+      throw new Error("Fork request conflicts with an existing session branch")
+    }
+    await git(
+      repository.root,
+      existingBranchCommit
+        ? ["worktree", "add", path, branch]
+        : ["worktree", "add", "-b", branch, path, checkpointCommit],
+      signal,
+    )
+    return { path: await realpath(path), branch, baseCommit: checkpointCommit }
   }
 
   async evidence(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence> {
