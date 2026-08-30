@@ -10,6 +10,7 @@ import {
   daemonShuttingDownErrorCode,
   demoWorkspace,
   maximumSessionHistoryPageItems,
+  maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolVersion,
@@ -26,6 +27,7 @@ import {
   type RpcMethod,
   type SessionHistoryPage,
   type SessionHistoryEntry,
+  type SystemEmergencyStopResult,
   type ClientKind,
   type Runtime,
   type TerminalOwner,
@@ -410,6 +412,11 @@ export class DomovoiDaemon {
   #providerProbe: ProviderProbe | undefined
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
+  #workspaceAbort = new AbortController()
+  #emergencyBlockedThreads = new Set<string>()
+  #failedEmergencyThreads = new Set<string>()
+  #inFlightProviderThreads = new Map<string, string>()
+  #emergencyStopTail: Promise<unknown> = Promise.resolve()
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -557,12 +564,19 @@ export class DomovoiDaemon {
         }
         const resource = this.#requestResource(raw)
         if (resource) {
-          void this.#mutations.enqueue(resource, () => this.#handle(socket, raw))
+          void this.#mutations.enqueue(
+            resource,
+            (signal) => this.#handle(socket, raw, signal),
+            { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
+          )
         } else if (
           this.#bypassesMutationQueue(raw)
           && this.#authenticatedClients.has(socket)
         ) void this.#handle(socket, raw)
-        else this.#enqueueMutation(() => this.#handle(socket, raw))
+        else void this.#mutations.enqueueExclusive(
+          (signal) => this.#handle(socket, raw, signal),
+          { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
+        )
       })
     })
 
@@ -779,6 +793,17 @@ export class DomovoiDaemon {
     return this.#mutations.enqueueExclusive(task)
   }
 
+  #cancelRpcRequest(socket: WebSocket, raw: string): void {
+    if (socket.readyState !== WebSocket.OPEN) return
+    try {
+      const request = JSON.parse(raw) as { id?: unknown }
+      if (typeof request.id !== "string" && typeof request.id !== "number") return
+      this.#error(socket, request.id, internalError, "Operation cancelled by emergency stop")
+    } catch {
+      // Invalid requests do not need a cancellation response.
+    }
+  }
+
   #requestResource(raw: string): string | undefined {
     try {
       const request = JSON.parse(raw) as {
@@ -839,6 +864,7 @@ export class DomovoiDaemon {
         || request.method === "skill.read"
         || request.method === "audit.query"
         || request.method === "audit.export"
+        || request.method === "system.emergencyStop"
     } catch {
       return false
     }
@@ -1003,7 +1029,7 @@ export class DomovoiDaemon {
     }
   }
 
-  async #handle(socket: WebSocket, raw: string): Promise<void> {
+  async #handle(socket: WebSocket, raw: string, signal?: AbortSignal): Promise<void> {
     let input: unknown
     try {
       input = JSON.parse(raw)
@@ -1075,13 +1101,25 @@ export class DomovoiDaemon {
 
     try {
       let changed = false
+      if (method === "system.emergencyStop") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const actor = this.#authenticatedActors.get(socket)
+        const client = actor?.kind === "client" ? actor.client : params.client
+        const result = await this.#enqueueEmergencyStop(client)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(result),
+        })
+        return
+      }
       if (method === "audit.query") {
         if (!this.#auditLog) {
           this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
           return
         }
         const params = rpcMethods[method].params.parse(request.params)
-        const result = await withAbortTimeout(
+        const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.query(params, signal),
           this.#agentTimeoutMs,
           "Audit query timed out",
@@ -1099,7 +1137,7 @@ export class DomovoiDaemon {
           return
         }
         const params = rpcMethods[method].params.parse(request.params)
-        const result = await withAbortTimeout(
+        const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.export(params, signal),
           this.#agentTimeoutMs,
           "Audit export timed out",
@@ -1401,7 +1439,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session evidence is unavailable")
           return
         }
-        const workspace = await withAbortTimeout(
+        const workspace = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.evidence!(session.workspacePath!, signal),
           this.#agentTimeoutMs,
           "Session evidence timed out",
@@ -1666,10 +1704,18 @@ export class DomovoiDaemon {
             "Domovoi could not stop a late provider handoff thread",
             (context, error) => this.#reportError(context, error),
           )
+          if (signal?.aborted) {
+            await withTimeout(
+              nextAgent.stopThread(nextThreadId),
+              this.#agentTimeoutMs,
+              "Cancelled provider handoff cleanup timed out",
+            )
+            signal.throwIfAborted()
+          }
           const previousAgent = this.#agents.require(previousRuntime.provider)
           let checkpoint: Awaited<ReturnType<WorkspaceService["checkpoint"]>>
           try {
-            checkpoint = await withAbortTimeout(
+            checkpoint = await this.#withAbortTimeout(
               (signal) => this.#workspaceService.checkpoint(
                 currentSession.workspacePath!,
                 "before provider handoff",
@@ -1726,7 +1772,7 @@ export class DomovoiDaemon {
 
       if (method === "project.open") {
         const params = rpcMethods[method].params.parse(request.params)
-        const repository = await withAbortTimeout(
+        const repository = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.inspect(params.path, signal),
           this.#agentTimeoutMs,
           "Repository inspection timed out",
@@ -1779,7 +1825,7 @@ export class DomovoiDaemon {
           return
         }
         try {
-          await withAbortTimeout(
+          await this.#withAbortTimeout(
             (signal) => this.#workspaceService.inspect(project.path, signal),
             this.#agentTimeoutMs,
             "Repository inspection timed out",
@@ -1803,7 +1849,7 @@ export class DomovoiDaemon {
           return
         }
         const sessionId = `session-${randomUUID()}`
-        const workspace = await withAbortTimeout(
+        const workspace = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.createSessionWorkspace(
             project.path,
             sessionId,
@@ -1824,9 +1870,17 @@ export class DomovoiDaemon {
             "Domovoi could not stop a late session thread",
             (context, error) => this.#reportError(context, error),
           )
+          if (signal?.aborted) {
+            await withTimeout(
+              agent.stopThread(providerThreadId),
+              this.#agentTimeoutMs,
+              "Cancelled session thread cleanup timed out",
+            )
+            signal.throwIfAborted()
+          }
         } catch (error) {
           try {
-            await withAbortTimeout(
+            await this.#withAbortTimeout(
               (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
               this.#agentTimeoutMs,
               "Session workspace cleanup timed out",
@@ -1964,7 +2018,7 @@ export class DomovoiDaemon {
           .update(params.requestId)
           .digest("hex")
           .slice(0, 20)}`
-        const workspace = await withAbortTimeout(
+        const workspace = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.createSessionWorkspaceFromCheckpoint!(
             source.workspacePath!,
             checkpoint.commit!,
@@ -1985,9 +2039,17 @@ export class DomovoiDaemon {
             "Domovoi could not stop a late fork thread",
             (context, error) => this.#reportError(context, error),
           )
+          if (signal?.aborted) {
+            await withTimeout(
+              agent.stopThread(providerThreadId),
+              this.#agentTimeoutMs,
+              "Cancelled fork thread cleanup timed out",
+            )
+            signal.throwIfAborted()
+          }
         } catch (error) {
           try {
-            await withAbortTimeout(
+            await this.#withAbortTimeout(
               (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
               this.#agentTimeoutMs,
               "Fork workspace cleanup timed out",
@@ -2051,7 +2113,7 @@ export class DomovoiDaemon {
             this.#reportError("Domovoi could not stop a failed fork thread", cleanupError)
           }
           try {
-            await withAbortTimeout(
+            await this.#withAbortTimeout(
               (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
               this.#agentTimeoutMs,
               "Fork workspace cleanup timed out",
@@ -2092,13 +2154,34 @@ export class DomovoiDaemon {
           return
         }
         const createdAt = new Date().toISOString()
-        const agent = await this.#ensureAgentConnected(session.runtime.provider)
-        const loadedThread = providerThreadKey(session.runtime.provider, session.providerThreadId)
+        const emergencyThread = providerThreadKey(
+          session.runtime.provider,
+          session.providerThreadId,
+        )
+        const providerThreadId = session.providerThreadId
+        if (this.#failedEmergencyThreads.has(emergencyThread)) {
+          this.#error(socket, request.id, invalidParams, "Provider thread requires recovery after emergency stop")
+          return
+        }
+        this.#emergencyBlockedThreads.delete(emergencyThread)
+        this.#inFlightProviderThreads.set(emergencyThread, session.id)
+        let agent: AgentAdapter
+        try {
+          agent = await this.#ensureAgentConnected(session.runtime.provider)
+        } catch (error) {
+          this.#inFlightProviderThreads.delete(emergencyThread)
+          throw error
+        }
+        if (signal?.aborted) {
+          this.#inFlightProviderThreads.delete(emergencyThread)
+          signal.throwIfAborted()
+        }
+        const loadedThread = providerThreadKey(session.runtime.provider, providerThreadId)
         if (!this.#loadedAgentThreads.has(loadedThread)) {
           try {
             await withTimeout(
               agent.resumeThread({
-                threadId: session.providerThreadId,
+                threadId: providerThreadId,
                 cwd: session.workspacePath,
                 runtime: session.runtime,
               }),
@@ -2106,10 +2189,15 @@ export class DomovoiDaemon {
               "Agent thread resume timed out",
             )
           } catch (error) {
+            this.#inFlightProviderThreads.delete(emergencyThread)
             if (error instanceof OperationTimeoutError) {
               await this.#quarantineProviderThread(session.id, error.message)
             }
             throw error
+          }
+          if (signal?.aborted) {
+            this.#inFlightProviderThreads.delete(emergencyThread)
+            signal.throwIfAborted()
           }
           this.#loadedAgentThreads.add(loadedThread)
         }
@@ -2120,16 +2208,17 @@ export class DomovoiDaemon {
         )
         let turnId = session.activeTurnId
         try {
+          signal?.throwIfAborted()
           if (turnId) {
             await withTimeout(
-              agent.steerTurn(session.providerThreadId, turnId, prompt),
+              agent.steerTurn(providerThreadId, turnId, prompt),
               this.#agentTimeoutMs,
               "Agent steering timed out",
             )
           } else {
             turnId = await withTimeout(
               agent.startTurn({
-                threadId: session.providerThreadId,
+                threadId: providerThreadId,
                 cwd: session.workspacePath,
                 prompt,
                 runtime: session.runtime,
@@ -2139,11 +2228,19 @@ export class DomovoiDaemon {
             )
           }
         } catch (error) {
+          this.#inFlightProviderThreads.delete(emergencyThread)
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
           throw error
         }
+        if (signal?.aborted) {
+          if (turnId) await this.#stopCancelledProviderTurn(session, turnId, providerThreadId)
+          this.#inFlightProviderThreads.delete(emergencyThread)
+          signal.throwIfAborted()
+        }
+        this.#inFlightProviderThreads.delete(emergencyThread)
+        signal?.throwIfAborted()
         const currentSession = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
@@ -2186,7 +2283,7 @@ export class DomovoiDaemon {
           return
         }
         const label = params.label ?? "manual"
-        const checkpoint = await withAbortTimeout(
+        const checkpoint = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
           this.#agentTimeoutMs,
           "Checkpoint timed out",
@@ -2240,7 +2337,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Checkpoint cannot be restored")
           return
         }
-        const restored = await withAbortTimeout(
+        const restored = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.restore(
             session.workspacePath!,
             item.commit!,
@@ -2287,6 +2384,10 @@ export class DomovoiDaemon {
 
       if (changed) this.#broadcastSnapshot()
     } catch (error) {
+      if (signal?.aborted) {
+        this.#error(socket, request.id, internalError, "Operation cancelled by emergency stop")
+        return
+      }
       if (error instanceof PublicRpcError) {
         if (error instanceof OperationTimeoutError) {
           this.#reportError(`RPC ${method} timed out`, error)
@@ -2312,6 +2413,7 @@ export class DomovoiDaemon {
     }
     const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
+    if (this.#emergencyBlockedThreads.has(providerThreadKey(provider, threadId))) return
     const session = this.#snapshot.sessions.find(
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
@@ -2666,6 +2768,265 @@ export class DomovoiDaemon {
     }
   }
 
+  #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+    const run = this.#emergencyStopTail.then(
+      () => this.#performEmergencyStop(client),
+      () => this.#performEmergencyStop(client),
+    )
+    this.#emergencyStopTail = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  async #performEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+    const requestedAt = new Date().toISOString()
+    const stopId = `stop-${randomUUID()}`
+    const failures: SystemEmergencyStopResult["failures"] = []
+    const affectedSessionIds = new Set<string>()
+    const active = this.#snapshot.sessions.filter(
+      (session) => !sessionIsArchiveReadOnly(session)
+        && session.providerThreadId
+        && session.activeTurnId,
+    )
+    for (const session of active) {
+      affectedSessionIds.add(session.id)
+      this.#emergencyBlockedThreads.add(
+        providerThreadKey(session.runtime.provider, session.providerThreadId!),
+      )
+      this.#flushCommandOutputStreams(session.id)
+    }
+    for (const [threadKey, sessionId] of this.#inFlightProviderThreads) {
+      this.#emergencyBlockedThreads.add(threadKey)
+      affectedSessionIds.add(sessionId)
+    }
+    for (const approval of this.#snapshot.approvals) affectedSessionIds.add(approval.sessionId)
+    for (const terminal of this.#terminals.values()) affectedSessionIds.add(terminal.sessionId)
+
+    const cancellation = new Error("Emergency stop requested")
+    const cancelledMutations = this.#mutations.cancelAll(cancellation)
+    const mutationsCancelled = cancelledMutations.active + cancelledMutations.queued
+    this.#workspaceAbort.abort(cancellation)
+    this.#workspaceAbort = new AbortController()
+
+    let terminalsClosed = 0
+    for (const terminalId of [...this.#terminals.keys()]) {
+      try {
+        if (this.#closeTerminal(terminalId)) terminalsClosed += 1
+      } catch (error) {
+        failures.push({
+          target: "terminal",
+          targetId: terminalId,
+          message: this.#emergencyFailureMessage(error, "Terminal close failed"),
+        })
+      }
+    }
+
+    let approvalsDenied = 0
+    for (const approval of this.#snapshot.approvals) {
+      try {
+        if (approval.providerRequestId !== undefined) {
+          this.#agents.require(
+            this.#snapshot.sessions.find(({ id }) => id === approval.sessionId)!.runtime.provider,
+          ).resolveApproval(approval.providerRequestId, "deny")
+        }
+        approvalsDenied += 1
+        this.#snapshot.thread.push({
+          id: `receipt-${approval.id}-${randomUUID()}`,
+          sessionId: approval.sessionId,
+          kind: "receipt",
+          operation: approval.operation,
+          decision: "deny",
+          checkpoint: approval.checkpoint,
+          client,
+          explanation: "Emergency stop",
+          createdAt: requestedAt,
+        })
+      } catch (error) {
+        failures.push({
+          target: "approval",
+          targetId: approval.id,
+          message: this.#emergencyFailureMessage(error, "Approval denial failed"),
+        })
+      }
+    }
+    this.#snapshot.approvals = []
+
+    let turnsStopped = 0
+    let providersReset = 0
+    const activeThreadKeys = new Set(active.map((session) =>
+      providerThreadKey(session.runtime.provider, session.providerThreadId!),
+    ))
+    const turnResults = await Promise.allSettled(active.map((session) =>
+      withTimeout(
+        this.#agents.require(session.runtime.provider).interruptTurn(
+          session.providerThreadId!,
+          session.activeTurnId!,
+        ),
+        this.#agentTimeoutMs,
+        "Emergency agent interrupt timed out",
+      ),
+    ))
+    for (const [index, result] of turnResults.entries()) {
+      const original = active[index]!
+      const session = this.#snapshot.sessions.find(({ id }) => id === original.id)
+      if (!session) continue
+      const activeTurnId = session.activeTurnId
+      session.updatedAt = requestedAt
+      delete session.activeTurnId
+      if (result.status === "fulfilled") {
+        turnsStopped += 1
+        session.state = "idle"
+        continue
+      }
+      let fallbackStopped = false
+      try {
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).stopThread(session.providerThreadId!),
+          this.#agentTimeoutMs,
+          "Emergency provider reset timed out",
+        )
+        fallbackStopped = true
+        turnsStopped += 1
+        providersReset += 1
+      } catch (fallbackError) {
+        failures.push({
+          target: "turn",
+          ...(activeTurnId ? { targetId: activeTurnId } : {}),
+          message: this.#emergencyFailureMessage(fallbackError, "Provider reset failed"),
+        })
+      }
+      session.state = "failed"
+      if (fallbackStopped) {
+        this.#loadedAgentThreads.delete(
+          providerThreadKey(session.runtime.provider, session.providerThreadId!),
+        )
+        delete session.providerThreadId
+      } else {
+        this.#failedEmergencyThreads.add(
+          providerThreadKey(session.runtime.provider, session.providerThreadId!),
+        )
+      }
+    }
+
+    const inFlight = [...this.#inFlightProviderThreads.entries()]
+      .filter(([threadKey]) => !activeThreadKeys.has(threadKey))
+    const inFlightResults = await Promise.allSettled(inFlight.map(([threadKey, sessionId]) => {
+      const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+      if (!session?.providerThreadId) return Promise.resolve()
+      const expectedKey = providerThreadKey(session.runtime.provider, session.providerThreadId)
+      if (expectedKey !== threadKey) return Promise.resolve()
+      return withTimeout(
+        this.#agents.require(session.runtime.provider).stopThread(session.providerThreadId),
+        this.#agentTimeoutMs,
+        "Emergency in-flight provider reset timed out",
+      )
+    }))
+    for (const [index, result] of inFlightResults.entries()) {
+      const [threadKey, sessionId] = inFlight[index]!
+      const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+      if (!session) continue
+      session.updatedAt = requestedAt
+      session.state = "failed"
+      if (result.status === "fulfilled") {
+        providersReset += 1
+        this.#loadedAgentThreads.delete(threadKey)
+        if (
+          session.providerThreadId
+          && providerThreadKey(session.runtime.provider, session.providerThreadId) === threadKey
+        ) delete session.providerThreadId
+      } else {
+        this.#failedEmergencyThreads.add(threadKey)
+        failures.push({
+          target: "provider",
+          targetId: threadKey.split("\u0000", 2)[1],
+          message: this.#emergencyFailureMessage(result.reason, "Provider reset failed"),
+        })
+      }
+    }
+
+    for (const sessionId of affectedSessionIds) {
+      const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
+      if (!session || sessionIsArchiveReadOnly(session)) continue
+      this.#snapshot.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId,
+        kind: "system",
+        body: `Emergency stop requested by ${client}.`,
+        detail: `${stopId}: ${turnsStopped} turns stopped, ${providersReset} providers reset, ${terminalsClosed} terminals closed, ${approvalsDenied} approvals denied, ${mutationsCancelled} mutations cancelled, and ${failures.length} failures recorded.`,
+        createdAt: requestedAt,
+      })
+    }
+
+    try {
+      this.#saveAgentState(false)
+    } catch (error) {
+      failures.push({
+        target: "persistence",
+        message: this.#emergencyFailureMessage(error, "Emergency state persistence failed"),
+      })
+      this.#reportError("Domovoi could not persist emergency stop state", error)
+    }
+    const result: SystemEmergencyStopResult = {
+      snapshot: workspaceSnapshotForClient(this.#snapshot),
+      stopId,
+      requestedAt,
+      client,
+      outcomes: {
+        turnsStopped,
+        terminalsClosed,
+        approvalsDenied,
+        mutationsCancelled,
+        providersReset,
+      },
+      failures: failures.slice(0, 100),
+    }
+    this.#broadcastSnapshot()
+    this.#broadcastNotification("system.emergencyStopped", result)
+    return result
+  }
+
+  #withAbortTimeout<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    return withAbortTimeout(operation, timeoutMs, message, this.#workspaceAbort.signal)
+  }
+
+  #emergencyFailureMessage(error: unknown, fallback: string): string {
+    return redactDurableText(error instanceof Error ? error.message : fallback).value
+      .slice(0, maximumEmergencyStopFailureMessageLength)
+  }
+
+  async #stopCancelledProviderTurn(
+    session: WorkspaceSnapshot["sessions"][number],
+    turnId: string,
+    providerThreadId = session.providerThreadId,
+  ): Promise<void> {
+    const threadId = providerThreadId
+    if (!threadId) return
+    const key = providerThreadKey(session.runtime.provider, threadId)
+    this.#emergencyBlockedThreads.add(key)
+    try {
+      await withTimeout(
+        this.#agents.require(session.runtime.provider).interruptTurn(threadId, turnId),
+        this.#agentTimeoutMs,
+        "Cancelled provider turn interrupt timed out",
+      )
+    } catch {
+      try {
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).stopThread(threadId),
+          this.#agentTimeoutMs,
+          "Cancelled provider reset timed out",
+        )
+        this.#loadedAgentThreads.delete(key)
+        delete session.providerThreadId
+      } catch {
+        this.#failedEmergencyThreads.add(key)
+      }
+    }
+  }
+
   async #pauseSessions(
     active: WorkspaceSnapshot["sessions"],
     client: ClientKind,
@@ -2849,7 +3210,7 @@ export class DomovoiDaemon {
 
     if (!session.archiveCheckpoint) {
       if (session.workspacePath) {
-        const checkpoint = await withAbortTimeout(
+        const checkpoint = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.checkpoint(
             session.workspacePath!,
             "before session archive",
@@ -2888,7 +3249,7 @@ export class DomovoiDaemon {
         throw new Error("Workspace service cannot preserve archive branches")
       }
       const workspacePath = session.workspacePath
-      await withAbortTimeout(
+      await this.#withAbortTimeout(
         (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
         this.#agentTimeoutMs,
         "Archive worktree cleanup timed out",
@@ -3055,7 +3416,7 @@ export class DomovoiDaemon {
       }
       if (session.workspacePath) {
         try {
-          await withAbortTimeout(
+          await this.#withAbortTimeout(
             (signal) => this.#workspaceService.removeSessionWorkspace(
               session.workspacePath!,
               signal,
@@ -3247,6 +3608,7 @@ function withAbortTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   message: string,
+  parentSignal?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController()
   return new Promise((resolvePromise, rejectPromise) => {
@@ -3256,17 +3618,31 @@ function withAbortTimeout<T>(
       controller.abort(timeoutError)
       rejectPromise(timeoutError)
     }, timeoutMs)
+    let abortFromParent = () => {}
+    const cleanup = () => {
+      clearTimeout(timer)
+      parentSignal?.removeEventListener("abort", abortFromParent)
+    }
+    abortFromParent = () => {
+      const reason = parentSignal?.reason ?? new Error("Operation aborted")
+      controller.abort(reason)
+      cleanup()
+      rejectPromise(reason)
+    }
+    if (parentSignal?.aborted) abortFromParent()
+    else parentSignal?.addEventListener("abort", abortFromParent, { once: true })
     let operationPromise: Promise<T>
     try {
+      controller.signal.throwIfAborted()
       operationPromise = operation(controller.signal)
     } catch (error) {
-      clearTimeout(timer)
+      cleanup()
       rejectPromise(error)
       return
     }
     operationPromise.then(
       (value) => {
-        clearTimeout(timer)
+        cleanup()
         if (Date.now() - startedAt > timeoutMs) {
           controller.abort(timeoutError)
           rejectPromise(timeoutError)
@@ -3275,7 +3651,7 @@ function withAbortTimeout<T>(
         resolvePromise(value)
       },
       (error: unknown) => {
-        clearTimeout(timer)
+        cleanup()
         rejectPromise(error)
       },
     )
