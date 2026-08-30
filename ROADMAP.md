@@ -122,7 +122,7 @@ workflow without becoming a code editor.
 - [x] Enforce hard gates that Build auto cannot bypass
 - [x] Add a searchable audit log with redaction and export
 - [x] Add command-level secret redaction before persistence or display
-- [ ] Add a global emergency stop that cancels all active tools and providers, not only UI state
+- [x] Add a global emergency stop that cancels all active tools and providers, not only UI state
 
 ### Preview and review
 
