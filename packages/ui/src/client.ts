@@ -1,5 +1,7 @@
 import {
   daemonAuthenticationErrorCode,
+  projectSwitchConfirmationErrorCode,
+  projectSwitchConfirmationSchema,
   rpcNotificationSchema,
   rpcMethods,
   rpcResponseSchema,
@@ -21,6 +23,7 @@ import {
   type AuditQueryPage,
   type AuditQueryParams,
   type ProviderModel,
+  type ProjectSwitchConfirmation,
   type RpcMethod,
   type RpcParams,
   type RpcResult,
@@ -43,6 +46,16 @@ class DaemonRpcError extends Error {
     super(message)
     this.name = "DaemonRpcError"
     this.code = code
+  }
+}
+
+export class ProjectSwitchConfirmationError extends Error {
+  readonly confirmation: ProjectSwitchConfirmation
+
+  constructor(message: string, confirmation: ProjectSwitchConfirmation) {
+    super(message)
+    this.name = "ProjectSwitchConfirmationError"
+    this.confirmation = confirmation
   }
 }
 
@@ -297,8 +310,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.activate", { sessionId, client: this.kind })
   }
 
-  openProject(path: string): Promise<WorkspaceSnapshot> {
-    return this.request("project.open", { path, client: this.kind })
+  openProject(path: string, confirmation?: ProjectSwitchConfirmation): Promise<WorkspaceSnapshot> {
+    return this.request("project.open", {
+      path,
+      client: this.kind,
+      ...(confirmation ? { confirmation } : {}),
+    })
   }
 
   createSession(title: string, runtime: Runtime): Promise<WorkspaceSnapshot> {
@@ -594,6 +611,16 @@ export class DomovoiClient extends EventTarget {
       if (response.data.error.code === daemonAuthenticationErrorCode) {
         this.#shouldReconnect = false
         this.#clearReconnectTimer()
+      }
+      if (response.data.error.code === projectSwitchConfirmationErrorCode) {
+        const confirmation = projectSwitchConfirmationSchema.safeParse(response.data.error.data)
+        if (confirmation.success) {
+          pending.reject(new ProjectSwitchConfirmationError(
+            response.data.error.message,
+            confirmation.data,
+          ))
+          return
+        }
       }
       pending.reject(new DaemonRpcError(response.data.error.code, response.data.error.message))
       return
