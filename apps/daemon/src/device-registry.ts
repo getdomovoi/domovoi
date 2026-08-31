@@ -17,6 +17,14 @@ export type DevicePairing = {
 export const maximumPairedDevices = 128
 const maximumDeviceLabelLength = 128
 
+export interface DeviceRegistry {
+  pair(input: { label: string }): DevicePairing
+  verify(token: string): PairedDevice | undefined
+  rotate(deviceId: string): DevicePairing
+  revoke(deviceId: string): PairedDevice
+  list(): PairedDevice[]
+}
+
 export class DeviceNotFoundError extends Error {
   constructor(deviceId: string) {
     super(`Paired device not found: ${deviceId}`)
@@ -61,7 +69,7 @@ function toPairedDevice(row: StoredDevice): PairedDevice {
   }
 }
 
-export class SqliteDeviceRegistry {
+export class SqliteDeviceRegistry implements DeviceRegistry {
   #database: DatabaseSync
 
   constructor(database: DatabaseSync) {

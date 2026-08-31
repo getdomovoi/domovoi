@@ -581,6 +581,12 @@ export class DomovoiDaemon {
     return { host: this.host, port: address.port }
   }
 
+  #credentialAccepted(token: string | undefined): boolean {
+    if (secureTokenMatch(this.#authToken, token)) return true
+    if (!token) return false
+    return this.#store.devices?.verify(token) !== undefined
+  }
+
   get authToken(): string {
     return this.#authToken
   }
@@ -633,7 +639,7 @@ export class DomovoiDaemon {
       const bearerToken = typeof authorization === "string"
         ? /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization)?.[1]
         : undefined
-      if (secureTokenMatch(this.#authToken, bearerToken)) {
+      if (this.#credentialAccepted(bearerToken)) {
         this.#authenticatedClients.add(socket)
       } else {
         const deadline = setTimeout(() => {
@@ -1265,7 +1271,7 @@ export class DomovoiDaemon {
     if (method === "system.hello") {
       if (!this.#authenticatedClients.has(socket)) {
         const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
-        if (!secureTokenMatch(this.#authToken, supplied)) {
+        if (!this.#credentialAccepted(supplied)) {
           this.#appendPreAuthAudit("authentication")
           this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
           return
