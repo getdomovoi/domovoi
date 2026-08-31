@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -68,6 +68,26 @@ describe("loadOrCreateMachineIdentity", () => {
     await expect(loadOrCreateMachineIdentity(identityPath, { label: "workshop" })).rejects.toThrow(
       "Machine identity is malformed",
     )
+  })
+
+  it("recovers from an interrupted initial write", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(identityPath, "")
+
+    const identity = await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+
+    expect(identity.id).toMatch(/^machine-[0-9a-f]{32}$/)
+    expect(JSON.parse(await readFile(identityPath, "utf8")) as { id: string }).toEqual(identity)
+  })
+
+  it("leaves no partial file behind after creating an identity", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+
+    await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+
+    expect(await readdir(root)).toEqual(["machine.json"])
   })
 
   it("returns one identity to concurrent daemon starts", async () => {

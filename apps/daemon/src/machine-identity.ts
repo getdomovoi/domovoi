@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto"
-import { chmod, mkdir, open, readFile } from "node:fs/promises"
+import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises"
 import { dirname } from "node:path"
-import { setTimeout as delay } from "node:timers/promises"
 
 export type MachineIdentity = {
   id: string
@@ -12,16 +11,13 @@ export const defaultMachineLabel = "domovoi-machine"
 
 const machineIdPattern = /^machine-[0-9a-f]{32}$/
 const maximumLabelLength = 128
-const identityReadAttempts = 20
-const identityReadDelayMs = 5
 
 export function normalizeMachineLabel(label: string): string {
   const trimmed = label.trim().slice(0, maximumLabelLength).trim()
   return trimmed || defaultMachineLabel
 }
 
-function parseMachineIdentity(contents: string): MachineIdentity | undefined {
-  if (!contents) return undefined
+function parseMachineIdentity(contents: string): MachineIdentity {
   let value: unknown
   try {
     value = JSON.parse(contents)
@@ -45,13 +41,35 @@ function parseMachineIdentity(contents: string): MachineIdentity | undefined {
   return { id, label }
 }
 
-async function readMachineIdentity(path: string): Promise<MachineIdentity> {
-  for (let attempt = 0; attempt < identityReadAttempts; attempt += 1) {
-    const identity = parseMachineIdentity((await readFile(path, "utf8")).trim())
-    if (identity) return identity
-    await delay(identityReadDelayMs)
+async function readMachineIdentity(path: string): Promise<MachineIdentity | undefined> {
+  let contents: string
+  try {
+    contents = (await readFile(path, "utf8")).trim()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
   }
-  throw new Error("Machine identity is malformed")
+  // An empty file is an initialization that was interrupted before its content
+  // was published, not a corrupted identity, so it is safe to replace.
+  if (!contents) return undefined
+  return parseMachineIdentity(contents)
+}
+
+async function publishMachineIdentity(path: string, identity: MachineIdentity): Promise<void> {
+  const temporaryPath = `${path}.${randomBytes(8).toString("hex")}.tmp`
+  try {
+    const handle = await open(temporaryPath, "wx", 0o600)
+    try {
+      await handle.writeFile(`${JSON.stringify(identity, null, 2)}\n`, "utf8")
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await rename(temporaryPath, path)
+  } catch (error) {
+    await rm(temporaryPath, { force: true })
+    throw error
+  }
 }
 
 export async function loadOrCreateMachineIdentity(
@@ -62,22 +80,21 @@ export async function loadOrCreateMachineIdentity(
   await mkdir(directory, { recursive: true, mode: 0o700 })
   if (process.platform !== "win32") await chmod(directory, 0o700)
 
-  try {
-    const handle = await open(path, "wx", 0o600)
-    try {
-      const identity: MachineIdentity = {
-        id: `machine-${randomBytes(16).toString("hex")}`,
-        label: normalizeMachineLabel(defaults.label),
-      }
-      await handle.writeFile(`${JSON.stringify(identity, null, 2)}\n`, "utf8")
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  const existing = await readMachineIdentity(path)
+  if (existing) {
+    if (process.platform !== "win32") await chmod(path, 0o600)
+    return existing
   }
 
+  await publishMachineIdentity(path, {
+    id: `machine-${randomBytes(16).toString("hex")}`,
+    label: normalizeMachineLabel(defaults.label),
+  })
+
+  // Concurrent starts each publish a candidate; the identity left by the final
+  // rename is the one every start returns.
+  const settled = await readMachineIdentity(path)
+  if (!settled) throw new Error("Machine identity is malformed")
   if (process.platform !== "win32") await chmod(path, 0o600)
-  return readMachineIdentity(path)
+  return settled
 }
