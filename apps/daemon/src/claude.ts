@@ -14,6 +14,17 @@ import type { AgentAdapter, AgentEvent, AgentVisualContext } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
+const claudeAskTools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const
+const claudeAskDisallowedTools = [
+  "Bash",
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "Task",
+  "Agent",
+  "Skill",
+  "mcp__*",
+] as const
 
 export type ClaudeMessageId = ReturnType<typeof randomUUID>
 
@@ -70,6 +81,8 @@ export type ClaudeQueryOptions = {
   includePartialMessages?: boolean
   forwardSubagentText?: boolean
   settingSources?: Array<"user" | "project" | "local">
+  tools?: string[]
+  disallowedTools?: string[]
   systemPrompt?: { type: "preset"; preset: "claude_code" }
   canUseTool?: (
     toolName: string,
@@ -98,6 +111,7 @@ type Session = {
   cwd: string
   input: PushStream<ClaudeUserMessage>
   query: ClaudeQuery
+  runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string }>
   activeTurnId?: string
 }
@@ -192,7 +206,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     runtime: Runtime
     visualContexts?: AgentVisualContext[]
   }): Promise<string> {
-    const session = this.#requireSession(threadId)
+    let session = this.#requireSession(threadId)
+    if (isClaudeAsk(session.runtime) !== isClaudeAsk(runtime)) {
+      session.input.close()
+      session.query.close()
+      this.#sessions.delete(threadId)
+      await this.#openSession(threadId, session.cwd, runtime, true)
+      session = this.#requireSession(threadId)
+    }
     const turnId = this.#id()
     await this.#applyRuntime(session, runtime)
     session.activeTurnId = turnId
@@ -269,6 +290,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const permission = claudePermissionFor(runtime)
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
+      ...claudeBoundaryOptions(runtime),
       cwd,
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
@@ -279,7 +301,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         this.#requestApproval(threadId, cwd, toolName, toolInput, context),
     }
     const query = this.#factory(input, options)
-    const session: Session = { threadId, cwd, input, query, tools: new Map() }
+    const session: Session = { threadId, cwd, input, query, runtime, tools: new Map() }
     this.#sessions.set(threadId, session)
     void this.#consume(session).catch((error: unknown) => {
       const turnId = session.activeTurnId
@@ -315,6 +337,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       session.query.setPermissionMode(permission.permissionMode),
       session.query.applyFlagSettings({ effortLevel: claudeEffortFor(runtime.reasoning) }),
     ])
+    session.runtime = runtime
   }
 
   #requestApproval(
@@ -324,8 +347,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     input: Record<string, unknown>,
     context: ClaudePermissionContext,
   ): Promise<PermissionResult> {
-    const requestId = ++this.#nextApprovalId
     const session = this.#requireSession(threadId)
+    if (session.runtime.permissionMode === "ask") {
+      if (!claudeAskTools.includes(toolName as typeof claudeAskTools[number])) {
+        return Promise.resolve({ behavior: "deny", message: "Ask mode is read-only" })
+      }
+      return Promise.resolve({ behavior: "allow", updatedInput: input })
+    }
+    const requestId = ++this.#nextApprovalId
     const command = typeof input.command === "string" ? input.command : toolName
     const reason = context.title ?? context.description ?? context.decisionReason
     this.#emit({
@@ -514,6 +543,19 @@ class PushStream<T> implements AsyncIterable<T> {
         return new Promise((resolve) => this.#waiters.push(resolve))
       },
     }
+  }
+}
+
+function isClaudeAsk(runtime: Runtime): boolean {
+  return runtime.permissionMode === "ask"
+}
+
+function claudeBoundaryOptions(runtime: Runtime): ClaudeQueryOptions {
+  if (!isClaudeAsk(runtime)) return {}
+  return {
+    settingSources: [],
+    tools: [...claudeAskTools],
+    disallowedTools: [...claudeAskDisallowedTools],
   }
 }
 

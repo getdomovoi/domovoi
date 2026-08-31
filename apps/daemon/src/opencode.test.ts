@@ -138,6 +138,16 @@ describe("OpenCodeSdkAdapter", () => {
       bash: "deny",
       external_directory: "deny",
     })
+    expect(config.agent?.["domovoi-ask"]?.tools).toEqual({
+      "*": false,
+      read: true,
+      glob: true,
+      grep: true,
+      list: true,
+      webfetch: true,
+      websearch: true,
+      question: true,
+    })
   })
 
   it("discovers configured models without starting a model turn", async () => {
