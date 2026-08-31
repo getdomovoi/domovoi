@@ -10,6 +10,7 @@ describe("parseDaemonEnvironment", () => {
       host: "127.0.0.1",
       port: 47831,
       credentialPath: join("/home/tester", ".domovoi", "daemon.token"),
+      machineIdentityPath: join("/home/tester", ".domovoi", "machine.json"),
       allowRemoteTransport: false,
     })
   })
@@ -75,6 +76,16 @@ describe("parseDaemonEnvironment", () => {
     }, "/home/tester")).toMatchObject({
       authToken: "secret-token",
       credentialPath: "/run/secrets/domovoi-token",
+    })
+  })
+
+  it("overrides the machine identity path", () => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_MACHINE_IDENTITY_PATH: "  " }, "/home/tester"))
+      .toThrow("DOMOVOI_MACHINE_IDENTITY_PATH")
+    expect(parseDaemonEnvironment({
+      DOMOVOI_MACHINE_IDENTITY_PATH: "/var/lib/domovoi/machine.json",
+    }, "/home/tester")).toMatchObject({
+      machineIdentityPath: "/var/lib/domovoi/machine.json",
     })
   })
 
