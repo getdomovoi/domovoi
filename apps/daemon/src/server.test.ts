@@ -2627,6 +2627,63 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("stops broadcasting to a device the moment it is revoked", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket, "tablet")
+    const notifications: string[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { method?: string }
+      if (message.method) notifications.push(message.method)
+    })
+
+    const admin = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      admin.once("open", resolve)
+      admin.once("error", reject)
+    })
+    await identifyClient(admin)
+    const revoked = new Promise<void>((resolve) => {
+      admin.once("message", () => resolve())
+    })
+    admin.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "device.revoke",
+      params: { deviceId: issued.device.id, client: "desktop" },
+    }))
+    await revoked
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    notifications.length = 0
+    const activated = new Promise<void>((resolve) => {
+      admin.once("message", () => resolve())
+    })
+    admin.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session.activate",
+      params: { sessionId: demoWorkspace.sessions[1]!.id, client: "desktop" },
+    }))
+    await activated
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(notifications).toEqual([])
+    expect(socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING)
+      .toBe(true)
+    admin.close()
+    socket.close()
+  })
+
   it("requires the configured token before serving daemon state", async () => {
     const agent = {
       connect: vi.fn(async () => {}),
