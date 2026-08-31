@@ -4237,10 +4237,10 @@ describe("DomovoiDaemon", () => {
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     const workspaceService = {
-      inspect: vi.fn(async (_path: string, _signal?: AbortSignal) => ({
-        root: "/code/domovoi",
-        name: "domovoi",
-        branch: "main",
+      inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+        root: path === "/code/elsewhere" ? "/code/elsewhere" : "/code/domovoi",
+        name: path === "/code/elsewhere" ? "elsewhere" : "domovoi",
+        branch: path === "/code/elsewhere" ? "develop" : "main",
         head: "a".repeat(40),
       })),
       createSessionWorkspace: vi.fn(async (_path: string, sessionId: string) => ({
@@ -4623,7 +4623,7 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledTimes(2))
-    const reopening = rpc("project.open", { path: "/code/domovoi", client: "desktop" })
+    const reopening = rpc("project.open", { path: "/code/domovoi/.", client: "desktop" })
     expect(agent.stopThread).not.toHaveBeenCalledWith("provider-thread-1")
     resolveLateTurn!("late-turn")
     await expect(lateTurn).resolves.toMatchObject({
@@ -4634,7 +4634,27 @@ describe("DomovoiDaemon", () => {
       },
     })
     const reopened = await reopening
-    expect(reopened).toMatchObject({ result: { activeSessionId: null, sessions: [] } })
+    expect(reopened).toMatchObject({
+      result: {
+        project: { path: "/code/domovoi", branch: "main" },
+        activeSessionId: sessionId,
+        sessions: [expect.objectContaining({ id: sessionId })],
+      },
+    })
+    expect(agent.stopThread).not.toHaveBeenCalledWith("provider-thread-1")
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalledWith(
+      `/worktrees/${sessionId}`,
+      expect.any(AbortSignal),
+    )
+
+    const switched = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    expect(switched).toMatchObject({
+      result: {
+        project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
+        activeSessionId: null,
+        sessions: [],
+      },
+    })
     expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(
       `/worktrees/${sessionId}`,
