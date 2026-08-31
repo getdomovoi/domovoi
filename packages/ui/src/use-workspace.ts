@@ -289,10 +289,11 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   const loadSessionHistory = useCallback(async (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
+    requestOptions?: DomovoiRequestOptions,
   ): Promise<SessionHistoryPage> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.loadSessionHistory(sessionId, options)
+    return client.loadSessionHistory(sessionId, options, requestOptions)
   }, [])
 
   const loadSessionEvidence = useCallback(async (sessionId: string): Promise<SessionEvidence> => {

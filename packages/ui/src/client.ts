@@ -451,12 +451,17 @@ export class DomovoiClient extends EventTarget {
   loadSessionHistory(
     sessionId: string,
     options: Omit<RpcParams<"session.history">, "sessionId"> = { limit: 50 },
+    requestOptions: DomovoiRequestOptions = {},
   ): Promise<SessionHistoryPage> {
-    return this.request("session.history", {
-      sessionId,
-      ...options,
-      limit: options.limit ?? 50,
-    })
+    return this.request(
+      "session.history",
+      {
+        sessionId,
+        ...options,
+        limit: options.limit ?? 50,
+      },
+      requestOptions,
+    )
   }
 
   authorizeArtifact(input: {
