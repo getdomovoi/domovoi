@@ -14,7 +14,7 @@ const hardGatePatterns = [
   /\b(?:kubectl\s+(?:apply|delete|patch)|helm\s+(?:upgrade|uninstall))\b/i,
   /\b(?:drop|truncate)\s+(?:database|schema|table)\b/i,
   /\b(?:migrate|migration)\b/i,
-  /(?:^|[/\\:])\.env(?:$|\s)|(?:^|[/\\:])\.ssh(?:[/\\]|$)|\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
+  /(?:^|[/\\:])["']?\.env["']?(?:$|\s)|(?:^|[/\\:])["']?\.ssh(?:[/\\]|["']?(?:$|\s))|\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
   /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
   /\b(?:curl|wget|ssh|scp|sftp)\b/i,
   /\bexternal[_ -]?directory\b/i,

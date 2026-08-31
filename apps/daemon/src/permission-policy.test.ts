@@ -41,6 +41,8 @@ describe("permissionDecisionFor", () => {
   it.each([
     "git show HEAD:.env",
     "git show HEAD:.ssh/config",
+    'git show HEAD:".env"',
+    "git show HEAD:'.ssh/config'",
   ])("hard-gates secret paths selected from Git objects: %s", (command) => {
     expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
       action: "review",
