@@ -147,10 +147,14 @@ class OperationTimeoutError extends PublicRpcError {
   }
 }
 
-function buildAutoViolation(runtime: Runtime, agent: AgentAdapter): string | undefined {
+function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | undefined {
+  const providerName = runtime.provider === "codex" ? "Codex" : runtime.provider
+  if (runtime.permissionMode === "ask") {
+    if (agent.permissionCapabilities?.ask === "read-only") return undefined
+    return `${providerName} does not support enforceable Ask mode`
+  }
   if (runtime.permissionMode !== "build" || !runtime.auto) return undefined
   if (agent.permissionCapabilities?.buildAuto === "pre-execution") return undefined
-  const providerName = runtime.provider === "codex" ? "Codex" : runtime.provider
   return `${providerName} does not support enforceable Build auto`
 }
 
@@ -1091,8 +1095,8 @@ export class DomovoiDaemon {
       }
       throw error
     }
-    const permissionViolation = buildAutoViolation(runtime, agent)
-    if (permissionViolation) throw new RuntimeValidationError(permissionViolation)
+    const violation = permissionViolation(runtime, agent)
+    if (violation) throw new RuntimeValidationError(violation)
     let models: ProviderModel[]
     try {
       models = await this.#listProviderModels(runtime.provider)
@@ -2056,6 +2060,17 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
           return
         }
+        const crossesAskBoundary = (session.runtime.permissionMode === "ask")
+          !== (params.runtime.permissionMode === "ask")
+        if (session.activeTurnId && crossesAskBoundary) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Stop the active turn before entering or leaving Ask mode",
+          )
+          return
+        }
         const providerChanged = params.runtime.provider !== session.runtime.provider
         const currentThreadKey = session.providerThreadId
           ? providerThreadKey(session.runtime.provider, session.providerThreadId)
@@ -2581,9 +2596,9 @@ export class DomovoiDaemon {
           return
         }
         const registeredAgent = this.#agents.require(session.runtime.provider)
-        const permissionViolation = buildAutoViolation(session.runtime, registeredAgent)
-        if (permissionViolation) {
-          this.#error(socket, request.id, invalidParams, permissionViolation)
+        const violation = permissionViolation(session.runtime, registeredAgent)
+        if (violation) {
+          this.#error(socket, request.id, invalidParams, violation)
           return
         }
         const preparedTurn = await prepareAnnotationTurn(

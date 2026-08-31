@@ -6,6 +6,7 @@ export type AcpProviderDefinition = Readonly<{
   launchArgs: readonly string[]
   modelArgs: readonly string[]
   modes: Readonly<Record<PermissionMode, string>>
+  askEnforcement: "read-only" | "unsupported"
 }>
 
 export const CURSOR_ACP_PROVIDER: AcpProviderDefinition = {
@@ -13,6 +14,7 @@ export const CURSOR_ACP_PROVIDER: AcpProviderDefinition = {
   commands: ["agent", "cursor-agent"],
   launchArgs: ["acp"],
   modelArgs: ["models"],
+  askEnforcement: "read-only",
   modes: { ask: "ask", plan: "plan", build: "agent" },
 }
 
@@ -21,6 +23,7 @@ export const GROK_ACP_PROVIDER: AcpProviderDefinition = {
   commands: ["grok"],
   launchArgs: ["agent", "stdio"],
   modelArgs: ["models"],
+  askEnforcement: "unsupported",
   modes: { ask: "default", plan: "plan", build: "default" },
 }
 

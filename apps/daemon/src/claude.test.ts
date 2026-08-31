@@ -86,7 +86,7 @@ function factoryHarness() {
 
 describe("claudePermissionFor", () => {
   it.each([
-    [runtime("ask"), "default", false],
+    [runtime("ask"), "dontAsk", false],
     [runtime("plan"), "plan", false],
     [runtime("build"), "default", false],
     [runtime("build", true), "default", false],
@@ -99,9 +99,10 @@ describe("claudePermissionFor", () => {
 })
 
 describe("ClaudeAgentSdkAdapter", () => {
-  it("declares pre-execution Build-auto enforcement", () => {
+  it("declares read-only Ask and pre-execution Build-auto enforcement", () => {
     const { factory } = factoryHarness()
     expect(new ClaudeAgentSdkAdapter(factory).permissionCapabilities).toEqual({
+      ask: "read-only",
       buildAuto: "pre-execution",
     })
   })
@@ -231,7 +232,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.resumeThread({
       threadId: "22222222-2222-4222-8222-222222222222",
       cwd: "/restored-worktree",
-      runtime: runtime("ask"),
+      runtime: runtime("build"),
     })
     expect(calls[0]?.options).toMatchObject({
       cwd: "/restored-worktree",
@@ -269,6 +270,78 @@ describe("ClaudeAgentSdkAdapter", () => {
       behavior: "allow",
       updatedInput: { command: "pnpm test" },
       updatedPermissions: [expect.objectContaining({ destination: "session" })],
+    })
+    await adapter.close()
+  })
+
+  it("isolates Ask from inherited approvals and exposes only read-only tools", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.resumeThread({
+      threadId: "22222222-2222-4222-8222-222222222222",
+      cwd: "/restored-worktree",
+      runtime: runtime("ask"),
+    })
+
+    expect(calls[0]?.options).toMatchObject({
+      permissionMode: "dontAsk",
+      settingSources: [],
+      tools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
+    })
+    expect(calls[0]?.options.disallowedTools).toEqual(expect.arrayContaining([
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Task",
+      "Skill",
+      "mcp__*",
+    ]))
+    await expect(calls[0]!.options.canUseTool!(
+      "Bash",
+      { command: "touch escaped" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "tool-denied",
+        requestId: "request-denied",
+      },
+    )).resolves.toEqual({ behavior: "deny", message: "Ask mode is read-only" })
+    await expect(calls[0]!.options.canUseTool!(
+      "Read",
+      { file_path: "README.md" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "tool-read",
+        requestId: "request-read",
+      },
+    )).resolves.toEqual({ behavior: "allow", updatedInput: { file_path: "README.md" } })
+    await adapter.close()
+  })
+
+  it("reopens a Claude session when a turn crosses the Ask tool boundary", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Inspect only",
+      runtime: runtime("ask"),
+    })
+
+    expect(calls).toHaveLength(2)
+    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
+    expect(calls[1]!.options).toMatchObject({
+      resume: threadId,
+      permissionMode: "dontAsk",
+      settingSources: [],
+      tools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
     })
     await adapter.close()
   })

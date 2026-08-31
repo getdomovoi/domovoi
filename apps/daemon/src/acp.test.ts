@@ -229,9 +229,12 @@ describe("AcpAgentAdapter", () => {
     )
   })
 
-  it("declares build-auto and mid-turn steering unsupported", async () => {
+  it("declares Cursor Ask read-only and build-auto unsupported", async () => {
     const { adapter } = createHarness()
-    expect(adapter.permissionCapabilities).toEqual({ buildAuto: "unsupported" })
+    expect(adapter.permissionCapabilities).toEqual({
+      ask: "read-only",
+      buildAuto: "unsupported",
+    })
     await expect(adapter.steerTurn("thread", "turn", "change course")).rejects.toThrow(
       "does not support mid-turn steering",
     )

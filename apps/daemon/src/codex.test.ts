@@ -98,7 +98,7 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto: boolean): Runt
 
 describe("codexPolicyFor", () => {
   it.each([
-    [runtime("ask", false), "on-request", "workspaceWrite"],
+    [runtime("ask", false), "on-request", "readOnly"],
     [runtime("plan", false), "never", "readOnly"],
     [runtime("build", false), "on-request", "workspaceWrite"],
     [runtime("build", true), "never", "workspaceWrite"],
@@ -172,8 +172,9 @@ describe("StdioCodexTransport", () => {
 })
 
 describe("CodexAppServerAdapter permissions", () => {
-  it("rejects Build-auto because Codex cannot expose every tool before execution", () => {
+  it("declares read-only Ask and rejects unenforceable Build-auto", () => {
     expect(new CodexAppServerAdapter(() => new FakeTransport()).permissionCapabilities).toEqual({
+      ask: "read-only",
       buildAuto: "unsupported",
     })
   })

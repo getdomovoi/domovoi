@@ -71,7 +71,7 @@ type PendingPermission = {
 type ActiveTurn = { id: string }
 
 export class AcpAgentAdapter implements AgentAdapter {
-  readonly permissionCapabilities = { buildAuto: "unsupported" } as const
+  readonly permissionCapabilities: NonNullable<AgentAdapter["permissionCapabilities"]>
 
   readonly #definition: AcpProviderDefinition
   readonly #createPeer: (handlers: AcpPeerHandlers) => AcpPeer
@@ -91,6 +91,10 @@ export class AcpAgentAdapter implements AgentAdapter {
     createId?: () => string
   }) {
     this.#definition = input.definition
+    this.permissionCapabilities = {
+      ask: input.definition.askEnforcement,
+      buildAuto: "unsupported",
+    }
     this.#createPeer = input.createPeer
     this.#listProviderModels = input.listModels
     this.#createId = input.createId ?? randomUUID

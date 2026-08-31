@@ -6,6 +6,26 @@ import { requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
 export const domovoiKiloConfig: Config = {
   autoupdate: false,
   agent: {
+    "domovoi-ask": {
+      mode: "primary",
+      description: "Domovoi read-only ask mode",
+      tools: {
+        "*": false,
+        read: true,
+        glob: true,
+        grep: true,
+        list: true,
+        webfetch: true,
+        websearch: true,
+        question: true,
+      },
+      permission: {
+        edit: "deny",
+        bash: "deny",
+        webfetch: "allow",
+        external_directory: "deny",
+      },
+    },
     plan: {
       permission: {
         edit: "deny",

@@ -41,6 +41,12 @@ type PendingRequest = {
 }
 
 export function codexPolicyFor(runtime: Runtime, cwd: string): CodexPolicy {
+  if (runtime.permissionMode === "ask") {
+    return {
+      approvalPolicy: "on-request",
+      sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } },
+    }
+  }
   if (runtime.permissionMode === "plan") {
     return {
       approvalPolicy: "never",
@@ -159,7 +165,7 @@ export class StdioCodexTransport implements CodexTransport {
 }
 
 export class CodexAppServerAdapter implements AgentAdapter {
-  readonly permissionCapabilities = { buildAuto: "unsupported" } as const
+  readonly permissionCapabilities = { ask: "read-only", buildAuto: "unsupported" } as const
   #transportFactory: () => CodexTransport
   #transport: CodexTransport | undefined
   #nextId = 0
