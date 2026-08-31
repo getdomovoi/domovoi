@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdir, realpath } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
@@ -51,6 +52,18 @@ export type WorkspaceEvidence = {
 
 export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
+const maximumEvidenceAttempts = 3
+
+export class WorkspaceEvidenceUnstableError extends Error {
+  constructor() {
+    super("Workspace changed while evidence was collected")
+    this.name = "WorkspaceEvidenceUnstableError"
+  }
+}
+
+export type GitWorkspaceServiceOptions = {
+  afterEvidenceObservation?: (observation: "status") => void | Promise<void>
+}
 
 export interface WorkspaceService {
   inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo>
@@ -164,6 +177,89 @@ async function boundedGit(
   })
 }
 
+async function hashGit(
+  repositoryPath: string,
+  arguments_: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn("git", ["-C", repositoryPath, ...arguments_], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const hash = createHash("sha256")
+    const errors: Buffer[] = []
+    let capturedErrorBytes = 0
+    let settled = false
+    const abort = () => child.kill()
+    signal?.addEventListener("abort", abort, { once: true })
+    child.stdout.on("data", (chunk: Buffer) => hash.update(chunk))
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (capturedErrorBytes >= 16_384) return
+      const captured = chunk.subarray(0, 16_384 - capturedErrorBytes)
+      errors.push(captured)
+      capturedErrorBytes += captured.length
+    })
+    child.once("error", (error) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener("abort", abort)
+      reject(error)
+    })
+    child.once("close", (code) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener("abort", abort)
+      if (signal?.aborted) {
+        reject(signal.reason)
+        return
+      }
+      if (code !== 0) {
+        reject(new Error(Buffer.concat(errors).toString("utf8").trim() || `git exited with ${code}`))
+        return
+      }
+      resolvePromise(hash.digest("hex"))
+    })
+  })
+}
+
+async function workspaceEvidenceFingerprint(
+  worktreePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const fingerprintConfig = [
+    "-c",
+    "core.fsmonitor=false",
+  ]
+  const [baseCommit, status, diffHash] = await Promise.all([
+    git(worktreePath, [...fingerprintConfig, "rev-parse", "HEAD"], signal),
+    git(worktreePath, [
+      ...fingerprintConfig,
+      "status",
+      "--porcelain=v2",
+      "-z",
+      "--untracked-files=all",
+    ], signal),
+    hashGit(worktreePath, [
+      ...fingerprintConfig,
+      "diff",
+      "--binary",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "HEAD",
+      "--",
+    ], signal),
+  ])
+  return createHash("sha256")
+    .update(baseCommit)
+    .update("\0")
+    .update(status)
+    .update("\0")
+    .update(diffHash)
+    .digest("hex")
+}
+
 function fieldsAndPath(record: string, fieldCount: number): { fields: string[]; path: string } {
   const fields: string[] = []
   let start = 0
@@ -243,9 +339,11 @@ function parseNumstat(output: string): Map<string, {
 
 export class GitWorkspaceService implements WorkspaceService {
   readonly worktreeRoot: string
+  readonly #afterEvidenceObservation?: GitWorkspaceServiceOptions["afterEvidenceObservation"]
 
-  constructor(worktreeRoot: string) {
+  constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
     this.worktreeRoot = resolve(worktreeRoot)
+    this.#afterEvidenceObservation = options.afterEvidenceObservation
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
@@ -335,61 +433,71 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async evidence(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence> {
-    const [baseCommit, status, numstat, diff] = await Promise.all([
-      git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
-      git(worktreePath, [
-        "-c",
-        "core.fsmonitor=false",
-        "status",
-        "--porcelain=v2",
-        "-z",
-        "--untracked-files=all",
-      ], signal),
-      git(worktreePath, [
-        "-c",
-        "core.fsmonitor=false",
-        "diff",
-        "HEAD",
-        "--numstat",
-        "-z",
-        "--no-renames",
-        "--no-textconv",
-        "--",
-      ], signal),
-      boundedGit(
-        worktreePath,
-        [
+    for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
+      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, signal)
+      const [baseCommit, status] = await Promise.all([
+        git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
+        git(worktreePath, [
+          "-c",
+          "core.fsmonitor=false",
+          "status",
+          "--porcelain=v2",
+          "-z",
+          "--untracked-files=all",
+        ], signal),
+      ])
+      await this.#afterEvidenceObservation?.("status")
+      const [numstat, diff] = await Promise.all([
+        git(worktreePath, [
           "-c",
           "core.fsmonitor=false",
           "diff",
-          "--no-ext-diff",
-          "--no-textconv",
-          "--no-color",
           "HEAD",
+          "--numstat",
+          "-z",
+          "--no-renames",
+          "--no-textconv",
           "--",
-        ],
-        maximumEvidenceDiffBytes,
-        signal,
-      ),
-    ])
-    const stats = parseNumstat(numstat)
-    const allFiles: ChangedFileEvidence[] = parseStatus(status).map((file) => {
-      const fileStats = stats.get(file.path)
+        ], signal),
+        boundedGit(
+          worktreePath,
+          [
+            "-c",
+            "core.fsmonitor=false",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "HEAD",
+            "--",
+          ],
+          maximumEvidenceDiffBytes,
+          signal,
+        ),
+      ])
+      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, signal)
+      if (fingerprintBefore !== fingerprintAfter) continue
+
+      const stats = parseNumstat(numstat)
+      const allFiles: ChangedFileEvidence[] = parseStatus(status).map((file) => {
+        const fileStats = stats.get(file.path)
+        return {
+          ...file,
+          additions: fileStats?.additions ?? null,
+          deletions: fileStats?.deletions ?? null,
+          binary: fileStats?.binary ?? false,
+        }
+      })
       return {
-        ...file,
-        additions: fileStats?.additions ?? null,
-        deletions: fileStats?.deletions ?? null,
-        binary: fileStats?.binary ?? false,
+        baseCommit,
+        diff: diff.output,
+        diffTruncated: diff.truncated,
+        totalChangedFiles: allFiles.length,
+        files: allFiles.slice(0, maximumEvidenceFiles),
+        filesTruncated: allFiles.length > maximumEvidenceFiles,
       }
-    })
-    return {
-      baseCommit,
-      diff: diff.output,
-      diffTruncated: diff.truncated,
-      totalChangedFiles: allFiles.length,
-      files: allFiles.slice(0, maximumEvidenceFiles),
-      filesTruncated: allFiles.length > maximumEvidenceFiles,
     }
+    throw new WorkspaceEvidenceUnstableError()
   }
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
