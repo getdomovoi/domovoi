@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 
@@ -10,7 +11,7 @@ import { FileSkillCatalog, skillRoots } from "./skills.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 async function skill(root: string, directory: string, frontmatter: string): Promise<string> {

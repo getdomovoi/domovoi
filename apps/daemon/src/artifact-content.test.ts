@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,7 +10,7 @@ import { readBoundedArtifactContent } from "./artifact-content.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 describe("readBoundedArtifactContent", () => {

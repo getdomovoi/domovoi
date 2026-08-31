@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -8,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { SqliteAuditLog } from "./audit-log.js"
 
 const scratchDirectories: string[] = []
-afterEach(async () => Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true }))))
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 describe("SqliteAuditLog", () => {
   it("redacts secrets before durable storage and uses the same record for export", () => {
