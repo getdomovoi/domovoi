@@ -32,8 +32,10 @@ import {
   hostAuthorityMatches,
   isTestCommandTitle,
   maximumAuthenticationPayloadBytes,
+  maximumCachedSessionHistoryFilterEntries,
   maximumWebSocketPayloadBytes,
   protectedAnnotationCropRefs,
+  SessionHistoryIndex,
   sessionHistoryEntries,
   sessionHistoryPage,
   signArtifactAccess,
@@ -2181,6 +2183,277 @@ describe("DomovoiDaemon", () => {
       before: "thread:tool-test",
       limit: 2,
     })).toBeUndefined()
+  })
+
+  it("indexes large mixed history once and bounds repeated filtered pages", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const other = snapshot.sessions[1]!
+    snapshot.thread = Array.from({ length: 12_000 }, (_, index) => {
+      const base = {
+        id: `message-${index}`,
+        sessionId: index % 3 === 0 ? other.id : session.id,
+        createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+      }
+      return index % 5 === 0
+        ? { ...base, kind: "tool" as const, tool: "command" as const, status: "completed" as const, title: `pnpm test shard ${index}`, output: index % 10 === 0 ? "needle passed" : "passed" }
+        : { ...base, kind: "user" as const, body: index % 11 === 0 ? `needle message ${index}` : `message ${index}` }
+    })
+    snapshot.annotations = Array.from({ length: 600 }, (_, index) => ({
+      id: `annotation-${index}`,
+      sessionId: index % 2 === 0 ? session.id : other.id,
+      artifactId: "artifact-plan",
+      anchor: { textQuote: `line ${index}` },
+      body: index % 7 === 0 ? `needle annotation ${index}` : `annotation ${index}`,
+      status: "open" as const,
+      origin: "desktop" as const,
+      thread: [],
+      createdAt: new Date(Date.UTC(2026, 7, 29, 0, 0, index)).toISOString(),
+      updatedAt: new Date(Date.UTC(2026, 7, 29, 0, 0, index)).toISOString(),
+    }))
+    const metrics = {
+      indexBuilds: 0,
+      indexedEntries: 0,
+      filterScans: 0,
+      filteredEntriesVisited: 0,
+      pageLookups: 0,
+      cachedFilterEntries: 0,
+      filterEvictions: 0,
+    }
+    const index = new SessionHistoryIndex(metrics)
+    const first = index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["messages", "tests", "annotations"],
+      query: "NEEDLE",
+      limit: 50,
+    })!
+    const afterFirst = { ...metrics }
+    const second = index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["messages", "tests", "annotations"],
+      query: "needle",
+      before: first.nextCursor,
+      limit: 50,
+    })!
+
+    expect(first.items).toHaveLength(50)
+    expect(second.items).toHaveLength(50)
+    expect(metrics.indexBuilds).toBe(1)
+    expect(metrics.filterScans).toBe(1)
+    expect(metrics.indexedEntries).toBeLessThanOrEqual(12_600)
+    expect(metrics.filteredEntriesVisited).toBe(afterFirst.filteredEntriesVisited)
+    expect(metrics.pageLookups - afterFirst.pageLookups).toBe(1)
+  })
+
+  it("normalizes the full category set without duplicating the base index", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.thread = Array.from({ length: 2_000 }, (_, index) => ({
+      id: `all-category-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+    }))
+    snapshot.annotations = []
+    const metrics = {
+      indexBuilds: 0,
+      indexedEntries: 0,
+      filterScans: 0,
+      filteredEntriesVisited: 0,
+      pageLookups: 0,
+      cachedFilterEntries: 0,
+      filterEvictions: 0,
+    }
+    const index = new SessionHistoryIndex(metrics)
+
+    const page = index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["messages", "tools", "approvals", "handoffs", "checkpoints", "annotations", "tests"],
+      limit: 50,
+    })!
+    index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["messages", "tools", "approvals", "handoffs", "checkpoints", "annotations", "tests"],
+      before: page.nextCursor,
+      limit: 50,
+    })
+
+    expect(metrics.filterScans).toBe(0)
+    expect(metrics.cachedFilterEntries).toBe(0)
+    expect(metrics.pageLookups).toBe(2)
+  })
+
+  it("bounds total cached filter entries while retaining the active filter", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.thread = Array.from({ length: 8_000 }, (_, index) => ({
+      id: `cache-message-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `shared-a shared-b shared-c message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+    }))
+    snapshot.annotations = []
+    const metrics = {
+      indexBuilds: 0,
+      indexedEntries: 0,
+      filterScans: 0,
+      filteredEntriesVisited: 0,
+      pageLookups: 0,
+      cachedFilterEntries: 0,
+      filterEvictions: 0,
+    }
+    const index = new SessionHistoryIndex(metrics)
+    let active
+    for (const query of ["shared-a", "shared-b", "shared-c"]) {
+      active = index.page(snapshot, { sessionId: session.id, query, limit: 50 })!
+    }
+    const afterActive = { ...metrics }
+    index.page(snapshot, {
+      sessionId: session.id,
+      query: "shared-c",
+      before: active!.nextCursor,
+      limit: 50,
+    })
+
+    expect(metrics.cachedFilterEntries).toBeLessThanOrEqual(
+      Math.max(maximumCachedSessionHistoryFilterEntries, snapshot.thread.length),
+    )
+    expect(metrics.filterEvictions).toBeGreaterThanOrEqual(2)
+    expect(metrics.filterScans).toBe(afterActive.filterScans)
+    expect(metrics.filteredEntriesVisited).toBe(afterActive.filteredEntriesVisited)
+  })
+
+  it("keeps cached cursor semantics and invalidates message and annotation edits", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const message = snapshot.thread.find((item) => item.sessionId === session.id && item.kind === "user")!
+    const annotation = snapshot.annotations.find((item) => item.sessionId === session.id)!
+    const index = new SessionHistoryIndex()
+
+    const page = index.page(snapshot, { sessionId: session.id, query: "not-yet-present", limit: 50 })
+    expect(page?.items).toEqual([])
+    if (message.kind !== "user") throw new Error("message fixture changed")
+    message.body = "not-yet-present in edited message"
+    annotation.body = "not-yet-present in edited annotation"
+    annotation.status = "resolved"
+    annotation.thread.push({
+      id: "edited-reply",
+      body: "not-yet-present in reply",
+      origin: "web",
+      createdAt: "2026-08-30T12:00:00.000Z",
+    })
+    index.invalidate(session.id)
+
+    expect(index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      query: "not-yet-present",
+      limit: 50,
+    })?.items.map((item) => item.id)).toEqual([`thread:${message.id}`])
+    expect(index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["annotations"],
+      query: "resolved",
+      limit: 50,
+    })?.items).toEqual([expect.objectContaining({ id: `annotation:${annotation.id}`, status: "resolved" })])
+    expect(index.page(snapshot, {
+      sessionId: session.id,
+      categories: ["annotations"],
+      query: "in reply",
+      limit: 50,
+    })?.items).toEqual([expect.objectContaining({ id: `annotation-reply:${annotation.id}:edited-reply` })])
+  })
+
+  it("rejects an aborted history scan before stale work can complete", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.thread = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `abort-message-${index}`,
+      sessionId: session.id,
+      kind: "user" as const,
+      body: `message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 28, 0, 0, index)).toISOString(),
+    }))
+    const index = new SessionHistoryIndex()
+
+    expect(() => index.page(snapshot, { sessionId: session.id, query: "missing", limit: 50 }, AbortSignal.abort()))
+      .toThrowError(expect.objectContaining({ name: "AbortError" }))
+  })
+
+  it("invalidates cached history after persisted annotation RPC mutations", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const annotation = snapshot.annotations.find((item) =>
+      item.sessionId === "session-billing" && item.status === "open"
+    )!
+    snapshot.annotations.forEach((item) => { item.status = "open" })
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({ port: 0, store })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown> & { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    const history = (query: string) => rpc("session.history", {
+      sessionId: annotation.sessionId,
+      categories: ["annotations"],
+      query,
+      limit: 50,
+    })
+
+    await expect(history("rpc cache invalidation reply")).resolves.toMatchObject({
+      result: { items: [] },
+    })
+    await expect(rpc("annotation.reply", {
+      annotationId: annotation.id,
+      body: "RPC cache invalidation reply",
+      client: "desktop",
+    })).resolves.toHaveProperty("result")
+    await expect(history("rpc cache invalidation reply")).resolves.toMatchObject({
+      result: {
+        items: [expect.objectContaining({
+          id: expect.stringContaining("annotation-reply:"),
+          body: "RPC cache invalidation reply",
+        })],
+      },
+    })
+
+    await expect(history("resolved")).resolves.toMatchObject({ result: { items: [] } })
+    await expect(rpc("annotation.setStatus", {
+      annotationId: annotation.id,
+      status: "resolved",
+      client: "desktop",
+    })).resolves.toHaveProperty("result")
+    await expect(history("resolved")).resolves.toMatchObject({
+      result: {
+        items: [expect.objectContaining({ id: `annotation:${annotation.id}`, status: "resolved" })],
+      },
+    })
+    expect(store.load().annotations.find((item) => item.id === annotation.id)).toMatchObject({
+      status: "resolved",
+      thread: expect.arrayContaining([
+        expect.objectContaining({ body: "RPC cache invalidation reply" }),
+      ]),
+    })
+    socket.close()
   })
 
   it("serves bounded snapshots with older history available by cursor", async () => {
