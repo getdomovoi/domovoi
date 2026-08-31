@@ -55,7 +55,11 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { GitWorkspaceService, type WorkspaceService } from "./workspace.js"
+import {
+  GitWorkspaceService,
+  WorkspaceEvidenceUnstableError,
+  type WorkspaceService,
+} from "./workspace.js"
 import {
   injectPreviewBridge,
   validPreviewBridgeChannel,
@@ -1700,11 +1704,19 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session evidence is unavailable")
           return
         }
-        const workspace = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.evidence!(session.workspacePath!, signal),
-          this.#agentTimeoutMs,
-          "Session evidence timed out",
-        )
+        let workspace
+        try {
+          workspace = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.evidence!(session.workspacePath!, signal),
+            this.#agentTimeoutMs,
+            "Session evidence timed out",
+          )
+        } catch (error) {
+          if (error instanceof WorkspaceEvidenceUnstableError) {
+            throw new PublicRpcError(internalError, error.message)
+          }
+          throw error
+        }
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
