@@ -8,6 +8,8 @@ import {
   demoWorkspace,
   helloParamsSchema,
   maximumJsonValueDepth,
+  projectSwitchConfirmationErrorCode,
+  projectSwitchConfirmationSchema,
   rpcMethods,
   rpcNotificationSchema,
   rpcRequestSchema,
@@ -21,6 +23,43 @@ import {
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
+  it("strictly describes project switch confirmation", () => {
+    const confirmation = {
+      kind: "project-switch-confirmation",
+      requestedPath: "/code/elsewhere",
+      sessions: [{
+        id: "session-1",
+        title: "Keep this work",
+        state: "idle",
+        workspacePath: "/worktrees/session-1",
+      }],
+      sessionCount: 1,
+      worktreeCount: 1,
+    }
+
+    expect(projectSwitchConfirmationErrorCode).toBe(-32010)
+    expect(projectSwitchConfirmationSchema.parse(confirmation)).toEqual(confirmation)
+    expect(projectSwitchConfirmationSchema.safeParse({ ...confirmation, extra: true }).success).toBe(false)
+    expect(projectSwitchConfirmationSchema.safeParse({
+      ...confirmation,
+      sessionCount: 2,
+    }).success).toBe(false)
+    expect(rpcMethods["project.open"].params.parse({
+      path: "/code/elsewhere",
+      client: "desktop",
+      discardSessions: true,
+    })).toEqual({ path: "/code/elsewhere", client: "desktop", discardSessions: true })
+    expect(rpcMethods["project.open"].params.safeParse({
+      path: "/code/elsewhere",
+      client: "desktop",
+      discardSessions: "yes",
+    }).success).toBe(false)
+    expect(rpcMethods["project.open"].params.safeParse({
+      path: "/code/elsewhere",
+      client: "desktop",
+      unknown: true,
+    }).success).toBe(false)
+  })
   it("exposes skill inventory without a distribution RPC", () => {
     expect(rpcMethods["skill.inventory"].params.parse({})).toEqual({})
     expect(Object.keys(rpcMethods).filter((method) => (
