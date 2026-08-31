@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises"
 import { dirname } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 export type MachineIdentity = {
   id: string
@@ -11,6 +12,8 @@ export const defaultMachineLabel = "domovoi-machine"
 
 const machineIdPattern = /^machine-[0-9a-f]{32}$/
 const maximumLabelLength = 128
+const identityReadAttempts = 20
+const identityReadDelayMs = 5
 
 export function normalizeMachineLabel(label: string): string {
   const trimmed = label.trim().slice(0, maximumLabelLength).trim()
@@ -72,6 +75,25 @@ async function publishMachineIdentity(path: string, identity: MachineIdentity): 
   }
 }
 
+async function claimMachineIdentity(path: string): Promise<boolean> {
+  try {
+    await (await open(path, "wx", 0o600)).close()
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
+    throw error
+  }
+}
+
+async function awaitPublishedIdentity(path: string): Promise<MachineIdentity | undefined> {
+  for (let attempt = 0; attempt < identityReadAttempts; attempt += 1) {
+    const identity = await readMachineIdentity(path)
+    if (identity) return identity
+    await delay(identityReadDelayMs)
+  }
+  return undefined
+}
+
 export async function loadOrCreateMachineIdentity(
   path: string,
   defaults: { label: string },
@@ -80,21 +102,32 @@ export async function loadOrCreateMachineIdentity(
   await mkdir(directory, { recursive: true, mode: 0o700 })
   if (process.platform !== "win32") await chmod(directory, 0o700)
 
-  const existing = await readMachineIdentity(path)
-  if (existing) {
-    if (process.platform !== "win32") await chmod(path, 0o600)
-    return existing
+  for (let takeover = 0; takeover < 2; takeover += 1) {
+    const existing = await readMachineIdentity(path)
+    if (existing) {
+      if (process.platform !== "win32") await chmod(path, 0o600)
+      return existing
+    }
+
+    if (await claimMachineIdentity(path)) {
+      await publishMachineIdentity(path, {
+        id: `machine-${randomBytes(16).toString("hex")}`,
+        label: normalizeMachineLabel(defaults.label),
+      })
+    }
+
+    // The claiming start publishes; every other start waits for that identity so
+    // one machine never reports two identifiers.
+    const settled = await awaitPublishedIdentity(path)
+    if (settled) {
+      if (process.platform !== "win32") await chmod(path, 0o600)
+      return settled
+    }
+
+    // Nothing published within the wait, so the claim belonged to a start that
+    // died before publishing. Discard the abandoned placeholder and try once more.
+    await rm(path, { force: true })
   }
 
-  await publishMachineIdentity(path, {
-    id: `machine-${randomBytes(16).toString("hex")}`,
-    label: normalizeMachineLabel(defaults.label),
-  })
-
-  // Concurrent starts each publish a candidate; the identity left by the final
-  // rename is the one every start returns.
-  const settled = await readMachineIdentity(path)
-  if (!settled) throw new Error("Machine identity is malformed")
-  if (process.platform !== "win32") await chmod(path, 0o600)
-  return settled
+  throw new Error("Machine identity is malformed")
 }

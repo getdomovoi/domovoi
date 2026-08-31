@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -102,6 +102,32 @@ describe("loadOrCreateMachineIdentity", () => {
     expect(new Set(identities.map((identity) => identity.id)).size).toBe(1)
     const stored = JSON.parse(await readFile(identityPath, "utf8")) as { id: string }
     expect(stored.id).toBe(identities[0]!.id)
+  })
+
+  it("waits for the identity published by the start that claimed the file", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(identityPath, "")
+    const published = { id: `machine-${"c".repeat(32)}`, label: "claimed" }
+
+    const pending = loadOrCreateMachineIdentity(identityPath, { label: "second-start" })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await writeFile(`${identityPath}.publish`, `${JSON.stringify(published)}\n`)
+    await rename(`${identityPath}.publish`, identityPath)
+
+    await expect(pending).resolves.toEqual(published)
+  })
+
+  it("gives repeated concurrent starts one identity", async () => {
+    for (let round = 0; round < 20; round += 1) {
+      const identityPath = join(await scratch(), "machine.json")
+      const identities = await Promise.all([
+        loadOrCreateMachineIdentity(identityPath, { label: "workshop" }),
+        loadOrCreateMachineIdentity(identityPath, { label: "workshop" }),
+        loadOrCreateMachineIdentity(identityPath, { label: "workshop" }),
+      ])
+      expect(new Set(identities.map((identity) => identity.id)).size).toBe(1)
+    }
   })
 
   it("falls back to a bounded label when the host name is unusable", async () => {
