@@ -277,7 +277,6 @@ export class DomovoiClient extends EventTarget {
     return this.request("approval.resolve", {
       approvalId,
       decision,
-      client: this.kind,
       ...(explanation ? { explanation } : {}),
     })
   }
