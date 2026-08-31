@@ -53,6 +53,28 @@ const skillSecurityMetadata = {
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 
+function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
+  const turns = snapshot.sessions.flatMap((session) => session.activeTurnId
+    ? [{ sessionId: session.id, state: session.state, activeTurnId: session.activeTurnId }]
+    : [])
+  const affected = new Set(turns.map(({ sessionId }) => sessionId))
+  const approvals = snapshot.approvals.filter((approval) => affected.has(approval.sessionId))
+  for (const turn of turns) {
+    const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
+    session.state = "idle"
+    delete session.activeTurnId
+  }
+  snapshot.approvals = snapshot.approvals.filter((approval) => !affected.has(approval.sessionId))
+  return () => {
+    for (const turn of turns) {
+      const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
+      session.state = turn.state
+      session.activeTurnId = turn.activeTurnId
+    }
+    snapshot.approvals.push(...approvals)
+  }
+}
+
 function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
   return new WebSocket(url, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -226,7 +248,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => "unused"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
-      startTurn: vi.fn(async () => "unused"),
+      startTurn: vi.fn(async () => "turn-secret-redaction"),
       steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
@@ -299,6 +321,12 @@ describe("DomovoiDaemon", () => {
       }
       socket.on("message", receive)
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue redaction test",
+      client: "desktop",
     })
 
     const approvalEvent = {
@@ -908,10 +936,11 @@ describe("DomovoiDaemon", () => {
     session.runtime.provider = "codex"
     session.providerThreadId = "thread-shutdown"
     session.activeTurnId = "turn-shutdown"
+    const activateTurns = deferLiveTurns(snapshot)
     const saves: typeof snapshot[] = []
     const order: string[] = []
     const store: WorkspaceStore = {
-      load: () => structuredClone(snapshot),
+      load: () => snapshot,
       save: (next) => {
         order.push("save")
         saves.push(structuredClone(next))
@@ -938,6 +967,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({ port: 0, authToken: "shutdown-token", store, agent })
     await daemon.start()
+    activateTurns()
 
     listener!({
       type: "text-delta",
@@ -1023,9 +1053,11 @@ describe("DomovoiDaemon", () => {
     const statePath = join(directory, "state.sqlite")
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
+    session.state = "idle"
     session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/restart"
     session.providerThreadId = "thread-restart"
-    session.activeTurnId = "turn-restart"
+    delete session.activeTurnId
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}),
@@ -1033,7 +1065,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => "unused"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
-      startTurn: vi.fn(async () => "unused"),
+      startTurn: vi.fn(async () => "turn-restart"),
       steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
@@ -1052,12 +1084,34 @@ describe("DomovoiDaemon", () => {
     })
     await daemon.start()
 
+    const socket = authenticatedSocket(daemon, `ws://${daemon.address!.host}:${daemon.address!.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const sent = new Promise<void>((resolve) => {
+      socket.on("message", function receive(data) {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== 1) return
+        socket.off("message", receive)
+        resolve()
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.send",
+      params: { sessionId: session.id, prompt: "Persist this turn", client: "desktop" },
+    }))
+    await sent
+
     listener!({
       type: "text-delta",
       threadId: "thread-restart",
       turnId: "turn-restart",
       delta: "persist me before close",
     })
+    socket.close()
     await daemon.stop()
 
     const recoveredStore = new SqliteWorkspaceStore(statePath, demoWorkspace)
@@ -1066,6 +1120,244 @@ describe("DomovoiDaemon", () => {
     expect(recovered.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "assistant", body: "persist me before close" }),
     ]))
+  })
+
+  it("reconciles persisted interrupted turns before listening", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-restart"
+    session.providerThreadId = "thread-restart"
+    session.activeTurnId = "turn-before-restart"
+    snapshot.approvals = [{
+      id: "approval-before-restart",
+      sessionId: session.id,
+      risk: "normal",
+      operation: "Run tests",
+      command: "pnpm test",
+      machine: snapshot.machine.name,
+      agent: "codex / gpt-5.6-sol",
+      mode: session.runtime.permissionMode,
+      directory: session.workspacePath,
+      affects: "Session files",
+      network: "None",
+      estimatedDuration: "Unknown",
+      checkpoint: session.baseCommit ?? "unavailable",
+      providerRequestId: 91,
+      requestedAt: new Date().toISOString(),
+    }, {
+      id: "approval-before-restart-2",
+      sessionId: session.id,
+      risk: "normal",
+      operation: "Inspect status",
+      command: "git status --short",
+      machine: snapshot.machine.name,
+      agent: "codex / gpt-5.6-sol",
+      mode: session.runtime.permissionMode,
+      directory: session.workspacePath,
+      affects: "Session files",
+      network: "None",
+      estimatedDuration: "Unknown",
+      checkpoint: session.baseCommit ?? "unavailable",
+      providerRequestId: 92,
+      requestedAt: new Date().toISOString(),
+    }]
+    const archived = snapshot.sessions[1]!
+    archived.state = "archived"
+    archived.archiveRequestedAt = "2026-08-30T12:00:00.000Z"
+    archived.archiveCheckpoint = "a".repeat(40)
+    archived.archivedAt = "2026-08-30T12:01:00.000Z"
+    delete archived.workspacePath
+    delete archived.providerThreadId
+    delete archived.activeTurnId
+    const archivedBefore = structuredClone(archived)
+
+    const saves: typeof snapshot[] = []
+    let daemon: DomovoiDaemon
+    const store = {
+      load: vi.fn(() => structuredClone(snapshot)),
+      save: vi.fn((next: typeof snapshot) => {
+        if (saves.length === 0) expect(daemon.address).toBeUndefined()
+        saves.push(structuredClone(next))
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const append = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
+      id: `audit-restart-${append.mock.calls.length}`,
+      occurredAt: "2026-08-31T12:00:00.000Z",
+      ...input,
+    }))
+    const auditLog = {
+      append,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn(() => ({
+        format: "jsonl" as const,
+        exportedAt: "2026-08-31T12:00:00.000Z",
+        content: "",
+        entryCount: 0,
+        hasMore: false,
+      })),
+    } satisfies AuditLog
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-after-restart"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      auditLog,
+      agent,
+      workspaceService,
+      artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+
+    expect(store.save).toHaveBeenCalledOnce()
+    const recovered = saves[0]!
+    expect(recovered.sessions.find(({ id }) => id === session.id)).toMatchObject({
+      state: "idle",
+      workspacePath: session.workspacePath,
+      providerThreadId: session.providerThreadId,
+    })
+    expect(recovered.sessions.find(({ id }) => id === session.id)).not.toHaveProperty("activeTurnId")
+    expect(recovered.sessions.find(({ id }) => id === archived.id)).toEqual(archivedBefore)
+    expect(recovered.approvals).toEqual([])
+    expect(recovered.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: session.id,
+        kind: "system",
+        body: "Daemon restart interrupted the active turn.",
+        detail: expect.stringContaining("Pending approval requests were expired"),
+      }),
+    ]))
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { kind: "daemon", component: "startup-recovery" },
+      action: "session.turn-interrupted",
+      outcome: "cancelled",
+      sessionId: session.id,
+      target: "turn-before-restart",
+    }))
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { kind: "daemon", component: "startup-recovery" },
+      action: "approval.expired",
+      outcome: "cancelled",
+      sessionId: session.id,
+      target: "approval-before-restart",
+    }))
+    expect(append.mock.calls
+      .filter(([input]) => input.action === "approval.expired")
+      .map(([input]) => input.target))
+      .toEqual(["approval-before-restart", "approval-before-restart-2"])
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    expect(agent.interruptTurn).not.toHaveBeenCalled()
+
+    const recoveredSystemItems = recovered.thread.filter(
+      (item) => item.sessionId === session.id
+        && item.kind === "system"
+        && item.body === "Daemon restart interrupted the active turn.",
+    )
+    const secondSave = vi.fn()
+    const secondAppend = vi.fn()
+    const secondStore = {
+      load: vi.fn(() => recovered),
+      save: secondSave,
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const secondAuditLog = {
+      append: secondAppend,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn(() => ({
+        format: "jsonl" as const,
+        exportedAt: "2026-08-31T12:00:00.000Z",
+        content: "",
+        entryCount: 0,
+        hasMore: false,
+      })),
+    } satisfies AuditLog
+    const secondDaemon = new DomovoiDaemon({
+      port: 0,
+      store: secondStore,
+      auditLog: secondAuditLog,
+      agent,
+      workspaceService,
+      artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
+    })
+    running.push(secondDaemon)
+    await secondDaemon.start()
+    expect(secondSave).not.toHaveBeenCalled()
+    expect(secondAppend).not.toHaveBeenCalled()
+    expect(recovered.thread.filter(
+      (item) => item.sessionId === session.id
+        && item.kind === "system"
+        && item.body === "Daemon restart interrupted the active turn.",
+    )).toHaveLength(recoveredSystemItems.length)
+
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, any>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, any>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await expect(rpc("checkpoint.create", {
+      sessionId: session.id,
+      label: "after restart",
+      client: "desktop",
+    })).resolves.toMatchObject({ result: { sessions: expect.any(Array) } })
+    await expect(rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue safely",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: { sessions: expect.arrayContaining([expect.objectContaining({
+        id: session.id,
+        activeTurnId: "turn-after-restart",
+      })]) },
+    })
+    expect(agent.resumeThread).toHaveBeenCalledWith({
+      threadId: "thread-restart",
+      cwd: "/worktrees/session-restart",
+      runtime: session.runtime,
+    })
+    expect(agent.startTurn).toHaveBeenCalledOnce()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    socket.close()
   })
 
   it("recovers sessions after a provider disconnect without steering a stale turn", async () => {
@@ -1394,6 +1686,7 @@ describe("DomovoiDaemon", () => {
     session.runtime.provider = "codex"
     session.providerThreadId = "thread-save-failure"
     session.activeTurnId = "turn-save-failure"
+    const activateTurns = deferLiveTurns(snapshot)
     const store = {
       load: vi.fn(() => snapshot),
       save: vi.fn(() => { throw new Error("disk full") }),
@@ -1418,6 +1711,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({ port: 0, authToken: "failure-token", store, agent })
     await daemon.start()
+    activateTurns()
     listener!({
       type: "text-delta",
       threadId: "thread-save-failure",
@@ -2433,6 +2727,7 @@ describe("DomovoiDaemon", () => {
     snapshot.sessions[2]!.runtime.provider = "codex"
     snapshot.sessions[2]!.providerThreadId = "thread-audit"
     snapshot.sessions[2]!.activeTurnId = "turn-audit"
+    const activateTurns = deferLiveTurns(snapshot)
     const agentListeners = new Set<(event: AgentEvent) => void>()
     const agent = {
       connect: vi.fn(async () => {}),
@@ -2454,12 +2749,13 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,
       agentTimeoutMs: 10,
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -2570,6 +2866,7 @@ describe("DomovoiDaemon", () => {
     session.runtime.provider = "codex"
     session.providerThreadId = "thread-persistence"
     session.activeTurnId = "turn-persistence"
+    const activateTurns = deferLiveTurns(snapshot)
     const store = {
       load: vi.fn(() => snapshot),
       save: vi.fn(() => { throw new Error("State persistence failed") }),
@@ -2591,6 +2888,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, agent, agentTimeoutMs: 10 })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -3734,6 +4032,7 @@ describe("DomovoiDaemon", () => {
       session.providerThreadId = `provider-${session.id}`
     }
     steeredTurn.activeTurnId = "provider-turn-active"
+    const activateTurns = deferLiveTurns(snapshot)
     const enabledSkill: SkillSummary = {
       id: "skill-4d6f4d6f4d6f",
       name: "repo-audit",
@@ -3772,12 +4071,13 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,
       skillCatalog,
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -3830,6 +4130,7 @@ describe("DomovoiDaemon", () => {
       session.providerThreadId = `provider-${session.id}`
     }
     manual.activeTurnId = "provider-turn-active"
+    const activateTurns = deferLiveTurns(snapshot)
     const enabledSkill: SkillSummary = {
       id: "skill-4d6f4d6f4d6f", name: "repo-audit", description: "Audit a repository.",
       path: "/home/dev/.agents/skills/repo-audit/SKILL.md", scope: "user", source: "agents",
@@ -3852,10 +4153,11 @@ describe("DomovoiDaemon", () => {
       read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
     } satisfies SkillCatalog
     const daemon = new DomovoiDaemon({
-      port: 0, store: new SqliteWorkspaceStore(":memory:", snapshot), agent, skillCatalog,
+      port: 0, store: { load: () => snapshot, save: vi.fn(), close: vi.fn() }, agent, skillCatalog,
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -5710,6 +6012,7 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = "/worktrees/ask-boundary"
     session.providerThreadId = "thread-ask-boundary"
     session.activeTurnId = "turn-ask-boundary"
+    const activateTurns = deferLiveTurns(snapshot)
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       permissionCapabilities: { ask: "read-only", buildAuto: "unsupported" },
@@ -5736,6 +6039,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent } })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -5986,10 +6290,13 @@ describe("DomovoiDaemon", () => {
     session.providerThreadId = "thread-billing"
     session.activeTurnId = "turn-billing"
     snapshot.sessions[1]!.workspacePath = "/worktrees/session-onboarding"
+    const sessionWorkspacePath = session.workspacePath
+    const otherWorkspacePath = snapshot.sessions[1]!.workspacePath
     snapshot.approvals = [
       { ...snapshot.approvals[0]!, id: "approval-billing", sessionId: session.id, providerRequestId: 11 },
       { ...snapshot.approvals[0]!, id: "approval-other", sessionId: snapshot.sessions[1]!.id, providerRequestId: 12 },
     ]
+    const activateTurns = deferLiveTurns(snapshot)
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
@@ -6023,8 +6330,8 @@ describe("DomovoiDaemon", () => {
       }),
     }
     const store = {
-      snapshot: structuredClone(snapshot),
-      load() { return structuredClone(this.snapshot) },
+      snapshot,
+      load() { return this.snapshot },
       save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
       close: vi.fn(),
     } satisfies WorkspaceStore & { snapshot: typeof snapshot }
@@ -6038,6 +6345,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -6078,10 +6386,10 @@ describe("DomovoiDaemon", () => {
     expect(agent.stopThread).toHaveBeenCalledWith("thread-billing")
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "deny")
     expect(store.snapshot.approvals).toEqual([expect.objectContaining({ id: "approval-other" })])
-    expect(terminalProcesses.get(session.workspacePath!)?.kill).toHaveBeenCalledOnce()
-    expect(terminalProcesses.get(otherSession.workspacePath!)?.kill).not.toHaveBeenCalled()
-    expect(workspaceService.checkpoint).toHaveBeenCalledWith(session.workspacePath, "before session archive", expect.any(AbortSignal))
-    expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith(session.workspacePath, expect.any(AbortSignal))
+    expect(terminalProcesses.get(sessionWorkspacePath)?.kill).toHaveBeenCalledOnce()
+    expect(terminalProcesses.get(otherWorkspacePath)?.kill).not.toHaveBeenCalled()
+    expect(workspaceService.checkpoint).toHaveBeenCalledWith(sessionWorkspacePath, "before session archive", expect.any(AbortSignal))
+    expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith(sessionWorkspacePath, expect.any(AbortSignal))
     expect(store.snapshot.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "tool-archive-output", output: "token=[REDACTED]" }),
     ]))
@@ -6117,7 +6425,7 @@ describe("DomovoiDaemon", () => {
     await daemon.stop()
     running.splice(running.indexOf(daemon), 1)
     store.snapshot.sessions[0]!.state = "archiving"
-    store.snapshot.sessions[0]!.workspacePath = session.workspacePath
+    store.snapshot.sessions[0]!.workspacePath = sessionWorkspacePath
     store.snapshot.sessions[0]!.providerThreadId = "thread-recovery"
     delete store.snapshot.sessions[0]!.archiveCheckpoint
     delete store.snapshot.sessions[0]!.archivedAt
@@ -6127,11 +6435,11 @@ describe("DomovoiDaemon", () => {
     const failedRecovery = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, workspaceService, errorSink: (entry) => errors.push(entry) })
     running.push(failedRecovery)
     await expect(failedRecovery.start()).resolves.toEqual(expect.objectContaining({ port: expect.any(Number) }))
-    expect(store.snapshot.sessions[0]).toMatchObject({ state: "archiving", workspacePath: session.workspacePath })
+    expect(store.snapshot.sessions[0]).toMatchObject({ state: "archiving", workspacePath: sessionWorkspacePath })
     expect(store.snapshot.sessions[0]).not.toHaveProperty("providerThreadId")
     expect(agent.resumeThread).toHaveBeenCalledWith({
       threadId: "thread-recovery",
-      cwd: session.workspacePath,
+      cwd: sessionWorkspacePath,
       runtime: store.snapshot.sessions[0]!.runtime,
     })
     expect(agent.resumeThread.mock.invocationCallOrder[0]).toBeLessThan(
@@ -6172,6 +6480,7 @@ describe("DomovoiDaemon", () => {
         providerRequestId: 13,
       },
     ]
+    const activateTurns = deferLiveTurns(snapshot)
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
@@ -6192,8 +6501,8 @@ describe("DomovoiDaemon", () => {
       archiveSessionWorkspace: vi.fn(async () => {}), checkpoint: vi.fn(), restore: vi.fn(),
     } satisfies WorkspaceService
     const store = {
-      snapshot: structuredClone(snapshot),
-      load() { return structuredClone(this.snapshot) },
+      snapshot,
+      load() { return this.snapshot },
       save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
       close: vi.fn(),
     } satisfies WorkspaceStore & { snapshot: typeof snapshot }
@@ -6207,6 +6516,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
