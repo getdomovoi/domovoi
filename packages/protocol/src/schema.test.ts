@@ -927,6 +927,12 @@ describe("workspace protocol", () => {
         explanation: "Use a staging database first.",
       }).explanation,
     ).toBe("Use a staging database first.")
+
+    expect(approvalResolveParamsSchema.parse({
+      approvalId: "approval-migrate",
+      decision: "allow-once",
+      client: "desktop",
+    })).not.toHaveProperty("client")
   })
 
   it("validates the local project and session lifecycle", () => {

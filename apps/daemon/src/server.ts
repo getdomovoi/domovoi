@@ -272,6 +272,8 @@ export function sessionHistoryEntries(
         operation: item.operation,
         checkpoint: item.checkpoint,
         client: item.client,
+        ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+        ...(item.clientId ? { clientId: item.clientId } : {}),
         ...(item.explanation ? { explanation: item.explanation } : {}),
       })
     } else {
@@ -451,6 +453,7 @@ export class DomovoiDaemon {
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
+  #connectionIds = new WeakMap<WebSocket, string>()
   #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
@@ -1238,30 +1241,34 @@ export class DomovoiDaemon {
       return
     }
 
-    if (!this.#authenticatedClients.has(socket)) {
-      if (method !== "system.hello") {
-        this.#appendPreAuthAudit("authentication")
-        this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
-        return
-      }
-      const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
-      if (!secureTokenMatch(this.#authToken, supplied)) {
-        this.#appendPreAuthAudit("authentication")
-        this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
-        return
+    if (method === "system.hello") {
+      if (!this.#authenticatedClients.has(socket)) {
+        const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
+        if (!secureTokenMatch(this.#authToken, supplied)) {
+          this.#appendPreAuthAudit("authentication")
+          this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
+          return
+        }
+        this.#authenticatedClients.add(socket)
       }
       const hello = paramsResult.data as RpcParams<"system.hello">
-      this.#authenticatedClients.add(socket)
+      if (this.#authenticatedActors.has(socket)) {
+        this.#error(socket, request.id, invalidParams, "Connection client identity is already established")
+        return
+      }
       this.#authenticatedActors.set(socket, {
         kind: "client",
         client: hello.client,
-        ...(hello.clientId
-          ? { clientId: hello.clientId }
-          : {}),
+        ...(hello.clientId ? { clientId: hello.clientId } : {}),
       })
+      this.#connectionIds.set(socket, randomUUID())
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
+    } else if (!this.#authenticatedClients.has(socket)) {
+      this.#appendPreAuthAudit("authentication")
+      this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
+      return
     }
 
     if (!this.#registerAudit(socket, request.id, method, paramsResult.data)) {
@@ -1964,6 +1971,12 @@ export class DomovoiDaemon {
 
       if (method === "approval.resolve") {
         const params = rpcMethods[method].params.parse(request.params)
+        const actor = this.#authenticatedActors.get(socket)
+        const connectionId = this.#connectionIds.get(socket)
+        if (!actor || actor.kind !== "client" || !connectionId) {
+          this.#error(socket, request.id, invalidParams, "Approval resolution requires an authenticated connection identity")
+          return
+        }
         const approval = this.#snapshot.approvals.find(
           (candidate) => candidate.id === params.approvalId,
         )
@@ -2002,7 +2015,8 @@ export class DomovoiDaemon {
             projectId: project.id,
             operation: approval.operation,
             command: approval.command,
-            createdBy: params.client,
+            createdBy: actor.client,
+            createdByConnectionId: connectionId,
             createdAt: new Date().toISOString(),
           })
         }
@@ -2013,7 +2027,8 @@ export class DomovoiDaemon {
           decision: params.decision,
           operation: approval.operation,
           checkpoint: approval.checkpoint,
-          client: params.client,
+          client: actor.client,
+          connectionId,
           ...(params.explanation
             ? { explanation: redactDurableText(params.explanation).value }
             : {}),
@@ -2813,10 +2828,16 @@ export class DomovoiDaemon {
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed) this.#store.save(this.#snapshot)
+      const result = method === "system.hello"
+        ? {
+            ...workspaceSnapshotForClient(this.#snapshot),
+            ...(this.#connectionIds.get(socket) ? { connectionId: this.#connectionIds.get(socket) } : {}),
+          }
+        : workspaceSnapshotForClient(this.#snapshot)
       this.#send(socket, {
         jsonrpc: "2.0",
         id: request.id,
-        result: workspaceSnapshotForClient(this.#snapshot),
+        result: rpcMethods[method].result.parse(result),
       })
 
       if (changed) this.#broadcastSnapshot()

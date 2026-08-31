@@ -89,7 +89,7 @@ export function sessionHistoryEntryDetail(entry: SessionHistoryEntry): string | 
   if (entry.category === "messages") return entry.detail ?? entry.body
   if (entry.category === "tools" || entry.category === "tests") return entry.output
   if (entry.category === "approvals") {
-    return `Checkpoint ${entry.checkpoint} · ${entry.client}${entry.explanation ? ` · ${entry.explanation}` : ""}`
+    return `Checkpoint ${entry.checkpoint} · ${entry.client}${entry.connectionId ? ` · connection ${entry.connectionId}` : entry.clientId ? ` · declared client ${entry.clientId}` : ""}${entry.explanation ? ` · ${entry.explanation}` : ""}`
   }
   if (entry.category === "handoffs") return entry.detail
   if (entry.category === "checkpoints") return entry.commit
