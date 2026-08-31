@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, unlink } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { mkdtemp, readFile, unlink, utimes } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -194,4 +195,70 @@ describe("AnnotationVisualContextService", () => {
     await expect(service.read(first.ref, "image/png")).resolves.toBeDefined()
     await expect(service.read(second.ref, "image/png")).resolves.toBeDefined()
   })
+
+  it("reserves concurrent crops while saturated retention is pruning", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-crops-"))
+    roots.push(root)
+    const removalStarted = deferred()
+    const releaseRemoval = deferred()
+    let removalCount = 0
+    const service = new AnnotationVisualContextService({
+      root,
+      maximumFileCount: 1,
+      removeFile: async (path) => {
+        removalCount += 1
+        if (removalCount === 1) {
+          removalStarted.resolve()
+          await releaseRemoval.promise
+        }
+        await unlink(path)
+      },
+    })
+    const seed = await service.storeUpload({
+      artifactRevision: 1,
+      mimeType: "image/png",
+      bytes: png,
+      width: 8,
+      height: 8,
+    })
+    if (seed.status !== "available") throw new Error("seed crop should be available")
+    await utimes(join(root, `${seed.ref}.png`), new Date(0), new Date(0))
+
+    const firstBytes = Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 2)])
+    const firstStore = service.storeUpload({
+      artifactRevision: 2,
+      mimeType: "image/png",
+      bytes: firstBytes,
+      width: 8,
+      height: 8,
+    })
+    await removalStarted.promise
+    await utimes(join(root, `${cropRef(firstBytes)}.png`), new Date(1_000), new Date(1_000))
+    const secondStore = service.storeUpload({
+      artifactRevision: 3,
+      mimeType: "image/png",
+      bytes: Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 3)]),
+      width: 8,
+      height: 8,
+    })
+
+    const second = await secondStore
+    releaseRemoval.resolve()
+    const first = await firstStore
+    if (first.status !== "available" || second.status !== "available") {
+      throw new Error("concurrent crops should be available")
+    }
+    await expect(service.read(first.ref, "image/png")).resolves.toEqual(new Uint8Array(firstBytes))
+    await expect(service.read(second.ref, "image/png")).resolves.toBeDefined()
+  })
 })
+
+function deferred() {
+  let resolve: (() => void) | undefined
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve: () => resolve!() }
+}
+
+function cropRef(bytes: Uint8Array): string {
+  return `crop-${createHash("sha256").update(bytes).digest("hex")}`
+}

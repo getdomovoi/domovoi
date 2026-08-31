@@ -44,6 +44,7 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
   readonly #protectedRefs: (() => Iterable<string> | Promise<Iterable<string>>) | undefined
   readonly #removeFile: (path: string) => Promise<void>
   readonly #reportRetentionOverflow: ((input: { fileCount: number; totalBytes: number }) => void) | undefined
+  readonly #reservedRefs = new Map<string, number>()
 
   constructor(options: {
     root: string
@@ -104,24 +105,31 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     const digest = createHash("sha256").update(input.bytes).digest("hex")
     const ref = `crop-${digest}`
     const extension = extensionFor(input.mimeType)
-    await mkdir(this.#root, { recursive: true, mode: 0o700 })
+    this.#reservedRefs.set(ref, (this.#reservedRefs.get(ref) ?? 0) + 1)
     try {
-      await writeFile(join(this.#root, `${ref}.${extension}`), input.bytes, {
-        flag: "wx",
-        mode: 0o600,
-      })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-    }
-    await this.#prune(ref)
-    return {
-      status: "available",
-      ref,
-      artifactRevision: input.artifactRevision,
-      mimeType: input.mimeType,
-      width: input.width,
-      height: input.height,
-      byteLength: input.bytes.byteLength,
+      await mkdir(this.#root, { recursive: true, mode: 0o700 })
+      try {
+        await writeFile(join(this.#root, `${ref}.${extension}`), input.bytes, {
+          flag: "wx",
+          mode: 0o600,
+        })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      }
+      await this.#prune(ref)
+      return {
+        status: "available",
+        ref,
+        artifactRevision: input.artifactRevision,
+        mimeType: input.mimeType,
+        width: input.width,
+        height: input.height,
+        byteLength: input.bytes.byteLength,
+      }
+    } finally {
+      const reservations = this.#reservedRefs.get(ref) ?? 1
+      if (reservations === 1) this.#reservedRefs.delete(ref)
+      else this.#reservedRefs.set(ref, reservations - 1)
     }
   }
 
@@ -154,7 +162,7 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     let totalBytes = files.reduce((total, file) => total + file.size, 0)
     for (const file of files) {
       if (fileCount <= this.#maximumFileCount && totalBytes <= this.#maximumTotalBytes) break
-      if (protectedRefs.has(file.ref)) continue
+      if (protectedRefs.has(file.ref) || this.#reservedRefs.has(file.ref)) continue
       try {
         await this.#removeFile(join(this.#root, file.name))
       } catch (error) {
