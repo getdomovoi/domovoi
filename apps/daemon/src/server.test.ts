@@ -2640,7 +2640,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    await identifyClient(socket, "tablet")
+    await identifyClient(socket, "web")
     const notifications: string[] = []
     socket.on("message", (data) => {
       const message = JSON.parse(data.toString()) as { method?: string }
