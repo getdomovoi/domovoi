@@ -15,7 +15,7 @@
     "performance:budget": "node scripts/performance-budgets.mjs",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "pretest:packages": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
-    "test": "pnpm --filter @getdomovoi/protocol test && pnpm --filter @getdomovoi/ui test && pnpm --filter @getdomovoi/web test && pnpm --filter @getdomovoi/daemon test && pnpm --filter @getdomovoi/desktop test && pnpm test:packages",
+    "test": "pnpm --filter @getdomovoi/protocol test && pnpm --filter @getdomovoi/ui test && pnpm --filter @getdomovoi/web test && pnpm --filter @getdomovoi/daemon test && pnpm --filter @getdomovoi/desktop test && pnpm test:packages && pnpm --filter @getdomovoi/desktop test:launch",
     "test:packages": "node --test scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs && node scripts/test-package-artifacts.mjs",
     "typecheck": "pnpm -r --if-present typecheck"
   }
