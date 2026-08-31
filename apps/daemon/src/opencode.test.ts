@@ -49,6 +49,12 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto = false): Runti
   auto,
 })
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
 function harness() {
   const stream = new EventStream()
   const client = {
@@ -138,6 +144,27 @@ describe("OpenCodeSdkAdapter", () => {
     expect(client.session.create).not.toHaveBeenCalled()
     await adapter.close()
     expect(server.close).toHaveBeenCalledOnce()
+  })
+
+  it("closes a runtime whose factory finishes during adapter close", async () => {
+    const { client, server } = harness()
+    const factoryResult = deferred<{ client: OpenCodeClient; server: typeof server }>()
+    const factory = vi.fn(() => factoryResult.promise) satisfies OpenCodeFactory
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    const connecting = adapter.connect()
+    let closeFinished = false
+    const closing = adapter.close().then(() => { closeFinished = true })
+    await Promise.resolve()
+    expect(closeFinished).toBe(false)
+
+    factoryResult.resolve({ client, server })
+
+    await expect(connecting).rejects.toThrow("OpenCode adapter closed")
+    await expect(closing).resolves.toBeUndefined()
+    expect(server.close).toHaveBeenCalledOnce()
+    await expect(adapter.connect()).rejects.toThrow("OpenCode adapter closed")
+    expect(factory).toHaveBeenCalledOnce()
   })
 
   it("streams turns, tools, permissions, and completion", async () => {
@@ -351,6 +378,27 @@ describe("KiloSdkAdapter", () => {
     expect(client.session.create).not.toHaveBeenCalled()
     await adapter.close()
     expect(server.close).toHaveBeenCalledOnce()
+  })
+
+  it("closes a runtime whose factory finishes during adapter close", async () => {
+    const { client, server } = harness()
+    const factoryResult = deferred<{ client: OpenCodeClient; server: typeof server }>()
+    const factory = vi.fn(() => factoryResult.promise) satisfies OpenCodeFactory
+    const adapter = new KiloSdkAdapter(factory)
+
+    const connecting = adapter.connect()
+    let closeFinished = false
+    const closing = adapter.close().then(() => { closeFinished = true })
+    await Promise.resolve()
+    expect(closeFinished).toBe(false)
+
+    factoryResult.resolve({ client, server })
+
+    await expect(connecting).rejects.toThrow("Kilo adapter closed")
+    await expect(closing).resolves.toBeUndefined()
+    expect(server.close).toHaveBeenCalledOnce()
+    await expect(adapter.connect()).rejects.toThrow("Kilo adapter closed")
+    expect(factory).toHaveBeenCalledOnce()
   })
 
   it("starts a Kilo session with Domovoi runtime controls", async () => {

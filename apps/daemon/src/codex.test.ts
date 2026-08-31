@@ -180,6 +180,26 @@ describe("CodexAppServerAdapter permissions", () => {
 })
 
 describe("CodexAppServerAdapter", () => {
+  it("resets timed-out initialization without reviving the stale transport", async () => {
+    const first = new FakeTransport()
+    const second = new FakeTransport()
+    const transports = [first, second]
+    const adapter = new CodexAppServerAdapter(() => transports.shift()!)
+
+    const staleConnection = adapter.connect()
+    await adapter.resetConnection()
+    await expect(staleConnection).rejects.toThrow("Codex connection reset")
+    expect(first.closeCount).toBe(1)
+
+    const freshConnection = adapter.connect()
+    first.receiveStale({ id: 1, result: {} })
+    expect(first.sent).not.toContainEqual(expect.objectContaining({ method: "initialized" }))
+    second.receive({ id: 2, result: {} })
+    await expect(freshConnection).resolves.toBeUndefined()
+    expect(second.sent).toContainEqual(expect.objectContaining({ method: "initialized" }))
+    await adapter.close()
+  })
+
   it("rejects in-flight work and reconnects after transport loss", async () => {
     const first = new FakeTransport()
     const second = new FakeTransport()
