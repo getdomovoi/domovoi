@@ -9,8 +9,6 @@ import type {
 
 import {
   agentPromptWithSkills,
-  BuildAutoSkillTrustError,
-  maximumBuildAutoSkillTrustErrorLength,
   maximumInjectedSkillContentLength,
   maximumInjectedSkills,
   maximumReviewedSkillCandidates,
@@ -182,7 +180,7 @@ describe("agentPromptWithSkills", () => {
       signature: { state: "invalid" as const, reason: "revoked-signer" as const },
       trust: { state: "blocked" as const, reason: "revoked-signer" as const },
     },
-  ])("blocks exact current $signature.state skills in Build auto", async (security) => {
+  ])("omits exact current $signature.state skills from Build auto", async (security) => {
     const unsafe = { ...skill("skill-aaaaaaaaaaaa", "unsafe-skill"), ...security }
     const skillCatalog = catalog([{ skill: unsafe, content: "Unsafe instructions." }])
     const snapshot = {
@@ -190,12 +188,9 @@ describe("agentPromptWithSkills", () => {
       skillEnablements: [review("project-one", unsafe)],
     } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
 
-    const result = agentPromptWithSkills(skillCatalog, snapshot, "Run it", {
+    await expect(agentPromptWithSkills(skillCatalog, snapshot, "Run it", {
       requireTrusted: true,
-    })
-
-    await expect(result).rejects.toBeInstanceOf(BuildAutoSkillTrustError)
-    await expect(result).rejects.toThrow(/unsafe-skill.*Disable.*trusted/i)
+    })).resolves.toBe("Run it")
   })
 
   it("allows both explicit trusted reasons in Build auto", async () => {
@@ -277,7 +272,7 @@ describe("agentPromptWithSkills", () => {
       .resolves.toContain("Reviewed locally.")
   })
 
-  it("bounds unsafe skill names in Build auto errors", async () => {
+  it("bounds reviewed skill reads in Build auto", async () => {
     const documents = Array.from({ length: 40 }, (_, index) => {
       const hex = index.toString(16).padStart(12, "0")
       const summary = skill(`skill-${hex}`, `unsafe-skill-${index}`)
@@ -288,13 +283,10 @@ describe("agentPromptWithSkills", () => {
       skillEnablements: documents.map(({ skill: summary }) => review("project-one", summary)),
     } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
 
-    const result = agentPromptWithSkills(catalog(documents), snapshot, "Run it", {
+    const skillCatalog = catalog(documents)
+    await expect(agentPromptWithSkills(skillCatalog, snapshot, "Run it", {
       requireTrusted: true,
-    })
-
-    await expect(result).rejects.toMatchObject({ message: expect.any(String) })
-    await expect(result).rejects.toSatisfy(
-      (error: Error) => error.message.length <= maximumBuildAutoSkillTrustErrorLength,
-    )
+    })).resolves.toBe("Run it")
+    expect(skillCatalog.read).toHaveBeenCalledTimes(maximumReviewedSkillCandidates)
   })
 })
