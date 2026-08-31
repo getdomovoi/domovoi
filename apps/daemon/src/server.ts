@@ -110,6 +110,8 @@ const invalidParams = -32602
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
+export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
+export const maximumAuthenticationPayloadBytes = 4 * 1_024
 const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
@@ -152,6 +154,12 @@ function sessionIsArchiveReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
   return session?.state === "archiving" || session?.state === "archived"
+}
+
+function webSocketPayloadByteLength(data: WebSocket.RawData): number {
+  return Array.isArray(data)
+    ? data.reduce((total, chunk) => total + chunk.byteLength, 0)
+    : data.byteLength
 }
 
 export function appendPlanDelta(
@@ -594,8 +602,14 @@ export class DomovoiDaemon {
       server: this.#http,
       path: "/rpc",
       verifyClient,
+      maxPayload: maximumWebSocketPayloadBytes,
     })
     this.#websocket.on("connection", (socket, request) => {
+      socket.on("error", (error: Error & { code?: string }) => {
+        if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
+          this.#reportError("Domovoi WebSocket failed", error)
+        }
+      })
       const authorization = request.headers.authorization
       const bearerToken = typeof authorization === "string"
         ? /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization)?.[1]
@@ -610,6 +624,13 @@ export class DomovoiDaemon {
         socket.once("close", () => clearTimeout(deadline))
       }
       socket.on("message", (data) => {
+        if (
+          !this.#authenticatedClients.has(socket)
+          && webSocketPayloadByteLength(data) > maximumAuthenticationPayloadBytes
+        ) {
+          socket.close(1009, "authentication payload too large")
+          return
+        }
         const raw = data.toString()
         if (this.#stopping || this.#stopped) {
           let id: string | number | null = null
@@ -621,6 +642,10 @@ export class DomovoiDaemon {
             // The daemon is already shutting down; a stable unavailable response is sufficient.
           }
           this.#error(socket, id, daemonShuttingDownErrorCode, "Daemon is shutting down")
+          return
+        }
+        if (!this.#authenticatedClients.has(socket)) {
+          void this.#handle(socket, raw)
           return
         }
         const resource = this.#requestResource(raw)
@@ -1165,7 +1190,7 @@ export class DomovoiDaemon {
     }
 
     const request = requestResult.data
-    if (!(request.method in rpcMethods)) {
+    if (!Object.hasOwn(rpcMethods, request.method)) {
       this.#error(socket, request.id, methodNotFound, `Unknown method: ${request.method}`)
       return
     }
