@@ -6,7 +6,12 @@ import { randomBytes } from "node:crypto"
 import { DomovoiDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
-import { startDesktop, startOwnedDaemon } from "./owned-daemon.js"
+import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
+import {
+  isAuthorizedRendererEvent,
+  resolveRendererTarget,
+  type RendererTarget,
+} from "./renderer-security.js"
 import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { captureAnnotationPng } from "./annotation-capture.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
@@ -28,11 +33,14 @@ if (process.platform !== "darwin" && process.platform !== "linux" && process.pla
 }
 
 let mainWindow: BrowserWindow | undefined
-let localDaemon: DomovoiDaemon | undefined
+let mainRendererTarget: RendererTarget | undefined
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 const deepLinks = new DesktopDeepLinkQueue()
+const ownedDaemon = new OwnedDaemonLifecycle((error) => {
+  console.error("Owned daemon failed to stop during desktop shutdown", error)
+})
 const startupMetrics = new DesktopStartupMetrics({
   enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
 })
@@ -64,7 +72,7 @@ const desktopNotifications = new DesktopNotificationController({
 
 async function ensureDaemon(): Promise<void> {
   const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831, authToken: rpcToken })
-  localDaemon = await startOwnedDaemon(daemon)
+  await ownedDaemon.start(daemon)
 }
 
 function focusMainWindow(): void {
@@ -80,7 +88,12 @@ function acceptDeepLink(link: DesktopDeepLink): void {
 }
 
 function authorizedDesktopSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents)
+  return Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && mainRendererTarget
+    && isAuthorizedRendererEvent(event, mainWindow.webContents, mainRendererTarget),
+  )
 }
 
 function createWindow(): void {
@@ -111,15 +124,21 @@ function createWindow(): void {
   mainWindow.once("closed", () => {
     if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
     rendererDeepLinkSink = undefined
+    mainRendererTarget = undefined
     mainWindow = undefined
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault())
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  mainRendererTarget = resolveRendererTarget({
+    isPackaged: app.isPackaged,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL,
+    bundledRendererPath: join(import.meta.dirname, "../renderer/index.html"),
+  })
+  if (mainRendererTarget.kind === "url") {
+    void mainWindow.loadURL(mainRendererTarget.url)
   } else {
-    void mainWindow.loadFile(join(import.meta.dirname, "../renderer/index.html"))
+    void mainWindow.loadFile(mainRendererTarget.path)
   }
 }
 
@@ -253,6 +272,6 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
-app.on("before-quit", () => {
-  void localDaemon?.stop()
+app.on("before-quit", (event) => {
+  ownedDaemon.beforeQuit(event, () => app.quit())
 })
