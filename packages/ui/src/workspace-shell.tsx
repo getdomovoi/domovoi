@@ -41,6 +41,7 @@ import type {
   RpcParams,
   Runtime,
   SessionEvidence,
+  FleetMachine,
   SessionHistoryCategory,
   SessionHistoryPage,
   SessionSummary,
@@ -111,6 +112,7 @@ import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
+import { MachineSwitcher } from "./machine-switcher.js"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
@@ -1100,6 +1102,8 @@ export function ArchiveSessionAction({
 export function Thread({
   snapshot,
   connected,
+  fleet,
+  currentMachineId,
   onResolve,
   onSetRuntime,
   onRestartProviderThread,
@@ -1116,6 +1120,8 @@ export function Thread({
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
+  fleet?: FleetMachine[] | undefined
+  currentMachineId?: string | undefined
   onResolve: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -1425,7 +1431,11 @@ export function Thread({
           />
           <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <Badge variant="machine">{snapshot.machine.name}</Badge>
+              <MachineSwitcher
+                machines={fleet ?? [localMachineEntry(snapshot)]}
+                currentMachineId={currentMachineId ?? snapshot.machine.id}
+                currentSessionCount={snapshot.sessions.length}
+              />
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
               {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
@@ -1437,6 +1447,22 @@ export function Thread({
       </div>}
     </main>
   )
+}
+
+// The fleet is fetched separately, so the composer still names this machine
+// from the snapshot until that answer arrives.
+function localMachineEntry(snapshot: WorkspaceSnapshot): FleetMachine {
+  return {
+    id: snapshot.machine.id,
+    label: snapshot.machine.name,
+    platform: snapshot.machine.platform,
+    arch: snapshot.machine.arch,
+    version: snapshot.machine.version,
+    connection: "local",
+    capabilities: [],
+    heartbeat: { state: "online", lastSeenAt: new Date(0).toISOString() },
+    self: true,
+  }
 }
 
 export function activeThreadKey(snapshot: WorkspaceSnapshot): string {
