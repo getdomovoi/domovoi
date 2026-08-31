@@ -30,7 +30,7 @@ export async function collectArtifactMeasurements(root = repositoryRoot) {
       rendererJavascriptBytes: await sumExtensions(renderer, new Set([".js", ".mjs"])),
       rendererStylesheetBytes: await sumExtensions(renderer, new Set([".css"])),
       mainBytes: (await readFile(join(desktop, "main", "index.js"))).byteLength,
-      preloadBytes: (await readFile(join(desktop, "preload", "index.mjs"))).byteLength,
+      preloadBytes: (await readFile(join(desktop, "preload", "index.cjs"))).byteLength,
     },
   }
 }

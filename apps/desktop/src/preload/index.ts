@@ -17,3 +17,10 @@ contextBridge.exposeInMainWorld(
   "domovoiDesktop",
   createDesktopWindowBridge(ipc, process.platform),
 )
+
+if (process.argv.includes("--domovoi-launch-smoke")) {
+  ipcRenderer.send("domovoi:launch-smoke-preload-ready")
+  contextBridge.exposeInMainWorld("domovoiLaunchSmoke", {
+    ready: () => ipcRenderer.send("domovoi:launch-smoke-ready"),
+  })
+}

@@ -36,6 +36,9 @@ let mainWindow: BrowserWindow | undefined
 let mainRendererTarget: RendererTarget | undefined
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
+const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
+let launchSmokeStage = "main"
+let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 const deepLinks = new DesktopDeepLinkQueue()
 const ownedDaemon = new OwnedDaemonLifecycle((error) => {
@@ -109,7 +112,8 @@ function createWindow(): void {
     ...(isMac ? { trafficLightPosition: { x: 16, y: 14 } } : {}),
     show: false,
     webPreferences: {
-      preload: join(import.meta.dirname, "../preload/index.mjs"),
+      additionalArguments: launchSmoke ? ["--domovoi-launch-smoke"] : [],
+      preload: join(import.meta.dirname, "../preload/index.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -117,9 +121,26 @@ function createWindow(): void {
   })
   startupMetrics.mark("window-created")
 
+  if (launchSmoke) {
+    mainWindow.webContents.on("console-message", (details) => {
+      if (details.level === "error" || details.level === "warning") {
+        console.error(`Desktop renderer ${details.level}: ${details.message}`)
+      }
+    })
+    mainWindow.webContents.on("preload-error", (_event, preloadPath, error) => {
+      console.error(`Desktop preload failed (${preloadPath}): ${error.message}`)
+    })
+    mainWindow.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+      if (isMainFrame) console.error(`Desktop renderer failed to load ${url}: ${code} ${description}`)
+    })
+    mainWindow.webContents.on("render-process-gone", (_event, details) => {
+      console.error(`Desktop renderer exited unexpectedly: ${details.reason} (${details.exitCode})`)
+    })
+  }
+
   mainWindow.once("ready-to-show", () => {
     startupMetrics.mark("ready-to-show")
-    mainWindow?.show()
+    if (!launchSmoke) mainWindow?.show()
   })
   mainWindow.once("closed", () => {
     if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
@@ -227,14 +248,32 @@ ipcMain.on("domovoi:deep-link-paused", (event) => {
   rendererDeepLinkSink = undefined
 })
 
+ipcMain.on("domovoi:launch-smoke-preload-ready", (event) => {
+  if (launchSmoke && event.sender === mainWindow?.webContents) launchSmokeStage = "preload"
+})
+
+ipcMain.on("domovoi:launch-smoke-ready", (event) => {
+  if (!launchSmoke) return
+  if (!authorizedDesktopSender(event)) {
+    console.error("Domovoi desktop launch smoke renderer sender was not authorized")
+    app.exit(1)
+    return
+  }
+  if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
+  console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
+  app.exit(0)
+})
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   app.quit()
 } else {
-  if (process.defaultApp && process.argv[1]) {
-    app.setAsDefaultProtocolClient("domovoi", process.execPath, [resolve(process.argv[1])])
-  } else {
-    app.setAsDefaultProtocolClient("domovoi")
+  if (!launchSmoke) {
+    if (process.defaultApp && process.argv[1]) {
+      app.setAsDefaultProtocolClient("domovoi", process.execPath, [resolve(process.argv[1])])
+    } else {
+      app.setAsDefaultProtocolClient("domovoi")
+    }
   }
 
   for (const link of deepLinksFromArgv(process.argv)) deepLinks.enqueue(link)
@@ -252,6 +291,14 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     startupMetrics.mark("app-ready")
+    if (launchSmoke) {
+      launchSmokeTimeout = setTimeout(() => {
+        console.error(`Domovoi desktop launch smoke stopped after ${launchSmokeStage} readiness`)
+        app.exit(1)
+      }, 10_000)
+      createWindow()
+      return
+    }
     await startDesktop(createWindow, async () => {
       await ensureDaemon()
       startupMetrics.mark("daemon-ready")
