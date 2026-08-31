@@ -97,13 +97,14 @@ type PendingSessionLoad = {
 }
 
 export function openCodeAgentFor(runtime: Runtime): string {
+  if (runtime.permissionMode === "ask") return "domovoi-ask"
   if (runtime.permissionMode === "plan") return "plan"
   if (runtime.permissionMode === "build" && runtime.auto) return "domovoi-auto"
   return "build"
 }
 
 export class OpenCodeSdkAdapter implements AgentAdapter {
-  readonly permissionCapabilities = { buildAuto: "pre-execution" } as const
+  readonly permissionCapabilities = { ask: "read-only", buildAuto: "pre-execution" } as const
   readonly #factory: OpenCodeFactory
   readonly #id: () => string
   readonly #identity: OpenCodeAdapterIdentity
@@ -728,6 +729,26 @@ function ensureSuccess(result: OpenCodeResult<unknown>, action: string): void {
 export const domovoiOpenCodeConfig: Config = {
   autoupdate: false,
   agent: {
+    "domovoi-ask": {
+      mode: "primary",
+      description: "Domovoi read-only ask mode",
+      tools: {
+        "*": false,
+        read: true,
+        glob: true,
+        grep: true,
+        list: true,
+        webfetch: true,
+        websearch: true,
+        question: true,
+      },
+      permission: {
+        edit: "deny",
+        bash: "deny",
+        webfetch: "allow",
+        external_directory: "deny",
+      },
+    },
     plan: {
       permission: {
         edit: "deny",

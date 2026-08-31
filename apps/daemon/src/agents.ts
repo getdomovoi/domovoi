@@ -22,6 +22,7 @@ export type AgentEvent =
   | { type: "turn-completed"; params: Record<string, unknown> }
 
 export type AgentPermissionCapabilities = Readonly<{
+  ask: "read-only" | "unsupported"
   buildAuto: "pre-execution" | "unsupported"
 }>
 

@@ -3757,7 +3757,7 @@ describe("DomovoiDaemon", () => {
       read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
     } satisfies SkillCatalog
     const agent = {
-      permissionCapabilities: { buildAuto: "pre-execution" as const },
+      permissionCapabilities: { ask: "read-only" as const, buildAuto: "pre-execution" as const },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"),
@@ -5572,7 +5572,7 @@ describe("DomovoiDaemon", () => {
     session.providerThreadId = "thread-build-auto"
     delete session.activeTurnId
     const agent = {
-      permissionCapabilities: { buildAuto: "unsupported" },
+      permissionCapabilities: { ask: "read-only", buildAuto: "unsupported" },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"),
@@ -5623,6 +5623,216 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("rejects Ask before a turn when the provider cannot enforce read-only operation", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "grok",
+      model: "grok-code-fast-1",
+      reasoning: "medium",
+      permissionMode: "ask",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = "/worktrees/ask"
+    session.providerThreadId = "thread-ask"
+    delete session.activeTurnId
+    const agent = {
+      permissionCapabilities: { ask: "unsupported", buildAuto: "unsupported" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "grok",
+        id: "grok-code-fast-1",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-ask"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => snapshot,
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      agents: { grok: agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.send",
+      params: { sessionId: session.id, prompt: "Inspect only", client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "grok does not support enforceable Ask mode",
+      },
+    })
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
+  it.each([
+    ["build", "ask"],
+    ["ask", "build"],
+  ] as const)("rejects an active %s to %s permission-boundary change, then allows it when idle", async (currentMode, nextMode) => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: currentMode,
+      auto: false,
+    }
+    session.state = "active"
+    session.workspacePath = "/worktrees/ask-boundary"
+    session.providerThreadId = "thread-ask-boundary"
+    session.activeTurnId = "turn-ask-boundary"
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "unsupported" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    const nextRuntime = { ...session.runtime, permissionMode: nextMode }
+    const savesBefore = store.save.mock.calls.length
+
+    await expect(rpc("session.setRuntime", {
+      sessionId: session.id,
+      runtime: nextRuntime,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "Stop the active turn before entering or leaving Ask mode",
+      },
+    })
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.listModels).not.toHaveBeenCalled()
+    expect(agent.startThread).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(store.save).toHaveBeenCalledTimes(savesBefore)
+    await expect(rpc("workspace.get", {})).resolves.toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          activeTurnId: "turn-ask-boundary",
+          runtime: expect.objectContaining({ permissionMode: currentMode }),
+        })]),
+      },
+    })
+
+    const safeMode = currentMode === "build" ? "plan" : "ask"
+    await expect(rpc("session.setRuntime", {
+      sessionId: session.id,
+      runtime: { ...session.runtime, permissionMode: safeMode, reasoning: "high" },
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          activeTurnId: "turn-ask-boundary",
+          runtime: expect.objectContaining({
+            permissionMode: safeMode,
+            reasoning: "high",
+          }),
+        })]),
+      },
+    })
+    expect(agent.startThread).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+
+    listener?.({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-ask-boundary",
+        turnId: "turn-ask-boundary",
+        turn: { id: "turn-ask-boundary", status: "completed" },
+      },
+    })
+    await expect(rpc("session.setRuntime", {
+      sessionId: session.id,
+      runtime: nextRuntime,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: {
+        sessions: expect.arrayContaining([expect.objectContaining({
+          id: session.id,
+          runtime: expect.objectContaining({ permissionMode: nextMode }),
+        })]),
+      },
+    })
+    expect(agent.connect).toHaveBeenCalledOnce()
+    expect(agent.listModels).toHaveBeenCalledOnce()
+    expect(agent.startThread).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    socket.close()
+  })
+
   it("auto-allows bounded work but keeps hard gates explicit", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -5648,7 +5858,7 @@ describe("DomovoiDaemon", () => {
     })
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
-      permissionCapabilities: { buildAuto: "pre-execution" },
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => [{
         ...codexModels()[0]!,
