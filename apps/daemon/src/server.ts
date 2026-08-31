@@ -71,7 +71,7 @@ import {
 } from "./annotation-visual-context.js"
 import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 import { agentPromptWithHandoff } from "./handoff-context.js"
-import { agentPromptWithSkills, BuildAutoSkillTrustError } from "./skill-context.js"
+import { agentPromptWithSkills } from "./skill-context.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -2564,23 +2564,16 @@ export class DomovoiDaemon {
           registeredAgent.capabilities,
           this.#annotationVisualContext,
         )
-        let prompt: string
-        try {
-          prompt = await agentPromptWithSkills(
-            this.#skillCatalog ?? new FileSkillCatalog(
-              skillRoots(homedir(), this.#snapshot.project?.path),
-            ),
-            this.#snapshot,
-            preparedTurn.prompt,
-            {
-              requireTrusted: session.runtime.permissionMode === "build" && session.runtime.auto,
-            },
-          )
-        } catch (error) {
-          if (!(error instanceof BuildAutoSkillTrustError)) throw error
-          this.#error(socket, request.id, invalidParams, error.message)
-          return
-        }
+        const prompt = await agentPromptWithSkills(
+          this.#skillCatalog ?? new FileSkillCatalog(
+            skillRoots(homedir(), this.#snapshot.project?.path),
+          ),
+          this.#snapshot,
+          preparedTurn.prompt,
+          {
+            requireTrusted: session.runtime.permissionMode === "build" && session.runtime.auto,
+          },
+        )
         const createdAt = new Date().toISOString()
         const emergencyThread = providerThreadKey(
           session.runtime.provider,
