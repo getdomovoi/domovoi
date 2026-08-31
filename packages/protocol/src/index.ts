@@ -1,3 +1,4 @@
+export * from "./devices.js"
 export * from "./fixtures.js"
 export * from "./fleet.js"
 export * from "./performance.js"

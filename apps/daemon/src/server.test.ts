@@ -2523,6 +2523,171 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  async function pairingClient(daemon: DomovoiDaemon, token?: string) {
+    const address = daemon.address!
+    const socket = token === undefined
+      ? authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      : new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const call = (id: number, method: string, params: Record<string, unknown>) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    await call(1, "system.hello", { client: "desktop", clientVersion: "0.0.1" })
+    return { socket, call }
+  }
+
+  it("pairs a device and returns its credential exactly once", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+    const listed = await call(3, "device.list", {})
+
+    const token = (paired.result as { token: string }).token
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(listed).toMatchObject({
+      result: { devices: [{ label: "studio-ipad", id: expect.stringMatching(/^device-/) }] },
+    })
+    expect(JSON.stringify(listed)).not.toContain(token)
+    socket.close()
+  })
+
+  it("keeps a paired credential out of the audit log", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+
+    const token = (paired.result as { token: string }).token
+    const entries = store.auditLog.query({ limit: 50 }).entries
+    expect(JSON.stringify(entries)).not.toContain(token)
+    expect(entries.some((entry) => entry.action === "device.pair")).toBe(true)
+    socket.close()
+  })
+
+  it("revokes and rotates a paired device", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+    const deviceId = (paired.result as { device: { id: string } }).device.id
+
+    const rotated = await call(3, "device.rotate", { deviceId, client: "desktop" })
+    const revoked = await call(4, "device.revoke", { deviceId, client: "desktop" })
+
+    const rotatedToken = (rotated.result as { token: string }).token
+    expect(rotatedToken).not.toBe((paired.result as { token: string }).token)
+    expect(revoked).toMatchObject({ result: { device: { revokedAt: expect.any(String) } } })
+    expect(store.devices.verify(rotatedToken)).toBeUndefined()
+    socket.close()
+  })
+
+  it("refuses to manage devices for a client holding only a device credential", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const { socket, call } = await pairingClient(daemon, issued.token)
+
+    const pairAttempt = await call(2, "device.pair", { label: "second-ipad", client: "tablet" })
+    const revokeAttempt = await call(3, "device.revoke", {
+      deviceId: issued.device.id,
+      client: "tablet",
+    })
+
+    for (const attempt of [pairAttempt, revokeAttempt]) {
+      expect(attempt).toMatchObject({
+        error: { message: "Managing paired devices requires the daemon credential" },
+      })
+    }
+    expect(store.devices.list()).toHaveLength(1)
+    socket.close()
+  })
+
+  it("stops broadcasting to a device the moment it is revoked", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket, "web")
+    const notifications: string[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { method?: string }
+      if (message.method) notifications.push(message.method)
+    })
+
+    const admin = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      admin.once("open", resolve)
+      admin.once("error", reject)
+    })
+    await identifyClient(admin)
+    const revoked = new Promise<void>((resolve) => {
+      admin.once("message", () => resolve())
+    })
+    const deviceClosed = new Promise<void>((resolve) => {
+      if (socket.readyState === WebSocket.CLOSED) resolve()
+      else socket.once("close", () => resolve())
+    })
+    admin.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "device.revoke",
+      params: { deviceId: issued.device.id, client: "desktop" },
+    }))
+    await revoked
+    await deviceClosed
+    notifications.length = 0
+    const activated = new Promise<void>((resolve) => {
+      admin.once("message", () => resolve())
+    })
+    admin.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session.activate",
+      params: { sessionId: demoWorkspace.sessions[1]!.id, client: "desktop" },
+    }))
+    await activated
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(notifications).toEqual([])
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
+    admin.close()
+    socket.close()
+  })
+
   it("requires the configured token before serving daemon state", async () => {
     const agent = {
       connect: vi.fn(async () => {}),
