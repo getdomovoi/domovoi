@@ -16,6 +16,32 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("keeps the event loop responsive while persisting long history", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-long-history-"))
+    scratchDirectories.push(scratch)
+    const store = new SqliteWorkspaceStore(join(scratch, "state.sqlite"), demoWorkspace)
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread = Array.from({ length: 6_000 }, (_, index) => ({
+      id: `long-history-${index}`,
+      sessionId: snapshot.sessions[0]!.id,
+      kind: "user" as const,
+      body: `message-${index}-${"x".repeat(2_048)}`,
+      createdAt: "2026-08-30T12:00:00.000Z",
+    }))
+    let heartbeats = 0
+    const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
+    const startedAt = performance.now()
+
+    await store.saveAsync(snapshot)
+
+    const elapsedMs = performance.now() - startedAt
+    clearInterval(heartbeat)
+    expect(store.load().thread).toHaveLength(6_000)
+    expect(heartbeats).toBeGreaterThanOrEqual(2)
+    expect(elapsedMs).toBeLessThan(5_000)
+    await store.close()
+  }, 10_000)
+
   it("redacts every durable command copy and drops legacy secret-bearing rules", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-redaction-"))
     scratchDirectories.push(scratch)
