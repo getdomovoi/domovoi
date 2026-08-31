@@ -54,7 +54,7 @@ import type {
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
-import { boundedClientThread } from "@getdomovoi/protocol"
+import { boundedClientThread, protocolVersion } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -1466,7 +1466,9 @@ function localMachineEntry(snapshot: WorkspaceSnapshot): FleetMachine {
     version: snapshot.machine.version,
     connection: "local",
     capabilities: [],
+    protocolVersion,
     heartbeat: { state: "online", lastSeenAt: new Date(0).toISOString() },
+    health: "healthy",
     self: true,
   }
 }

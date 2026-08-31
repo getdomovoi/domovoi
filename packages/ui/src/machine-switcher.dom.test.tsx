@@ -17,6 +17,8 @@ const local: FleetMachine = {
   connection: "local",
   capabilities: ["sessions", "terminals"],
   heartbeat: { state: "online", lastSeenAt: "2026-08-31T12:00:00.000Z" },
+  protocolVersion: "0.1.0",
+  health: "healthy",
   self: true,
 }
 
@@ -34,6 +36,7 @@ const offline: FleetMachine = {
   label: "hetzner",
   connection: "relay",
   heartbeat: { state: "offline", lastSeenAt: "2026-08-31T11:00:00.000Z" },
+  health: "unreachable",
 }
 
 async function openMenu(machines: FleetMachine[], sessionCount = 2) {
@@ -91,6 +94,25 @@ it("explains that a reachable machine cannot be selected yet", async () => {
   const studio = screen.getByRole("menuitem", { name: /studio/ })
   expect(studio.getAttribute("aria-disabled")).toBe("true")
   expect(screen.getByText("Machine transfer is not available yet")).toBeTruthy()
+})
+
+it("names a machine that needs an upgrade", async () => {
+  await openMenu([local, { ...tailnet, health: "upgrade-required" }])
+
+  const studio = screen.getByRole("menuitem", { name: /studio/ })
+  expect(studio.textContent).toContain("Upgrade required")
+})
+
+it("names a machine the client is too old to talk to", async () => {
+  await openMenu([local, { ...tailnet, health: "version-mismatch" }])
+
+  expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Version mismatch")
+})
+
+it("names a machine that is reconnecting", async () => {
+  await openMenu([local, { ...tailnet, health: "reconnecting" }])
+
+  expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Reconnecting")
 })
 
 it("describes a fleet holding only this machine", async () => {

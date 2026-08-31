@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { fleetHealthSchema } from "./fleet-health.js"
 import { connectionKindSchema } from "./schema.js"
 
 export const maximumFleetMachines = 128
@@ -44,12 +45,16 @@ const fleetMachineFactsObject = z.object({
   version: z.string().trim().min(1).max(64),
   connection: connectionKindSchema,
   capabilities: z.array(machineCapabilitySchema).max(16),
+  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
 }).strict()
 
 export const fleetMachineFactsSchema = fleetMachineFactsObject.superRefine(refineCapabilities)
 
 export const fleetMachineSchema = fleetMachineFactsObject.extend({
   heartbeat: machineHeartbeatSchema,
+  // Health is derived by the daemon from the heartbeat and version facts, so a
+  // machine never reports its own verdict.
+  health: fleetHealthSchema,
   self: z.boolean(),
 }).strict().superRefine(refineCapabilities)
 

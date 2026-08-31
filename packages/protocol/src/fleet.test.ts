@@ -12,6 +12,8 @@ import {
 
 const machine = {
   id: `machine-${"a".repeat(32)}`,
+  protocolVersion: "0.1.0",
+  health: "healthy" as const,
   label: "workshop",
   platform: "linux",
   arch: "x64",
@@ -57,9 +59,29 @@ describe("fleetMachineSchema", () => {
   })
 })
 
+describe("fleet machine health", () => {
+  it("requires a described health state", () => {
+    const { health: _health, ...withoutHealth } = machine
+    expect(fleetMachineSchema.safeParse(withoutHealth).success).toBe(false)
+    expect(fleetMachineSchema.safeParse({ ...machine, health: "fine" }).success).toBe(false)
+  })
+
+  it("requires a readable protocol version", () => {
+    expect(fleetMachineSchema.safeParse({ ...machine, protocolVersion: "latest" }).success)
+      .toBe(false)
+  })
+
+  it("keeps health out of reported facts, because the daemon derives it", () => {
+    const { heartbeat: _heartbeat, self: _self, ...facts } = machine
+    expect(fleetMachineFactsSchema.safeParse(facts).success).toBe(false)
+    const { health: _health, ...reportable } = facts
+    expect(fleetMachineFactsSchema.parse(reportable)).toEqual(reportable)
+  })
+})
+
 describe("fleetMachineFactsSchema", () => {
   it("describes a machine without its observed heartbeat", () => {
-    const { heartbeat: _heartbeat, self: _self, ...facts } = machine
+    const { heartbeat: _heartbeat, self: _self, health: _health, ...facts } = machine
     expect(fleetMachineFactsSchema.parse(facts)).toEqual(facts)
   })
 
@@ -68,7 +90,7 @@ describe("fleetMachineFactsSchema", () => {
   })
 
   it("rejects duplicate capabilities", () => {
-    const { heartbeat: _heartbeat, self: _self, ...facts } = machine
+    const { heartbeat: _heartbeat, self: _self, health: _health, ...facts } = machine
     expect(fleetMachineFactsSchema.safeParse({
       ...facts,
       capabilities: ["sessions", "sessions"],
