@@ -83,13 +83,16 @@ describe("DomovoiClient", () => {
       confirmation: { requestedPath: "/code/elsewhere", sessionCount: 1 },
     })
 
-    const confirmed = client.openProject("/code/elsewhere", true)
+    const confirmed = client.openProject(
+      "/code/elsewhere",
+      (confirmationError as ProjectSwitchConfirmationError).confirmation,
+    )
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "project.open",
       params: {
         path: "/code/elsewhere",
         client: "web",
-        discardSessions: true,
+        confirmation: (confirmationError as ProjectSwitchConfirmationError).confirmation,
       },
     })
     socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })

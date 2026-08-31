@@ -2334,25 +2334,29 @@ export class DomovoiDaemon {
             changed = true
           }
         } else {
-          if (this.#snapshot.sessions.length > 0 && params.discardSessions !== true) {
-            const sessions = this.#snapshot.sessions.map((session) => ({
-              id: session.id,
-              title: session.title,
-              state: session.state,
-              ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
-            }))
+          const sessions = this.#snapshot.sessions.map((session) => ({
+            id: session.id,
+            title: session.title,
+            state: session.state,
+            ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
+          }))
+          const confirmation: ProjectSwitchConfirmation = {
+            kind: "project-switch-confirmation",
+            requestedPath: repository.root,
+            sessions,
+            sessionCount: sessions.length,
+            worktreeCount: sessions.filter((session) => session.workspacePath).length,
+          }
+          if (
+            sessions.length > 0
+            && JSON.stringify(params.confirmation) !== JSON.stringify(confirmation)
+          ) {
             this.#error(
               socket,
               request.id,
               projectSwitchConfirmationErrorCode,
               "Confirm session removal before switching projects",
-              {
-                kind: "project-switch-confirmation",
-                requestedPath: repository.root,
-                sessions,
-                sessionCount: sessions.length,
-                worktreeCount: sessions.filter((session) => session.workspacePath).length,
-              },
+              confirmation,
             )
             return
           }

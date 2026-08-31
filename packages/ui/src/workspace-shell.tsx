@@ -2889,10 +2889,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setProjectSwitchPending(true)
     setProjectSwitchError("")
     try {
-      await openProject(path, true)
+      await openProject(path, projectSwitchConfirmation)
       setProjectSwitchConfirmation(null)
     } catch (cause) {
-      setProjectSwitchError(cause instanceof Error ? cause.message : "Domovoi could not switch projects")
+      if (cause instanceof ProjectSwitchConfirmationError) {
+        setProjectSwitchConfirmation(cause.confirmation)
+        setProjectSwitchError("Sessions changed while confirmation was open. Review the updated impact.")
+      } else {
+        setProjectSwitchError(cause instanceof Error ? cause.message : "Domovoi could not switch projects")
+      }
     } finally {
       setProjectSwitchPending(false)
     }

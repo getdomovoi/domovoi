@@ -47,12 +47,12 @@ describe("audit RPC contracts", () => {
     expect(rpcMethods["project.open"].params.parse({
       path: "/code/elsewhere",
       client: "desktop",
-      discardSessions: true,
-    })).toEqual({ path: "/code/elsewhere", client: "desktop", discardSessions: true })
+      confirmation,
+    })).toEqual({ path: "/code/elsewhere", client: "desktop", confirmation })
     expect(rpcMethods["project.open"].params.safeParse({
       path: "/code/elsewhere",
       client: "desktop",
-      discardSessions: "yes",
+      confirmation: { ...confirmation, sessionCount: 2 },
     }).success).toBe(false)
     expect(rpcMethods["project.open"].params.safeParse({
       path: "/code/elsewhere",
