@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite"
 import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
-import { SqliteDeviceRegistry } from "./device-registry.js"
+import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
 import { redactWorkspaceCopies } from "./secret-redaction.js"
 
 type StoredWorkspace = {
@@ -15,6 +15,7 @@ type StoredWorkspace = {
 
 export interface WorkspaceStore {
   readonly auditLog?: AuditLog
+  readonly devices?: DeviceRegistry
   load(): WorkspaceSnapshot
   save(snapshot: WorkspaceSnapshot): void
   close(): void

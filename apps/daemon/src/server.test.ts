@@ -2392,6 +2392,56 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("accepts a paired device credential and rejects it once revoked", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const paired = store.devices.pair({ label: "studio-ipad" })
+
+    const open = (token: string) => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      return socket
+    }
+    const hello = (socket: WebSocket) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => {
+          resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+        })
+      })
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "system.hello",
+        params: { client: "tablet", clientVersion: "0.0.1" },
+      }))
+      return response
+    }
+
+    const pairedSocket = open(paired.token)
+    await new Promise<void>((resolve, reject) => {
+      pairedSocket.once("open", resolve)
+      pairedSocket.once("error", reject)
+    })
+    await expect(hello(pairedSocket)).resolves.toMatchObject({
+      result: { machine: { id: expect.any(String) } },
+    })
+    pairedSocket.close()
+
+    store.devices.revoke(paired.device.id)
+    const revokedSocket = open(paired.token)
+    await new Promise<void>((resolve, reject) => {
+      revokedSocket.once("open", resolve)
+      revokedSocket.once("error", reject)
+    })
+    await expect(hello(revokedSocket)).resolves.toMatchObject({
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+    revokedSocket.close()
+  })
+
   it("requires the configured token before serving daemon state", async () => {
     const agent = {
       connect: vi.fn(async () => {}),
