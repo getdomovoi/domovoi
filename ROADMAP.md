@@ -100,7 +100,7 @@ workflow without becoming a code editor.
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
-- [ ] Require explicit confirmation before switching projects discards current sessions and worktrees
+- [x] Require explicit confirmation before switching projects discards current sessions and worktrees
 
 ### Providers and credentials
 
