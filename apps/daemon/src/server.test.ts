@@ -59,6 +59,29 @@ function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
   })
 }
 
+function identifyClient(
+  socket: WebSocket,
+  client: "desktop" | "web" = "desktop",
+  clientId = `${client}-test-client`,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const id = "test-client-identity"
+    const receive = (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as { id?: string }
+      if (message.id !== id) return
+      socket.off("message", receive)
+      resolve()
+    }
+    socket.on("message", receive)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "system.hello",
+      params: { client, clientId, clientVersion: "0.0.1" },
+    }))
+  })
+}
+
 const codexModels = () => [{
   provider: "codex" as const,
   id: "gpt-5.6-sol",
@@ -259,6 +282,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await identifyClient(socket)
     const notifications: unknown[] = []
     socket.on("message", (data) => {
       const message = JSON.parse(data.toString()) as { id?: unknown }
@@ -3247,6 +3271,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await identifyClient(socket)
 
     const approvalResponse = new Promise<Record<string, unknown>>((resolve) => {
       socket.on("message", (data) => {
@@ -3284,6 +3309,61 @@ describe("DomovoiDaemon", () => {
             client: "desktop",
           }),
         ]),
+      },
+    })
+    socket.close()
+  })
+
+  it("binds approval receipts and rules to the authenticated client identity", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.risk = "normal"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const request = (id: number, method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+      const listener = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", listener)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", listener)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    })
+
+    await expect(request(1, "system.hello", {
+      client: "web",
+      clientId: "web-operator-7",
+      clientVersion: "0.0.1",
+      authToken: daemon.authToken,
+    })).resolves.toHaveProperty("result")
+
+    const resolved = await request(2, "approval.resolve", {
+      approvalId: snapshot.approvals[0]!.id,
+      decision: "always-project",
+      client: "desktop",
+    })
+
+    expect(resolved).toMatchObject({
+      result: {
+        approvalRules: [expect.objectContaining({
+          createdBy: "web",
+          createdByClientId: "web-operator-7",
+        })],
+        thread: expect.arrayContaining([expect.objectContaining({
+          kind: "receipt",
+          client: "web",
+          clientId: "web-operator-7",
+        })]),
       },
     })
     socket.close()
@@ -4004,6 +4084,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", () => resolve())
       socket.once("error", reject)
     })
+    await identifyClient(socket, "web")
 
     const nextResponse = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
       const receive = (data: WebSocket.RawData) => {
@@ -4290,6 +4371,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await identifyClient(socket)
     const notifications: Array<{ method?: string; params?: unknown }> = []
     socket.on("message", (data) => {
       const message = JSON.parse(data.toString()) as { method?: string; params?: unknown }
@@ -5582,6 +5664,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await identifyClient(socket)
     let id = 0
     const rpc = (method: string, params: Record<string, unknown>) => {
       const requestId = ++id

@@ -78,6 +78,25 @@ it("does not refetch skills for unrelated workspace updates", () => {
 })
 
 describe("RuntimeControls", () => {
+  it("displays an approval receipt's authenticated client identifier", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread.push({
+      id: "receipt-client-identity",
+      sessionId: snapshot.activeSessionId!,
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run tests",
+      checkpoint: "checkpoint-one",
+      client: "web",
+      clientId: "web-operator-7",
+      createdAt: "2026-08-31T12:00:00.000Z",
+    })
+
+    const markup = renderToStaticMarkup(<Thread snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+
+    expect(markup).toContain("decided from web (web-operator-7)")
+  })
+
   it("bounds initial rendered thread work with the canonical effective limit", () => {
     const snapshot = structuredClone(demoWorkspace)
     const sessionId = snapshot.activeSessionId!

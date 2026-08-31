@@ -151,7 +151,19 @@ describe("SqliteWorkspaceStore", () => {
       operation: "Run tests",
       command: "pnpm test",
       createdBy: "desktop",
+      createdByClientId: "desktop-one",
       createdAt: "2026-08-26T06:00:00.000Z",
+    })
+    changed.thread.push({
+      id: "receipt-client-identity",
+      sessionId: changed.sessions[0]!.id,
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run tests",
+      checkpoint: "checkpoint-one",
+      client: "desktop",
+      clientId: "desktop-one",
+      createdAt: "2026-08-30T12:00:00.000Z",
     })
     changed.skillEnablements.push({
       projectId: changed.project!.id,
