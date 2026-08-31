@@ -118,12 +118,32 @@ describe("loadOrCreateMachineIdentity", () => {
     await expect(pending).resolves.toEqual(published)
   })
 
+  it("keeps waiting while the claiming start is still alive", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(`${identityPath}.lock`, "")
+    const published = { id: `machine-${"d".repeat(32)}`, label: "claimed" }
+
+    const pending = loadOrCreateMachineIdentity(identityPath, {
+      label: "second-start",
+      lockStalenessMs: 2_000,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    await writeFile(`${identityPath}.publish`, `${JSON.stringify(published)}\n`)
+    await rename(`${identityPath}.publish`, identityPath)
+
+    await expect(pending).resolves.toEqual(published)
+  })
+
   it("takes over an abandoned initialization claim", async () => {
     const root = await scratch()
     const identityPath = join(root, "machine.json")
     await writeFile(`${identityPath}.lock`, "")
 
-    const identity = await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+    const identity = await loadOrCreateMachineIdentity(identityPath, {
+      label: "workshop",
+      lockStalenessMs: 0,
+    })
 
     expect(identity.id).toMatch(/^machine-[0-9a-f]{32}$/)
     expect(await readdir(root)).toEqual(["machine.json"])

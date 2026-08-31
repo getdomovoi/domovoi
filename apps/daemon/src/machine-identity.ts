@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename, rm } from "node:fs/promises"
+import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
 import { dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -12,8 +12,8 @@ export const defaultMachineLabel = "domovoi-machine"
 
 const machineIdPattern = /^machine-[0-9a-f]{32}$/
 const maximumLabelLength = 128
-const identityReadAttempts = 20
-const identityReadDelayMs = 5
+const identityPollDelayMs = 5
+export const defaultLockStalenessMs = 5_000
 
 export function normalizeMachineLabel(label: string): string {
   const trimmed = label.trim().slice(0, maximumLabelLength).trim()
@@ -98,21 +98,38 @@ async function claimInitialization(lockPath: string): Promise<boolean> {
   }
 }
 
-async function awaitPublishedIdentity(path: string): Promise<MachineIdentity | undefined> {
-  for (let attempt = 0; attempt < identityReadAttempts; attempt += 1) {
+async function lockAgeMs(lockPath: string): Promise<number | undefined> {
+  try {
+    return Date.now() - (await stat(lockPath)).mtimeMs
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+}
+
+// Waits as long as the claiming start looks alive. A fixed poll budget would
+// hand the identity to a second start whenever publishing ran slowly.
+async function awaitPublishedIdentity(
+  path: string,
+  lockPath: string,
+  stalenessMs: number,
+): Promise<MachineIdentity | undefined> {
+  for (;;) {
     const identity = await readMachineIdentity(path)
     if (identity) return identity
-    await delay(identityReadDelayMs)
+    const age = await lockAgeMs(lockPath)
+    if (age === undefined || age > stalenessMs) return undefined
+    await delay(identityPollDelayMs)
   }
-  return undefined
 }
 
 export async function loadOrCreateMachineIdentity(
   path: string,
-  defaults: { label: string },
+  defaults: { label: string; lockStalenessMs?: number },
 ): Promise<MachineIdentity> {
   const directory = dirname(path)
   const lockPath = `${path}.lock`
+  const stalenessMs = defaults.lockStalenessMs ?? defaultLockStalenessMs
   await mkdir(directory, { recursive: true, mode: 0o700 })
   if (process.platform !== "win32") await chmod(directory, 0o700)
 
@@ -125,12 +142,17 @@ export async function loadOrCreateMachineIdentity(
 
     if (await claimInitialization(lockPath)) {
       try {
-        const published = await publishMachineIdentity(path, {
+        await publishMachineIdentity(path, {
           id: `machine-${randomBytes(16).toString("hex")}`,
           label: normalizeMachineLabel(defaults.label),
         })
-        if (process.platform !== "win32") await chmod(path, 0o600)
-        return published
+        // Adopt whatever is persisted: a start that took this lock over may have
+        // published first, and one machine keeps one identity.
+        const persisted = await readMachineIdentity(path)
+        if (persisted) {
+          if (process.platform !== "win32") await chmod(path, 0o600)
+          return persisted
+        }
       } finally {
         await rm(lockPath, { force: true })
       }
@@ -138,7 +160,7 @@ export async function loadOrCreateMachineIdentity(
 
     // Another start is initializing; wait for its identity so one machine never
     // reports two identifiers.
-    const settled = await awaitPublishedIdentity(path)
+    const settled = await awaitPublishedIdentity(path, lockPath, stalenessMs)
     if (settled) {
       if (process.platform !== "win32") await chmod(path, 0o600)
       return settled
@@ -149,5 +171,5 @@ export async function loadOrCreateMachineIdentity(
     await rm(lockPath, { force: true })
   }
 
-  throw new Error("Machine identity is malformed")
+  throw new Error(`Machine identity initialization did not complete at ${path}`)
 }
