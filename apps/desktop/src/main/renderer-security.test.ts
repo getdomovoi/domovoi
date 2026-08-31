@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import { describe, expect, it } from "vitest"
@@ -9,6 +10,7 @@ import {
 } from "./renderer-security.js"
 
 const bundledRendererPath = "/opt/domovoi/out/renderer/index.html"
+const expectedBundledRendererPath = resolve(bundledRendererPath)
 
 describe("resolveRendererTarget", () => {
   it("always uses the bundled renderer in packaged builds", () => {
@@ -16,7 +18,7 @@ describe("resolveRendererTarget", () => {
       isPackaged: true,
       rendererUrl: "http://127.0.0.1:5173/app",
       bundledRendererPath,
-    })).toEqual({ kind: "file", path: bundledRendererPath })
+    })).toEqual({ kind: "file", path: expectedBundledRendererPath })
   })
 
   it.each([
@@ -44,7 +46,7 @@ describe("resolveRendererTarget", () => {
       isPackaged: false,
       rendererUrl,
       bundledRendererPath,
-    })).toEqual({ kind: "file", path: bundledRendererPath })
+    })).toEqual({ kind: "file", path: expectedBundledRendererPath })
   })
 })
 
