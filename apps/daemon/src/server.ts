@@ -106,6 +106,10 @@ import {
 import { testEvidence } from "./test-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
+import {
+  RpcOutboundBackpressure,
+  type RpcOutboundBackpressureOptions,
+} from "./rpc-outbound.js"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import {
@@ -424,6 +428,7 @@ export type DaemonServerOptions = {
   tls?: TlsMaterial
   advertiseHost?: string
   machineCredentials?: MachineCredentials
+  rpcOutboundBackpressure?: RpcOutboundBackpressureOptions
 }
 
 export type DaemonErrorEntry = {
@@ -509,6 +514,7 @@ export class DomovoiDaemon {
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
+  #rpcOutbound: RpcOutboundBackpressure
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -524,6 +530,7 @@ export class DomovoiDaemon {
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
+    this.#rpcOutbound = new RpcOutboundBackpressure(options.rpcOutboundBackpressure)
     const machinePlatform = platform()
     const machineArch = arch()
     const machineName = options.machineIdentity?.label ?? hostname()
@@ -718,6 +725,7 @@ export class DomovoiDaemon {
       maxPayload: maximumWebSocketPayloadBytes,
     })
     this.#websocket.on("connection", (socket, request) => {
+      socket.once("close", () => this.#rpcOutbound.forget(socket))
       socket.on("error", (error: Error & { code?: string }) => {
         if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
           this.#reportError("Domovoi WebSocket failed", error)
@@ -809,6 +817,7 @@ export class DomovoiDaemon {
       failures.push(error)
     }
     this.#closeAllTerminals()
+    this.#rpcOutbound.dispose()
     for (const client of this.#websocket?.clients ?? []) client.close(1001, "daemon stopping")
 
     try {
@@ -844,7 +853,11 @@ export class DomovoiDaemon {
 
   #send(socket: WebSocket, payload: unknown): void {
     this.#completeAudit(socket, payload)
-    socket.send(JSON.stringify(payload))
+    this.#sendWithoutAudit(socket, payload)
+  }
+
+  #sendWithoutAudit(socket: WebSocket, payload: unknown): void {
+    this.#rpcOutbound.send(socket, JSON.stringify(payload))
   }
 
   #appendAudit(input: AuditAppendInput): void {
@@ -959,7 +972,18 @@ export class DomovoiDaemon {
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
         && this.#deviceCredentialActive(client)
-      ) client.send(message)
+      ) {
+        this.#rpcOutbound.notify(
+          client,
+          method,
+          message,
+          () => JSON.stringify({
+            jsonrpc: "2.0",
+            method: "workspace.changed",
+            params: workspaceSnapshotForClient(this.#snapshot),
+          }),
+        )
+      }
     }
   }
 
@@ -1434,11 +1458,11 @@ export class DomovoiDaemon {
         action: "security.duplicate-request-id",
         outcome: "denied",
       })
-      socket.send(JSON.stringify({
+      this.#sendWithoutAudit(socket, {
         jsonrpc: "2.0",
         id: request.id,
         error: { code: invalidRequest, message: "Request id is already in flight" },
-      }))
+      })
       return
     }
 
