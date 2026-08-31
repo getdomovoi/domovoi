@@ -99,6 +99,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   readonly #identity: OpenCodeAdapterIdentity
   #runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined
   #connection: Promise<void> | undefined
+  #closed = false
   #sessions = new Map<string, Session>()
   #pendingSessionLoads = new Map<string, PendingSessionLoad>()
   #directories = new Map<string, DirectoryStream>()
@@ -117,14 +118,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   async connect(): Promise<void> {
+    if (this.#closed) throw new Error(`${this.#identity.providerName} adapter closed`)
     if (this.#runtime) return
     this.#connection ??= this.#factory().then((runtime) => {
-      this.#runtime = runtime
+      if (this.#closed) runtime.server.close()
+      else this.#runtime = runtime
     })
+    const connection = this.#connection
     try {
-      await this.#connection
+      await connection
+      if (this.#closed) throw new Error(`${this.#identity.providerName} adapter closed`)
     } finally {
-      this.#connection = undefined
+      if (this.#connection === connection) this.#connection = undefined
     }
   }
 
@@ -302,12 +307,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   async close(): Promise<void> {
+    this.#closed = true
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
     this.#sessions.clear()
     this.#pendingApprovals.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
+    await this.#connection
   }
 
   async #client(): Promise<OpenCodeClient> {
