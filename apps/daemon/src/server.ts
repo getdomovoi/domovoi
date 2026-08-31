@@ -2060,6 +2060,17 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
           return
         }
+        const crossesAskBoundary = (session.runtime.permissionMode === "ask")
+          !== (params.runtime.permissionMode === "ask")
+        if (session.activeTurnId && crossesAskBoundary) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Stop the active turn before entering or leaving Ask mode",
+          )
+          return
+        }
         const providerChanged = params.runtime.provider !== session.runtime.provider
         const currentThreadKey = session.providerThreadId
           ? providerThreadKey(session.runtime.provider, session.providerThreadId)
