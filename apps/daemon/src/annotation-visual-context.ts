@@ -44,7 +44,11 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
   readonly #protectedRefs: (() => Iterable<string> | Promise<Iterable<string>>) | undefined
   readonly #removeFile: (path: string) => Promise<void>
   readonly #reportRetentionOverflow: ((input: { fileCount: number; totalBytes: number }) => void) | undefined
+  readonly #reportRetentionError: ((error: unknown) => void) | undefined
+  readonly #scheduleRetentionReconciliation: (task: () => Promise<void>) => void
   readonly #reservedRefs = new Map<string, number>()
+  readonly #publishingRefs = new Map<string, number>()
+  #pruneTail: Promise<void> = Promise.resolve()
 
   constructor(options: {
     root: string
@@ -54,6 +58,8 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     protectedRefs?: () => Iterable<string> | Promise<Iterable<string>>
     removeFile?: (path: string) => Promise<void>
     reportRetentionOverflow?: (input: { fileCount: number; totalBytes: number }) => void
+    reportRetentionError?: (error: unknown) => void
+    scheduleRetentionReconciliation?: (task: () => Promise<void>) => void
   }) {
     this.#root = options.root
     this.#renderer = options.renderer
@@ -62,6 +68,9 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     this.#protectedRefs = options.protectedRefs
     this.#removeFile = options.removeFile ?? unlink
     this.#reportRetentionOverflow = options.reportRetentionOverflow
+    this.#reportRetentionError = options.reportRetentionError
+    this.#scheduleRetentionReconciliation = options.scheduleRetentionReconciliation
+      ?? ((task) => { setImmediate(() => { void task().catch(() => {}) }) })
   }
 
   async capture(input: {
@@ -106,6 +115,7 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     const ref = `crop-${digest}`
     const extension = extensionFor(input.mimeType)
     this.#reservedRefs.set(ref, (this.#reservedRefs.get(ref) ?? 0) + 1)
+    let publish = false
     try {
       await mkdir(this.#root, { recursive: true, mode: 0o700 })
       try {
@@ -116,7 +126,8 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
       }
-      await this.#prune(ref)
+      await this.#serializedPrune(ref)
+      publish = true
       return {
         status: "available",
         ref,
@@ -130,11 +141,56 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
       const reservations = this.#reservedRefs.get(ref) ?? 1
       if (reservations === 1) this.#reservedRefs.delete(ref)
       else this.#reservedRefs.set(ref, reservations - 1)
+      if (publish) this.#deferRetentionReconciliation(ref)
     }
   }
 
-  async #prune(currentRef: string): Promise<void> {
-    const protectedRefs = new Set<string>([currentRef])
+  #deferRetentionReconciliation(ref: string): void {
+    this.#publishingRefs.set(ref, (this.#publishingRefs.get(ref) ?? 0) + 1)
+    const reconcile = async () => {
+      try {
+        await this.#serializedReconciliation(ref)
+      } catch (error) {
+        this.#reportReconciliationError(error)
+      }
+    }
+    try {
+      this.#scheduleRetentionReconciliation(reconcile)
+    } catch (error) {
+      this.#releasePublication(ref)
+      this.#reportReconciliationError(error)
+    }
+  }
+
+  #reportReconciliationError(error: unknown): void {
+    try {
+      this.#reportRetentionError?.(error)
+    } catch {}
+  }
+
+  #releasePublication(ref: string): void {
+    const publications = this.#publishingRefs.get(ref) ?? 1
+    if (publications === 1) this.#publishingRefs.delete(ref)
+    else this.#publishingRefs.set(ref, publications - 1)
+  }
+
+  async #serializedPrune(currentRef?: string): Promise<void> {
+    const prune = this.#pruneTail.then(() => this.#prune(currentRef))
+    this.#pruneTail = prune.catch(() => {})
+    await prune
+  }
+
+  async #serializedReconciliation(ref: string): Promise<void> {
+    const prune = this.#pruneTail.then(async () => {
+      this.#releasePublication(ref)
+      await this.#prune()
+    })
+    this.#pruneTail = prune.catch(() => {})
+    await prune
+  }
+
+  async #prune(currentRef?: string): Promise<void> {
+    const protectedRefs = new Set<string>(currentRef ? [currentRef] : [])
     for (const ref of await this.#protectedRefs?.() ?? []) {
       if (/^crop-[a-f0-9]{64}$/.test(ref)) protectedRefs.add(ref)
     }
@@ -162,7 +218,11 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
     let totalBytes = files.reduce((total, file) => total + file.size, 0)
     for (const file of files) {
       if (fileCount <= this.#maximumFileCount && totalBytes <= this.#maximumTotalBytes) break
-      if (protectedRefs.has(file.ref) || this.#reservedRefs.has(file.ref)) continue
+      if (
+        protectedRefs.has(file.ref)
+        || this.#reservedRefs.has(file.ref)
+        || this.#publishingRefs.has(file.ref)
+      ) continue
       try {
         await this.#removeFile(join(this.#root, file.name))
       } catch (error) {

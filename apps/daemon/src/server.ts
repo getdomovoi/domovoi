@@ -549,6 +549,10 @@ export class DomovoiDaemon {
           context: "annotation crop retention",
           detail: `Protected crop retention exceeds bounds (${fileCount} files, ${totalBytes} bytes)`,
         }),
+        reportRetentionError: (error) => this.#errorSink({
+          context: "annotation crop retention",
+          detail: error instanceof Error ? error.message : String(error),
+        }),
       })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,

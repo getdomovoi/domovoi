@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, unlink, utimes } from "node:fs/promises"
+import { mkdtemp, readFile, unlink, utimes, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -191,6 +191,7 @@ describe("AnnotationVisualContextService", () => {
       height: 8,
     })
     if (second.status !== "available") throw new Error("crop should be available")
+    protectedRefs.add(second.ref)
     expect(reportRetentionOverflow).toHaveBeenCalledWith(expect.objectContaining({ fileCount: 2 }))
     await expect(service.read(first.ref, "image/png")).resolves.toBeDefined()
     await expect(service.read(second.ref, "image/png")).resolves.toBeDefined()
@@ -201,10 +202,12 @@ describe("AnnotationVisualContextService", () => {
     roots.push(root)
     const removalStarted = deferred()
     const releaseRemoval = deferred()
+    const protectedRefs = new Set<string>()
     let removalCount = 0
     const service = new AnnotationVisualContextService({
       root,
       maximumFileCount: 1,
+      protectedRefs: () => protectedRefs,
       removeFile: async (path) => {
         removalCount += 1
         if (removalCount === 1) {
@@ -224,32 +227,112 @@ describe("AnnotationVisualContextService", () => {
     if (seed.status !== "available") throw new Error("seed crop should be available")
     await utimes(join(root, `${seed.ref}.png`), new Date(0), new Date(0))
 
+    const publish = async (store: ReturnType<AnnotationVisualContextService["storeUpload"]>) => {
+      const result = await store
+      if (result.status !== "available") throw new Error("concurrent crop should be available")
+      protectedRefs.add(result.ref)
+      return result
+    }
     const firstBytes = Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 2)])
-    const firstStore = service.storeUpload({
+    const firstStore = publish(service.storeUpload({
       artifactRevision: 2,
       mimeType: "image/png",
       bytes: firstBytes,
       width: 8,
       height: 8,
-    })
+    }))
     await removalStarted.promise
     await utimes(join(root, `${cropRef(firstBytes)}.png`), new Date(1_000), new Date(1_000))
-    const secondStore = service.storeUpload({
+    const secondBytes = Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 3)])
+    const secondStore = publish(service.storeUpload({
       artifactRevision: 3,
       mimeType: "image/png",
-      bytes: Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 3)]),
+      bytes: secondBytes,
       width: 8,
       height: 8,
-    })
+    }))
 
-    const second = await secondStore
+    await waitForFile(join(root, `${cropRef(secondBytes)}.png`))
     releaseRemoval.resolve()
-    const first = await firstStore
-    if (first.status !== "available" || second.status !== "available") {
-      throw new Error("concurrent crops should be available")
-    }
+    const [first, second] = await Promise.all([firstStore, secondStore])
     await expect(service.read(first.ref, "image/png")).resolves.toEqual(new Uint8Array(firstBytes))
     await expect(service.read(second.ref, "image/png")).resolves.toBeDefined()
+  })
+
+  it("reconciles retention after concurrent crops are published", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-crops-"))
+    roots.push(root)
+    const protectedRefs = new Set<string>()
+    const firstPruneStarted = deferred()
+    const releaseFirstPrune = deferred()
+    const scheduled: Array<() => Promise<void>> = []
+    let blockFirstPrune = true
+    let activeRemovals = 0
+    let maximumConcurrentRemovals = 0
+    const options: ConstructorParameters<typeof AnnotationVisualContextService>[0] = {
+      root,
+      maximumFileCount: 1,
+      protectedRefs: async () => {
+        if (blockFirstPrune) {
+          blockFirstPrune = false
+          firstPruneStarted.resolve()
+          await releaseFirstPrune.promise
+        }
+        return protectedRefs
+      },
+      removeFile: async (path) => {
+        activeRemovals += 1
+        maximumConcurrentRemovals = Math.max(maximumConcurrentRemovals, activeRemovals)
+        await Promise.resolve()
+        try {
+          await unlink(path)
+        } finally {
+          activeRemovals -= 1
+        }
+      },
+      scheduleRetentionReconciliation: (task) => scheduled.push(task),
+    }
+    const service = new AnnotationVisualContextService(options)
+    const seedBytes = Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 4)])
+    await writeFile(join(root, `${cropRef(seedBytes)}.png`), seedBytes)
+
+    const firstBytes = Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 5)])
+    const secondBytes = Buffer.concat([png.subarray(0, 8), Buffer.alloc(64, 6)])
+    const publish = async (store: ReturnType<AnnotationVisualContextService["storeUpload"]>) => {
+      const result = await store
+      if (result.status !== "available") throw new Error("concurrent crop should be available")
+      protectedRefs.add(result.ref)
+      await expect(service.read(result.ref, "image/png")).resolves.toBeDefined()
+      return result
+    }
+    const first = publish(service.storeUpload({
+      artifactRevision: 1,
+      mimeType: "image/png",
+      bytes: firstBytes,
+      width: 8,
+      height: 8,
+    }))
+    await firstPruneStarted.promise
+    const second = publish(service.storeUpload({
+      artifactRevision: 2,
+      mimeType: "image/png",
+      bytes: secondBytes,
+      width: 8,
+      height: 8,
+    }))
+    await waitForFile(join(root, `${cropRef(secondBytes)}.png`))
+    releaseFirstPrune.resolve()
+    const [firstResult, secondResult] = await Promise.all([first, second])
+
+    await expect(service.read(firstResult.ref, "image/png")).resolves.toBeDefined()
+    await expect(service.read(secondResult.ref, "image/png")).resolves.toBeDefined()
+    protectedRefs.delete(firstResult.ref)
+    expect(scheduled.length).toBeGreaterThan(0)
+    await Promise.all(scheduled.splice(0).map((task) => task()))
+
+    await expect(service.read(firstResult.ref, "image/png")).rejects.toThrow("Stored crop is unavailable")
+    await expect(service.read(secondResult.ref, "image/png")).resolves.toBeDefined()
+    expect(maximumConcurrentRemovals).toBe(1)
   })
 })
 
@@ -261,4 +344,17 @@ function deferred() {
 
 function cropRef(bytes: Uint8Array): string {
   return `crop-${createHash("sha256").update(bytes).digest("hex")}`
+}
+
+async function waitForFile(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await readFile(path)
+      return
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+  }
+  throw new Error(`Timed out waiting for ${path}`)
 }
