@@ -18,7 +18,7 @@ describe("RPC errors", () => {
     const detail = redactErrorDetail(new Error([
       "provider request failed",
       "Authorization: Bearer super-secret-bearer-token",
-      '\"Authorization\": \"Bearer json-secret-token\"',
+      '"Authorization": "Bearer json-secret-token"',
       "api_key=sk-proj-secret-value",
       "password: hunter2",
       "credentials=shared-credential",

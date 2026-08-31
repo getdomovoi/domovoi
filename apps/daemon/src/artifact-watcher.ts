@@ -119,7 +119,8 @@ export class ArtifactWatcher {
       const next = new Map(scan.files.map((file) => [file.path, file.fingerprint]))
       for (const file of scan.files) {
         if (this.#known.get(file.path) === file.fingerprint) continue
-        const { fingerprint: _, ...change } = file
+        const { fingerprint, ...change } = file
+        void fingerprint
         this.#onChange(change)
       }
       this.#known = next

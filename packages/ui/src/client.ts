@@ -250,7 +250,6 @@ export class DomovoiClient extends EventTarget {
         return
       }
 
-      let timer: ReturnType<typeof setTimeout> | undefined
       const onAbort = () => {
         const pending = this.#pending.get(id)
         if (!pending) return
@@ -259,7 +258,7 @@ export class DomovoiClient extends EventTarget {
         pending.reject(requestAbortError(options.signal!))
       }
       const cleanup = () => {
-        if (timer !== undefined) clearTimeout(timer)
+        clearTimeout(timer)
         options.signal?.removeEventListener("abort", onAbort)
       }
       const pending: PendingRequest = {
@@ -269,7 +268,7 @@ export class DomovoiClient extends EventTarget {
         cleanup,
       }
       this.#pending.set(id, pending)
-      timer = setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.#pending.get(id) !== pending) return
         this.#pending.delete(id)
         pending.cleanup()

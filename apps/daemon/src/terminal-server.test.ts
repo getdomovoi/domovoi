@@ -5,7 +5,11 @@ import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import {
+  demoWorkspace,
+  type RpcMethod,
+  type RpcResult,
+} from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./codex"
 import { DomovoiDaemon } from "./server"
@@ -15,6 +19,7 @@ import type { WorkspaceService } from "./workspace"
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
+type TestRpcResponse<M extends RpcMethod> = Record<string, unknown> & { result: RpcResult<M> }
 
 function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   const turns = snapshot.sessions.flatMap((session) => session.activeTurnId
@@ -76,14 +81,14 @@ describe("terminal RPC", () => {
       socket.once("error", reject)
     })
     let id = 0
-    const rpc = (method: string, params: Record<string, unknown>) => {
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
       const requestId = ++id
-      const response = new Promise<Record<string, any>>((resolve) => {
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
         const receive = (data: WebSocket.RawData) => {
           const message = JSON.parse(data.toString()) as { id?: number }
           if (message.id !== requestId) return
           socket.off("message", receive)
-          resolve(message as Record<string, any>)
+          resolve(message as TestRpcResponse<M>)
         }
         socket.on("message", receive)
       })
@@ -106,7 +111,7 @@ describe("terminal RPC", () => {
         failures: [expect.objectContaining({ target: "persistence" })],
       },
     })
-    expect(stopped.result.failures[0].message.length).toBeLessThanOrEqual(512)
+    expect(stopped.result.failures[0]!.message.length).toBeLessThanOrEqual(512)
     expect(terminal.kill).toHaveBeenCalledOnce()
     socket.close()
   })
@@ -151,14 +156,14 @@ describe("terminal RPC", () => {
       socket.once("error", reject)
     })
     let id = 0
-    const rpc = (method: string, params: Record<string, unknown>) => {
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
       const requestId = ++id
-      const response = new Promise<Record<string, any>>((resolve) => {
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
         const receive = (data: WebSocket.RawData) => {
           const message = JSON.parse(data.toString()) as { id?: number }
           if (message.id !== requestId) return
           socket.off("message", receive)
-          resolve(message as Record<string, any>)
+          resolve(message as TestRpcResponse<M>)
         }
         socket.on("message", receive)
       })
@@ -246,14 +251,14 @@ describe("terminal RPC", () => {
       socket.once("error", reject)
     })
     let id = 0
-    const rpc = (method: string, params: Record<string, unknown>) => {
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
       const requestId = ++id
-      const response = new Promise<Record<string, any>>((resolve) => {
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
         const receive = (data: WebSocket.RawData) => {
           const message = JSON.parse(data.toString()) as { id?: number }
           if (message.id !== requestId) return
           socket.off("message", receive)
-          resolve(message as Record<string, any>)
+          resolve(message as TestRpcResponse<M>)
         }
         socket.on("message", receive)
       })
@@ -348,14 +353,14 @@ describe("terminal RPC", () => {
       socket.once("error", reject)
     })
     let id = 0
-    const rpc = (method: string, params: Record<string, unknown>) => {
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
       const requestId = ++id
-      const response = new Promise<Record<string, any>>((resolve) => {
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
         const receive = (data: WebSocket.RawData) => {
           const message = JSON.parse(data.toString()) as { id?: number }
           if (message.id !== requestId) return
           socket.off("message", receive)
-          resolve(message as Record<string, any>)
+          resolve(message as TestRpcResponse<M>)
         }
         socket.on("message", receive)
       })
@@ -540,14 +545,14 @@ describe("terminal RPC", () => {
       socket.once("error", reject)
     })
     let requestId = 0
-    const rpc = (method: string, params: Record<string, unknown>) => {
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
       const id = ++requestId
-      const response = new Promise<Record<string, any>>((resolve) => {
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
         const receive = (data: WebSocket.RawData) => {
           const message = JSON.parse(data.toString()) as { id?: number }
           if (message.id !== id) return
           socket.off("message", receive)
-          resolve(message as Record<string, any>)
+          resolve(message as TestRpcResponse<M>)
         }
         socket.on("message", receive)
       })
@@ -586,9 +591,9 @@ describe("terminal RPC", () => {
       },
     }))
     await observerHello
-    const emergencyNotification = new Promise<Record<string, any>>((resolve) => {
+    const emergencyNotification = new Promise<Record<string, unknown>>((resolve) => {
       const receive = (data: WebSocket.RawData) => {
-        const message = JSON.parse(data.toString()) as Record<string, any>
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
         if (message.method !== "system.emergencyStopped") return
         observer.off("message", receive)
         resolve(message)

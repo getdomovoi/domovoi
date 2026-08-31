@@ -47,7 +47,10 @@ function isId(value: unknown): value is string | null {
     typeof value === "string"
     && value.length > 0
     && value.length <= 512
-    && !/[\u0000-\u001f\u007f]/u.test(value)
+    && [...value].every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint >= 0x20 && codePoint !== 0x7f
+    })
   )
 }
 

@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -31,6 +31,15 @@ it("retains an explicit auto choice when the UI remains in Build mode", () => {
 })
 
 describe("PreviewVariantThumbnail", () => {
+  it("keeps authorization dependencies stable across unrelated artifact replacement", () => {
+    const preview = demoWorkspace.artifacts.find((artifact) => artifact.type === "preview")!
+    const replacement = { ...preview, title: `${preview.title} updated` }
+
+    expect(artifactAuthorizationKey([replacement])).toBe(artifactAuthorizationKey([preview]))
+    expect(artifactAuthorizationKey([{ ...replacement, revision: replacement.revision + 1 }]))
+      .not.toBe(artifactAuthorizationKey([preview]))
+  })
+
   it("renders real cached imagery when available and a truthful fallback otherwise", () => {
     expect(renderToStaticMarkup(<PreviewVariantThumbnail url="blob:domovoi-thumbnail" />)).toContain("<img")
     expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).toContain("PREVIEW")
