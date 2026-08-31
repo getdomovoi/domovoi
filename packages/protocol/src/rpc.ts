@@ -16,6 +16,15 @@ import {
   sessionStateSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
+import {
+  deviceListParamsSchema,
+  devicePairParamsSchema,
+  devicePairResultSchema,
+  deviceRevokeParamsSchema,
+  deviceRotateParamsSchema,
+  devicesResultSchema,
+  pairedDeviceSchema,
+} from "./devices.js"
 import { fleetSnapshotSchema } from "./fleet.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
 import {
@@ -947,6 +956,16 @@ export const rpcMethods = {
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
+  "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
+  "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
+  "device.revoke": {
+    params: deviceRevokeParamsSchema,
+    result: z.object({ device: pairedDeviceSchema }).strict(),
+  },
+  "device.rotate": {
+    params: deviceRotateParamsSchema,
+    result: devicePairResultSchema,
+  },
   "system.pauseAll": {
     params: systemPauseAllParamsSchema,
     result: workspaceSnapshotSchema,

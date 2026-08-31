@@ -828,7 +828,7 @@ export class DomovoiDaemon {
     const actor: AuditActor = this.#authenticatedActors.get(socket)
       ?? { kind: "daemon", component: "rpc" }
     const sessionId = this.#auditSessionId(values)
-    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId"]
+    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
       ?? (method === "skill.setEnabled" && typeof values.id === "string" ? values.id : undefined)
@@ -1706,6 +1706,44 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
+        })
+        return
+      }
+
+      if (
+        method === "device.pair"
+        || method === "device.list"
+        || method === "device.revoke"
+        || method === "device.rotate"
+      ) {
+        const params = rpcMethods[method].params.parse(request.params)
+        const devices = this.#store.devices
+        if (!devices) {
+          this.#error(socket, request.id, internalError, "Device pairing is unavailable")
+          return
+        }
+        // A stolen device credential must not be able to mint more devices or
+        // withdraw the ones that would reveal it.
+        if (method !== "device.list" && this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Managing paired devices requires the daemon credential",
+          )
+          return
+        }
+        const result = method === "device.pair"
+          ? devices.pair({ label: (params as { label: string }).label })
+          : method === "device.list"
+            ? { devices: devices.list() }
+            : method === "device.revoke"
+              ? { device: devices.revoke((params as { deviceId: string }).deviceId) }
+              : devices.rotate((params as { deviceId: string }).deviceId)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(result),
         })
         return
       }
