@@ -6,6 +6,7 @@ export type DaemonEnvironmentConfig = {
   host: string
   port: number
   credentialPath: string
+  machineIdentityPath: string
   authToken?: string
   allowedOrigins?: string[]
   allowRemoteTransport: boolean
@@ -37,6 +38,11 @@ export function parseDaemonEnvironment(
     environment.DOMOVOI_CREDENTIAL_PATH,
     homeDirectory,
   )
+  const machineIdentityPath = parseStatePath(
+    environment.DOMOVOI_MACHINE_IDENTITY_PATH,
+    "DOMOVOI_MACHINE_IDENTITY_PATH",
+    join(homeDirectory, ".domovoi", "machine.json"),
+  )
   const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
   const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
 
@@ -44,6 +50,7 @@ export function parseDaemonEnvironment(
     host,
     port,
     credentialPath,
+    machineIdentityPath,
     ...(authToken !== undefined ? { authToken } : {}),
     ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
     allowRemoteTransport,
@@ -77,10 +84,22 @@ function parseRemoteTransport(value: string | undefined): boolean {
 }
 
 function parseCredentialPath(value: string | undefined, homeDirectory: string): string {
-  if (value === undefined) return join(homeDirectory, ".domovoi", "daemon.token")
+  return parseStatePath(
+    value,
+    "DOMOVOI_CREDENTIAL_PATH",
+    join(homeDirectory, ".domovoi", "daemon.token"),
+  )
+}
+
+function parseStatePath(
+  value: string | undefined,
+  variable: string,
+  fallback: string,
+): string {
+  if (value === undefined) return fallback
   const path = value.trim()
   if (!path) {
-    throw new DaemonConfigurationError("DOMOVOI_CREDENTIAL_PATH cannot be empty")
+    throw new DaemonConfigurationError(`${variable} cannot be empty`)
   }
   return path
 }

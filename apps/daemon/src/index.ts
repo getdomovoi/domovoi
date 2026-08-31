@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
+import { homedir, hostname } from "node:os"
 
 import { DomovoiDaemon } from "./server.js"
 import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
+import { loadOrCreateMachineIdentity } from "./machine-identity.js"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -23,6 +24,7 @@ Environment:
   DOMOVOI_PORT                    Listener port (default: 47831)
   DOMOVOI_AUTH_TOKEN              Bearer token for daemon requests
   DOMOVOI_CREDENTIAL_PATH         Credential file (default: ~/.domovoi/daemon.token)
+  DOMOVOI_MACHINE_IDENTITY_PATH   Machine identity file (default: ~/.domovoi/machine.json)
   DOMOVOI_ALLOWED_ORIGINS         Comma-separated trusted browser origins
   DOMOVOI_ALLOW_REMOTE_TRANSPORT  Set to 1 to permit non-loopback listeners
 `
@@ -58,6 +60,9 @@ async function main() {
   const config = parseDaemonEnvironment(process.env, homedir())
   const authToken = config.authToken
     ?? await loadOrCreateDaemonToken(config.credentialPath)
+  const machineIdentity = await loadOrCreateMachineIdentity(config.machineIdentityPath, {
+    label: hostname(),
+  })
   const daemon = new DomovoiDaemon({
     host: config.host,
     port: config.port,
@@ -65,6 +70,7 @@ async function main() {
     authToken,
     ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
     providerProbe: new CliProviderProbe(),
+    machineIdentity,
   })
 
   const address = await daemon.start()
