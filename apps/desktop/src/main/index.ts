@@ -38,7 +38,9 @@ let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 const deepLinks = new DesktopDeepLinkQueue()
-const ownedDaemon = new OwnedDaemonLifecycle()
+const ownedDaemon = new OwnedDaemonLifecycle((error) => {
+  console.error("Owned daemon failed to stop during desktop shutdown", error)
+})
 const startupMetrics = new DesktopStartupMetrics({
   enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
 })

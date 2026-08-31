@@ -109,4 +109,29 @@ describe("OwnedDaemonLifecycle", () => {
     await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
     expect(daemon.stop).toHaveBeenCalledOnce()
   })
+
+  it("reports a stop failure once and still permits one re-entrant quit", async () => {
+    const stopFailure = new Error("daemon stop failed")
+    const daemon = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => { throw stopFailure }),
+    }
+    const errorSink = vi.fn()
+    const lifecycle = new OwnedDaemonLifecycle(errorSink)
+    const reentrantEvent = { preventDefault: vi.fn() }
+    const quit = vi.fn(() => lifecycle.beforeQuit(reentrantEvent, quit))
+
+    await lifecycle.start(daemon)
+    lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
+    lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
+
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
+    lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
+
+    expect(daemon.stop).toHaveBeenCalledOnce()
+    expect(errorSink).toHaveBeenCalledOnce()
+    expect(errorSink).toHaveBeenCalledWith(stopFailure)
+    expect(quit).toHaveBeenCalledOnce()
+    expect(reentrantEvent.preventDefault).not.toHaveBeenCalled()
+  })
 })
