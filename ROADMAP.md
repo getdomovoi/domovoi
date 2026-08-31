@@ -316,8 +316,9 @@ dependent work starts.
 
 1. **Provider handoff disclosure:** required pre-switch loss disclosure, safe-boundary behavior,
    and the warning difference between switch and fork.
-2. **Skill trust:** capability vocabulary, signature authority, privileged installation, unsigned
-   Build-auto behavior, and fleet declaration semantics.
+2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
+   custody model. Current `.sig` declarations are content-digest-bound but are not
+   cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
 3. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
 4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
