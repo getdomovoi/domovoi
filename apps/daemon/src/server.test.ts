@@ -6334,3 +6334,41 @@ describe("DomovoiDaemon", () => {
       .toHaveLength(1)
   })
 })
+
+describe("adversarially deep JSON-RPC payloads", () => {
+  it("answers deeply nested requests with a bounded error and keeps serving", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const rejections: unknown[] = []
+    const recordRejection = (reason: unknown) => rejections.push(reason)
+    process.on("unhandledRejection", recordRejection)
+    try {
+      const nested = `${"[".repeat(100_000)}1${"]".repeat(100_000)}`
+      const rejected = new Promise<Record<string, any>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, any>))
+      })
+      socket.send(`{"jsonrpc":"2.0","id":1,"method":"workspace.get","params":{"nested":${nested}}}`)
+      await expect(rejected).resolves.toMatchObject({
+        error: { code: -32600, message: "Request does not match JSON-RPC 2.0" },
+      })
+
+      const served = new Promise<Record<string, any>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, any>))
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "workspace.get", params: {} }))
+      await expect(served).resolves.toMatchObject({ id: 2 })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(rejections).toEqual([])
+    } finally {
+      process.off("unhandledRejection", recordRejection)
+      socket.close()
+    }
+  })
+})
