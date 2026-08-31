@@ -3314,7 +3314,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("binds approval receipts and rules to the authenticated client identity", async () => {
+  it("issues immutable connection IDs for approval attribution", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.approvals[0]!.risk = "normal"
     const daemon = new DomovoiDaemon({
@@ -3323,31 +3323,47 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve)
-      socket.once("error", reject)
-    })
+    const connect = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      const request = (id: number, method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+        const listener = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", listener)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", listener)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+      const hello = await request(1, "system.hello", {
+        client: "web",
+        clientId: "spoofed-device-id",
+        clientVersion: "0.0.1",
+        authToken: daemon.authToken,
+      })
+      return { socket, request, hello }
+    }
+    const first = await connect()
+    const second = await connect()
+    const firstConnectionId = (first.hello.result as { connectionId?: string }).connectionId
+    const secondConnectionId = (second.hello.result as { connectionId?: string }).connectionId
 
-    const request = (id: number, method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
-      const listener = (data: WebSocket.RawData) => {
-        const message = JSON.parse(data.toString()) as { id?: number }
-        if (message.id !== id) return
-        socket.off("message", listener)
-        resolve(message as Record<string, unknown>)
-      }
-      socket.on("message", listener)
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
-    })
-
-    await expect(request(1, "system.hello", {
-      client: "web",
-      clientId: "web-operator-7",
+    expect(firstConnectionId).toEqual(expect.any(String))
+    expect(secondConnectionId).toEqual(expect.any(String))
+    expect(firstConnectionId).not.toBe(secondConnectionId)
+    await expect(first.request(2, "system.hello", {
+      client: "desktop",
+      clientId: "changed-device-id",
       clientVersion: "0.0.1",
-      authToken: daemon.authToken,
-    })).resolves.toHaveProperty("result")
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Connection client identity is already established" },
+    })
 
-    const resolved = await request(2, "approval.resolve", {
+    const resolved = await first.request(3, "approval.resolve", {
       approvalId: snapshot.approvals[0]!.id,
       decision: "always-project",
       client: "desktop",
@@ -3357,16 +3373,17 @@ describe("DomovoiDaemon", () => {
       result: {
         approvalRules: [expect.objectContaining({
           createdBy: "web",
-          createdByClientId: "web-operator-7",
+          createdByConnectionId: firstConnectionId,
         })],
         thread: expect.arrayContaining([expect.objectContaining({
           kind: "receipt",
           client: "web",
-          clientId: "web-operator-7",
+          connectionId: firstConnectionId,
         })]),
       },
     })
-    socket.close()
+    first.socket.close()
+    second.socket.close()
   })
 
   it("activates an existing session and rejects unknown sessions", async () => {

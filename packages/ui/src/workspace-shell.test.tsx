@@ -78,7 +78,7 @@ it("does not refetch skills for unrelated workspace updates", () => {
 })
 
 describe("RuntimeControls", () => {
-  it("displays an approval receipt's authenticated client identifier", () => {
+  it("displays an approval receipt's server-issued connection identifier", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.thread.push({
       id: "receipt-client-identity",
@@ -88,13 +88,13 @@ describe("RuntimeControls", () => {
       operation: "Run tests",
       checkpoint: "checkpoint-one",
       client: "web",
-      clientId: "web-operator-7",
+      connectionId: "11111111-1111-4111-8111-111111111111",
       createdAt: "2026-08-31T12:00:00.000Z",
     })
 
     const markup = renderToStaticMarkup(<Thread snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
 
-    expect(markup).toContain("decided from web (web-operator-7)")
+    expect(markup).toContain("decided from web · connection 11111111-1111-4111-8111-111111111111")
   })
 
   it("bounds initial rendered thread work with the canonical effective limit", () => {
