@@ -34,9 +34,35 @@ const rpcMethodNameSchema = z.string().min(1).refine(
   (method) => method.trim() === method,
   "Method names cannot start or end with whitespace",
 )
+
+export const maximumJsonValueDepth = 64
+
+function jsonValueDepthWithinLimit(value: unknown, limit: number): boolean {
+  const pending: Array<{ value: unknown, depth: number }> = [{ value, depth: 0 }]
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    if (current.value === null || typeof current.value !== "object") continue
+    if (current.depth >= limit) return false
+    const children = Array.isArray(current.value)
+      ? current.value
+      : Object.values(current.value as Record<string, unknown>)
+    for (const child of children) pending.push({ value: child, depth: current.depth + 1 })
+  }
+  return true
+}
+
+const jsonValueSchema = z.unknown().superRefine((value, context) => {
+  if (!jsonValueDepthWithinLimit(value, maximumJsonValueDepth)) {
+    context.addIssue({
+      code: "custom",
+      message: `JSON values cannot nest deeper than ${maximumJsonValueDepth} levels`,
+    })
+  }
+}).pipe(z.json())
+
 const rpcParamsSchema = z.union([
-  z.record(z.string(), z.json()),
-  z.array(z.json()),
+  z.record(z.string(), jsonValueSchema),
+  z.array(jsonValueSchema),
 ])
 
 export const rpcRequestSchema = z.object({
@@ -49,13 +75,13 @@ export const rpcRequestSchema = z.object({
 const rpcErrorSchema = z.object({
   code: z.number().int().safe(),
   message: z.string(),
-  data: z.json().optional(),
+  data: jsonValueSchema.optional(),
 }).strict()
 
 const rpcSuccessResponseSchema = z.object({
   jsonrpc: z.literal("2.0"),
   id: requestIdSchema,
-  result: z.json(),
+  result: jsonValueSchema,
   error: z.never().optional(),
 }).strict()
 
