@@ -70,6 +70,8 @@ describe("skill browser", () => {
     expect(markup).toContain("/home/dev/.agents/skills/design-studio/SKILL.md")
     expect(markup).toContain("Unsigned")
     expect(markup).toContain("Excluded from Build auto")
+    expect(markup).toContain("Review and enable this exact skill to use it in Ask, Plan, and Build manual")
+    expect(markup).not.toContain("This skill is used in Ask, Plan, and Build manual")
     expect(markup).toContain("View SKILL.md")
     expect(markup).toContain("Review &amp; enable")
     expect(markup).toContain("sha256:")
@@ -104,6 +106,7 @@ describe("skill browser", () => {
     expect(markup).toContain("Enabled for this project")
     expect(markup).toContain("Review &amp; disable")
     expect(markup).toContain("Enablement does not change signature or trust state")
+    expect(markup).not.toContain("Review and enable this exact skill to use it")
     expect(markup).toContain("Build auto runs without this skill")
   })
 

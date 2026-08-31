@@ -377,7 +377,11 @@ export function SkillBrowser({
                 <AlertTitle>Project review</AlertTitle>
                 <AlertDescription>
                   Enablement does not change signature or trust state. Any content or capability change requires another review.
-                  {selected.trust.state === "untrusted" ? " This skill is used in Ask, Plan, and Build manual. Build auto runs without this skill." : null}
+                  {selected.trust.state === "untrusted"
+                    ? selectedEnabled
+                      ? " This skill is used in Ask, Plan, and Build manual. Build auto runs without this skill."
+                      : " Review and enable this exact skill to use it in Ask, Plan, and Build manual. Build auto will run without it."
+                    : null}
                   {selected.trust.state === "blocked" ? " Blocked skills are never injected into provider context." : null}
                 </AlertDescription>
               </Alert>
