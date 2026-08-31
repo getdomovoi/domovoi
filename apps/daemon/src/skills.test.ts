@@ -20,7 +20,19 @@ async function skill(root: string, directory: string, frontmatter: string): Prom
   return path
 }
 
+function directoryLinkType(platform: NodeJS.Platform): "dir" | "junction" {
+  return platform === "win32" ? "junction" : "dir"
+}
+
 describe("FileSkillCatalog", () => {
+  it.each([
+    ["win32", "junction"],
+    ["linux", "dir"],
+    ["darwin", "dir"],
+  ] as const)("uses %s-compatible directory links", (platform, expected) => {
+    expect(directoryLinkType(platform)).toBe(expected)
+  })
+
   it("binds declared capabilities and conservative trust state to the skill content", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-manifest-"))
     scratchDirectories.push(scratch)
@@ -223,7 +235,7 @@ describe("FileSkillCatalog", () => {
     ]).list()).resolves.toEqual([])
   })
 
-  it.skipIf(process.platform === "win32")("follows user links but not project links outside their root", async () => {
+  it("follows user links but not project links outside their root", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-links-"))
     scratchDirectories.push(scratch)
     const shared = join(scratch, "shared")
@@ -232,9 +244,10 @@ describe("FileSkillCatalog", () => {
     await skill(shared, "plan-preview", "name: plan-preview\ndescription: Render plans as HTML.")
     await mkdir(userRoot, { recursive: true })
     await mkdir(projectRoot, { recursive: true })
-    await symlink(join(shared, "plan-preview"), join(userRoot, "plan-preview"), "dir")
-    await symlink(join(shared, "plan-preview"), join(userRoot, "plan-preview-alias"), "dir")
-    await symlink(join(shared, "plan-preview"), join(projectRoot, "plan-preview"), "dir")
+    const linkType = directoryLinkType(process.platform)
+    await symlink(join(shared, "plan-preview"), join(userRoot, "plan-preview"), linkType)
+    await symlink(join(shared, "plan-preview"), join(userRoot, "plan-preview-alias"), linkType)
+    await symlink(join(shared, "plan-preview"), join(projectRoot, "plan-preview"), linkType)
 
     const skills = await new FileSkillCatalog([
       { path: userRoot, scope: "user", source: "agents" },
