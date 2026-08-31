@@ -1,4 +1,4 @@
-import { StrictMode } from "react"
+import { StrictMode, useEffect } from "react"
 import { createRoot } from "react-dom/client"
 
 import { StartupError, WorkspaceShell } from "@getdomovoi/ui"
@@ -6,11 +6,20 @@ import "@getdomovoi/ui/styles.css"
 
 const root = createRoot(document.getElementById("root")!)
 
+function DesktopLaunchSmoke() {
+  useEffect(() => window.domovoiLaunchSmoke?.ready(), [])
+  return <div data-domovoi-launch-smoke="ready" />
+}
+
 async function renderDesktop(): Promise<void> {
   try {
     if (!window.domovoiDesktop) throw new Error("Desktop bridge is unavailable")
     const rpcToken = await window.domovoiDesktop.getRpcToken()
     if (!rpcToken) throw new Error("Desktop authentication token is unavailable")
+    if (window.domovoiLaunchSmoke) {
+      root.render(<DesktopLaunchSmoke />)
+      return
+    }
     root.render(
       <StrictMode>
         <WorkspaceShell
