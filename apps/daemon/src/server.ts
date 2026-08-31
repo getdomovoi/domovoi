@@ -17,6 +17,7 @@ import {
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolVersion,
+  projectSwitchConfirmationErrorCode,
   rpcMethods,
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
@@ -28,6 +29,7 @@ import {
   type AuditActor,
   type AuditOutcome,
   type ProviderModel,
+  type ProjectSwitchConfirmation,
   type RpcParams,
   type RpcMethod,
   type SessionHistoryPage,
@@ -897,8 +899,18 @@ export class DomovoiDaemon {
     return reportError ? observed : refresh
   }
 
-  #error(socket: WebSocket, id: string | number | null, code: number, message: string): void {
-    this.#send(socket, { jsonrpc: "2.0", id, error: { code, message } })
+  #error(
+    socket: WebSocket,
+    id: string | number | null,
+    code: number,
+    message: string,
+    data?: ProjectSwitchConfirmation,
+  ): void {
+    this.#send(socket, {
+      jsonrpc: "2.0",
+      id,
+      error: { code, message, ...(data ? { data } : {}) },
+    })
   }
 
   #reportError(context: string, error: unknown): void {
@@ -2322,6 +2334,32 @@ export class DomovoiDaemon {
             changed = true
           }
         } else {
+          const sessions = this.#snapshot.sessions.map((session) => ({
+            id: session.id,
+            title: session.title,
+            state: session.state,
+            ...(session.workspacePath ? { workspacePath: session.workspacePath } : {}),
+          }))
+          const confirmation: ProjectSwitchConfirmation = {
+            kind: "project-switch-confirmation",
+            requestedPath: repository.root,
+            sessions,
+            sessionCount: sessions.length,
+            worktreeCount: sessions.filter((session) => session.workspacePath).length,
+          }
+          if (
+            sessions.length > 0
+            && JSON.stringify(params.confirmation) !== JSON.stringify(confirmation)
+          ) {
+            this.#error(
+              socket,
+              request.id,
+              projectSwitchConfirmationErrorCode,
+              "Confirm session removal before switching projects",
+              confirmation,
+            )
+            return
+          }
           this.#closeAllTerminals()
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
