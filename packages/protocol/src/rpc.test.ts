@@ -7,6 +7,7 @@ import {
   auditQueryParamsSchema,
   demoWorkspace,
   helloParamsSchema,
+  maximumJsonValueDepth,
   rpcMethods,
   rpcNotificationSchema,
   rpcRequestSchema,
@@ -563,5 +564,126 @@ describe("session evidence", () => {
     },
   ])("rejects inconsistent evidence aggregates %#", (override) => {
     expect(sessionEvidenceSchema.safeParse({ ...evidence, ...override }).success).toBe(false)
+  })
+})
+
+describe("JSON value depth bounds", () => {
+  const nest = (depth: number): unknown => {
+    let value: unknown = 1
+    for (let index = 0; index < depth; index += 1) value = [value]
+    return value
+  }
+
+  it("rejects adversarially deep request params without throwing", () => {
+    const request = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { payload: nest(100_000) },
+    }
+    let result: ReturnType<typeof rpcRequestSchema.safeParse> | undefined
+    expect(() => {
+      result = rpcRequestSchema.safeParse(request)
+    }).not.toThrow()
+    expect(result?.success).toBe(false)
+  })
+
+  it("rejects adversarially deep response results without throwing", () => {
+    const response = { jsonrpc: "2.0", id: 1, result: nest(100_000) }
+    let result: ReturnType<typeof rpcResponseSchema.safeParse> | undefined
+    expect(() => {
+      result = rpcResponseSchema.safeParse(response)
+    }).not.toThrow()
+    expect(result?.success).toBe(false)
+  })
+
+  it("accepts values exactly at the depth limit and rejects one level deeper", () => {
+    const atLimit = { jsonrpc: "2.0", id: 1, result: nest(maximumJsonValueDepth) }
+    const overLimit = { jsonrpc: "2.0", id: 1, result: nest(maximumJsonValueDepth + 1) }
+    expect(rpcResponseSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcResponseSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("accepts request params exactly at the depth limit and rejects one level deeper", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth),
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth + 1),
+    }
+    expect(rpcRequestSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcRequestSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("counts the params object itself as a nesting level", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth - 1) },
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth) },
+    }
+    expect(rpcRequestSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcRequestSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("accepts notification params exactly at the depth limit and rejects one level deeper", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth),
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth + 1),
+    }
+    expect(rpcNotificationSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcNotificationSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("counts the notification params object itself as a nesting level", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth - 1) },
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth) },
+    }
+    expect(rpcNotificationSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcNotificationSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("keeps rejecting responses that omit a result", () => {
+    expect(rpcResponseSchema.safeParse({ jsonrpc: "2.0", id: 1 }).success).toBe(false)
+  })
+
+  it("still accepts ordinarily nested params and results", () => {
+    const params = { payload: nest(16), note: { a: { b: ["c", { d: null }] } } }
+    expect(rpcRequestSchema.safeParse({
+      jsonrpc: "2.0",
+      id: "req-1",
+      method: "system.hello",
+      params,
+    }).success).toBe(true)
+    expect(rpcResponseSchema.safeParse({
+      jsonrpc: "2.0",
+      id: "req-1",
+      result: params,
+    }).success).toBe(true)
   })
 })
