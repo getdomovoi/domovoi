@@ -2,7 +2,12 @@ import { DatabaseSync } from "node:sqlite"
 
 import { describe, expect, it } from "vitest"
 
-import { maximumFleetMachines, offlineHeartbeatMs, staleHeartbeatMs } from "@getdomovoi/protocol"
+import {
+  maximumFleetMachines,
+  offlineHeartbeatMs,
+  staleHeartbeatMs,
+  type MachineCapability,
+} from "@getdomovoi/protocol"
 
 import { FleetLimitReachedError, SqliteFleetRegistry } from "./fleet-registry.js"
 
@@ -124,7 +129,7 @@ describe("SqliteFleetRegistry", () => {
     }, 1_000)).toThrow()
     expect(() => fleet.record({
       ...localMachine,
-      capabilities: ["mine-bitcoin"] as unknown as string[],
+      capabilities: ["mine-bitcoin"] as unknown as MachineCapability[],
     }, 1_000)).toThrow()
   })
 
