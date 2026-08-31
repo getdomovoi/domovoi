@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url"
 
 import electronPath from "electron"
 
+import { launchSmokeElectronArgs } from "./launch-smoke-args.mjs"
+
 const successMarker = "DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK"
 const timeoutMs = 15_000
 const desktopRoot = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -32,7 +34,11 @@ await Promise.all([
   mkdir(join(profileRoot, "data")),
 ])
 
-const electronArgs = ["--headless", "--disable-gpu", desktopRoot]
+const electronArgs = launchSmokeElectronArgs({
+  platform: process.platform,
+  ci: process.env.CI === "true",
+  desktopRoot,
+})
 const xvfb = process.platform === "linux" ? await executableOnPath("xvfb-run") : undefined
 const command = xvfb ?? electronPath
 const args = xvfb ? ["--auto-servernum", electronPath, ...electronArgs] : electronArgs
