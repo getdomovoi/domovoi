@@ -146,6 +146,31 @@ describe("OpenCodeSdkAdapter", () => {
     expect(server.close).toHaveBeenCalledOnce()
   })
 
+  it("rejects malformed provider model catalogs", async () => {
+    const { client, factory } = harness()
+    client.config.providers.mockResolvedValueOnce({
+      data: { default: {}, providers: [{ id: "anthropic", name: "Anthropic", models: [] }] },
+    } as never)
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await expect(adapter.listModels()).rejects.toThrow(
+      "OpenCode provider catalog returned invalid data",
+    )
+    await adapter.close()
+  })
+
+  it("rejects non-string session identifiers", async () => {
+    const { client, factory } = harness()
+    client.session.create.mockResolvedValueOnce({ data: { id: 42 } } as never)
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await expect(adapter.startThread({
+      cwd: "/worktree",
+      runtime: runtime("build"),
+    })).rejects.toThrow("OpenCode session creation returned invalid data")
+    await adapter.close()
+  })
+
   it("closes a runtime whose factory finishes during adapter close", async () => {
     const { client, server } = harness()
     const factoryResult = deferred<{ client: OpenCodeClient; server: typeof server }>()
