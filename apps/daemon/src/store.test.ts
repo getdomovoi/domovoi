@@ -129,6 +129,22 @@ describe("SqliteWorkspaceStore", () => {
     reopened.close()
   })
 
+  it("keeps paired device credentials across workspace-store reopen", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const first = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const paired = first.devices.pair({ label: "studio-ipad" })
+    first.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.devices.verify(paired.token)?.id).toBe(paired.device.id)
+    expect(reopened.devices.list()).toEqual([
+      expect.objectContaining({ id: paired.device.id, label: "studio-ipad" }),
+    ])
+    reopened.close()
+  })
+
   it("restores daemon-owned workspace state after reopening", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)

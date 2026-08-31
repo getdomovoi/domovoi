@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite"
 import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
+import { SqliteDeviceRegistry } from "./device-registry.js"
 import { redactWorkspaceCopies } from "./secret-redaction.js"
 
 type StoredWorkspace = {
@@ -88,6 +89,7 @@ function finalizeStoredWorkspace(
 export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly path: string
   readonly auditLog: SqliteAuditLog
+  readonly devices: SqliteDeviceRegistry
   #database: DatabaseSync
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
@@ -103,6 +105,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       );
     `)
     this.auditLog = new SqliteAuditLog(this.#database)
+    this.devices = new SqliteDeviceRegistry(this.#database)
 
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
