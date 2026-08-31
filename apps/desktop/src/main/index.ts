@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto"
 import { DomovoiDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
-import { startDesktop, startOwnedDaemon } from "./owned-daemon.js"
+import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
 import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { captureAnnotationPng } from "./annotation-capture.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
@@ -28,11 +28,11 @@ if (process.platform !== "darwin" && process.platform !== "linux" && process.pla
 }
 
 let mainWindow: BrowserWindow | undefined
-let localDaemon: DomovoiDaemon | undefined
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 const deepLinks = new DesktopDeepLinkQueue()
+const ownedDaemon = new OwnedDaemonLifecycle()
 const startupMetrics = new DesktopStartupMetrics({
   enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
 })
@@ -64,7 +64,7 @@ const desktopNotifications = new DesktopNotificationController({
 
 async function ensureDaemon(): Promise<void> {
   const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831, authToken: rpcToken })
-  localDaemon = await startOwnedDaemon(daemon)
+  await ownedDaemon.start(daemon)
 }
 
 function focusMainWindow(): void {
@@ -253,6 +253,6 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
-app.on("before-quit", () => {
-  void localDaemon?.stop()
+app.on("before-quit", (event) => {
+  ownedDaemon.beforeQuit(event, () => app.quit())
 })
