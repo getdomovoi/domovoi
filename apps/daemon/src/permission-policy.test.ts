@@ -38,6 +38,23 @@ describe("permissionDecisionFor", () => {
     })
   })
 
+  it.each([
+    "git show HEAD:.env",
+    "git show HEAD:.ssh/config",
+  ])("hard-gates secret paths selected from Git objects: %s", (command) => {
+    expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
+      action: "review",
+      risk: "hard-gate",
+    })
+  })
+
+  it("keeps non-secret Git object inspection bounded in Build auto", () => {
+    expect(permissionDecisionFor({
+      runtime: runtime(true),
+      command: "git show HEAD:README.md",
+    })).toEqual({ action: "allow", risk: "normal" })
+  })
+
   it.each(["pnpm test", "git diff --check", "pwd"])(
     "auto-allows the bounded Build-auto operation %s",
     (command) => {
