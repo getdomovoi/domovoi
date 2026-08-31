@@ -167,7 +167,7 @@ workflow without becoming a code editor.
 Priority: `P1`. Keep code and execution on the selected machine while one client controls the
 fleet.
 
-- [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
+- [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
 - [ ] Add device pairing, revocation, and credential rotation
 - [ ] Add a fleet registry and machine selector to the shared protocol and UI
