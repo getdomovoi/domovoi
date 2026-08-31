@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { Worker } from "node:worker_threads"
 
 import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -20,7 +21,8 @@ export interface WorkspaceStore {
   readonly fleet?: FleetRegistry
   load(): WorkspaceSnapshot
   save(snapshot: WorkspaceSnapshot): void
-  close(): void
+  saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
+  close(): void | Promise<void>
 }
 
 export type WorkspaceStoreOptions = {
@@ -89,12 +91,110 @@ function finalizeStoredWorkspace(
   }
 }
 
+type WriterResponse = {
+  id: number
+  error?: string
+}
+
+const workspaceWriterSource = String.raw`
+const { existsSync, chmodSync } = require("node:fs")
+const { DatabaseSync } = require("node:sqlite")
+const { parentPort, workerData } = require("node:worker_threads")
+
+async function start() {
+  const { workspaceSnapshotSchema } = await import(workerData.protocolUrl)
+  const database = new DatabaseSync(workerData.path)
+  database.exec("PRAGMA journal_mode = WAL;")
+  const save = database.prepare(
+    "INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, ?, ?) " +
+    "ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at",
+  )
+  parentPort.on("message", (message) => {
+    try {
+      if (message.close) {
+        database.close()
+        parentPort.postMessage({ id: message.id })
+        return
+      }
+      const validated = workspaceSnapshotSchema.parse(message.snapshot)
+      save.run(JSON.stringify(validated), message.updatedAt)
+      if (process.platform !== "win32") {
+        for (const path of [workerData.path, workerData.path + "-wal", workerData.path + "-shm"]) {
+          if (existsSync(path)) chmodSync(path, 0o600)
+        }
+      }
+      parentPort.postMessage({ id: message.id })
+    } catch (error) {
+      parentPort.postMessage({
+        id: message.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  })
+}
+
+start().catch((error) => { throw error })
+`
+
+class AsyncWorkspaceWriter {
+  readonly #worker: Worker
+  readonly #pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
+  #nextId = 0
+  #closing: Promise<void> | undefined
+
+  constructor(path: string) {
+    this.#worker = new Worker(workspaceWriterSource, {
+      eval: true,
+      workerData: { path, protocolUrl: import.meta.resolve("@getdomovoi/protocol") },
+    })
+    this.#worker.on("message", (response: WriterResponse) => {
+      const pending = this.#pending.get(response.id)
+      if (!pending) return
+      this.#pending.delete(response.id)
+      if (response.error) pending.reject(new Error(response.error))
+      else pending.resolve()
+    })
+    this.#worker.on("error", (error) => this.#rejectPending(error))
+    this.#worker.on("exit", (code) => {
+      if (code !== 0 && !this.#closing) {
+        this.#rejectPending(new Error(`Workspace persistence worker exited with code ${code}`))
+      }
+    })
+  }
+
+  write(snapshot: WorkspaceSnapshot): Promise<void> {
+    return this.#request({ snapshot, updatedAt: new Date().toISOString() })
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing
+    this.#closing = this.#request({ close: true }).then(async () => {
+      await this.#worker.terminate()
+    })
+    return this.#closing
+  }
+
+  #request(message: Record<string, unknown>): Promise<void> {
+    const id = ++this.#nextId
+    return new Promise<void>((resolve, reject) => {
+      this.#pending.set(id, { resolve, reject })
+      this.#worker.postMessage({ id, ...message })
+    })
+  }
+
+  #rejectPending(error: Error): void {
+    for (const pending of this.#pending.values()) pending.reject(error)
+    this.#pending.clear()
+  }
+}
+
 export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly path: string
   readonly auditLog: SqliteAuditLog
   readonly devices: SqliteDeviceRegistry
   readonly fleet: SqliteFleetRegistry
   #database: DatabaseSync
+  #writer: AsyncWorkspaceWriter | undefined
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
@@ -149,6 +249,21 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   save(snapshot: WorkspaceSnapshot): void {
     const validated = workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot))
+    this.#writeValidated(validated)
+  }
+
+  async saveAsync(snapshot: WorkspaceSnapshot): Promise<void> {
+    const sanitized = redactWorkspaceCopies(snapshot)
+    if (this.path === ":memory:") {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      this.#writeValidated(workspaceSnapshotSchema.parse(sanitized))
+      return
+    }
+    this.#writer ??= new AsyncWorkspaceWriter(this.path)
+    await this.#writer.write(sanitized)
+  }
+
+  #writeValidated(snapshot: WorkspaceSnapshot): void {
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)
@@ -157,12 +272,16 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           snapshot = excluded.snapshot,
           updated_at = excluded.updated_at
       `)
-      .run(JSON.stringify(validated), new Date().toISOString())
+      .run(JSON.stringify(snapshot), new Date().toISOString())
     this.#restrictFilePermissions()
   }
 
-  close(): void {
-    this.#database.close()
+  close(): void | Promise<void> {
+    if (!this.#writer) {
+      this.#database.close()
+      return
+    }
+    return this.#writer.close().then(() => this.#database.close())
   }
 
   #restrictFilePermissions(): void {

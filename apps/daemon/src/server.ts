@@ -24,7 +24,6 @@ import {
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
   workspaceDeltaSchema,
-  workspaceSnapshotSchema,
   type Annotation,
   type Artifact,
   type ArtifactAccessPurpose,
@@ -805,7 +804,7 @@ export class DomovoiDaemon {
     try {
       await this.#providerRefresh
       await this.#mutations.drain()
-      if (this.#deltaFlush) this.#saveAgentState(false)
+      if (this.#deltaFlush) await this.#saveAgentState(false)
     } catch (error) {
       failures.push(error)
     }
@@ -830,7 +829,7 @@ export class DomovoiDaemon {
       result.status === "rejected" ? [result.reason] : []
     ))
     try {
-      this.#store.close()
+      await this.#store.close()
     } catch (error) {
       failures.push(error)
     }
@@ -982,9 +981,9 @@ export class DomovoiDaemon {
     }))
     await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
-      workspaceSnapshotSchema.parse(this.#snapshot)
-      this.#store.save(this.#snapshot)
-      this.#broadcastSnapshot()
+      const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+      await this.#persistSnapshot()
+      this.#broadcastNotification("workspace.changed", clientSnapshot)
     })
   }
 
@@ -1447,7 +1446,7 @@ export class DomovoiDaemon {
       let changed = false
       let alreadyPersisted = false
       if (method === "system.emergencyStop") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"system.emergencyStop">
         const actor = this.#authenticatedActors.get(socket)
         const client = actor?.kind === "client" ? actor.client : params.client
         const result = await this.#enqueueEmergencyStop(client)
@@ -1463,7 +1462,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
           return
         }
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"audit.query">
         const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.query(params, signal),
           this.#agentTimeoutMs,
@@ -1477,7 +1476,7 @@ export class DomovoiDaemon {
         return
       }
       if (method === "session.usage") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.usage">
         if (!this.#snapshot.sessions.some((session) => session.id === params.sessionId)) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
@@ -1494,7 +1493,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
           return
         }
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"audit.export">
         const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.export(params, signal),
           this.#agentTimeoutMs,
@@ -1508,7 +1507,7 @@ export class DomovoiDaemon {
         return
       }
       if (method === "terminal.create") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"terminal.create">
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
@@ -1619,7 +1618,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "terminal.claim") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"terminal.claim">
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
@@ -1636,7 +1635,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "terminal.input") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"terminal.input">
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
@@ -1656,7 +1655,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "terminal.resize") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"terminal.resize">
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
@@ -1678,7 +1677,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "terminal.close") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"terminal.close">
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
@@ -1698,7 +1697,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "artifact.authorize") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"artifact.authorize">
         const artifact = this.#snapshot.artifacts.find(
           (candidate) => candidate.id === params.artifactId
             && candidate.sessionId === params.sessionId
@@ -1737,7 +1736,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "runtime.models") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"runtime.models">
         let models: ProviderModel[]
         try {
           models = await this.#listProviderModels(params.provider)
@@ -1938,7 +1937,6 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        rpcMethods[method].params.parse(request.params)
         const catalog = this.#skillCatalog ?? new FileSkillCatalog(
           skillRoots(homedir(), this.#snapshot.project?.path),
         )
@@ -1961,7 +1959,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.read") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"skill.read">
         const catalog = this.#skillCatalog ?? new FileSkillCatalog(
           skillRoots(homedir(), this.#snapshot.project?.path),
         )
@@ -1979,7 +1977,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.setEnabled") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"skill.setEnabled">
         const project = this.#snapshot.project
         if (!project) {
           this.#error(socket, request.id, invalidParams, "Open a project before reviewing skills")
@@ -2033,7 +2031,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.history") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.history">
         if (!this.#snapshot.sessions.some((session) => session.id === params.sessionId)) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
@@ -2052,7 +2050,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.evidence") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.evidence">
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
@@ -2097,7 +2095,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "system.pauseAll") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"system.pauseAll">
         changed = await this.#pauseSessions(this.#snapshot.sessions.filter(
           (session) => !sessionIsArchiveReadOnly(session)
             && session.providerThreadId
@@ -2106,7 +2104,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.pause") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.pause">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
@@ -2123,7 +2121,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.archive") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.archive">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
@@ -2134,7 +2132,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "annotation.create") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"annotation.create">
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
@@ -2219,7 +2217,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "annotation.reply") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"annotation.reply">
         const annotation = this.#snapshot.annotations.find(
           (candidate) => candidate.id === params.annotationId,
         )
@@ -2246,7 +2244,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "annotation.setStatus") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"annotation.setStatus">
         const annotation = this.#snapshot.annotations.find(
           (candidate) => candidate.id === params.annotationId,
         )
@@ -2346,7 +2344,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.setRuntime") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.setRuntime">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
@@ -2595,7 +2593,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "project.open") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"project.open">
         const repository = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.inspect(params.path, signal),
           this.#agentTimeoutMs,
@@ -2666,7 +2664,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.activate") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.activate">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
@@ -2677,7 +2675,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.create") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.create">
         const project = this.#snapshot.project
         if (!project) {
           this.#error(
@@ -2783,7 +2781,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.fork") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.fork">
         const existingFork = this.#snapshot.sessions.find(
           (candidate) => candidate.forkedFrom?.requestId === params.requestId,
         )
@@ -2964,8 +2962,8 @@ export class DomovoiDaemon {
           createdAt,
         })
         try {
-          workspaceSnapshotSchema.parse(candidate)
-          this.#store.save(candidate)
+          if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
+          else this.#store.save(candidate)
         } catch (error) {
           try {
             await withTimeout(
@@ -2999,7 +2997,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.send") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.send">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (session?.state === "archiving" || session?.state === "archived") {
           this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
@@ -3143,7 +3141,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "checkpoint.create") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"checkpoint.create">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (session?.state === "archiving" || session?.state === "archived") {
           this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
@@ -3189,7 +3187,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "checkpoint.restore") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"checkpoint.restore">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (session?.state === "archiving" || session?.state === "archived") {
           this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
@@ -3254,22 +3252,26 @@ export class DomovoiDaemon {
         changed = true
       }
 
+      const clientSnapshot = changed
+        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        : workspaceSnapshotForClient(this.#snapshot)
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
-      if (changed && !alreadyPersisted) this.#store.save(this.#snapshot)
+      if (changed && !alreadyPersisted) await this.#persistSnapshot()
+      const helloConnectionId = this.#connectionIds.get(socket)
       const result = method === "system.hello"
         ? {
-            ...workspaceSnapshotForClient(this.#snapshot),
-            ...(this.#connectionIds.get(socket) ? { connectionId: this.#connectionIds.get(socket) } : {}),
+            ...clientSnapshot,
+            ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
-        : workspaceSnapshotForClient(this.#snapshot)
+        : clientSnapshot
       this.#send(socket, {
         jsonrpc: "2.0",
         id: request.id,
         result: rpcMethods[method].result.parse(result),
       })
 
-      if (changed) this.#broadcastSnapshot()
+      if (changed) this.#broadcastNotification("workspace.changed", clientSnapshot)
     } catch (error) {
       if (signal?.aborted) {
         this.#error(socket, request.id, internalError, "Operation cancelled by emergency stop")
@@ -3295,7 +3297,7 @@ export class DomovoiDaemon {
         outcome: "failed",
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
       })
-      this.#handleProviderDisconnect(provider, event.reason)
+      await this.#handleProviderDisconnect(provider, event.reason)
       return
     }
     const threadId = threadIdForAgentEvent(event)
@@ -3610,11 +3612,11 @@ export class DomovoiDaemon {
       }
       this.#scheduleDeltaFlush()
     } else {
-      this.#flushAgentState()
+      await this.#flushAgentState()
     }
   }
 
-  #handleProviderDisconnect(provider: string, reason: string): void {
+  async #handleProviderDisconnect(provider: string, reason: string): Promise<void> {
     const hadConnection = this.#connectedAgents.delete(provider)
       || this.#agentConnections.has(provider)
       || this.#providerModels.has(provider)
@@ -3656,7 +3658,7 @@ export class DomovoiDaemon {
         (approval) => !affectedSessionIds.has(approval.sessionId),
       )
     }
-    if (changed) this.#flushAgentState()
+    if (changed) await this.#flushAgentState()
   }
 
   #providerEpoch(provider: string): number {
@@ -3864,7 +3866,7 @@ export class DomovoiDaemon {
     }
 
     try {
-      this.#saveAgentState(false)
+      await this.#saveAgentState(false)
     } catch (error) {
       failures.push({
         target: "persistence",
@@ -4086,7 +4088,7 @@ export class DomovoiDaemon {
         detail: "Domovoi will preserve history and a final checkpoint, then stop active resources and remove only the isolated worktree.",
         createdAt: requestedAt,
       })
-      this.#saveAgentState()
+      await this.#saveAgentState()
     }
 
     this.#closeSessionTerminals(sessionId)
@@ -4122,7 +4124,7 @@ export class DomovoiDaemon {
       this.#snapshot.approvals = this.#snapshot.approvals.filter(
         (candidate) => candidate.id !== approval.id,
       )
-      this.#saveAgentState(false)
+      await this.#saveAgentState(false)
     }
 
     if (session.activeTurnId && session.providerThreadId) {
@@ -4137,7 +4139,7 @@ export class DomovoiDaemon {
           "Archive turn interrupt timed out",
         )
         delete session.activeTurnId
-        this.#saveAgentState(false)
+        await this.#saveAgentState(false)
       } catch (error) {
         this.#reportError(
           `Domovoi could not interrupt active turn for archive ${session.id}; stopping provider`,
@@ -4157,7 +4159,7 @@ export class DomovoiDaemon {
       this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
       delete session.providerThreadId
       delete session.activeTurnId
-      this.#saveAgentState(false)
+      await this.#saveAgentState(false)
     }
 
     if (!session.providerThreadId && unresolvedApprovalIds.size > 0) {
@@ -4177,7 +4179,7 @@ export class DomovoiDaemon {
       this.#snapshot.approvals = this.#snapshot.approvals.filter(
         ({ id }) => !unresolvedApprovalIds.has(id),
       )
-      this.#saveAgentState(false)
+      await this.#saveAgentState(false)
     }
 
     if (!session.archiveCheckpoint) {
@@ -4213,7 +4215,7 @@ export class DomovoiDaemon {
             : undefined
       }
       if (!session.archiveCheckpoint) throw new Error("Session archive has no durable checkpoint")
-      this.#saveAgentState(false)
+      await this.#saveAgentState(false)
     }
 
     if (session.workspacePath) {
@@ -4227,7 +4229,7 @@ export class DomovoiDaemon {
         "Archive worktree cleanup timed out",
       )
       delete session.workspacePath
-      this.#saveAgentState(false)
+      await this.#saveAgentState(false)
     }
 
     const archivedAt = new Date().toISOString()
@@ -4242,7 +4244,7 @@ export class DomovoiDaemon {
       detail: `Final checkpoint ${session.archiveCheckpoint.slice(0, 8)} is retained. Provider, terminal, and isolated worktree resources were cleaned up; the source checkout's branch, HEAD, status, and files remain unchanged.`,
       createdAt: archivedAt,
     })
-    this.#saveAgentState(false)
+    await this.#saveAgentState(false)
   }
 
   async #loadProviderThreadForArchive(
@@ -4388,7 +4390,7 @@ export class DomovoiDaemon {
       })
     }
     session.updatedAt = new Date().toISOString()
-    this.#flushAgentState()
+    await this.#flushAgentState()
   }
 
   #closeArtifactWatchers(): void {
@@ -4410,26 +4412,33 @@ export class DomovoiDaemon {
     if (this.#deltaFlush) clearTimeout(this.#deltaFlush)
     this.#deltaFlush = setTimeout(() => {
       this.#deltaFlush = undefined
-      this.#flushAgentState(false)
+      void this.#flushAgentState(false)
     }, 32)
   }
 
-  #flushAgentState(broadcast = true): void {
+  async #flushAgentState(broadcast = true): Promise<void> {
     try {
-      this.#saveAgentState(broadcast)
+      await this.#saveAgentState(broadcast)
     } catch (error) {
       this.#reportError("Domovoi could not persist agent state", error)
     }
   }
 
-  #saveAgentState(broadcast = true): void {
+  async #persistSnapshot(): Promise<void> {
+    if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
+    else this.#store.save(this.#snapshot)
+  }
+
+  async #saveAgentState(broadcast = true): Promise<void> {
     if (this.#deltaFlush) {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
     }
-    workspaceSnapshotSchema.parse(this.#snapshot)
-    this.#store.save(this.#snapshot)
-    if (broadcast) this.#broadcastSnapshot()
+    const clientSnapshot = broadcast
+      ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
+      : undefined
+    await this.#persistSnapshot()
+    if (clientSnapshot) this.#broadcastNotification("workspace.changed", clientSnapshot)
   }
 
   async #quarantineProviderThread(
@@ -4459,9 +4468,9 @@ export class DomovoiDaemon {
       createdAt: session.updatedAt,
     })
     try {
-      workspaceSnapshotSchema.parse(this.#snapshot)
-      this.#store.save(this.#snapshot)
-      this.#broadcastSnapshot()
+      const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+      await this.#persistSnapshot()
+      this.#broadcastNotification("workspace.changed", clientSnapshot)
     } finally {
       try {
         await withTimeout(

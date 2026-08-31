@@ -126,6 +126,59 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("awaits async long-history persistence without starving timers", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread = Array.from({ length: 4_000 }, (_, index) => ({
+      id: `long-history-${index}`,
+      sessionId: snapshot.sessions[0]!.id,
+      kind: "user" as const,
+      body: `message-${index}-${"x".repeat(1_024)}`,
+      createdAt: "2026-08-30T12:00:00.000Z",
+    }))
+    let durable = false
+    const save = vi.fn(() => { throw new Error("synchronous persistence used") })
+    const saveAsync = vi.fn(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      durable = true
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save, saveAsync, close: vi.fn() },
+      agents: {},
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let heartbeats = 0
+    const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
+    const startedAt = performance.now()
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.activate",
+      params: { sessionId: snapshot.sessions[1]!.id, client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      result: { activeSessionId: snapshot.sessions[1]!.id },
+    })
+    const elapsedMs = performance.now() - startedAt
+    clearInterval(heartbeat)
+    expect(durable).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+    expect(saveAsync).toHaveBeenCalledOnce()
+    expect(heartbeats).toBeGreaterThanOrEqual(5)
+    expect(elapsedMs).toBeLessThan(500)
+    socket.close()
+  })
+
   it("protects only valid crop references retained by annotations", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.annotations[0]!.visualContext = {
