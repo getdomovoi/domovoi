@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "packageManager": "pnpm@11.5.3",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.1"
@@ -16,7 +16,7 @@
     "dev": "pnpm --parallel --filter @getdomovoi/daemon --filter @getdomovoi/web dev",
     "dev:desktop": "pnpm --filter @getdomovoi/desktop dev",
     "license:audit": "node scripts/dependency-licenses.mjs",
-    "lint": "pnpm -r --if-present lint",
+    "lint": "eslint \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\" --max-warnings 0",
     "performance:budget": "node scripts/performance-budgets.mjs",
     "prerelease:artifacts": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "release:artifacts": "node scripts/release-artifacts.mjs",
@@ -30,5 +30,11 @@
     "test:install": "node scripts/test-package-install.mjs",
     "test:packages": "node --test scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs scripts/dependency-licenses.test.mjs scripts/package-install-plan.test.mjs scripts/release-artifacts.test.mjs scripts/version-lockstep.test.mjs scripts/workflow-pins.test.mjs && node scripts/test-package-artifacts.mjs",
     "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "typescript-eslint": "^8.68.0"
   }
 }

@@ -41,7 +41,7 @@ function createAdapter(
           return parseAcpModelCatalog(definition.id, result.stdout)
         } catch (error) {
           if (isMissingCommand(error)) continue
-          throw new Error(`${displayName} model catalog is unavailable`)
+          throw new Error(`${displayName} model catalog is unavailable`, { cause: error })
         }
       }
       throw new Error(`${displayName} CLI is unavailable`)

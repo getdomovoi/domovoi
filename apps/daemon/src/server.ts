@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http"
 import { createServer as createSecureServer } from "node:https"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { lstat, readFile, realpath, stat } from "node:fs/promises"
+import { lstat, realpath, stat } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
@@ -14,7 +14,6 @@ import {
   machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
   demoWorkspace,
-  maximumSessionHistoryPageItems,
   maximumTerminalReplayCharacters,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
@@ -1244,7 +1243,7 @@ export class DomovoiDaemon {
     let purpose: ArtifactAccessPurpose = "preview"
     let bridgeChannel: string | undefined
     let parentOrigin: string | undefined
-    let authorized = false
+    let authorized: boolean
     try {
       const requestUrl = new URL(url, "http://domovoi.local")
       artifactId = decodeURIComponent(requestUrl.pathname.slice("/artifacts/".length))
@@ -1553,7 +1552,6 @@ export class DomovoiDaemon {
           cols: params.cols,
           rows: params.rows,
         })
-        let output: TerminalOutputBatcher
         const outputBackpressure = new TerminalOutputBackpressure(
           process,
           () => this.#maximumAuthenticatedClientBufferedBytes(),
@@ -1561,7 +1559,7 @@ export class DomovoiDaemon {
           undefined,
           () => output.resume(params.terminalId),
         )
-        output = new TerminalOutputBatcher((terminalId, data) => {
+        const output = new TerminalOutputBatcher((terminalId, data) => {
           this.#broadcastNotification("terminal.output", { terminalId, data })
           return outputBackpressure.observe()
         })
@@ -4712,13 +4710,12 @@ function withAbortTimeout<T>(
   return new Promise((resolvePromise, rejectPromise) => {
     const timeoutError = new OperationTimeoutError(message)
     const startedAt = Date.now()
-    let timer: ReturnType<typeof setTimeout>
     let abortFromParent = () => {}
     const cleanup = () => {
       clearTimeout(timer)
       parentSignal?.removeEventListener("abort", abortFromParent)
     }
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       controller.abort(timeoutError)
       cleanup()
       rejectPromise(timeoutError)
