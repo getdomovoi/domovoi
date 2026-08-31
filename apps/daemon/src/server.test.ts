@@ -2656,6 +2656,10 @@ describe("DomovoiDaemon", () => {
     const revoked = new Promise<void>((resolve) => {
       admin.once("message", () => resolve())
     })
+    const deviceClosed = new Promise<void>((resolve) => {
+      if (socket.readyState === WebSocket.CLOSED) resolve()
+      else socket.once("close", () => resolve())
+    })
     admin.send(JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
@@ -2663,7 +2667,7 @@ describe("DomovoiDaemon", () => {
       params: { deviceId: issued.device.id, client: "desktop" },
     }))
     await revoked
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await deviceClosed
     notifications.length = 0
     const activated = new Promise<void>((resolve) => {
       admin.once("message", () => resolve())
@@ -2678,8 +2682,7 @@ describe("DomovoiDaemon", () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(notifications).toEqual([])
-    expect(socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING)
-      .toBe(true)
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
     admin.close()
     socket.close()
   })
