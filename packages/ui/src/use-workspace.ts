@@ -189,10 +189,10 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.activateSession(sessionId))
   }, [updateSnapshotFrom])
 
-  const openProject = useCallback(async (path: string) => {
+  const openProject = useCallback(async (path: string, discardSessions = false) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.openProject(path))
+    updateSnapshotFrom(client, await client.openProject(path, discardSessions))
   }, [updateSnapshotFrom])
 
   const createSession = useCallback(async (title: string, runtime: Runtime) => {
