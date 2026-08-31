@@ -5126,6 +5126,36 @@ describe("DomovoiDaemon", () => {
       expect.objectContaining({ body: "unscoped event must not be recorded" }),
     ]))
 
+    const restarted = await rpc("session.restartProviderThread", {
+      sessionId: quarantineSessionId,
+      client: "web",
+    })
+    expect(restarted).toMatchObject({
+      result: {
+        sessions: [expect.objectContaining({
+          id: quarantineSessionId,
+          state: "idle",
+          providerThreadId: "provider-thread-1",
+        })],
+        thread: expect.arrayContaining([expect.objectContaining({
+          sessionId: quarantineSessionId,
+          kind: "system",
+          body: "Provider thread restarted by desktop.",
+          detail: expect.stringContaining("worktree, history, checkpoints, artifacts, and annotations were preserved"),
+        })]),
+      },
+    })
+    expect(agent.startThread).toHaveBeenLastCalledWith({
+      cwd: `/worktrees/${quarantineSessionId}`,
+      runtime,
+    })
+    expect(await rpc("session.restartProviderThread", {
+      sessionId: quarantineSessionId,
+      client: "desktop",
+    })).toMatchObject({
+      error: { code: -32602, message: "Session already has a live provider thread" },
+    })
+
     const steeringCreated = await rpc("session.create", {
       title: "Quarantine timed-out steering",
       runtime,
@@ -5169,6 +5199,111 @@ describe("DomovoiDaemon", () => {
     }).sessions.find((session) => session.id === steeringSessionId)
     expect(steeringSession).toBeDefined()
     expect(steeringSession).not.toHaveProperty("providerThreadId")
+    agent.stopThread.mockClear()
+    store.save.mockImplementationOnce(() => { throw new Error("disk full") })
+    expect(await rpc("session.restartProviderThread", {
+      sessionId: steeringSessionId,
+      client: "web",
+    })).toMatchObject({
+      error: { code: -32603, message: "Internal daemon error" },
+    })
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(await rpc("workspace.get", {})).toMatchObject({
+      result: { sessions: expect.arrayContaining([expect.objectContaining({
+        id: steeringSessionId,
+        state: "failed",
+      })]) },
+    })
+    expect((await rpc("workspace.get", {}) as { result: { sessions: Array<{ id: string; providerThreadId?: string }> } })
+      .result.sessions.find(({ id }) => id === steeringSessionId)).not.toHaveProperty("providerThreadId")
+    agent.stopThread.mockClear()
+    let resolveLateRestart: ((threadId: string) => void) | undefined
+    agent.startThread.mockImplementationOnce(() => new Promise<string>((resolve) => {
+      resolveLateRestart = resolve
+    }))
+    expect(await rpc("session.restartProviderThread", {
+      sessionId: steeringSessionId,
+      client: "desktop",
+    })).toMatchObject({
+      error: { code: -32603, message: "Provider restart timed out" },
+    })
+    resolveLateRestart!("late-restart-thread")
+    await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith("late-restart-thread"))
+    expect((await rpc("workspace.get", {}) as { result: { sessions: Array<{ id: string; providerThreadId?: string }> } })
+      .result.sessions.find(({ id }) => id === steeringSessionId)).not.toHaveProperty("providerThreadId")
+    socket.close()
+  })
+
+  it("rejects provider restart outside a recoverable session", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const noWorktree = snapshot.sessions[0]!
+    noWorktree.state = "failed"
+    delete noWorktree.workspacePath
+    delete noWorktree.providerThreadId
+    const archived = snapshot.sessions[1]!
+    archived.state = "archived"
+    archived.archiveRequestedAt = "2026-08-31T12:00:00.000Z"
+    archived.archiveCheckpoint = "a".repeat(40)
+    archived.archivedAt = "2026-08-31T12:01:00.000Z"
+    delete archived.workspacePath
+    delete archived.providerThreadId
+    const live = snapshot.sessions[2]!
+    live.workspacePath = "/worktrees/live"
+    live.providerThreadId = "thread-live"
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: vi.fn(() => structuredClone(snapshot)),
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agent })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const unauthenticated = new Promise<Record<string, any>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, any>))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "session.restartProviderThread",
+      params: { sessionId: noWorktree.id, client: "web" },
+    }))
+    await expect(unauthenticated).resolves.toMatchObject({
+      error: { code: -32602, message: "Provider restart requires an authenticated connection identity" },
+    })
+    expect(agent.startThread).not.toHaveBeenCalled()
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (sessionId: string) => new Promise<Record<string, any>>((resolve) => {
+      const requestId = ++id
+      socket.on("message", function receive(data) {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        resolve(message)
+      })
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0", id: requestId, method: "session.restartProviderThread",
+        params: { sessionId, client: "desktop" },
+      }))
+    })
+
+    await expect(rpc("missing")).resolves.toMatchObject({ error: { code: -32602, message: "Session does not exist" } })
+    await expect(rpc(noWorktree.id)).resolves.toMatchObject({ error: { code: -32602, message: "Session has no worktree" } })
+    await expect(rpc(archived.id)).resolves.toMatchObject({ error: { code: -32602, message: "Archived sessions are read-only" } })
+    await expect(rpc(live.id)).resolves.toMatchObject({ error: { code: -32602, message: "Session already has a live provider thread" } })
+    expect(agent.startThread).not.toHaveBeenCalled()
     socket.close()
   })
 
