@@ -584,6 +584,7 @@ export class DomovoiDaemon {
     if (this.#http) throw new Error("Daemon is already running")
 
     await this.#recoverSessionArchives()
+    this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
 
     this.#http = createServer((request, response) => {
@@ -3589,6 +3590,69 @@ export class DomovoiDaemon {
           }
         },
       )
+    }
+  }
+
+  #recoverInterruptedTurns(): void {
+    const interrupted = this.#snapshot.sessions.filter(
+      (session) => session.state !== "archiving"
+        && session.state !== "archived"
+        && session.activeTurnId,
+    )
+    if (interrupted.length === 0) return
+
+    const recoveredAt = new Date().toISOString()
+    const candidate = structuredClone(this.#snapshot)
+    const recoveredTurns: Array<{ sessionId: string; turnId: string }> = []
+    const expiredApprovals = candidate.approvals.filter(
+      (approval) => interrupted.some((session) => session.id === approval.sessionId),
+    )
+    const interruptedSessionIds = new Set(interrupted.map((session) => session.id))
+
+    for (const session of candidate.sessions) {
+      if (!interruptedSessionIds.has(session.id) || !session.activeTurnId) continue
+      recoveredTurns.push({ sessionId: session.id, turnId: session.activeTurnId })
+      session.state = "idle"
+      session.updatedAt = recoveredAt
+      delete session.activeTurnId
+      candidate.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId: session.id,
+        kind: "system",
+        body: "Daemon restart interrupted the active turn.",
+        detail: `${expiredApprovals.some((approval) => approval.sessionId === session.id)
+          ? "Pending approval requests were expired. "
+          : ""}The worktree and session history were preserved. Send another message to continue with a new provider turn.`,
+        createdAt: recoveredAt,
+      })
+    }
+
+    candidate.approvals = candidate.approvals.filter(
+      (approval) => !interruptedSessionIds.has(approval.sessionId),
+    )
+
+    workspaceSnapshotSchema.parse(candidate)
+    this.#store.save(candidate)
+    this.#snapshot = candidate
+    for (const recovered of recoveredTurns) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "startup-recovery" },
+        action: "session.turn-interrupted",
+        outcome: "cancelled",
+        sessionId: recovered.sessionId,
+        ...(candidate.project ? { projectId: candidate.project.id } : {}),
+        target: recovered.turnId,
+      })
+    }
+    for (const approval of expiredApprovals) {
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "startup-recovery" },
+        action: "approval.expired",
+        outcome: "cancelled",
+        sessionId: approval.sessionId,
+        ...(candidate.project ? { projectId: candidate.project.id } : {}),
+        target: approval.id,
+      })
     }
   }
 

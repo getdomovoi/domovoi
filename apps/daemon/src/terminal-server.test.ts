@@ -15,6 +15,28 @@ import type { WorkspaceService } from "./workspace"
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 
+function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
+  const turns = snapshot.sessions.flatMap((session) => session.activeTurnId
+    ? [{ sessionId: session.id, state: session.state, activeTurnId: session.activeTurnId }]
+    : [])
+  const affected = new Set(turns.map(({ sessionId }) => sessionId))
+  const approvals = snapshot.approvals.filter((approval) => affected.has(approval.sessionId))
+  for (const turn of turns) {
+    const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
+    session.state = "idle"
+    delete session.activeTurnId
+  }
+  snapshot.approvals = snapshot.approvals.filter((approval) => !affected.has(approval.sessionId))
+  return () => {
+    for (const turn of turns) {
+      const session = snapshot.sessions.find(({ id }) => id === turn.sessionId)!
+      session.state = turn.state
+      session.activeTurnId = turn.activeTurnId
+    }
+    snapshot.approvals.push(...approvals)
+  }
+}
+
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
   await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
@@ -268,6 +290,7 @@ describe("terminal RPC", () => {
     session.providerThreadId = "thread-failed-emergency"
     session.activeTurnId = "turn-failed-emergency"
     snapshot.approvals = []
+    const activateTurns = deferLiveTurns(snapshot)
     let listener: ((event: AgentEvent) => void) | undefined
     const never = () => new Promise<void>(() => {})
     let failedThreadStopAttempts = 0
@@ -308,13 +331,14 @@ describe("terminal RPC", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,
       workspaceService,
       agentTimeoutMs: 10,
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${daemon.authToken}` },
     })
@@ -438,6 +462,7 @@ describe("terminal RPC", () => {
       session.providerThreadId = `thread-emergency-${index}`
       session.activeTurnId = `turn-emergency-${index}`
     }
+    const activeTurnIds = active.map((session) => session.activeTurnId!)
     const checkpointSession = snapshot.sessions[2]!
     checkpointSession.workspacePath = "/worktrees/emergency-checkpoint"
     checkpointSession.runtime.provider = "codex"
@@ -448,6 +473,7 @@ describe("terminal RPC", () => {
       sessionId: session.id,
       providerRequestId: 70 + index,
     }))
+    const activateTurns = deferLiveTurns(snapshot)
 
     const processes = new Map<string, TerminalProcess>()
     const terminalService = {
@@ -490,7 +516,13 @@ describe("terminal RPC", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-emergency-stop-"))
     scratchDirectories.push(scratch)
     const statePath = join(scratch, "state.sqlite")
-    const store = new SqliteWorkspaceStore(statePath, snapshot)
+    const sqliteStore = new SqliteWorkspaceStore(statePath, snapshot)
+    const store = {
+      auditLog: sqliteStore.auditLog,
+      load: () => snapshot,
+      save: (next: typeof snapshot) => sqliteStore.save(next),
+      close: () => sqliteStore.close(),
+    } satisfies WorkspaceStore
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
@@ -500,6 +532,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -621,11 +654,11 @@ describe("terminal RPC", () => {
         },
       },
     })
-    for (const session of active) {
+    for (const [index, session] of active.entries()) {
       const current = stopped.result.snapshot.sessions.find(({ id }: { id: string }) => id === session.id)
       expect(current).not.toHaveProperty("activeTurnId")
       expect(processes.get(session.workspacePath!)?.kill).toHaveBeenCalledOnce()
-      expect(agent.interruptTurn).toHaveBeenCalledWith(session.providerThreadId, session.activeTurnId)
+      expect(agent.interruptTurn).toHaveBeenCalledWith(session.providerThreadId, activeTurnIds[index])
     }
     expect(agent.resolveApproval).toHaveBeenCalledWith(70, "deny")
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "deny")
@@ -730,14 +763,16 @@ describe("terminal RPC", () => {
     session.runtime.provider = "codex"
     session.providerThreadId = "thread-billing"
     session.activeTurnId = "turn-billing"
+    const activateTurns = deferLiveTurns(snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,
       terminalService,
     })
     running.push(daemon)
     const address = await daemon.start()
+    activateTurns()
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${daemon.authToken}` },
     })
