@@ -16,6 +16,7 @@ import {
   sessionStateSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
+import { fleetSnapshotSchema } from "./fleet.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
 import {
   skillCapabilityManifestSchema,
@@ -726,6 +727,8 @@ export const systemPauseAllParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const fleetListParamsSchema = z.object({}).strict()
+
 export const systemEmergencyStopParamsSchema = z.object({
   client: clientKindSchema,
 }).strict()
@@ -943,6 +946,7 @@ export const rpcMethods = {
   "terminal.input": { params: terminalInputParamsSchema, result: terminalAcceptedSchema },
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
+  "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
   "system.pauseAll": {
     params: systemPauseAllParamsSchema,
     result: workspaceSnapshotSchema,
