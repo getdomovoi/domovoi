@@ -2275,15 +2275,11 @@ describe("DomovoiDaemon", () => {
       params: {},
     }))
 
-    const authenticationOutcome = await Promise.race([
-      rejection,
-      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
-    ])
-    releaseInspection({ root: "/blocked", name: "blocked", branch: "main", head: "a".repeat(40) })
-    expect(authenticationOutcome).toMatchObject({
+    await expect(rejection).resolves.toMatchObject({
       id: 2,
       error: { code: -32001, message: "Daemon authentication required" },
     })
+    releaseInspection({ root: "/blocked", name: "blocked", branch: "main", head: "a".repeat(40) })
     unauthenticated.close()
     authenticated.close()
   })
