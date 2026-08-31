@@ -1,6 +1,7 @@
 import WebSocket from "ws"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -39,7 +40,7 @@ function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 describe("terminal RPC", () => {

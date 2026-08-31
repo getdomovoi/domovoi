@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
@@ -12,7 +13,7 @@ const execute = promisify(execFile)
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 describe("GitWorkspaceService", () => {
