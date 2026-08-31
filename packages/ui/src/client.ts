@@ -88,8 +88,19 @@ type PendingRequest = {
   cleanup: () => void
 }
 
+type DomovoiReconnectTimer = number | ReturnType<typeof globalThis.setTimeout>
+
+export type DomovoiReconnectScheduler = {
+  setTimeout: (callback: () => void, delayMs: number) => DomovoiReconnectTimer
+  clearTimeout: (timer: DomovoiReconnectTimer) => void
+}
+
 type DomovoiClientOptions = {
   reconnectDelayMs?: number
+  reconnectMaxDelayMs?: number
+  reconnectJitterRatio?: number
+  random?: () => number
+  scheduler?: DomovoiReconnectScheduler
   requestTimeoutMs?: number
   authToken?: string
   clientId?: string
@@ -97,6 +108,13 @@ type DomovoiClientOptions = {
 
 const defaultRequestTimeoutMs = 120_000
 const maximumRequestTimeoutMs = 2_147_483_647
+const defaultReconnectDelayMs = 1_000
+const defaultReconnectMaxDelayMs = 30_000
+const defaultReconnectJitterRatio = 0.2
+const defaultReconnectScheduler: DomovoiReconnectScheduler = {
+  setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
+  clearTimeout: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
+}
 
 function requestTimeout(value: number | undefined, fallback: number): number {
   const timeoutMs = value ?? fallback
@@ -121,8 +139,16 @@ export class DomovoiClient extends EventTarget {
   #requestId = 0
   #pending = new Map<number, PendingRequest>()
   #opening: Promise<WorkspaceSnapshot> | undefined
+  #cancelOpening: ((error: Error) => void) | undefined
   #reconnectDelayMs: number
-  #reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  #reconnectMaxDelayMs: number
+  #reconnectJitterRatio: number
+  #random: () => number
+  #scheduler: DomovoiReconnectScheduler
+  #reconnectTimer: DomovoiReconnectTimer | undefined
+  #reconnectAttempt = 0
+  #connectionGeneration = 0
+  #authenticationTerminal = false
   #shouldReconnect = false
   #authToken: string | undefined
   #requestTimeoutMs: number
@@ -132,13 +158,34 @@ export class DomovoiClient extends EventTarget {
     this.url = url
     this.kind = kind
     this.clientId = options.clientId ?? crypto.randomUUID()
-    this.#reconnectDelayMs = options.reconnectDelayMs ?? 1_000
+    this.#reconnectDelayMs = options.reconnectDelayMs ?? defaultReconnectDelayMs
+    this.#reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs
+    this.#reconnectJitterRatio = options.reconnectJitterRatio ?? defaultReconnectJitterRatio
+    if (!Number.isFinite(this.#reconnectDelayMs) || this.#reconnectDelayMs <= 0) {
+      throw new RangeError("Reconnect delay must be positive")
+    }
+    if (
+      !Number.isFinite(this.#reconnectMaxDelayMs)
+      || this.#reconnectMaxDelayMs < this.#reconnectDelayMs
+    ) {
+      throw new RangeError("Reconnect maximum delay must be at least the base delay")
+    }
+    if (
+      !Number.isFinite(this.#reconnectJitterRatio)
+      || this.#reconnectJitterRatio < 0
+      || this.#reconnectJitterRatio > 1
+    ) {
+      throw new RangeError("Reconnect jitter ratio must be between 0 and 1")
+    }
+    this.#random = options.random ?? Math.random
+    this.#scheduler = options.scheduler ?? defaultReconnectScheduler
     this.#requestTimeoutMs = requestTimeout(options.requestTimeoutMs, defaultRequestTimeoutMs)
     this.#authToken = options.authToken
   }
 
   connect(): Promise<WorkspaceSnapshot> {
     this.#shouldReconnect = true
+    this.#authenticationTerminal = false
     this.#clearReconnectTimer()
     return this.#open()
   }
@@ -147,6 +194,7 @@ export class DomovoiClient extends EventTarget {
     if (this.#opening) return this.#opening
     if (this.#socket) return Promise.reject(new Error("Daemon connection is already open"))
 
+    const generation = ++this.#connectionGeneration
     const opening = new Promise<WorkspaceSnapshot>((resolve, reject) => {
       const socket = new WebSocket(this.url)
       this.#socket = socket
@@ -156,13 +204,20 @@ export class DomovoiClient extends EventTarget {
         opening = false
         reject(error)
       }
+      this.#cancelOpening = rejectOpening
       socket.addEventListener("error", () => {
+        if (socket !== this.#socket || generation !== this.#connectionGeneration) return
         rejectOpening(new Error(`Cannot reach ${this.url}`))
         socket.close()
       }, { once: true })
       socket.addEventListener(
         "open",
         () => {
+          if (
+            socket !== this.#socket
+            || generation !== this.#connectionGeneration
+            || !this.#shouldReconnect
+          ) return
           this.request("system.hello", {
             client: this.kind,
             clientId: this.clientId,
@@ -170,8 +225,10 @@ export class DomovoiClient extends EventTarget {
             ...(this.#authToken ? { authToken: this.#authToken } : {}),
           }).then(
             (snapshot) => {
-              if (socket !== this.#socket) return
+              if (socket !== this.#socket || generation !== this.#connectionGeneration) return
               opening = false
+              this.#reconnectAttempt = 0
+              this.#authenticationTerminal = false
               this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
               this.dispatchEvent(new Event("connected"))
               resolve(snapshot)
@@ -186,14 +243,19 @@ export class DomovoiClient extends EventTarget {
         { once: true },
       )
       socket.addEventListener("message", (event) => {
-        if (socket === this.#socket) this.#receive(String(event.data))
+        if (socket === this.#socket && generation === this.#connectionGeneration) {
+          this.#receive(String(event.data))
+        }
       })
-      socket.addEventListener("close", () => {
-        if (socket !== this.#socket) return
+      socket.addEventListener("close", (event) => {
+        if (socket !== this.#socket || generation !== this.#connectionGeneration) return
         this.#socket = undefined
         const error = new Error("Daemon connection closed")
         rejectOpening(error)
         this.#rejectPending(error)
+        if (event.code === 1008 && /auth/i.test(event.reason)) {
+          this.#markAuthenticationRequired(event.reason || "Daemon authentication required")
+        }
         this.dispatchEvent(new Event("disconnected"))
         this.#scheduleReconnect()
       })
@@ -201,10 +263,16 @@ export class DomovoiClient extends EventTarget {
     this.#opening = opening
     void opening.then(
       () => {
-        if (this.#opening === opening) this.#opening = undefined
+        if (this.#opening === opening) {
+          this.#opening = undefined
+          this.#cancelOpening = undefined
+        }
       },
       () => {
-        if (this.#opening === opening) this.#opening = undefined
+        if (this.#opening === opening) {
+          this.#opening = undefined
+          this.#cancelOpening = undefined
+        }
       },
     )
     return opening
@@ -212,8 +280,13 @@ export class DomovoiClient extends EventTarget {
 
   disconnect(): void {
     this.#shouldReconnect = false
+    this.#connectionGeneration += 1
     this.#clearReconnectTimer()
     const socket = this.#socket
+    this.#socket = undefined
+    this.#cancelOpening?.(new Error("Daemon connection closed"))
+    this.#cancelOpening = undefined
+    this.#opening = undefined
     this.#rejectPending(new Error("Daemon connection closed"))
     socket?.close(1000, "client closed")
   }
@@ -544,17 +617,49 @@ export class DomovoiClient extends EventTarget {
   }
 
   #scheduleReconnect(): void {
-    if (!this.#shouldReconnect || this.#reconnectTimer) return
-    this.#reconnectTimer = setTimeout(() => {
+    if (
+      !this.#shouldReconnect
+      || this.#authenticationTerminal
+      || this.#reconnectTimer !== undefined
+      || this.#socket
+    ) return
+    const exponentialDelay = Math.min(
+      this.#reconnectMaxDelayMs,
+      this.#reconnectDelayMs * (2 ** Math.min(this.#reconnectAttempt, 30)),
+    )
+    const random = Math.min(1, Math.max(0, this.#random()))
+    const jitterMultiplier = 1 - this.#reconnectJitterRatio + (2 * this.#reconnectJitterRatio * random)
+    const delayMs = Math.min(
+      this.#reconnectMaxDelayMs,
+      Math.round(exponentialDelay * jitterMultiplier),
+    )
+    this.#reconnectAttempt += 1
+    const generation = this.#connectionGeneration
+    this.#reconnectTimer = this.#scheduler.setTimeout(() => {
       this.#reconnectTimer = undefined
+      if (
+        generation !== this.#connectionGeneration
+        || !this.#shouldReconnect
+        || this.#authenticationTerminal
+        || this.#socket
+      ) return
       void this.#open().catch(() => undefined)
-    }, this.#reconnectDelayMs)
+    }, delayMs)
   }
 
   #clearReconnectTimer(): void {
-    if (!this.#reconnectTimer) return
-    clearTimeout(this.#reconnectTimer)
+    if (this.#reconnectTimer === undefined) return
+    this.#scheduler.clearTimeout(this.#reconnectTimer)
     this.#reconnectTimer = undefined
+  }
+
+  #markAuthenticationRequired(message: string): void {
+    if (this.#authenticationTerminal) return
+    this.#authenticationTerminal = true
+    this.#clearReconnectTimer()
+    this.dispatchEvent(new CustomEvent("authentication-required", {
+      detail: { message, action: "update-credentials-or-reconnect" },
+    }))
   }
 
   #rejectPending(error: Error): void {
@@ -630,9 +735,15 @@ export class DomovoiClient extends EventTarget {
     pending.cleanup()
 
     if (response.data.error) {
+      const error = new DaemonRpcError(response.data.error.code, response.data.error.message)
       if (response.data.error.code === daemonAuthenticationErrorCode) {
-        this.#shouldReconnect = false
-        this.#clearReconnectTimer()
+        pending.reject(error)
+        this.#markAuthenticationRequired(response.data.error.message)
+        const socket = this.#socket
+        queueMicrotask(() => {
+          if (socket === this.#socket) socket?.close(1000, "authentication required")
+        })
+        return
       }
       if (response.data.error.code === projectSwitchConfirmationErrorCode) {
         const confirmation = projectSwitchConfirmationSchema.safeParse(response.data.error.data)
@@ -644,7 +755,7 @@ export class DomovoiClient extends EventTarget {
           return
         }
       }
-      pending.reject(new DaemonRpcError(response.data.error.code, response.data.error.message))
+      pending.reject(error)
       return
     }
 
