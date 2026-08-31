@@ -1968,6 +1968,34 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it.each(["toString", "constructor"])(
+    "rejects inherited RPC method name %s as method not found",
+    async (method) => {
+      const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => {
+          resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+        })
+      })
+
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: {} }))
+
+      await expect(response).resolves.toEqual({
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32601, message: `Unknown method: ${method}` },
+      })
+      socket.close()
+    },
+  )
+
   it("requires the configured token before serving daemon state", async () => {
     const agent = {
       connect: vi.fn(async () => {}),
