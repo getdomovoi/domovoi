@@ -362,6 +362,28 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("cancels session history through its request signal", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const controller = new AbortController()
+
+    const loading = client.loadSessionHistory(
+      demoWorkspace.sessions[0]!.id,
+      { query: "newest", limit: 50 },
+      { signal: controller.signal },
+    )
+    const cancellation = loading.catch((cause: unknown) => cause)
+    controller.abort()
+
+    await expect(cancellation).resolves.toMatchObject({ name: "AbortError" })
+    expect(vi.getTimerCount()).toBe(0)
+    client.disconnect()
+  })
+
   it("requests and validates refreshed session evidence", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const connecting = client.connect()
