@@ -528,6 +528,24 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("attributes provider restart requests to the client", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const restarted = client.restartProviderThread("session-billing")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.restartProviderThread",
+      params: { sessionId: "session-billing", client: "web" },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(restarted).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
   it("ignores a late response without affecting a newer desktop request", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
       requestTimeoutMs: 100,
