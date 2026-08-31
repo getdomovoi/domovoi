@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
@@ -13,6 +14,31 @@ const confirmation = {
   ],
   sessionCount: 2,
   worktreeCount: 1,
+}
+
+function RetryHarness({ retry }: { retry: Promise<void> }) {
+  const [open, setOpen] = useState(true)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+
+  return open ? (
+    <ProjectSwitchConfirmationDialog
+      confirmation={confirmation}
+      pending={pending}
+      error={error}
+      onCancel={() => setOpen(false)}
+      onConfirm={async () => {
+        setPending(true)
+        try {
+          await retry
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : "Project switch failed")
+        } finally {
+          setPending(false)
+        }
+      }}
+    />
+  ) : null
 }
 
 describe("ProjectSwitchConfirmationDialog", () => {
@@ -39,5 +65,30 @@ describe("ProjectSwitchConfirmationDialog", () => {
     await user.click(screen.getByRole("button", { name: "Remove sessions and switch" }))
     expect(onConfirm).toHaveBeenCalledOnce()
     expect(onConfirm).toHaveBeenCalledWith("/code/elsewhere")
+  })
+
+  it("stays open while retrying and shows a failed retry", async () => {
+    const user = userEvent.setup()
+    let rejectRetry: (cause: Error) => void = () => undefined
+    const retry = new Promise<void>((_resolve, reject) => {
+      rejectRetry = reject
+    })
+
+    render(<RetryHarness retry={retry} />)
+    await user.click(screen.getByRole("button", { name: "Remove sessions and switch" }))
+    rejectRetry(new Error("Project switch retry failed"))
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Project switch retry failed")
+    expect(screen.getByRole("alertdialog")).not.toBeNull()
+  })
+
+  it("disables cancellation and confirmation while retrying", async () => {
+    const user = userEvent.setup()
+    render(<RetryHarness retry={new Promise(() => undefined)} />)
+
+    await user.click(screen.getByRole("button", { name: "Remove sessions and switch" }))
+
+    expect((await screen.findByRole<HTMLButtonElement>("button", { name: "Keep current project" })).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Switching…" }).disabled).toBe(true)
   })
 })

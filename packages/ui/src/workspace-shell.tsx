@@ -245,13 +245,13 @@ export function ProjectSwitchConfirmationDialog({
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>Keep current project</AlertDialogCancel>
-          <AlertDialogAction
+          <Button
             variant="destructive"
             disabled={pending}
             onClick={() => onConfirm(confirmation.requestedPath)}
           >
             {pending ? "Switching…" : "Remove sessions and switch"}
-          </AlertDialogAction>
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
