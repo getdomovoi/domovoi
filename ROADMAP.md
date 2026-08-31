@@ -86,6 +86,32 @@ Completion proof:
 Priority: `P1`. Produce a dependable single-machine Domovoi that can replace a terminal-only agent
 workflow without becoming a code editor.
 
+### Completion-audit remediation ledger
+
+Live-verified against `getdomovoi/domovoi` on 2026-08-30 (America/Boise):
+
+- [#94](https://github.com/getdomovoi/domovoi/pull/94) — `fix: bound daemon request admission` —
+  `MERGED`: closes unbounded pre-authentication request admission and inherited RPC method dispatch.
+- [#95](https://github.com/getdomovoi/domovoi/pull/95) —
+  `fix: harden provider connection lifecycle` — `MERGED`: closes late provider setup/shutdown and
+  stale-connection races after timeouts.
+- [#93](https://github.com/getdomovoi/domovoi/pull/93) —
+  `fix: harden desktop lifecycle and renderer` — `MERGED`: closes unawaited daemon shutdown and
+  untrusted privileged-renderer IPC origins.
+- [#96](https://github.com/getdomovoi/domovoi/pull/96) — `fix: stabilize session evidence` —
+  `MERGED`: closes mixed-generation Git evidence when worktree state changes during collection.
+- [#98](https://github.com/getdomovoi/domovoi/pull/98) — `fix: ignore stale skill source` — `MERGED`:
+  closes out-of-order skill-source responses replacing the active selection.
+- [#99](https://github.com/getdomovoi/domovoi/pull/99) —
+  `test: verify bundled desktop launch` — `MERGED`: closes missing built-desktop launch proof and
+  Windows skill-link safety coverage.
+- [#97](https://github.com/getdomovoi/domovoi/pull/97) —
+  `fix: harden preview annotation context` — `OPEN` (pending): fixes annotation-crop retention
+  races, but the tested reservation and serialization changes must merge before this concern is
+  complete.
+- This local docs/infra branch remediates audit concerns I1–I5 but has no PR yet; parent will update
+  this ledger after merge.
+
 ### Sessions and worktrees
 
 - [x] Open a local Git repository and create a session worktree
