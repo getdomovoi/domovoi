@@ -1,0 +1,83 @@
+import { describe, expect, it } from "vitest"
+
+import {
+  devicePairParamsSchema,
+  devicePairResultSchema,
+  deviceRevokeParamsSchema,
+  deviceRotateParamsSchema,
+  devicesResultSchema,
+  pairedDeviceSchema,
+} from "./devices.js"
+
+const device = {
+  id: `device-${"a".repeat(32)}`,
+  label: "studio-ipad",
+  pairedAt: "2026-08-31T12:00:00.000Z",
+}
+
+describe("pairedDeviceSchema", () => {
+  it("describes a paired device", () => {
+    expect(pairedDeviceSchema.parse(device)).toEqual(device)
+  })
+
+  it("carries the optional contact and revocation times", () => {
+    const seen = {
+      ...device,
+      lastSeenAt: "2026-08-31T12:30:00.000Z",
+      revokedAt: "2026-08-31T13:00:00.000Z",
+    }
+    expect(pairedDeviceSchema.parse(seen)).toEqual(seen)
+  })
+
+  it("rejects an identifier that is not a device identity", () => {
+    expect(pairedDeviceSchema.safeParse({ ...device, id: "ipad" }).success).toBe(false)
+  })
+
+  it("refuses to describe a credential", () => {
+    expect(pairedDeviceSchema.safeParse({ ...device, token: "secret" }).success).toBe(false)
+    expect(pairedDeviceSchema.safeParse({ ...device, tokenHash: "secret" }).success).toBe(false)
+  })
+})
+
+describe("devicePairParamsSchema", () => {
+  it("requires a bounded label and the requesting client", () => {
+    expect(devicePairParamsSchema.parse({ label: "studio-ipad", client: "desktop" }))
+      .toEqual({ label: "studio-ipad", client: "desktop" })
+    expect(devicePairParamsSchema.safeParse({ label: "  ", client: "desktop" }).success).toBe(false)
+    expect(devicePairParamsSchema.safeParse({
+      label: "n".repeat(129),
+      client: "desktop",
+    }).success).toBe(false)
+    expect(devicePairParamsSchema.safeParse({ label: "studio-ipad" }).success).toBe(false)
+  })
+})
+
+describe("devicePairResultSchema", () => {
+  it("returns the device beside its one-time credential", () => {
+    const paired = { device, token: "n".repeat(43) }
+    expect(devicePairResultSchema.parse(paired)).toEqual(paired)
+  })
+
+  it("rejects a credential that is not the issued shape", () => {
+    expect(devicePairResultSchema.safeParse({ device, token: "short" }).success).toBe(false)
+  })
+})
+
+describe("deviceRevokeParamsSchema and deviceRotateParamsSchema", () => {
+  it("require a device identity and the requesting client", () => {
+    const params = { deviceId: device.id, client: "web" }
+    expect(deviceRevokeParamsSchema.parse(params)).toEqual(params)
+    expect(deviceRotateParamsSchema.parse(params)).toEqual(params)
+    expect(deviceRevokeParamsSchema.safeParse({ deviceId: "ipad", client: "web" }).success)
+      .toBe(false)
+  })
+})
+
+describe("devicesResultSchema", () => {
+  it("lists paired devices without any credential", () => {
+    expect(devicesResultSchema.parse({ devices: [device] }).devices).toEqual([device])
+    expect(devicesResultSchema.safeParse({
+      devices: [{ ...device, token: "secret" }],
+    }).success).toBe(false)
+  })
+})
