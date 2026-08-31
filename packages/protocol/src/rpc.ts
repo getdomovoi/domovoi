@@ -13,6 +13,7 @@ import {
   connectionIdSchema,
   providerModelsSchema,
   runtimeSchema,
+  sessionStateSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
@@ -31,6 +32,40 @@ export const requestIdSchema = z.union([
 ])
 export const daemonAuthenticationErrorCode = -32001 as const
 export const daemonShuttingDownErrorCode = -32002 as const
+export const projectSwitchConfirmationErrorCode = -32010 as const
+
+const projectSwitchAffectedSessionSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  state: sessionStateSchema,
+  workspacePath: z.string().min(1).optional(),
+}).strict()
+
+export const projectSwitchConfirmationSchema = z.object({
+  kind: z.literal("project-switch-confirmation"),
+  requestedPath: z.string().min(1),
+  sessions: z.array(projectSwitchAffectedSessionSchema),
+  sessionCount: z.number().int().nonnegative(),
+  worktreeCount: z.number().int().nonnegative(),
+}).strict().superRefine((confirmation, context) => {
+  if (confirmation.sessionCount !== confirmation.sessions.length) {
+    context.addIssue({
+      code: "custom",
+      message: "Session count must match the affected sessions",
+      path: ["sessionCount"],
+    })
+  }
+  const worktreeCount = confirmation.sessions.filter((session) => session.workspacePath).length
+  if (confirmation.worktreeCount !== worktreeCount) {
+    context.addIssue({
+      code: "custom",
+      message: "Worktree count must match affected session worktrees",
+      path: ["worktreeCount"],
+    })
+  }
+})
+
+export type ProjectSwitchConfirmation = z.infer<typeof projectSwitchConfirmationSchema>
 
 const rpcMethodNameSchema = z.string().min(1).refine(
   (method) => method.trim() === method,
@@ -765,7 +800,8 @@ export const runtimeModelsParamsSchema = z.object({
 export const projectOpenParamsSchema = z.object({
   path: z.string().min(1),
   client: clientKindSchema,
-})
+  discardSessions: z.boolean().optional(),
+}).strict()
 
 export const sessionCreateParamsSchema = z.object({
   title: z.string().trim().min(1),
