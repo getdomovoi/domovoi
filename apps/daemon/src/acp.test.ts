@@ -60,6 +60,36 @@ function createHarness() {
 }
 
 describe("AcpAgentAdapter", () => {
+  it("discards a timed-out peer and isolates its late initialization", async () => {
+    let finishFirstInitialization!: () => void
+    const firstPeer = new FakePeer()
+    firstPeer.initialize.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      finishFirstInitialization = () => resolve(undefined)
+    }))
+    const secondPeer = new FakePeer()
+    secondPeer.setup = { ...secondPeer.setup, sessionId: "fresh-session" }
+    const createPeer = vi.fn()
+      .mockReturnValueOnce(firstPeer)
+      .mockReturnValueOnce(secondPeer)
+    const adapter = new AcpAgentAdapter({
+      definition: CURSOR_ACP_PROVIDER,
+      createPeer,
+      listModels: async () => [],
+    })
+
+    const staleConnection = adapter.connect()
+    await adapter.resetConnection()
+    expect(firstPeer.close).toHaveBeenCalledOnce()
+
+    await expect(adapter.connect()).resolves.toBeUndefined()
+    finishFirstInitialization()
+    await expect(staleConnection).rejects.toThrow("ACP connection reset during initialization")
+    expect(firstPeer.close).toHaveBeenCalledOnce()
+    await expect(adapter.startThread({ cwd: "/repo", runtime })).resolves.toBe("fresh-session")
+    expect(secondPeer.startSession).toHaveBeenCalledOnce()
+    expect(firstPeer.startSession).not.toHaveBeenCalled()
+  })
+
   it("closes a failed peer and creates a fresh peer on retry", async () => {
     const failedPeer = new FakePeer()
     failedPeer.initialize.mockRejectedValueOnce(new Error("initialize failed"))

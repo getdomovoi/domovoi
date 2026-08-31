@@ -112,15 +112,24 @@ export class AcpAgentAdapter implements AgentAdapter {
     this.#peer = peer
     try {
       await peer.initialize()
+      if (this.#peer !== peer) {
+        throw new Error(`${this.#definition.id} ACP connection reset during initialization`)
+      }
     } catch (error) {
-      if (this.#peer === peer) this.#peer = undefined
-      try {
-        await peer.close()
-      } catch {
-        // Preserve the initialization failure; the failed peer is already detached.
+      if (this.#peer === peer) {
+        this.#peer = undefined
+        try {
+          await peer.close()
+        } catch {
+          // Preserve the initialization failure; the failed peer is already detached.
+        }
       }
       throw error
     }
+  }
+
+  async resetConnection(): Promise<void> {
+    await this.close()
   }
 
   listModels(): Promise<ProviderModel[]> {

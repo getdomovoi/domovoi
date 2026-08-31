@@ -3746,15 +3746,16 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("shares slow agent initialization across timed-out model requests", async () => {
+  it("quarantines retries until a timed-out connection reset settles", async () => {
     let finishConnect: (() => void) | undefined
-    let finishModels: (() => void) | undefined
-    const models = codexModels()
+    let finishReset: (() => void) | undefined
+    const errorSink = vi.fn()
     const agent = {
-      connect: vi.fn(() => new Promise<void>((resolve) => { finishConnect = resolve })),
-      listModels: vi.fn(() => new Promise<typeof models>((resolve) => {
-        finishModels = () => resolve(models)
-      })),
+      connect: vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((resolve) => { finishConnect = resolve }))
+        .mockResolvedValue(undefined),
+      resetConnection: vi.fn(() => new Promise<void>((resolve) => { finishReset = resolve })),
+      listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused-thread"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
@@ -3769,7 +3770,79 @@ describe("DomovoiDaemon", () => {
       port: 0,
       statePath: ":memory:",
       agent,
-      agentTimeoutMs: 500,
+      agentTimeoutMs: 100,
+      errorSink,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const rpc = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "runtime.models",
+        params: { provider: "codex", client: "desktop" },
+      }))
+    })
+
+    const timedOut = rpc(1)
+    await vi.waitFor(() => expect(agent.resetConnection).toHaveBeenCalledOnce())
+    expect(agent.close).not.toHaveBeenCalled()
+    await expect(timedOut).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "Agent provider codex connection reset failed",
+      detail: expect.stringContaining("Agent connection reset timed out"),
+    }))
+
+    const retry = rpc(2)
+    finishConnect!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(agent.listModels).not.toHaveBeenCalled()
+    expect(agent.connect).toHaveBeenCalledOnce()
+
+    finishReset!()
+    await expect(retry).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    expect(agent.connect).toHaveBeenCalledTimes(2)
+    expect(agent.listModels).toHaveBeenCalledOnce()
+    socket.close()
+  })
+
+  it("retries timed-out setup without closing adapters that cannot reset", async () => {
+    let finishConnect: (() => void) | undefined
+    const agent = {
+      connect: vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((resolve) => { finishConnect = resolve }))
+        .mockResolvedValue(undefined),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused-thread"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused-turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agent,
+      agentTimeoutMs: 100,
+      errorSink: vi.fn(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -3795,23 +3868,16 @@ describe("DomovoiDaemon", () => {
     })
 
     await expect(rpc(1)).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
-    const second = rpc(2)
-    expect(agent.connect).toHaveBeenCalledOnce()
+    expect(agent.close).not.toHaveBeenCalled()
     finishConnect!()
-    await vi.waitFor(
-      () => expect(agent.listModels).toHaveBeenCalledOnce(),
-      { interval: 1, timeout: 100 },
-    )
-    const third = rpc(3)
     await new Promise((resolve) => setTimeout(resolve, 0))
+
+    await expect(rpc(2)).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    expect(agent.connect).toHaveBeenCalledTimes(2)
     expect(agent.listModels).toHaveBeenCalledOnce()
-    finishModels!()
-    await expect(second).resolves.toMatchObject({
-      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
-    })
-    await expect(third).resolves.toMatchObject({
-      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
-    })
+    expect(agent.close).not.toHaveBeenCalled()
     socket.close()
   })
 
