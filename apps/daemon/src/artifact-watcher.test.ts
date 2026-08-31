@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, opendir, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, opendir, symlink, writeFile } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 
@@ -9,7 +10,7 @@ import { ArtifactWatcher, type ArtifactFileChange, type ArtifactWatchFactory } f
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 async function scratch(name: string): Promise<string> {

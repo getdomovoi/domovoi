@@ -1,4 +1,5 @@
-import { access, mkdir, mkdtemp, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -117,7 +118,7 @@ const codexModels = () => [{
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 describe("DomovoiDaemon", () => {
