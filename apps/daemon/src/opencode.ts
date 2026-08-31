@@ -732,6 +732,16 @@ export const domovoiOpenCodeConfig: Config = {
     "domovoi-ask": {
       mode: "primary",
       description: "Domovoi read-only ask mode",
+      tools: {
+        "*": false,
+        read: true,
+        glob: true,
+        grep: true,
+        list: true,
+        webfetch: true,
+        websearch: true,
+        question: true,
+      },
       permission: {
         edit: "deny",
         bash: "deny",
