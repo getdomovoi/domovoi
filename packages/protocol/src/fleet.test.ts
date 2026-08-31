@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  fleetMachineFactsSchema,
   fleetMachineSchema,
   fleetSnapshotSchema,
   machineHeartbeatState,
@@ -52,6 +53,25 @@ describe("fleetMachineSchema", () => {
     expect(fleetMachineSchema.safeParse({
       ...machine,
       heartbeat: { state: "online", lastSeenAt: "not-a-time" },
+    }).success).toBe(false)
+  })
+})
+
+describe("fleetMachineFactsSchema", () => {
+  it("describes a machine without its observed heartbeat", () => {
+    const { heartbeat: _heartbeat, self: _self, ...facts } = machine
+    expect(fleetMachineFactsSchema.parse(facts)).toEqual(facts)
+  })
+
+  it("rejects reported facts that carry a heartbeat", () => {
+    expect(fleetMachineFactsSchema.safeParse(machine).success).toBe(false)
+  })
+
+  it("rejects duplicate capabilities", () => {
+    const { heartbeat: _heartbeat, self: _self, ...facts } = machine
+    expect(fleetMachineFactsSchema.safeParse({
+      ...facts,
+      capabilities: ["sessions", "sessions"],
     }).success).toBe(false)
   })
 })

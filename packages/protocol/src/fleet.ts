@@ -23,17 +23,10 @@ export const machineHeartbeatSchema = z.object({
   lastSeenAt: z.string().datetime({ offset: true }),
 }).strict()
 
-export const fleetMachineSchema = z.object({
-  id: machineIdSchema,
-  label: z.string().trim().min(1).max(128),
-  platform: z.string().trim().min(1).max(64),
-  arch: z.string().trim().min(1).max(64),
-  version: z.string().trim().min(1).max(64),
-  connection: connectionKindSchema,
-  capabilities: z.array(machineCapabilitySchema).max(16),
-  heartbeat: machineHeartbeatSchema,
-  self: z.boolean(),
-}).strict().superRefine((machine, context) => {
+function refineCapabilities(
+  machine: { capabilities: MachineCapability[] },
+  context: z.RefinementCtx,
+): void {
   if (new Set(machine.capabilities).size !== machine.capabilities.length) {
     context.addIssue({
       code: "custom",
@@ -41,7 +34,24 @@ export const fleetMachineSchema = z.object({
       message: "Machine capabilities must be unique",
     })
   }
-})
+}
+
+const fleetMachineFactsObject = z.object({
+  id: machineIdSchema,
+  label: z.string().trim().min(1).max(128),
+  platform: z.string().trim().min(1).max(64),
+  arch: z.string().trim().min(1).max(64),
+  version: z.string().trim().min(1).max(64),
+  connection: connectionKindSchema,
+  capabilities: z.array(machineCapabilitySchema).max(16),
+}).strict()
+
+export const fleetMachineFactsSchema = fleetMachineFactsObject.superRefine(refineCapabilities)
+
+export const fleetMachineSchema = fleetMachineFactsObject.extend({
+  heartbeat: machineHeartbeatSchema,
+  self: z.boolean(),
+}).strict().superRefine(refineCapabilities)
 
 export const fleetSnapshotSchema = z.object({
   machines: z.array(fleetMachineSchema).max(maximumFleetMachines),
@@ -74,6 +84,7 @@ export function machineHeartbeatState(
 }
 
 export type MachineCapability = z.infer<typeof machineCapabilitySchema>
+export type FleetMachineFacts = z.infer<typeof fleetMachineFactsSchema>
 export type MachineHeartbeat = z.infer<typeof machineHeartbeatSchema>
 export type HeartbeatState = z.infer<typeof heartbeatStateSchema>
 export type FleetMachine = z.infer<typeof fleetMachineSchema>
