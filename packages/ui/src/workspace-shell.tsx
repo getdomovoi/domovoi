@@ -1428,6 +1428,14 @@ export function forkProviderChoice(
   return onFork(selectRuntimeModel(runtime, choice.model), checkpointId, choice.requestId)
 }
 
+export function normalizePermissionMode(runtime: Runtime, permissionMode: PermissionMode): Runtime {
+  return {
+    ...runtime,
+    permissionMode,
+    auto: permissionMode === "build" && runtime.auto,
+  }
+}
+
 export function RuntimeControls({
   runtime,
   providers,
@@ -1519,7 +1527,7 @@ export function RuntimeControls({
   }
 
   const setMode = (permissionMode: string) => {
-    if (permissionMode) onChange({ ...runtime, permissionMode: permissionMode as PermissionMode })
+    if (permissionMode) onChange(normalizePermissionMode(runtime, permissionMode as PermissionMode))
   }
   return (
     <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
@@ -1579,7 +1587,7 @@ export function RuntimeControls({
       <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending} onCheckedChange={(auto) => onChange({ ...runtime, auto })} />Auto</label>
+      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange({ ...runtime, auto: runtime.permissionMode === "build" && auto })} />Auto</label>
       <AlertDialog
         open={providerChoice !== undefined}
         onOpenChange={(open) => {
