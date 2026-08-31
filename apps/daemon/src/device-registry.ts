@@ -1,0 +1,150 @@
+import { createHash, randomBytes } from "node:crypto"
+import type { DatabaseSync } from "node:sqlite"
+
+export type PairedDevice = {
+  id: string
+  label: string
+  pairedAt: string
+  lastSeenAt?: string
+  revokedAt?: string
+}
+
+export type DevicePairing = {
+  device: PairedDevice
+  token: string
+}
+
+export const maximumPairedDevices = 128
+const maximumDeviceLabelLength = 128
+
+export class DeviceNotFoundError extends Error {
+  constructor(deviceId: string) {
+    super(`Paired device not found: ${deviceId}`)
+    this.name = "DeviceNotFoundError"
+  }
+}
+
+export class DeviceLimitReachedError extends Error {
+  constructor() {
+    super(`Paired device limit of ${maximumPairedDevices} reached`)
+    this.name = "DeviceLimitReachedError"
+  }
+}
+
+type StoredDevice = {
+  id: string
+  label: string
+  paired_at: string
+  last_seen_at: string | null
+  revoked_at: string | null
+}
+
+function hashDeviceToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex")
+}
+
+function validateLabel(label: string): string {
+  const trimmed = label.trim()
+  if (!trimmed || label.length > maximumDeviceLabelLength) {
+    throw new Error("Device label is invalid")
+  }
+  return trimmed
+}
+
+function toPairedDevice(row: StoredDevice): PairedDevice {
+  return {
+    id: row.id,
+    label: row.label,
+    pairedAt: row.paired_at,
+    ...(row.last_seen_at === null ? {} : { lastSeenAt: row.last_seen_at }),
+    ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+  }
+}
+
+export class SqliteDeviceRegistry {
+  #database: DatabaseSync
+
+  constructor(database: DatabaseSync) {
+    this.#database = database
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS paired_devices (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        paired_at TEXT NOT NULL,
+        last_seen_at TEXT,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS paired_devices_revoked_at ON paired_devices (revoked_at);
+    `)
+  }
+
+  pair(input: { label: string }): DevicePairing {
+    const label = validateLabel(input.label)
+    const active = this.#database
+      .prepare("SELECT COUNT(*) AS total FROM paired_devices WHERE revoked_at IS NULL")
+      .get() as { total: number }
+    if (active.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
+
+    const token = randomBytes(32).toString("base64url")
+    const device: PairedDevice = {
+      id: `device-${randomBytes(16).toString("hex")}`,
+      label,
+      pairedAt: new Date().toISOString(),
+    }
+    this.#database
+      .prepare(`
+        INSERT INTO paired_devices (id, label, token_hash, paired_at)
+        VALUES (?, ?, ?, ?)
+      `)
+      .run(device.id, device.label, hashDeviceToken(token), device.pairedAt)
+    return { device, token }
+  }
+
+  verify(token: string): PairedDevice | undefined {
+    if (!token) return undefined
+    const row = this.#database
+      .prepare("SELECT * FROM paired_devices WHERE token_hash = ? AND revoked_at IS NULL")
+      .get(hashDeviceToken(token)) as StoredDevice | undefined
+    if (!row) return undefined
+
+    const lastSeenAt = new Date().toISOString()
+    this.#database
+      .prepare("UPDATE paired_devices SET last_seen_at = ? WHERE id = ?")
+      .run(lastSeenAt, row.id)
+    return toPairedDevice({ ...row, last_seen_at: lastSeenAt })
+  }
+
+  rotate(deviceId: string): DevicePairing {
+    const row = this.#database
+      .prepare("SELECT * FROM paired_devices WHERE id = ? AND revoked_at IS NULL")
+      .get(deviceId) as StoredDevice | undefined
+    if (!row) throw new DeviceNotFoundError(deviceId)
+
+    const token = randomBytes(32).toString("base64url")
+    this.#database
+      .prepare("UPDATE paired_devices SET token_hash = ? WHERE id = ?")
+      .run(hashDeviceToken(token), deviceId)
+    return { device: toPairedDevice(row), token }
+  }
+
+  revoke(deviceId: string): PairedDevice {
+    const row = this.#database
+      .prepare("SELECT * FROM paired_devices WHERE id = ?")
+      .get(deviceId) as StoredDevice | undefined
+    if (!row) throw new DeviceNotFoundError(deviceId)
+
+    const revokedAt = row.revoked_at ?? new Date().toISOString()
+    this.#database
+      .prepare("UPDATE paired_devices SET revoked_at = ? WHERE id = ?")
+      .run(revokedAt, deviceId)
+    return toPairedDevice({ ...row, revoked_at: revokedAt })
+  }
+
+  list(): PairedDevice[] {
+    const rows = this.#database
+      .prepare("SELECT * FROM paired_devices ORDER BY paired_at ASC, id ASC")
+      .all() as StoredDevice[]
+    return rows.map(toPairedDevice)
+  }
+}
