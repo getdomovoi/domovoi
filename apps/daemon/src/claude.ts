@@ -15,6 +15,8 @@ import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 
+export type ClaudeMessageId = ReturnType<typeof randomUUID>
+
 export type ClaudeUserMessage = {
   type: "user"
   message: {
@@ -28,7 +30,7 @@ export type ClaudeUserMessage = {
     >
   }
   parent_tool_use_id: null
-  uuid: string
+  uuid: ClaudeMessageId
   session_id: string
 }
 
@@ -78,14 +80,7 @@ export type ClaudeQueryOptions = {
 
 export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
   initializationResult(): Promise<unknown>
-  supportedModels(): Promise<Array<{
-    value: string
-    resolvedModel?: string
-    displayName: string
-    description: string
-    supportsEffort?: boolean
-    supportedEffortLevels?: readonly typeof claudeEfforts[number][]
-  }>>
+  supportedModels(): Promise<unknown>
   setModel(model?: string): Promise<void>
   setPermissionMode(mode: ClaudePermissionMode): Promise<void>
   applyFlagSettings(settings: { effortLevel?: typeof claudeEfforts[number] | null }): Promise<void>
@@ -127,7 +122,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly permissionCapabilities = { buildAuto: "pre-execution" } as const
   readonly capabilities = { vision: true } as const
   readonly #factory: ClaudeQueryFactory
-  readonly #id: () => string
+  readonly #id: () => ClaudeMessageId
   #sessions = new Map<string, Session>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
@@ -135,7 +130,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
 
   constructor(
     factory: ClaudeQueryFactory = defaultClaudeQueryFactory,
-    id: () => string = randomUUID,
+    id: () => ClaudeMessageId = randomUUID,
   ) {
     this.#factory = factory
     this.#id = id
@@ -148,7 +143,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const runtime = this.#factory(input, { ...baseOptions(), settingSources: [] })
     try {
       await runtime.initializationResult()
-      const models = await runtime.supportedModels()
+      const models = requireClaudeModels(await runtime.supportedModels())
       return models.map((model, index) => {
         const efforts = model.supportsEffort
           ? [...(model.supportedEffortLevels ?? [])]
@@ -530,7 +525,7 @@ function baseOptions(): ClaudeQueryOptions {
 
 function userMessage(
   threadId: string,
-  turnId: string,
+  turnId: ClaudeMessageId,
   prompt: string,
   visualContexts: AgentVisualContext[] = [],
 ): ClaudeUserMessage {
@@ -562,6 +557,42 @@ function claudeEffortFor(reasoning: string): typeof claudeEfforts[number] {
   return claudeEfforts.find((effort) => effort === reasoning) ?? "medium"
 }
 
+type ClaudeModel = {
+  value: string
+  displayName: string
+  description: string
+  supportsEffort?: boolean
+  supportedEffortLevels?: readonly typeof claudeEfforts[number][]
+}
+
+function requireClaudeModels(value: unknown): ClaudeModel[] {
+  if (!Array.isArray(value)) throw new Error("Claude model catalog returned invalid data")
+  return value.map((candidate) => {
+    const model = asRecord(candidate)
+    const efforts = model?.supportedEffortLevels
+    if (
+      !model
+      || typeof model.value !== "string"
+      || typeof model.displayName !== "string"
+      || typeof model.description !== "string"
+      || (model.supportsEffort !== undefined && typeof model.supportsEffort !== "boolean")
+      || (efforts !== undefined && (
+        !Array.isArray(efforts)
+        || efforts.some((effort) => !claudeEfforts.some((candidate) => candidate === effort))
+      ))
+    ) throw new Error("Claude model catalog returned invalid data")
+    return {
+      value: model.value,
+      displayName: model.displayName,
+      description: model.description,
+      ...(typeof model.supportsEffort === "boolean" ? { supportsEffort: model.supportsEffort } : {}),
+      ...(Array.isArray(efforts)
+        ? { supportedEffortLevels: claudeEfforts.filter((effort) => efforts.includes(effort)) }
+        : {}),
+    }
+  })
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? value as Record<string, unknown> : undefined
 }
@@ -578,6 +609,6 @@ function toolOutput(result: unknown, fallback: unknown): string {
 }
 
 const defaultClaudeQueryFactory: ClaudeQueryFactory = (input, options) => query({
-  prompt: input as AsyncIterable<SDKUserMessage>,
-  options: options as Options,
-}) as unknown as ClaudeQuery
+  prompt: input satisfies AsyncIterable<SDKUserMessage>,
+  options: options satisfies Options,
+})

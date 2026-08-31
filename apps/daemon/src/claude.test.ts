@@ -5,6 +5,7 @@ import type { Runtime } from "@getdomovoi/protocol"
 import {
   ClaudeAgentSdkAdapter,
   claudePermissionFor,
+  type ClaudeMessageId,
   type ClaudeQuery,
   type ClaudeQueryFactory,
   type ClaudeQueryOptions,
@@ -123,9 +124,26 @@ describe("ClaudeAgentSdkAdapter", () => {
     expect(calls[0]?.options.settingSources).toEqual([])
   })
 
+  it("rejects malformed model metadata", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+    const listing = adapter.listModels()
+    calls[0]!.query.supportedModels.mockResolvedValueOnce([{
+      value: 7,
+      displayName: "Sonnet 5",
+      description: "Balanced coding model",
+    }] as never)
+
+    await expect(listing).rejects.toThrow("Claude model catalog returned invalid data")
+  })
+
   it("starts a streaming session and emits turn text and completion", async () => {
     const { calls, factory } = factoryHarness()
-    const ids = ["11111111-1111-4111-8111-111111111111", "turn-1"]
+    const turnId: ClaudeMessageId = "22222222-2222-4222-8222-222222222222"
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      turnId,
+    ]
     const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
     const event = vi.fn()
     adapter.onEvent(event)
@@ -145,12 +163,12 @@ describe("ClaudeAgentSdkAdapter", () => {
       cwd: "/worktree",
       prompt: "Run tests",
       runtime: runtime("build"),
-    })).resolves.toBe("turn-1")
+    })).resolves.toBe(turnId)
     const input = await calls[0]!.input[Symbol.asyncIterator]().next()
     expect(input.value).toMatchObject({
       type: "user",
       message: { role: "user", content: "Run tests" },
-      uuid: "turn-1",
+      uuid: turnId,
       session_id: threadId,
     })
 
@@ -163,15 +181,15 @@ describe("ClaudeAgentSdkAdapter", () => {
     await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
       type: "text-delta",
       threadId,
-      turnId: "turn-1",
+      turnId,
       delta: "Tests pass.",
     }))
     expect(event).toHaveBeenCalledWith({
       type: "turn-completed",
       params: {
         threadId,
-        turnId: "turn-1",
-        turn: { id: "turn-1", status: "completed" },
+        turnId,
+        turn: { id: turnId, status: "completed" },
       },
     })
     await adapter.close()
@@ -179,7 +197,7 @@ describe("ClaudeAgentSdkAdapter", () => {
 
   it("sends declared visual context as bounded image content", async () => {
     const { calls, factory } = factoryHarness()
-    const adapter = new ClaudeAgentSdkAdapter(factory, () => "turn-vision")
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
 
     await adapter.startTurn({
@@ -206,7 +224,7 @@ describe("ClaudeAgentSdkAdapter", () => {
 
   it("resumes with worktree context and routes approval decisions", async () => {
     const { calls, factory } = factoryHarness()
-    const adapter = new ClaudeAgentSdkAdapter(factory, () => "turn-resumed")
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
     const event = vi.fn()
     adapter.onEvent(event)
 
@@ -257,7 +275,10 @@ describe("ClaudeAgentSdkAdapter", () => {
 
   it("translates Claude tool lifecycle into Domovoi command and file events", async () => {
     const { calls, factory } = factoryHarness()
-    const ids = ["33333333-3333-4333-8333-333333333333", "turn-tools"]
+    const ids: ClaudeMessageId[] = [
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ]
     const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
     const event = vi.fn()
     adapter.onEvent(event)

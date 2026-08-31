@@ -1,7 +1,7 @@
 import type { Config } from "@kilocode/sdk"
 
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
-import type { OpenCodeClient, OpenCodeFactory } from "./opencode.js"
+import { requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
 
 export const domovoiKiloConfig: Config = {
   autoupdate: false,
@@ -49,7 +49,7 @@ export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
     createClient: createKiloClient,
   })
   return {
-    client: runtime.client as unknown as OpenCodeClient,
+    client: requireOpenCodeClient(runtime.client, "Kilo"),
     server: runtime.server,
   }
 }
