@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -15,6 +15,20 @@ const runtime: Runtime = {
   permissionMode: "build",
   auto: false,
 }
+
+it.each(["ask", "plan"] as const)("clears auto when the UI selects %s mode", (permissionMode) => {
+  expect(normalizePermissionMode({ ...runtime, auto: true }, permissionMode)).toMatchObject({
+    permissionMode,
+    auto: false,
+  })
+})
+
+it("retains an explicit auto choice when the UI remains in Build mode", () => {
+  expect(normalizePermissionMode({ ...runtime, auto: true }, "build")).toMatchObject({
+    permissionMode: "build",
+    auto: true,
+  })
+})
 
 describe("PreviewVariantThumbnail", () => {
   it("renders real cached imagery when available and a truthful fallback otherwise", () => {
