@@ -169,7 +169,7 @@ fleet.
 
 - [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
-- [ ] Add device pairing, revocation, and credential rotation
+- [x] Add device pairing, revocation, and credential rotation
 - [ ] Add a fleet registry and machine selector to the shared protocol and UI
 - [ ] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
