@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
 
 import type { SkillDocument, SkillEnablementReview, SkillInventorySource, SkillSummary } from "@getdomovoi/protocol"
@@ -128,6 +128,7 @@ export function SkillBrowser({
   const [sourceContent, setSourceContent] = useState("")
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceError, setSourceError] = useState("")
+  const sourceRequestGeneration = useRef(0)
   const [reviewEnabled, setReviewEnabled] = useState<boolean>()
   const [reviewPending, setReviewPending] = useState(false)
   const [reviewError, setReviewError] = useState("")
@@ -156,14 +157,23 @@ export function SkillBrowser({
   }, [selectedId, skills])
 
   const readSource = (skill: SkillSummary) => {
+    const generation = ++sourceRequestGeneration.current
     setSourceSkill(skill)
     setSourceContent("")
     setSourceError("")
     setSourceLoading(true)
     void onReadSkill(skill.id).then(
-      (document) => setSourceContent(document.content),
-      (cause: unknown) => setSourceError(cause instanceof Error ? cause.message : "SKILL.md could not be read"),
-    ).finally(() => setSourceLoading(false))
+      (document) => {
+        if (sourceRequestGeneration.current === generation) setSourceContent(document.content)
+      },
+      (cause: unknown) => {
+        if (sourceRequestGeneration.current === generation) {
+          setSourceError(cause instanceof Error ? cause.message : "SKILL.md could not be read")
+        }
+      },
+    ).finally(() => {
+      if (sourceRequestGeneration.current === generation) setSourceLoading(false)
+    })
   }
 
   const submitReview = () => {
