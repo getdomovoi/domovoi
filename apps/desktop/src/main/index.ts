@@ -7,6 +7,11 @@ import { DomovoiDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
 import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
+import {
+  isAuthorizedRendererEvent,
+  resolveRendererTarget,
+  type RendererTarget,
+} from "./renderer-security.js"
 import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { captureAnnotationPng } from "./annotation-capture.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
@@ -28,6 +33,7 @@ if (process.platform !== "darwin" && process.platform !== "linux" && process.pla
 }
 
 let mainWindow: BrowserWindow | undefined
+let mainRendererTarget: RendererTarget | undefined
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
@@ -80,7 +86,12 @@ function acceptDeepLink(link: DesktopDeepLink): void {
 }
 
 function authorizedDesktopSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents)
+  return Boolean(
+    mainWindow
+    && !mainWindow.isDestroyed()
+    && mainRendererTarget
+    && isAuthorizedRendererEvent(event, mainWindow.webContents, mainRendererTarget),
+  )
 }
 
 function createWindow(): void {
@@ -111,15 +122,21 @@ function createWindow(): void {
   mainWindow.once("closed", () => {
     if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
     rendererDeepLinkSink = undefined
+    mainRendererTarget = undefined
     mainWindow = undefined
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault())
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  mainRendererTarget = resolveRendererTarget({
+    isPackaged: app.isPackaged,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL,
+    bundledRendererPath: join(import.meta.dirname, "../renderer/index.html"),
+  })
+  if (mainRendererTarget.kind === "url") {
+    void mainWindow.loadURL(mainRendererTarget.url)
   } else {
-    void mainWindow.loadFile(join(import.meta.dirname, "../renderer/index.html"))
+    void mainWindow.loadFile(mainRendererTarget.path)
   }
 }
 
