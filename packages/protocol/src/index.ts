@@ -1,6 +1,7 @@
 export * from "./devices.js"
 export * from "./fixtures.js"
 export * from "./fleet.js"
+export * from "./fleet-health.js"
 export * from "./performance.js"
 export * from "./preview-bridge.js"
 export * from "./rpc.js"
