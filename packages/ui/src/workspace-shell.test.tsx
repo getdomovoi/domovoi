@@ -540,6 +540,41 @@ describe("provider failure guidance", () => {
     expect(markup).toContain(message)
     expect(markup).toContain(guidance)
   })
+
+  it("requires provider restart before another message", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.state = "failed"
+    delete active.providerThreadId
+    active.providerFailure = providerFailureSchema.parse({
+      kind: "transport",
+      action: "retry",
+      message: "Provider connection failed",
+      retryable: true,
+    })
+    const markup = renderToStaticMarkup(
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn(async () => {})}
+        onSetRuntime={vi.fn(async () => {})}
+        onRestartProviderThread={vi.fn(async () => {})}
+        onForkSession={vi.fn(async () => {})}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn(async () => {})}
+        onRestoreCheckpoint={vi.fn(async () => {})}
+        onPauseSession={vi.fn(async () => {})}
+        onArchiveSession={vi.fn(async () => {})}
+      />,
+    )
+
+    expect(markup).toContain("Provider thread needs recovery")
+    expect(markup).toContain("Restart provider")
+    expect(markup).toContain("Restart the provider before sending")
+    expect(markup).toMatch(/aria-label="Send message"[^>]*disabled=""/)
+  })
 })
 
 describe("archived annotation controls", () => {
