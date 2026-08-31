@@ -56,6 +56,32 @@ function comparisonVariant(state: SkillFleetCellState): "success" | "warning" | 
   return "secondary"
 }
 
+function skillSecurityCopy(skill: SkillSummary): {
+  label: string
+  buildAuto: string
+  variant: "success" | "warning" | "destructive"
+} {
+  if (skill.trust.state === "blocked") {
+    return {
+      label: "Signature invalid",
+      buildAuto: "Excluded from every permission mode",
+      variant: "destructive",
+    }
+  }
+  if (skill.trust.state === "trusted") {
+    return {
+      label: `Trusted by ${skill.trust.authority}`,
+      buildAuto: "Available in Build auto",
+      variant: "success",
+    }
+  }
+  return {
+    label: skill.signature.state === "unverified" ? "Signature present, not verified" : "Unsigned",
+    buildAuto: "Excluded from Build auto",
+    variant: "warning",
+  }
+}
+
 export function SkillSourceContent({
   skill,
   content,
@@ -151,6 +177,7 @@ export function SkillBrowser({
         row.name === selected.name && row.scope === selected.scope && row.source === selected.source
       ))
     : undefined
+  const selectedSecurity = selected ? skillSecurityCopy(selected) : undefined
 
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
@@ -304,6 +331,13 @@ export function SkillBrowser({
                   <CardContent className="font-machine text-[11px]">{selected.scope}</CardContent>
                 </Card>
                 <Card className="sm:col-span-2">
+                  <CardHeader><CardTitle>Security</CardTitle><CardDescription>Publisher evidence and Build-auto behavior</CardDescription></CardHeader>
+                  <CardContent className="flex flex-wrap items-center gap-2 font-machine text-[10.5px]">
+                    <Badge variant={selectedSecurity?.variant}>{selectedSecurity?.label}</Badge>
+                    <span className="text-muted-foreground">{selectedSecurity?.buildAuto}</span>
+                  </CardContent>
+                </Card>
+                <Card className="sm:col-span-2">
                   <CardHeader><CardTitle>Location</CardTitle><CardDescription>SKILL.md on the execution machine</CardDescription></CardHeader>
                   <CardContent><code className="block break-all font-machine text-[10.5px]">{selected.path}</code></CardContent>
                 </Card>
@@ -341,7 +375,15 @@ export function SkillBrowser({
               <Alert className="mt-4">
                 <FileTextIcon />
                 <AlertTitle>Project review</AlertTitle>
-                <AlertDescription>Enablement does not change signature or trust state. Any content or capability change requires another review.</AlertDescription>
+                <AlertDescription>
+                  Enablement does not change signature or trust state. Any content or capability change requires another review.
+                  {selected.trust.state === "untrusted"
+                    ? selectedEnabled
+                      ? " This skill is used in Ask, Plan, and Build manual. Build auto runs without this skill."
+                      : " Review and enable this exact skill to use it in Ask, Plan, and Build manual. Build auto will run without it."
+                    : null}
+                  {selected.trust.state === "blocked" ? " Blocked skills are never injected into provider context." : null}
+                </AlertDescription>
               </Alert>
               {reviewError ? <Alert variant="destructive" className="mt-4"><AlertTitle>Review failed</AlertTitle><AlertDescription>{reviewError}</AlertDescription></Alert> : null}
               <div className="mt-4 flex flex-wrap gap-2">

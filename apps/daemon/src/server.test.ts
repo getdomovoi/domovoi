@@ -3621,7 +3621,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("blocks untrusted enabled skills before Build auto starts or steers providers", async () => {
+  it("omits untrusted enabled skills without blocking Build auto turns", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const newTurn = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
     const steeredTurn = snapshot.sessions.find((candidate) => candidate.id === "session-onboarding")!
@@ -3702,17 +3702,17 @@ describe("DomovoiDaemon", () => {
       }))
     })
 
-    await expect(send(1, newTurn.id)).resolves.toMatchObject({
-      error: { code: -32602, message: expect.stringMatching(/repo-audit.*Disable.*trusted/i) },
-    })
-    await expect(send(2, steeredTurn.id)).resolves.toMatchObject({
-      error: { code: -32602, message: expect.stringMatching(/repo-audit.*Disable.*trusted/i) },
-    })
+    await expect(send(1, newTurn.id)).resolves.toHaveProperty("result")
+    await expect(send(2, steeredTurn.id)).resolves.toHaveProperty("result")
     expect(skillCatalog.read).toHaveBeenCalledTimes(2)
-    expect(agent.connect).not.toHaveBeenCalled()
-    expect(agent.resumeThread).not.toHaveBeenCalled()
-    expect(agent.startTurn).not.toHaveBeenCalled()
-    expect(agent.steerTurn).not.toHaveBeenCalled()
+    expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.not.stringContaining("Audit every change."),
+    }))
+    expect(agent.steerTurn).toHaveBeenCalledWith(
+      steeredTurn.providerThreadId,
+      "provider-turn-active",
+      expect.not.stringContaining("Audit every change."),
+    )
     socket.close()
   })
 

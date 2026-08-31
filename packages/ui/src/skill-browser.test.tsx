@@ -68,7 +68,10 @@ describe("skill browser", () => {
     expect(markup).toContain("design-studio")
     expect(markup).toContain("USER · AGENTS")
     expect(markup).toContain("/home/dev/.agents/skills/design-studio/SKILL.md")
-    expect(markup).not.toContain("trusted")
+    expect(markup).toContain("Unsigned")
+    expect(markup).toContain("Excluded from Build auto")
+    expect(markup).toContain("Review and enable this exact skill to use it in Ask, Plan, and Build manual")
+    expect(markup).not.toContain("This skill is used in Ask, Plan, and Build manual")
     expect(markup).toContain("View SKILL.md")
     expect(markup).toContain("Review &amp; enable")
     expect(markup).toContain("sha256:")
@@ -103,6 +106,39 @@ describe("skill browser", () => {
     expect(markup).toContain("Enabled for this project")
     expect(markup).toContain("Review &amp; disable")
     expect(markup).toContain("Enablement does not change signature or trust state")
+    expect(markup).not.toContain("Review and enable this exact skill to use it")
+    expect(markup).toContain("Build auto runs without this skill")
+  })
+
+  it("labels declared signatures as unverified instead of trusted", () => {
+    const unverified = {
+      ...skills[0]!,
+      signature: {
+        state: "unverified" as const,
+        algorithm: "ed25519" as const,
+        keyId: "publisher-key",
+        value: "YWJjZGVmZ2hpamtsbW5vcA==",
+      },
+      trust: { state: "untrusted" as const, reason: "unverified-signature" as const },
+    }
+    const markup = renderToStaticMarkup(
+      <SkillBrowser
+        skills={[unverified]}
+        loading={false}
+        error=""
+        onBack={vi.fn()}
+        onOpenAudit={vi.fn()}
+        onReadSkill={vi.fn()}
+        projectId="project-acme-api"
+        enablements={[]}
+        onSetSkillEnabled={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain("Signature present, not verified")
+    expect(markup).toContain("Excluded from Build auto")
+    expect(markup).not.toContain("Verified publisher")
   })
 
   it("shows metadata-only machine comparison without a distribution action", () => {
