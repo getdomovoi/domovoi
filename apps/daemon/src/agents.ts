@@ -37,6 +37,8 @@ export interface AgentAdapter {
   readonly permissionCapabilities?: AgentPermissionCapabilities
   readonly capabilities?: AgentCapabilities
   connect(): Promise<void>
+  /** Discard connection state while keeping the adapter reusable. */
+  resetConnection?(): Promise<void>
   listModels(): Promise<ProviderModel[]>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
   resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void>

@@ -185,6 +185,14 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
   }
 
+  async resetConnection(): Promise<void> {
+    const transport = this.#transport
+    this.#connectPromise = undefined
+    if (transport) this.#detachTransport(transport)
+    this.#rejectPending(new Error("Codex connection reset"))
+    await transport?.close()
+  }
+
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
     const policy = codexPolicyFor(runtime, cwd)
     const sandbox = policy.sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write"

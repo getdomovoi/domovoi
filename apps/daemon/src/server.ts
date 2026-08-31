@@ -424,6 +424,7 @@ export class DomovoiDaemon {
   #workspaceService: WorkspaceService
   #connectedAgents = new Set<string>()
   #agentConnections = new Map<string, Promise<void>>()
+  #agentConnectionResets = new Map<string, Promise<void>>()
   #providerModels = new Map<string, { models: ProviderModel[]; cachedAt: number }>()
   #providerModelRequests = new Map<string, Promise<ProviderModel[]>>()
   #providerEpochs = new Map<string, number>()
@@ -964,6 +965,7 @@ export class DomovoiDaemon {
   async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
     const agent = this.#agents.require(provider)
     if (this.#connectedAgents.has(provider)) return agent
+    await this.#agentConnectionResets.get(provider)
     if (!this.#agentConnections.has(provider)) {
       const epoch = this.#providerEpoch(provider)
       const connection = agent.connect().then(() => {
@@ -976,11 +978,36 @@ export class DomovoiDaemon {
       )
     }
     const pendingConnection = this.#agentConnections.get(provider)!
-    await withTimeout(
-      pendingConnection,
-      this.#agentTimeoutMs,
-      "Agent setup timed out",
-    )
+    try {
+      await withTimeout(
+        pendingConnection,
+        this.#agentTimeoutMs,
+        "Agent setup timed out",
+      )
+    } catch (error) {
+      if (
+        error instanceof OperationTimeoutError
+        && this.#agentConnections.get(provider) === pendingConnection
+      ) {
+        this.#agentConnections.delete(provider)
+        this.#providerEpochs.set(provider, this.#providerEpoch(provider) + 1)
+        if (agent.resetConnection) {
+          const reset = withTimeout(
+            Promise.resolve().then(() => agent.resetConnection!()),
+            this.#agentTimeoutMs,
+            "Agent connection reset timed out",
+          ).catch((resetError) => {
+            this.#reportError(`Agent provider ${provider} connection reset failed`, resetError)
+          })
+          this.#agentConnectionResets.set(provider, reset)
+          await reset
+          if (this.#agentConnectionResets.get(provider) === reset) {
+            this.#agentConnectionResets.delete(provider)
+          }
+        }
+      }
+      throw error
+    }
     if (!this.#connectedAgents.has(provider)) {
       if (this.#agentConnections.get(provider) === pendingConnection) {
         this.#agentConnections.delete(provider)

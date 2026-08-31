@@ -3562,15 +3562,15 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("shares slow agent initialization across timed-out model requests", async () => {
+  it("resets timed-out setup and rejects its late completion before retrying", async () => {
     let finishConnect: (() => void) | undefined
-    let finishModels: (() => void) | undefined
-    const models = codexModels()
+    let finishReset: (() => void) | undefined
     const agent = {
-      connect: vi.fn(() => new Promise<void>((resolve) => { finishConnect = resolve })),
-      listModels: vi.fn(() => new Promise<typeof models>((resolve) => {
-        finishModels = () => resolve(models)
-      })),
+      connect: vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((resolve) => { finishConnect = resolve }))
+        .mockResolvedValue(undefined),
+      resetConnection: vi.fn(() => new Promise<void>((resolve) => { finishReset = resolve })),
+      listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused-thread"),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
@@ -3585,7 +3585,8 @@ describe("DomovoiDaemon", () => {
       port: 0,
       statePath: ":memory:",
       agent,
-      agentTimeoutMs: 500,
+      agentTimeoutMs: 100,
+      errorSink: vi.fn(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -3610,24 +3611,23 @@ describe("DomovoiDaemon", () => {
       }))
     })
 
-    await expect(rpc(1)).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
-    const second = rpc(2)
+    const timedOut = rpc(1)
+    await vi.waitFor(() => expect(agent.resetConnection).toHaveBeenCalledOnce())
+    expect(agent.close).not.toHaveBeenCalled()
+    const retry = rpc(2)
     expect(agent.connect).toHaveBeenCalledOnce()
     finishConnect!()
-    await vi.waitFor(
-      () => expect(agent.listModels).toHaveBeenCalledOnce(),
-      { interval: 1, timeout: 100 },
-    )
-    const third = rpc(3)
     await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(agent.listModels).not.toHaveBeenCalled()
+    expect(agent.connect).toHaveBeenCalledOnce()
+
+    finishReset!()
+    await expect(timedOut).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
+    await expect(retry).resolves.toMatchObject({
+      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
+    })
+    expect(agent.connect).toHaveBeenCalledTimes(2)
     expect(agent.listModels).toHaveBeenCalledOnce()
-    finishModels!()
-    await expect(second).resolves.toMatchObject({
-      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
-    })
-    await expect(third).resolves.toMatchObject({
-      result: [expect.objectContaining({ id: "gpt-5.6-sol" })],
-    })
     socket.close()
   })
 
