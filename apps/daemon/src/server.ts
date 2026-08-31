@@ -353,29 +353,178 @@ function sessionHistorySearchText(entry: SessionHistoryEntry): string {
   return `${entry.body}\n${entry.origin}\n${entry.artifactId ?? ""}\n${entry.status ?? ""}`
 }
 
+export type SessionHistoryIndexMetrics = {
+  indexBuilds: number
+  indexedEntries: number
+  filterScans: number
+  filteredEntriesVisited: number
+  pageLookups: number
+  cachedFilterEntries: number
+  filterEvictions: number
+}
+
+type IndexedSessionHistory = {
+  entries: SessionHistoryEntry[]
+  positions: Map<string, number>
+}
+
+type FilteredSessionHistory = { indices: number[] }
+
+const maximumCachedSessionHistoryFilters = 32
+export const maximumCachedSessionHistoryFilterEntries = 10_000
+const allSessionHistoryCategories = [
+  "annotations",
+  "approvals",
+  "checkpoints",
+  "handoffs",
+  "messages",
+  "tests",
+  "tools",
+] as const
+
+function indexedSessionHistory(entries: SessionHistoryEntry[]): IndexedSessionHistory {
+  return {
+    entries,
+    positions: new Map(entries.map((entry, index) => [entry.id, index])),
+  }
+}
+
+function filteredPosition(indices: number[], entryIndex: number): number | undefined {
+  let low = 0
+  let high = indices.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (indices[middle]! < entryIndex) low = middle + 1
+    else high = middle
+  }
+  return indices[low] === entryIndex ? low : undefined
+}
+
+function throwIfHistoryAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException("Session history request aborted", "AbortError")
+}
+
+export class SessionHistoryIndex {
+  readonly #sessions = new Map<string, IndexedSessionHistory>()
+  readonly #filters = new Map<string, { sessionId: string; history: FilteredSessionHistory }>()
+  readonly #metrics: SessionHistoryIndexMetrics | undefined
+  #cachedFilterEntries = 0
+
+  constructor(metrics?: SessionHistoryIndexMetrics) {
+    this.#metrics = metrics
+  }
+
+  invalidate(sessionId?: string): void {
+    if (sessionId === undefined) {
+      this.#sessions.clear()
+      this.#filters.clear()
+      this.#cachedFilterEntries = 0
+    } else {
+      this.#sessions.delete(sessionId)
+      for (const [key, filter] of this.#filters) {
+        if (filter.sessionId !== sessionId) continue
+        this.#cachedFilterEntries -= filter.history.indices.length
+        this.#filters.delete(key)
+      }
+    }
+    if (this.#metrics) this.#metrics.cachedFilterEntries = this.#cachedFilterEntries
+  }
+
+  page(
+    snapshot: WorkspaceSnapshot,
+    params: RpcParams<"session.history">,
+    signal?: AbortSignal,
+  ): SessionHistoryPage | undefined {
+    throwIfHistoryAborted(signal)
+    let indexed = this.#sessions.get(params.sessionId)
+    if (!indexed) {
+      const entries = sessionHistoryEntries(snapshot, params.sessionId)
+      indexed = indexedSessionHistory(entries)
+      this.#sessions.set(params.sessionId, indexed)
+      if (this.#metrics) {
+        this.#metrics.indexBuilds += 1
+        this.#metrics.indexedEntries += entries.length
+      }
+    }
+
+    const requestedCategories = params.categories
+      ? [...new Set(params.categories)].sort()
+      : undefined
+    const categories = requestedCategories?.length === allSessionHistoryCategories.length
+      && requestedCategories.every((category, offset) => category === allSessionHistoryCategories[offset])
+      ? undefined
+      : requestedCategories
+    const query = params.query?.toLowerCase()
+    let filtered: FilteredSessionHistory | undefined
+    if (categories || query) {
+      const filterKey = JSON.stringify([categories ?? null, query ?? null])
+      const cacheKey = `${params.sessionId}\u0000${filterKey}`
+      filtered = this.#filters.get(cacheKey)?.history
+      if (!filtered) {
+        const categorySet = categories ? new Set(categories) : undefined
+        const indices: number[] = []
+        if (this.#metrics) this.#metrics.filterScans += 1
+        for (let offset = 0; offset < indexed.entries.length; offset += 1) {
+          if ((offset & 255) === 0) throwIfHistoryAborted(signal)
+          const entry = indexed.entries[offset]!
+          if (this.#metrics) this.#metrics.filteredEntriesVisited += 1
+          if (
+            (!categorySet || categorySet.has(entry.category))
+            && (!query || sessionHistorySearchText(entry).toLowerCase().includes(query))
+          ) indices.push(offset)
+        }
+        throwIfHistoryAborted(signal)
+        filtered = { indices }
+        this.#filters.set(cacheKey, { sessionId: params.sessionId, history: filtered })
+        this.#cachedFilterEntries += indices.length
+        while (
+          (this.#filters.size > maximumCachedSessionHistoryFilters
+            || this.#cachedFilterEntries > maximumCachedSessionHistoryFilterEntries)
+          && this.#filters.size > 1
+        ) {
+          const oldestKey = this.#filters.keys().next().value!
+          const oldest = this.#filters.get(oldestKey)!
+          this.#filters.delete(oldestKey)
+          this.#cachedFilterEntries -= oldest.history.indices.length
+          if (this.#metrics) this.#metrics.filterEvictions += 1
+        }
+      } else {
+        const cached = this.#filters.get(cacheKey)!
+        this.#filters.delete(cacheKey)
+        this.#filters.set(cacheKey, cached)
+      }
+      if (this.#metrics) this.#metrics.cachedFilterEntries = this.#cachedFilterEntries
+    }
+
+    if (this.#metrics) this.#metrics.pageLookups += 1
+    const beforeIndex = params.before === undefined ? undefined : indexed.positions.get(params.before)
+    const end = params.before === undefined
+      ? filtered?.indices.length ?? indexed.entries.length
+      : beforeIndex === undefined
+        ? undefined
+        : filtered
+          ? filteredPosition(filtered.indices, beforeIndex)
+          : beforeIndex
+    if (end === undefined) return undefined
+    const start = Math.max(0, end - params.limit)
+    const items = filtered
+      ? filtered.indices.slice(start, end).map((offset) => indexed.entries[offset]!)
+      : indexed.entries.slice(start, end)
+    const hasMore = start > 0
+    return {
+      sessionId: params.sessionId,
+      items,
+      hasMore,
+      ...(hasMore ? { nextCursor: items[0]!.id } : {}),
+    }
+  }
+}
+
 export function sessionHistoryPage(
   snapshot: WorkspaceSnapshot,
   params: RpcParams<"session.history">,
 ): SessionHistoryPage | undefined {
-  const categories = params.categories ? new Set(params.categories) : undefined
-  const query = params.query?.toLowerCase()
-  const history = sessionHistoryEntries(snapshot, params.sessionId).filter((entry) =>
-    (!categories || categories.has(entry.category))
-    && (!query || sessionHistorySearchText(entry).toLowerCase().includes(query))
-  )
-  const end = params.before
-    ? history.findIndex((item) => item.id === params.before)
-    : history.length
-  if (end < 0) return undefined
-  const start = Math.max(0, end - params.limit)
-  const items = history.slice(start, end)
-  const hasMore = start > 0
-  return {
-    sessionId: params.sessionId,
-    items,
-    hasMore,
-    ...(hasMore ? { nextCursor: items[0]!.id } : {}),
-  }
+  return new SessionHistoryIndex().page(snapshot, params)
 }
 
 type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
@@ -515,6 +664,7 @@ export class DomovoiDaemon {
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
   #rpcOutbound: RpcOutboundBackpressure
+  #sessionHistory = new SessionHistoryIndex()
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -2060,7 +2210,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        const page = sessionHistoryPage(this.#snapshot, params)
+        const page = this.#sessionHistory.page(this.#snapshot, params, signal)
         if (!page) {
           this.#error(socket, request.id, invalidParams, "History cursor does not exist")
           return
@@ -3620,6 +3770,7 @@ export class DomovoiDaemon {
     }
 
     session.updatedAt = createdAt
+    this.#sessionHistory.invalidate(session.id)
     if (
       event.type === "text-delta" ||
       event.type === "plan-delta" ||
@@ -4449,6 +4600,7 @@ export class DomovoiDaemon {
   }
 
   async #persistSnapshot(): Promise<void> {
+    this.#sessionHistory.invalidate()
     if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
     else this.#store.save(this.#snapshot)
   }
