@@ -8,6 +8,7 @@ import {
 import {
   annotationAnchorSchema,
   approvalDecisionSchema,
+  clientIdentityIdSchema,
   clientKindSchema,
   providerModelsSchema,
   runtimeSchema,
@@ -194,6 +195,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     operation: z.string(),
     checkpoint: z.string(),
     client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
   }),
   z.object({
@@ -586,7 +588,7 @@ export const sessionEvidenceSchema = z.object({
 
 export const helloParamsSchema = z.object({
   client: clientKindSchema,
-  clientId: z.string().trim().min(1).max(128).optional(),
+  clientId: clientIdentityIdSchema.optional(),
   clientVersion: z.string().min(1),
   authToken: z.string().min(1).optional(),
 })
@@ -725,7 +727,6 @@ export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
     decision: approvalDecisionSchema,
-    client: clientKindSchema,
     explanation: z.string().trim().min(1).optional(),
   })
   .superRefine((params, context) => {

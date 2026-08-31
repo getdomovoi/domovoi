@@ -5,6 +5,7 @@ import { skillEnablementReviewsSchema } from "./skills.js"
 export const protocolVersion = "0.1.0" as const
 
 export const clientKindSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
+export const clientIdentityIdSchema = z.string().trim().min(1).max(128)
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
 export const sessionStateSchema = z.enum([
   "active",
@@ -183,6 +184,7 @@ export const approvalRuleSchema = z.object({
   operation: z.string().min(1),
   command: z.string().min(1),
   createdBy: clientKindSchema,
+  createdByClientId: clientIdentityIdSchema.optional(),
   createdAt: z.string().datetime(),
 })
 
@@ -225,6 +227,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     operation: z.string(),
     checkpoint: z.string(),
     client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
     createdAt: z.string().datetime(),
   }),
