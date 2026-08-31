@@ -37,6 +37,7 @@ import type {
   ProviderFailure,
   ProviderModel,
   ProviderRuntime,
+  ProjectSwitchConfirmation,
   RpcParams,
   Runtime,
   SessionEvidence,
@@ -114,6 +115,7 @@ import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
+import { ProjectSwitchConfirmationError } from "./client"
 import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
@@ -206,6 +208,54 @@ export type WorkspaceShellProps = {
   rpcToken?: string
   windowBridge?: DesktopWindowBridge
   onChangeCredential?: () => void
+}
+
+export function ProjectSwitchConfirmationDialog({
+  confirmation,
+  pending = false,
+  error = "",
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: ProjectSwitchConfirmation
+  pending?: boolean
+  error?: string
+  onCancel: () => void
+  onConfirm: (path: string) => void
+}) {
+  return (
+    <AlertDialog open onOpenChange={(open) => { if (!open && !pending) onCancel() }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove current sessions and switch projects?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This removes {confirmation.sessionCount} sessions and their saved history, including {confirmation.worktreeCount} isolated {confirmation.worktreeCount === 1 ? "worktree" : "worktrees"}. Archive anything you want to preserve first.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <ScrollArea className="max-h-44 rounded-md border">
+          <ul className="divide-y">
+            {confirmation.sessions.map((session) => (
+              <li key={session.id} className="px-3 py-2 text-sm">
+                <span className="block font-medium text-foreground">{session.title}</span>
+                <span className="font-machine text-[10px] text-muted-foreground">{session.workspacePath ?? "No isolated worktree"}</span>
+              </li>
+            ))}
+          </ul>
+        </ScrollArea>
+        {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>Keep current project</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={pending}
+            onClick={() => onConfirm(confirmation.requestedPath)}
+          >
+            {pending ? "Switching…" : "Remove sessions and switch"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
 }
 
 export function PreviewVariantThumbnail({ url }: { url?: string | undefined }) {
@@ -2714,6 +2764,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
   const [workspaceError, setWorkspaceError] = useState("")
+  const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
+  const [projectSwitchPending, setProjectSwitchPending] = useState(false)
+  const [projectSwitchError, setProjectSwitchError] = useState("")
   const [connectionError, setConnectionError] = useState("")
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [providerRefresh, setProviderRefresh] = useState(0)
@@ -2819,13 +2872,38 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const pauseActiveTurns = () => {
     void emergencyStop()
   }
+  const openProjectSafely = async (path: string) => {
+    try {
+      await openProject(path)
+    } catch (cause) {
+      if (cause instanceof ProjectSwitchConfirmationError) {
+        setProjectSwitchError("")
+        setProjectSwitchConfirmation(cause.confirmation)
+        return
+      }
+      throw cause
+    }
+  }
+  const confirmProjectSwitch = async (path: string) => {
+    if (projectSwitchPending || projectSwitchConfirmation?.requestedPath !== path) return
+    setProjectSwitchPending(true)
+    setProjectSwitchError("")
+    try {
+      await openProject(path, true)
+      setProjectSwitchConfirmation(null)
+    } catch (cause) {
+      setProjectSwitchError(cause instanceof Error ? cause.message : "Domovoi could not switch projects")
+    } finally {
+      setProjectSwitchPending(false)
+    }
+  }
   const requestOpenProject = () => {
     if (!windowBridge) {
       setLauncherMode("project")
       return
     }
     setWorkspaceError("")
-    void openProjectFromDesktop(windowBridge, openProject).catch((cause: unknown) => {
+    void openProjectFromDesktop(windowBridge, openProjectSafely).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
     })
   }
@@ -3143,10 +3221,22 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             ? desktopFirstRun.persisted.permissionMode
             : "build"}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
-          onOpenProject={openProject}
+          onOpenProject={openProjectSafely}
           onCreateSession={createSession}
           onListModels={listModels}
         /> : null}
+        {projectSwitchConfirmation ? (
+          <ProjectSwitchConfirmationDialog
+            confirmation={projectSwitchConfirmation}
+            pending={projectSwitchPending}
+            error={projectSwitchError}
+            onCancel={() => {
+              setProjectSwitchError("")
+              setProjectSwitchConfirmation(null)
+            }}
+            onConfirm={(path) => { void confirmProjectSwitch(path) }}
+          />
+        ) : null}
         <CommandPalette
           open={commandPaletteOpen}
           platform={commandPlatform}
