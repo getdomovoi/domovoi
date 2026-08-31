@@ -13,6 +13,7 @@ import {
   demoWorkspace,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
+  maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
   projectSwitchConfirmationSchema,
   workspaceSnapshotSchema,
@@ -39,6 +40,11 @@ import {
   workspaceSnapshotForClient,
   workspaceDeltaChunks,
 } from "./server.js"
+import {
+  retryableSlowClientCloseCode,
+  retryableSlowClientCloseReason,
+  rpcWebSocketHighWaterBytes,
+} from "./rpc-outbound.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
@@ -126,6 +132,104 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it("closes a client whose RPC response reaches the outbound high-water boundary", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
+      agents: {},
+      rpcOutboundBackpressure: {
+        bufferedBytes: () => rpcWebSocketHighWaterBytes,
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const outcome = new Promise<{ kind: "message"; value: unknown } | { kind: "close"; code: number; reason: string }>(
+      (resolve) => {
+        socket.once("message", (data) => resolve({ kind: "message", value: JSON.parse(data.toString()) }))
+        socket.once("close", (code, reason) => resolve({ kind: "close", code, reason: reason.toString() }))
+      },
+    )
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "workspace.get", params: {} }))
+
+    await expect(outcome).resolves.toEqual({
+      kind: "close",
+      code: retryableSlowClientCloseCode,
+      reason: retryableSlowClientCloseReason,
+    })
+  })
+
+  it("bypasses ordinary pressure policy for terminal notifications", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-terminal-backpressure-"))
+    scratchDirectories.push(workspacePath)
+    session.workspacePath = workspacePath
+    const output = "x".repeat(maximumTerminalOutputChunkCharacters)
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn((listener: (data: string) => void) => {
+        listener(output)
+        return { dispose: vi.fn() }
+      }),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: {},
+      terminalService: { spawn: vi.fn(() => terminal) },
+      rpcOutboundBackpressure: {
+        bufferedBytes: () => rpcWebSocketHighWaterBytes,
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const messages: Array<{ method?: string; id?: number; params?: { data?: string } }> = []
+    const outcome = new Promise<"response" | { code: number; reason: string }>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString())
+        messages.push(message)
+        if (message.id === 1) resolve("response")
+      })
+      socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "terminal.create",
+      params: {
+        terminalId: "terminal-backpressure",
+        sessionId: session.id,
+        cols: 80,
+        rows: 24,
+        client: "desktop",
+        clientId: "desktop-backpressure",
+      },
+    }))
+
+    await expect(outcome).resolves.toEqual({
+      code: retryableSlowClientCloseCode,
+      reason: retryableSlowClientCloseReason,
+    })
+    expect(messages).toEqual([expect.objectContaining({
+      method: "terminal.output",
+      params: { terminalId: "terminal-backpressure", data: output },
+    })])
+  })
+
   it("awaits async long-history persistence without starving timers", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.thread = Array.from({ length: 4_000 }, (_, index) => ({
