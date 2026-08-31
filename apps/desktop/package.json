@@ -10,7 +10,7 @@
     "pretest:launch": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "dev": "electron-vite dev",
     "test": "vitest run",
-    "test:launch": "node --test scripts/launch-smoke-args.test.mjs && electron-vite build && node scripts/launch-smoke.mjs",
+    "test:launch": "node --test scripts/launch-smoke-args.node.mjs && electron-vite build && node scripts/launch-smoke.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
