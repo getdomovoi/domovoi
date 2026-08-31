@@ -2,9 +2,11 @@ import type { DatabaseSync } from "node:sqlite"
 
 import {
   fleetMachineFactsSchema,
+  fleetMachineHealth,
   fleetSnapshotSchema,
   machineHeartbeatState,
   maximumFleetMachines,
+  protocolVersion,
   type FleetMachineFacts,
   type FleetSnapshot,
   type MachineCapability,
@@ -25,6 +27,7 @@ type StoredFleetMachine = {
   version: string
   connection: string
   capabilities: string
+  protocol_version: string
   last_seen_ms: number
 }
 
@@ -47,6 +50,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
         version TEXT NOT NULL,
         connection TEXT NOT NULL,
         capabilities TEXT NOT NULL,
+        protocol_version TEXT NOT NULL,
         last_seen_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS fleet_machines_last_seen ON fleet_machines (last_seen_ms DESC);
@@ -70,8 +74,9 @@ export class SqliteFleetRegistry implements FleetRegistry {
     this.#database
       .prepare(`
         INSERT INTO fleet_machines (
-          id, label, platform, arch, version, connection, capabilities, last_seen_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          id, label, platform, arch, version, connection, capabilities, protocol_version,
+          last_seen_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           label = excluded.label,
           platform = excluded.platform,
@@ -79,6 +84,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
           version = excluded.version,
           connection = excluded.connection,
           capabilities = excluded.capabilities,
+          protocol_version = excluded.protocol_version,
           last_seen_ms = excluded.last_seen_ms
       `)
       .run(
@@ -89,6 +95,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
         machine.version,
         machine.connection,
         JSON.stringify(machine.capabilities),
+        machine.protocolVersion,
         nowMs,
       )
   }
@@ -98,7 +105,9 @@ export class SqliteFleetRegistry implements FleetRegistry {
       .prepare("SELECT * FROM fleet_machines ORDER BY last_seen_ms DESC, id ASC")
       .all() as StoredFleetMachine[]
     return fleetSnapshotSchema.parse({
-      machines: rows.map((row) => ({
+      machines: rows.map((row) => {
+        const heartbeat = machineHeartbeatState(row.last_seen_ms, nowMs)
+        return {
         id: row.id,
         label: row.label,
         platform: row.platform,
@@ -106,12 +115,22 @@ export class SqliteFleetRegistry implements FleetRegistry {
         version: row.version,
         connection: row.connection,
         capabilities: JSON.parse(row.capabilities) as MachineCapability[],
+        protocolVersion: row.protocol_version,
         heartbeat: {
-          state: machineHeartbeatState(row.last_seen_ms, nowMs),
+          state: heartbeat,
           lastSeenAt: new Date(row.last_seen_ms).toISOString(),
         },
+        // The daemon only observes its own link, so a machine it is not
+        // currently hearing from counts as disconnected rather than retrying.
+        health: fleetMachineHealth({
+          heartbeat,
+          connection: heartbeat === "offline" ? "disconnected" : "connected",
+          protocolVersion: row.protocol_version,
+          clientProtocolVersion: protocolVersion,
+        }),
         self: row.id === selfId,
-      })),
+      }
+      }),
     })
   }
 }
