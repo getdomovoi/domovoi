@@ -37,7 +37,7 @@ import {
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
-import type { WorkspaceService } from "./workspace.js"
+import { WorkspaceEvidenceUnstableError, type WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
@@ -596,6 +596,51 @@ describe("DomovoiDaemon", () => {
       expect.any(AbortSignal),
     )
     expect(save).not.toHaveBeenCalled()
+  })
+
+  it("returns an explicit error when workspace evidence stays unstable", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/session-evidence"
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      evidence: vi.fn(async () => { throw new WorkspaceEvidenceUnstableError() }),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "unstable-evidence-token",
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
+        if (message.id === 1) resolve(message)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.evidence",
+      params: { sessionId: session.id },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: { code: -32603, message: "Workspace changed while evidence was collected" },
+    })
   })
 
   it.each([

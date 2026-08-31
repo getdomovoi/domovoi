@@ -6,7 +6,7 @@ import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { GitWorkspaceService } from "./workspace.js"
+import { GitWorkspaceService, WorkspaceEvidenceUnstableError } from "./workspace.js"
 
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
@@ -337,6 +337,84 @@ describe("GitWorkspaceService", () => {
     expect(evidence.diff).toContain("diff --git a/README.md b/README.md")
     expect(evidence.diff).toContain("unstaged too")
     expect(evidence.diff).not.toContain("untracked file.ts")
+  })
+
+  it("retries when the worktree changes between Git evidence observations", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-evidence-generation-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "alpha.txt"), "alpha base\n")
+    await writeFile(join(repositoryPath, "beta.txt"), "beta base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    await writeFile(join(repositoryPath, "alpha.txt"), "alpha changed\n")
+    let observations = 0
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterEvidenceObservation: async (observation) => {
+        if (observation !== "status" || observations++ > 0) return
+        await writeFile(join(repositoryPath, "alpha.txt"), "alpha base\n")
+        await writeFile(join(repositoryPath, "beta.txt"), "beta changed\n")
+      },
+    })
+
+    const evidence = await service.evidence(repositoryPath)
+
+    expect({
+      files: evidence.files.map((file) => file.path),
+      includesAlphaDiff: evidence.diff.includes("diff --git a/alpha.txt b/alpha.txt"),
+      includesBetaDiff: evidence.diff.includes("diff --git a/beta.txt b/beta.txt"),
+    }).toEqual({
+      files: ["beta.txt"],
+      includesAlphaDiff: false,
+      includesBetaDiff: true,
+    })
+    expect(observations).toBe(2)
+  })
+
+  it("fails explicitly after bounded retries against an unstable worktree", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-evidence-unstable-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "alpha.txt"), "alpha base\n")
+    await writeFile(join(repositoryPath, "beta.txt"), "beta base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    await writeFile(join(repositoryPath, "alpha.txt"), "alpha changed\n")
+    let observations = 0
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterEvidenceObservation: async (observation) => {
+        if (observation !== "status") return
+        observations += 1
+        const odd = observations % 2 === 1
+        await writeFile(join(repositoryPath, "alpha.txt"), odd ? "alpha base\n" : "alpha changed\n")
+        await writeFile(join(repositoryPath, "beta.txt"), odd ? "beta changed\n" : "beta base\n")
+      },
+    })
+
+    await expect(service.evidence(repositoryPath)).rejects.toThrow(WorkspaceEvidenceUnstableError)
+    expect(observations).toBe(3)
   })
 
   it("bounds Git evidence without changing its measured totals", async () => {
