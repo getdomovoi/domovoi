@@ -1052,6 +1052,7 @@ export function Thread({
   connected,
   onResolve,
   onSetRuntime,
+  onRestartProviderThread,
   onForkSession,
   onListModels,
   onNewSession,
@@ -1071,6 +1072,7 @@ export function Thread({
     explanation?: string,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
+  onRestartProviderThread?: (() => Promise<void>) | undefined
   onForkSession: (input: Omit<RpcParams<"session.fork">, "client">) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
   onNewSession: () => void
@@ -1091,6 +1093,7 @@ export function Thread({
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
+  const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
 
   if (!active) {
@@ -1122,6 +1125,7 @@ export function Thread({
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
+  const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   const forkCheckpoint = snapshot.thread.filter((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit
   ).at(-1)
@@ -1129,7 +1133,7 @@ export function Thread({
 
   const submitPrompt = async () => {
     const nextPrompt = prompt.trim()
-    if (!nextPrompt || pending) return
+    if (!nextPrompt || pending || providerRestartRequired) return
     setPending(true)
     setSendError("")
     try {
@@ -1139,6 +1143,19 @@ export function Thread({
       setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
     } finally {
       setPending(false)
+    }
+  }
+
+  const restartProvider = async () => {
+    if (!onRestartProviderThread || restartPending) return
+    setRestartPending(true)
+    setSendError("")
+    try {
+      await onRestartProviderThread()
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The provider thread could not be restarted")
+    } finally {
+      setRestartPending(false)
     }
   }
 
@@ -1292,6 +1309,18 @@ export function Thread({
               <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
             </Alert>
           ) : null}
+          {providerRestartRequired ? (
+            <Alert variant="destructive">
+              <CircleStopIcon />
+              <AlertTitle>Provider thread needs recovery</AlertTitle>
+              <AlertDescription className="flex flex-wrap items-center gap-3">
+                The worktree and session history are safe. Restart the provider before sending another message.
+                <Button variant="outline" size="sm" disabled={!connected || restartPending} onClick={() => void restartProvider()}>
+                  {restartPending ? "Restarting provider…" : "Restart provider"}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          ) : null}
           {renderedThreadForActiveSession(snapshot).map((item) => {
             if (item.kind === "checkpoint") {
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
@@ -1352,7 +1381,7 @@ export function Thread({
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2"><span className="font-machine text-[9px] text-faint">Ctrl/⌘ + Enter send</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
       </div>}
@@ -2603,6 +2632,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     refreshProviders,
     reconnect,
     restoreCheckpoint,
+    restartProviderThread,
     resizeTerminal,
     resolveApproval,
     replyToAnnotation,
@@ -3077,7 +3107,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}

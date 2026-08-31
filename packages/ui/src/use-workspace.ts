@@ -177,6 +177,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.setRuntime(sessionId, runtime))
   }, [updateSnapshotFrom])
 
+  const restartProviderThread = useCallback(async (sessionId: string, runtime?: Runtime) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshotFrom(client, await client.restartProviderThread(sessionId, runtime))
+  }, [updateSnapshotFrom])
+
   const activateSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -514,6 +520,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     refreshProviders,
     reconnect,
     restoreCheckpoint,
+    restartProviderThread,
     resizeTerminal,
     replyToAnnotation,
     resolveApproval,

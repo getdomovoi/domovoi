@@ -285,6 +285,14 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.setRuntime", { sessionId, runtime, client: this.kind })
   }
 
+  restartProviderThread(sessionId: string, runtime?: Runtime): Promise<WorkspaceSnapshot> {
+    return this.request("session.restartProviderThread", {
+      sessionId,
+      client: this.kind,
+      ...(runtime ? { runtime } : {}),
+    })
+  }
+
   activateSession(sessionId: string): Promise<WorkspaceSnapshot> {
     return this.request("session.activate", { sessionId, client: this.kind })
   }
