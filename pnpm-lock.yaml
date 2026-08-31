@@ -83,9 +83,6 @@ importers:
       '@getdomovoi/daemon':
         specifier: workspace:*
         version: link:../daemon
-      '@getdomovoi/protocol':
-        specifier: workspace:*
-        version: link:../../packages/protocol
       '@getdomovoi/ui':
         specifier: workspace:*
         version: link:../../packages/ui
