@@ -1,4 +1,5 @@
-import { mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,7 +10,7 @@ import { loadOrCreateMachineIdentity } from "./machine-identity.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 async function scratch(): Promise<string> {
