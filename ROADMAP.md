@@ -90,6 +90,8 @@ workflow without becoming a code editor.
 
 - [x] Open a local Git repository and create a session worktree
 - [x] Send, steer, stop, persist, and resume agent turns
+- [x] Reconcile interrupted active turns on daemon startup without losing worktree or history
+- [x] Restart a quarantined provider thread in-app while preserving the existing session worktree
 - [x] Create and restore checkpoints with a recovery checkpoint
 - [x] Change providers/models through a documented checkpointed handoff
 - [x] Prevent manual checkpoint creation while an agent is mutating the worktree
@@ -98,6 +100,7 @@ workflow without becoming a code editor.
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
+- [x] Require explicit confirmation before switching projects discards current sessions and worktrees
 
 ### Providers and credentials
 

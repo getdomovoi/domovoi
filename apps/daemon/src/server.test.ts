@@ -12,6 +12,7 @@ import {
   demoWorkspace,
   maximumEffectiveClientThreadItems,
   maximumWorkspaceDeltaChunkLength,
+  projectSwitchConfirmationSchema,
   workspaceSnapshotSchema,
   type ProviderModel,
   type SkillSummary,
@@ -5080,7 +5081,71 @@ describe("DomovoiDaemon", () => {
       expect.any(AbortSignal),
     )
 
-    const switched = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    agent.stopThread.mockClear()
+    workspaceService.removeSessionWorkspace.mockClear()
+    const savesBeforeRejectedSwitch = store.save.mock.calls.length
+    const rejectedSwitch = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    expect(rejectedSwitch).toMatchObject({
+      error: {
+        code: -32010,
+        data: {
+          kind: "project-switch-confirmation",
+          requestedPath: "/code/elsewhere",
+          sessionCount: 1,
+          worktreeCount: 1,
+          sessions: [{
+            id: sessionId,
+            title: "Build persistence",
+            state: "active",
+            workspacePath: `/worktrees/${sessionId}`,
+          }],
+        },
+      },
+    })
+    expect(agent.stopThread).not.toHaveBeenCalled()
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
+    expect(store.save).toHaveBeenCalledTimes(savesBeforeRejectedSwitch)
+
+    const firstConfirmation = projectSwitchConfirmationSchema.parse(
+      (rejectedSwitch.error as { data?: unknown }).data,
+    )
+    const racedSession = await rpc("session.create", {
+      title: "Created while confirmation was open",
+      runtime,
+      client: "desktop",
+    })
+    expect(racedSession).toMatchObject({
+      result: { sessions: expect.arrayContaining([
+        expect.objectContaining({ title: "Created while confirmation was open" }),
+      ]) },
+    })
+    agent.stopThread.mockClear()
+    workspaceService.removeSessionWorkspace.mockClear()
+    const savesBeforeStaleConfirmation = store.save.mock.calls.length
+    const staleConfirmation = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      confirmation: firstConfirmation,
+    })
+    expect(staleConfirmation).toMatchObject({
+      error: {
+        code: -32010,
+        data: { sessionCount: 2, worktreeCount: 2 },
+      },
+    })
+    expect(agent.stopThread).not.toHaveBeenCalled()
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
+    expect(store.save).toHaveBeenCalledTimes(savesBeforeStaleConfirmation)
+
+    const currentConfirmation = projectSwitchConfirmationSchema.parse(
+      (staleConfirmation.error as { data?: unknown }).data,
+    )
+
+    const switched = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      confirmation: currentConfirmation,
+    })
     expect(switched).toMatchObject({
       result: {
         project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
