@@ -88,6 +88,7 @@ import {
 import { permissionDecisionFor } from "./permission-policy.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
+import type { MachineIdentity } from "./machine-identity.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
   ArtifactWatcher,
@@ -404,6 +405,7 @@ export type DaemonServerOptions = {
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
   annotationVisualContext?: AnnotationVisualContextStore
+  machineIdentity?: MachineIdentity
 }
 
 export type DaemonErrorEntry = {
@@ -496,11 +498,12 @@ export class DomovoiDaemon {
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
     )
-    const machineName = hostname()
     const machinePlatform = platform()
     const machineArch = arch()
+    const machineName = options.machineIdentity?.label ?? hostname()
     const initialSnapshot = createEmptyWorkspace({
-      id: `machine-${createHash("sha256").update(`${machineName}:${machinePlatform}:${machineArch}`).digest("hex").slice(0, 12)}`,
+      id: options.machineIdentity?.id
+        ?? `machine-${createHash("sha256").update(`${hostname()}:${machinePlatform}:${machineArch}`).digest("hex").slice(0, 12)}`,
       name: machineName,
       platform: machinePlatform,
       arch: machineArch,

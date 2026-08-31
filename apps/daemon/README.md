@@ -25,6 +25,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_PORT` | Listener port |
 | `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
 | `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |
+| `DOMOVOI_MACHINE_IDENTITY_PATH` | Stable machine identity file path |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
