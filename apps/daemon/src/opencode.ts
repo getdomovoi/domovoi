@@ -13,6 +13,9 @@ import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
+type OpencodeSdkClient = ReturnType<typeof createOpencodeClient>
+type MethodOptions<T extends (...args: never[]) => unknown> = Parameters<T>[0]
+
 export type OpenCodeEvent = {
   type: string
   properties: Record<string, unknown>
@@ -20,35 +23,42 @@ export type OpenCodeEvent = {
 
 export type OpenCodeClient = {
   config: {
-    get(options?: Record<string, unknown>): Promise<OpenCodeResult<{ model?: string }>>
-    providers(options?: Record<string, unknown>): Promise<OpenCodeResult<{
-      providers: Array<{
-        id: string
-        name: string
-        models: Record<string, {
-          id: string
-          providerID: string
-          name: string
-          status?: string
-          capabilities?: { reasoning?: boolean }
-        }>
-      }>
-      default: Record<string, string>
-    }>>
+    get(options?: MethodOptions<OpencodeSdkClient["config"]["get"]>): Promise<OpenCodeResult<unknown>>
+    providers(
+      options?: MethodOptions<OpencodeSdkClient["config"]["providers"]>,
+    ): Promise<OpenCodeResult<unknown>>
   }
   session: {
-    create(options: Record<string, unknown>): Promise<OpenCodeResult<{ id: string }>>
-    get(options: Record<string, unknown>): Promise<OpenCodeResult<{ id: string }>>
-    delete(options: Record<string, unknown>): Promise<OpenCodeResult<boolean>>
-    abort(options: Record<string, unknown>): Promise<OpenCodeResult<boolean>>
-    promptAsync(options: Record<string, unknown>): Promise<OpenCodeResult<void>>
+    create(options: MethodOptions<OpencodeSdkClient["session"]["create"]>): Promise<OpenCodeResult<unknown>>
+    get(options: MethodOptions<OpencodeSdkClient["session"]["get"]>): Promise<OpenCodeResult<unknown>>
+    delete(options: MethodOptions<OpencodeSdkClient["session"]["delete"]>): Promise<OpenCodeResult<unknown>>
+    abort(options: MethodOptions<OpencodeSdkClient["session"]["abort"]>): Promise<OpenCodeResult<unknown>>
+    promptAsync(
+      options: MethodOptions<OpencodeSdkClient["session"]["promptAsync"]>,
+    ): Promise<OpenCodeResult<unknown>>
   }
   event: {
-    subscribe(options?: Record<string, unknown>): Promise<{ stream: AsyncIterable<OpenCodeEvent> }>
+    subscribe(options?: MethodOptions<OpencodeSdkClient["event"]["subscribe"]>): Promise<unknown>
   }
   postSessionIdPermissionsPermissionId(
-    options: Record<string, unknown>,
-  ): Promise<OpenCodeResult<boolean>>
+    options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
+  ): Promise<OpenCodeResult<unknown>>
+}
+
+type OpenCodeConfig = { model?: string }
+
+type OpenCodeCatalog = {
+  providers: Array<{
+    id: string
+    name: string
+    models: Record<string, {
+      id: string
+      name: string
+      status?: string
+      capabilities?: { reasoning?: boolean }
+    }>
+  }>
+  default: Record<string, string>
 }
 
 export type OpenCodeFactory = () => Promise<{
@@ -139,8 +149,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       client.config.get({ throwOnError: true }),
       client.config.providers({ throwOnError: true }),
     ])
-    const configured = unwrap(config, `${this.#identity.providerName} config`)
-    const providerCatalog = unwrap(catalog, `${this.#identity.providerName} provider catalog`)
+    const configured = requireConfig(
+      unwrap(config, `${this.#identity.providerName} config`),
+      `${this.#identity.providerName} config`,
+    )
+    const providerCatalog = requireCatalog(
+      unwrap(catalog, `${this.#identity.providerName} provider catalog`),
+      `${this.#identity.providerName} provider catalog`,
+    )
     const models = providerCatalog.providers
       .flatMap((provider) => Object.values(provider.models).map((model) => ({ provider, model })))
       .filter(({ model }) => model.status !== "deprecated")
@@ -172,11 +188,15 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
     const client = await this.#client()
-    const created = unwrap(await client.session.create({
-      query: { directory: cwd },
-      body: { title: "Domovoi session" },
-      throwOnError: true,
-    }), `${this.#identity.providerName} session creation`)
+    const action = `${this.#identity.providerName} session creation`
+    const created = requireSession(
+      unwrap(await client.session.create({
+        query: { directory: cwd },
+        body: { title: "Domovoi session" },
+        throwOnError: true,
+      }), action),
+      action,
+    )
     try {
       await this.#loadSession(created.id, cwd, runtime)
     } catch (error) {
@@ -204,11 +224,15 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#pendingSessionLoads.set(threadId, pending)
     try {
       const client = await this.#client()
-      const session = unwrap(await client.session.get({
-        path: { id: threadId },
-        query: { directory: cwd },
-        throwOnError: true,
-      }), `${this.#identity.providerName} session resume`)
+      const action = `${this.#identity.providerName} session resume`
+      const session = requireSession(
+        unwrap(await client.session.get({
+          path: { id: threadId },
+          query: { directory: cwd },
+          throwOnError: true,
+        }), action),
+        action,
+      )
       if (session.id !== threadId) {
         throw new Error(`${this.#identity.providerName} did not resume the requested session`)
       }
@@ -346,10 +370,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     const controller = new AbortController()
     const client = await this.#client()
-    const events = await client.event.subscribe({
-      query: { directory: cwd },
-      signal: controller.signal,
-    })
+    const events = requireEventSubscription(
+      await client.event.subscribe({
+        query: { directory: cwd },
+        signal: controller.signal,
+      }),
+      `${this.#identity.providerName} event subscription`,
+    )
     if (pending?.cancelled) {
       controller.abort()
       throw new Error(`${this.#identity.providerName} session stopped while resuming`)
@@ -579,7 +606,113 @@ function errorMessage(error: Record<string, unknown> | undefined, providerName: 
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" ? value as Record<string, unknown> : undefined
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function invalidData(action: string): never {
+  throw new Error(`${action} returned invalid data`)
+}
+
+function requireConfig(value: unknown, action: string): OpenCodeConfig {
+  const config = asRecord(value)
+  if (!config || (config.model !== undefined && typeof config.model !== "string")) {
+    return invalidData(action)
+  }
+  return { ...(typeof config.model === "string" ? { model: config.model } : {}) }
+}
+
+function requireCatalog(value: unknown, action: string): OpenCodeCatalog {
+  const catalog = asRecord(value)
+  const defaults = asRecord(catalog?.default)
+  if (!catalog || !defaults || !Array.isArray(catalog.providers)) return invalidData(action)
+  if (Object.values(defaults).some((model) => typeof model !== "string")) return invalidData(action)
+
+  const providers: OpenCodeCatalog["providers"] = []
+  for (const candidate of catalog.providers) {
+    const provider = asRecord(candidate)
+    const models = asRecord(provider?.models)
+    if (!provider || typeof provider.id !== "string" || typeof provider.name !== "string" || !models) {
+      return invalidData(action)
+    }
+    const validatedModels: OpenCodeCatalog["providers"][number]["models"] = {}
+    for (const [key, candidateModel] of Object.entries(models)) {
+      const model = asRecord(candidateModel)
+      const capabilities = model?.capabilities === undefined
+        ? undefined
+        : asRecord(model.capabilities)
+      if (
+        !model
+        || typeof model.id !== "string"
+        || typeof model.name !== "string"
+        || (model.status !== undefined && typeof model.status !== "string")
+        || (model.capabilities !== undefined && !capabilities)
+        || (capabilities?.reasoning !== undefined && typeof capabilities.reasoning !== "boolean")
+      ) return invalidData(action)
+      validatedModels[key] = {
+        id: model.id,
+        name: model.name,
+        ...(typeof model.status === "string" ? { status: model.status } : {}),
+        ...(capabilities ? { capabilities: { reasoning: capabilities.reasoning === true } } : {}),
+      }
+    }
+    providers.push({ id: provider.id, name: provider.name, models: validatedModels })
+  }
+  const validatedDefaults: Record<string, string> = {}
+  for (const [provider, model] of Object.entries(defaults)) {
+    if (typeof model === "string") validatedDefaults[provider] = model
+  }
+  return { providers, default: validatedDefaults }
+}
+
+function requireSession(value: unknown, action: string): { id: string } {
+  const session = asRecord(value)
+  if (!session || typeof session.id !== "string") return invalidData(action)
+  return { id: session.id }
+}
+
+function requireEventSubscription(
+  value: unknown,
+  action: string,
+): { stream: AsyncIterable<OpenCodeEvent> } {
+  const subscription = asRecord(value)
+  if (!subscription || !isAsyncIterable(subscription.stream)) return invalidData(action)
+  return { stream: subscription.stream }
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<OpenCodeEvent> {
+  return value !== null
+    && typeof value === "object"
+    && Symbol.asyncIterator in value
+    && typeof value[Symbol.asyncIterator] === "function"
+}
+
+export function requireOpenCodeClient(value: unknown, providerName: string): OpenCodeClient {
+  if (!isOpenCodeClient(value)) throw new Error(`${providerName} client returned invalid data`)
+  return value
+}
+
+function isOpenCodeClient(value: unknown): value is OpenCodeClient {
+  const client = asRecord(value)
+  const config = asRecord(client?.config)
+  const session = asRecord(client?.session)
+  const event = asRecord(client?.event)
+  return Boolean(
+    client
+    && config
+    && typeof config.get === "function"
+    && typeof config.providers === "function"
+    && session
+    && typeof session.create === "function"
+    && typeof session.get === "function"
+    && typeof session.delete === "function"
+    && typeof session.abort === "function"
+    && typeof session.promptAsync === "function"
+    && event
+    && typeof event.subscribe === "function"
+    && typeof client.postSessionIdPermissionsPermissionId === "function"
+  )
 }
 
 function unwrap<T>(result: OpenCodeResult<T>, action: string): T {
@@ -636,7 +769,7 @@ const defaultOpenCodeFactory: OpenCodeFactory = async () => {
     createClient: createOpencodeClient,
   })
   return {
-    client: runtime.client as unknown as OpenCodeClient,
+    client: requireOpenCodeClient(runtime.client, "OpenCode"),
     server: runtime.server,
   }
 }
