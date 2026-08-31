@@ -5048,7 +5048,36 @@ describe("DomovoiDaemon", () => {
       expect.any(AbortSignal),
     )
 
-    const switched = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    agent.stopThread.mockClear()
+    workspaceService.removeSessionWorkspace.mockClear()
+    const savesBeforeRejectedSwitch = store.save.mock.calls.length
+    const rejectedSwitch = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    expect(rejectedSwitch).toMatchObject({
+      error: {
+        code: -32010,
+        data: {
+          kind: "project-switch-confirmation",
+          requestedPath: "/code/elsewhere",
+          sessionCount: 1,
+          worktreeCount: 1,
+          sessions: [{
+            id: sessionId,
+            title: "Build persistence",
+            state: "active",
+            workspacePath: `/worktrees/${sessionId}`,
+          }],
+        },
+      },
+    })
+    expect(agent.stopThread).not.toHaveBeenCalled()
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
+    expect(store.save).toHaveBeenCalledTimes(savesBeforeRejectedSwitch)
+
+    const switched = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      discardSessions: true,
+    })
     expect(switched).toMatchObject({
       result: {
         project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
