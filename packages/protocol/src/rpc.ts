@@ -51,19 +51,21 @@ function jsonValueDepthWithinLimit(value: unknown, limit: number): boolean {
   return true
 }
 
-const jsonValueSchema = z.unknown().superRefine((value, context) => {
+const jsonValueDepthGuard = z.unknown().superRefine((value, context) => {
   if (!jsonValueDepthWithinLimit(value, maximumJsonValueDepth)) {
     context.addIssue({
       code: "custom",
       message: `JSON values cannot nest deeper than ${maximumJsonValueDepth} levels`,
     })
   }
-}).pipe(z.json())
+})
 
-const rpcParamsSchema = z.union([
-  z.record(z.string(), jsonValueSchema),
-  z.array(jsonValueSchema),
-])
+const jsonValueSchema = jsonValueDepthGuard.pipe(z.json())
+
+const rpcParamsSchema = jsonValueDepthGuard.pipe(z.union([
+  z.record(z.string(), z.json()),
+  z.array(z.json()),
+]))
 
 export const rpcRequestSchema = z.object({
   jsonrpc: z.literal("2.0"),

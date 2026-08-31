@@ -604,6 +604,70 @@ describe("JSON value depth bounds", () => {
     expect(rpcResponseSchema.safeParse(overLimit).success).toBe(false)
   })
 
+  it("accepts request params exactly at the depth limit and rejects one level deeper", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth),
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth + 1),
+    }
+    expect(rpcRequestSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcRequestSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("counts the params object itself as a nesting level", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth - 1) },
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth) },
+    }
+    expect(rpcRequestSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcRequestSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("accepts notification params exactly at the depth limit and rejects one level deeper", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth),
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: nest(maximumJsonValueDepth + 1),
+    }
+    expect(rpcNotificationSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcNotificationSchema.safeParse(overLimit).success).toBe(false)
+  })
+
+  it("counts the notification params object itself as a nesting level", () => {
+    const atLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth - 1) },
+    }
+    const overLimit = {
+      jsonrpc: "2.0",
+      method: "system.hello",
+      params: { payload: nest(maximumJsonValueDepth) },
+    }
+    expect(rpcNotificationSchema.safeParse(atLimit).success).toBe(true)
+    expect(rpcNotificationSchema.safeParse(overLimit).success).toBe(false)
+  })
+
   it("keeps rejecting responses that omit a result", () => {
     expect(rpcResponseSchema.safeParse({ jsonrpc: "2.0", id: 1 }).success).toBe(false)
   })
