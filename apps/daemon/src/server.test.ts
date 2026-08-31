@@ -25,6 +25,8 @@ import {
   DomovoiDaemon,
   hostAuthorityMatches,
   isTestCommandTitle,
+  maximumAuthenticationPayloadBytes,
+  maximumWebSocketPayloadBytes,
   protectedAnnotationCropRefs,
   sessionHistoryEntries,
   sessionHistoryPage,
@@ -2098,6 +2100,164 @@ describe("DomovoiDaemon", () => {
     await expect(rejected).resolves.toEqual({ code: 1008, reason: "authentication failed" })
     unauthenticated.close()
     socket.close()
+  })
+
+  it("enforces schema-sized authenticated and pre-auth payload limits", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const schemaSizedResponse = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    })
+    const schemaSizedRequest = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "annotation.create",
+      params: {
+        sessionId: "session-billing",
+        artifactId: "missing-artifact",
+        anchor: { textQuote: "schema-sized upload" },
+        body: "Keep the upload capability.",
+        visualContextUpload: {
+          artifactRevision: 1,
+          mimeType: "image/png",
+          width: 1,
+          height: 1,
+          data: "A".repeat(2_000_000),
+        },
+        client: "desktop",
+      },
+    })
+    expect(Buffer.byteLength(schemaSizedRequest)).toBeLessThan(maximumWebSocketPayloadBytes)
+    socket.send(schemaSizedRequest)
+    await expect(schemaSizedResponse).resolves.toMatchObject({
+      id: 1,
+      error: { code: -32602, message: "Artifact does not belong to the session" },
+    })
+
+    const oversized = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const outcome = new Promise<{ type: "close"; code: number } | { type: "message" }>((resolve, reject) => {
+      oversized.once("error", reject)
+      oversized.once("close", (code) => resolve({ type: "close", code }))
+      oversized.once("message", () => resolve({ type: "message" }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      oversized.once("open", resolve)
+      oversized.once("error", reject)
+    })
+    oversized.send("x".repeat(maximumWebSocketPayloadBytes + 1))
+
+    const oversizedOutcome = await outcome
+
+    const unauthenticated = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const unauthenticatedOutcome = new Promise<
+      { type: "close"; code: number } | { type: "message" }
+    >((resolve, reject) => {
+      unauthenticated.once("error", reject)
+      unauthenticated.once("close", (code) => resolve({ type: "close", code }))
+      unauthenticated.once("message", () => resolve({ type: "message" }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      unauthenticated.once("open", resolve)
+      unauthenticated.once("error", reject)
+    })
+    const oversizedAuthenticationRequest = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "system.hello",
+      params: {
+        client: "web",
+        clientVersion: "x".repeat(maximumAuthenticationPayloadBytes),
+        authToken: daemon.authToken,
+      },
+    })
+    expect(Buffer.byteLength(oversizedAuthenticationRequest)).toBeGreaterThan(
+      maximumAuthenticationPayloadBytes,
+    )
+    unauthenticated.send(oversizedAuthenticationRequest)
+
+    expect([oversizedOutcome, await unauthenticatedOutcome]).toEqual([
+      { type: "close", code: 1009 },
+      { type: "close", code: 1009 },
+    ])
+    socket.close()
+  })
+
+  it("authenticates bounded frames before mutation queue admission", async () => {
+    let releaseInspection!: (repository: {
+      root: string
+      name: string
+      branch: string
+      head: string
+    }) => void
+    const inspection = new Promise<{
+      root: string
+      name: string
+      branch: string
+      head: string
+    }>((resolve) => { releaseInspection = resolve })
+    const workspaceService = {
+      inspect: vi.fn(() => inspection),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "queue-auth-token",
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const authenticated = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      authenticated.once("open", resolve)
+      authenticated.once("error", reject)
+    })
+    authenticated.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "project.open",
+      params: { path: "/blocked", client: "desktop" },
+    }))
+    await vi.waitFor(() => expect(workspaceService.inspect).toHaveBeenCalledOnce())
+
+    const unauthenticated = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      unauthenticated.once("open", resolve)
+      unauthenticated.once("error", reject)
+    })
+    const rejection = new Promise<Record<string, unknown>>((resolve) => {
+      unauthenticated.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+    unauthenticated.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "workspace.get",
+      params: {},
+    }))
+
+    const authenticationOutcome = await Promise.race([
+      rejection,
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+    ])
+    releaseInspection({ root: "/blocked", name: "blocked", branch: "main", head: "a".repeat(40) })
+    expect(authenticationOutcome).toMatchObject({
+      id: 2,
+      error: { code: -32001, message: "Daemon authentication required" },
+    })
+    unauthenticated.close()
+    authenticated.close()
   })
 
   it("generates authentication for loopback daemons", async () => {
