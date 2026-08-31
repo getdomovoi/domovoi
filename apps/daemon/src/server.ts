@@ -126,6 +126,7 @@ const sessionResourceMethods = new Set([
   "session.fork",
   "session.history",
   "session.send",
+  "session.restartProviderThread",
   "session.setRuntime",
 ])
 const unauditedRpcMethods = new Set<RpcMethod>([
@@ -1292,6 +1293,7 @@ export class DomovoiDaemon {
 
     try {
       let changed = false
+      let alreadyPersisted = false
       if (method === "system.emergencyStop") {
         const params = rpcMethods[method].params.parse(request.params)
         const actor = this.#authenticatedActors.get(socket)
@@ -2207,6 +2209,98 @@ export class DomovoiDaemon {
         changed = true
       }
 
+      if (method === "session.restartProviderThread") {
+        const params = rpcMethods[method].params.parse(request.params)
+        const authenticatedActor = this.#authenticatedActors.get(socket)
+        const connectionId = this.#connectionIds.get(socket)
+        if (!authenticatedActor || authenticatedActor.kind !== "client" || !connectionId) {
+          this.#error(socket, request.id, invalidParams, "Provider restart requires an authenticated connection identity")
+          return
+        }
+        const client = authenticatedActor.client
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
+        if (!session.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        if (session.providerThreadId) {
+          this.#error(socket, request.id, invalidParams, "Session already has a live provider thread")
+          return
+        }
+        let runtime: Runtime
+        try {
+          runtime = await this.#resolveRuntime(params.runtime ?? session.runtime)
+        } catch (error) {
+          if (!(error instanceof RuntimeValidationError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        const agent = await this.#ensureAgentConnected(runtime.provider)
+        const threadId = await withLateCleanup(
+          agent.startThread({ cwd: session.workspacePath, runtime }),
+          this.#agentTimeoutMs,
+          "Provider restart timed out",
+          (lateThreadId) => agent.stopThread(lateThreadId),
+          "Domovoi could not stop a late restarted provider thread",
+          (context, error) => this.#reportError(context, error),
+        )
+        try {
+          if (signal?.aborted) {
+            await withTimeout(
+              agent.stopThread(threadId),
+              this.#agentTimeoutMs,
+              "Cancelled provider restart cleanup timed out",
+            )
+            signal.throwIfAborted()
+          }
+          const candidate = structuredClone(this.#snapshot)
+          const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
+          if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
+            throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
+          }
+          const createdAt = new Date().toISOString()
+          currentSession.runtime = runtime
+          currentSession.providerThreadId = threadId
+          currentSession.state = "idle"
+          currentSession.updatedAt = createdAt
+          delete currentSession.activeTurnId
+          delete currentSession.providerFailure
+          candidate.thread.push({
+            id: `system-${randomUUID()}`,
+            sessionId: currentSession.id,
+            kind: "system",
+            body: `Provider thread restarted by ${client}.`,
+            detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
+            createdAt,
+          })
+          workspaceSnapshotSchema.parse(candidate)
+          this.#store.save(candidate)
+          this.#snapshot = candidate
+          this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
+          changed = true
+          alreadyPersisted = true
+        } catch (error) {
+          try {
+            await withTimeout(
+              agent.stopThread(threadId),
+              this.#agentTimeoutMs,
+              "Failed provider restart cleanup timed out",
+            )
+          } catch (cleanupError) {
+            this.#reportError("Domovoi could not stop a failed restarted provider thread", cleanupError)
+          }
+          throw error
+        }
+      }
+
       if (method === "project.open") {
         const params = rpcMethods[method].params.parse(request.params)
         const repository = await this.#withAbortTimeout(
@@ -2843,7 +2937,7 @@ export class DomovoiDaemon {
 
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
-      if (changed) this.#store.save(this.#snapshot)
+      if (changed && !alreadyPersisted) this.#store.save(this.#snapshot)
       const result = method === "system.hello"
         ? {
             ...workspaceSnapshotForClient(this.#snapshot),

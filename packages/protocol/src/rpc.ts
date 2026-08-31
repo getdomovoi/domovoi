@@ -751,6 +751,12 @@ export const sessionSetRuntimeParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const sessionRestartProviderThreadParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  runtime: runtimeSchema.optional(),
+  client: clientKindSchema,
+}).strict()
+
 export const runtimeModelsParamsSchema = z.object({
   provider: z.string().trim().min(1),
   client: clientKindSchema,
@@ -963,6 +969,10 @@ export const rpcMethods = {
   },
   "session.setRuntime": {
     params: sessionSetRuntimeParamsSchema,
+    result: workspaceSnapshotSchema,
+  },
+  "session.restartProviderThread": {
+    params: sessionRestartProviderThreadParamsSchema,
     result: workspaceSnapshotSchema,
   },
   "project.open": { params: projectOpenParamsSchema, result: workspaceSnapshotSchema },

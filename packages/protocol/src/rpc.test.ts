@@ -185,6 +185,24 @@ describe("session usage RPC contracts", () => {
   })
 })
 
+describe("provider thread restart RPC contracts", () => {
+  it("accepts only attributed strict restart requests", () => {
+    expect(rpcMethods["session.restartProviderThread"].params.parse({
+      sessionId: "session-1",
+      client: "desktop",
+    })).toEqual({ sessionId: "session-1", client: "desktop" })
+    expect(rpcMethods["session.restartProviderThread"].params.safeParse({
+      sessionId: "session-1",
+      client: "desktop",
+      secret: "forbidden",
+    }).success).toBe(false)
+    expect(rpcMethods["session.restartProviderThread"].params.safeParse({
+      sessionId: "session-1",
+    }).success).toBe(false)
+    expect(rpcMethods["session.restartProviderThread"].result.parse(demoWorkspace)).toEqual(demoWorkspace)
+  })
+})
+
 describe("authenticated client identity", () => {
   it("bounds optional hello client ids", () => {
     expect(helloParamsSchema.parse({
