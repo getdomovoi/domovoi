@@ -2183,28 +2183,42 @@ export class DomovoiDaemon {
           this.#agentTimeoutMs,
           "Repository inspection timed out",
         )
-        this.#closeAllTerminals()
-        for (const session of this.#snapshot.sessions) {
-          this.#flushCommandOutputStreams(session.id)
-        }
-        await this.#cleanupSessions()
-        this.#commandOutputRedactors.clear()
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
-        this.#snapshot.project = {
-          id: projectId,
-          machineId: this.#snapshot.machine.id,
-          name: repository.name,
-          path: repository.root,
-          branch: repository.branch,
+        if (this.#snapshot.project?.path === repository.root) {
+          if (
+            this.#snapshot.project.name !== repository.name
+            || this.#snapshot.project.branch !== repository.branch
+          ) {
+            this.#snapshot.project = {
+              ...this.#snapshot.project,
+              name: repository.name,
+              branch: repository.branch,
+            }
+            changed = true
+          }
+        } else {
+          this.#closeAllTerminals()
+          for (const session of this.#snapshot.sessions) {
+            this.#flushCommandOutputStreams(session.id)
+          }
+          await this.#cleanupSessions()
+          this.#commandOutputRedactors.clear()
+          this.#snapshot.project = {
+            id: projectId,
+            machineId: this.#snapshot.machine.id,
+            name: repository.name,
+            path: repository.root,
+            branch: repository.branch,
+          }
+          this.#snapshot.sessions = []
+          this.#snapshot.activeSessionId = null
+          this.#snapshot.approvals = []
+          this.#snapshot.approvalRules = []
+          this.#snapshot.thread = []
+          this.#snapshot.artifacts = []
+          this.#snapshot.annotations = []
+          changed = true
         }
-        this.#snapshot.sessions = []
-        this.#snapshot.activeSessionId = null
-        this.#snapshot.approvals = []
-        this.#snapshot.approvalRules = []
-        this.#snapshot.thread = []
-        this.#snapshot.artifacts = []
-        this.#snapshot.annotations = []
-        changed = true
       }
 
       if (method === "session.activate") {
