@@ -1190,7 +1190,7 @@ export class DomovoiDaemon {
     }
 
     const request = requestResult.data
-    if (!(request.method in rpcMethods)) {
+    if (!Object.hasOwn(rpcMethods, request.method)) {
       this.#error(socket, request.id, methodNotFound, `Unknown method: ${request.method}`)
       return
     }
