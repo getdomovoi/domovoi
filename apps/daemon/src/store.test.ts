@@ -151,7 +151,17 @@ describe("SqliteWorkspaceStore", () => {
       operation: "Run tests",
       command: "pnpm test",
       createdBy: "desktop",
+      createdByConnectionId: "11111111-1111-4111-8111-111111111111",
       createdByClientId: "desktop-one",
+      createdAt: "2026-08-26T06:00:00.000Z",
+    })
+    changed.approvalRules.push({
+      id: "legacy-rule-client-id",
+      projectId: changed.project!.id,
+      operation: "Run legacy tests",
+      command: "pnpm test:legacy",
+      createdBy: "desktop",
+      createdByClientId: "legacy-desktop-one",
       createdAt: "2026-08-26T06:00:00.000Z",
     })
     changed.thread.push({
@@ -162,7 +172,19 @@ describe("SqliteWorkspaceStore", () => {
       operation: "Run tests",
       checkpoint: "checkpoint-one",
       client: "desktop",
+      connectionId: "11111111-1111-4111-8111-111111111111",
       clientId: "desktop-one",
+      createdAt: "2026-08-30T12:00:00.000Z",
+    })
+    changed.thread.push({
+      id: "legacy-receipt-client-id",
+      sessionId: changed.sessions[0]!.id,
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run legacy tests",
+      checkpoint: "checkpoint-one",
+      client: "desktop",
+      clientId: "legacy-desktop-one",
       createdAt: "2026-08-30T12:00:00.000Z",
     })
     changed.skillEnablements.push({

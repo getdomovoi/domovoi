@@ -197,6 +197,11 @@ describe("authenticated client identity", () => {
       clientId: "x".repeat(129),
       clientVersion: "1.0.0",
     }).success).toBe(false)
+    expect(rpcMethods["system.hello"].result.parse({
+      ...demoWorkspace,
+      connectionId: "11111111-1111-4111-8111-111111111111",
+    }).connectionId).toBe("11111111-1111-4111-8111-111111111111")
+    expect(rpcMethods["system.hello"].result.parse(demoWorkspace).connectionId).toBeUndefined()
   })
 })
 

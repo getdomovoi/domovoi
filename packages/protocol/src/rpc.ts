@@ -10,6 +10,7 @@ import {
   approvalDecisionSchema,
   clientIdentityIdSchema,
   clientKindSchema,
+  connectionIdSchema,
   providerModelsSchema,
   runtimeSchema,
   workspaceSnapshotSchema,
@@ -195,6 +196,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     operation: z.string(),
     checkpoint: z.string(),
     client: clientKindSchema,
+    connectionId: connectionIdSchema.optional(),
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
   }),
@@ -593,6 +595,10 @@ export const helloParamsSchema = z.object({
   authToken: z.string().min(1).optional(),
 })
 
+export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
+  connectionId: connectionIdSchema.optional(),
+})
+
 export const artifactAccessPurposeSchema = z.enum(["preview", "print", "download"])
 
 export const artifactAuthorizeParamsSchema = z.object({
@@ -882,7 +888,7 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
 }).strict()
 
 export const rpcMethods = {
-  "system.hello": { params: helloParamsSchema, result: workspaceSnapshotSchema },
+  "system.hello": { params: helloParamsSchema, result: systemHelloResultSchema },
   "artifact.authorize": {
     params: artifactAuthorizeParamsSchema,
     result: artifactAuthorizeResultSchema,
