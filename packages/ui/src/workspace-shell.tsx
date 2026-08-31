@@ -1434,7 +1434,7 @@ export function Thread({
               <MachineSwitcher
                 machines={fleet ?? [localMachineEntry(snapshot)]}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
-                currentSessionCount={snapshot.sessions.length}
+                currentSessionCount={activeSessionCount(snapshot)}
               />
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
               {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
@@ -1447,6 +1447,12 @@ export function Thread({
       </div>}
     </main>
   )
+}
+
+// The handoff's machine menu reports active sessions, so sessions that are
+// idle, finished, or archived are not counted as work on this machine.
+export function activeSessionCount(snapshot: WorkspaceSnapshot): number {
+  return snapshot.sessions.filter((session) => session.state === "active" || session.state === "waiting").length
 }
 
 // The fleet is fetched separately, so the composer still names this machine

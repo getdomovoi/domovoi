@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { Thread } from "./workspace-shell.js"
+import { activeSessionCount, Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -47,6 +47,18 @@ it("opens the device menu from the composer machine chip", async () => {
 
   expect(screen.getByRole("menuitem", { name: new RegExp(snapshot.machine.name) }).textContent)
     .toContain("This machine")
+})
+
+it("counts only sessions with work in flight", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.sessions = [
+    { ...snapshot.sessions[0]!, id: "session-active", state: "active" },
+    { ...snapshot.sessions[0]!, id: "session-waiting", state: "waiting" },
+    { ...snapshot.sessions[0]!, id: "session-idle", state: "idle" },
+    { ...snapshot.sessions[0]!, id: "session-archived", state: "archived" },
+  ]
+
+  expect(activeSessionCount(snapshot)).toBe(2)
 })
 
 it("keeps naming the machine when the fleet has not loaded", () => {
