@@ -86,7 +86,7 @@ function factoryHarness() {
 
 describe("claudePermissionFor", () => {
   it.each([
-    [runtime("ask"), "default", false],
+    [runtime("ask"), "dontAsk", false],
     [runtime("plan"), "plan", false],
     [runtime("build"), "default", false],
     [runtime("build", true), "default", false],
@@ -99,9 +99,10 @@ describe("claudePermissionFor", () => {
 })
 
 describe("ClaudeAgentSdkAdapter", () => {
-  it("declares pre-execution Build-auto enforcement", () => {
+  it("declares read-only Ask and pre-execution Build-auto enforcement", () => {
     const { factory } = factoryHarness()
     expect(new ClaudeAgentSdkAdapter(factory).permissionCapabilities).toEqual({
+      ask: "read-only",
       buildAuto: "pre-execution",
     })
   })
@@ -236,7 +237,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     expect(calls[0]?.options).toMatchObject({
       cwd: "/restored-worktree",
       resume: "22222222-2222-4222-8222-222222222222",
-      permissionMode: "default",
+      permissionMode: "dontAsk",
     })
 
     const decision = calls[0]!.options.canUseTool!(
