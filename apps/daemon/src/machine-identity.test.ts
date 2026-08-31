@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -70,6 +70,26 @@ describe("loadOrCreateMachineIdentity", () => {
     )
   })
 
+  it("recovers from an interrupted initial write", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(identityPath, "")
+
+    const identity = await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+
+    expect(identity.id).toMatch(/^machine-[0-9a-f]{32}$/)
+    expect(JSON.parse(await readFile(identityPath, "utf8")) as { id: string }).toEqual(identity)
+  })
+
+  it("leaves no partial file behind after creating an identity", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+
+    await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+
+    expect(await readdir(root)).toEqual(["machine.json"])
+  })
+
   it("returns one identity to concurrent daemon starts", async () => {
     const identityPath = join(await scratch(), "machine.json")
 
@@ -82,6 +102,63 @@ describe("loadOrCreateMachineIdentity", () => {
     expect(new Set(identities.map((identity) => identity.id)).size).toBe(1)
     const stored = JSON.parse(await readFile(identityPath, "utf8")) as { id: string }
     expect(stored.id).toBe(identities[0]!.id)
+  })
+
+  it("waits for the identity published by the start that claimed initialization", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(`${identityPath}.lock`, "")
+    const published = { id: `machine-${"c".repeat(32)}`, label: "claimed" }
+
+    const pending = loadOrCreateMachineIdentity(identityPath, { label: "second-start" })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await writeFile(`${identityPath}.publish`, `${JSON.stringify(published)}\n`)
+    await rename(`${identityPath}.publish`, identityPath)
+
+    await expect(pending).resolves.toEqual(published)
+  })
+
+  it("keeps waiting while the claiming start is still alive", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(`${identityPath}.lock`, "")
+    const published = { id: `machine-${"d".repeat(32)}`, label: "claimed" }
+
+    const pending = loadOrCreateMachineIdentity(identityPath, {
+      label: "second-start",
+      lockStalenessMs: 2_000,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    await writeFile(`${identityPath}.publish`, `${JSON.stringify(published)}\n`)
+    await rename(`${identityPath}.publish`, identityPath)
+
+    await expect(pending).resolves.toEqual(published)
+  })
+
+  it("takes over an abandoned initialization claim", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(`${identityPath}.lock`, "")
+
+    const identity = await loadOrCreateMachineIdentity(identityPath, {
+      label: "workshop",
+      lockStalenessMs: 0,
+    })
+
+    expect(identity.id).toMatch(/^machine-[0-9a-f]{32}$/)
+    expect(await readdir(root)).toEqual(["machine.json"])
+  })
+
+  it("gives repeated concurrent starts one identity", async () => {
+    for (let round = 0; round < 20; round += 1) {
+      const identityPath = join(await scratch(), "machine.json")
+      const identities = await Promise.all([
+        loadOrCreateMachineIdentity(identityPath, { label: "workshop" }),
+        loadOrCreateMachineIdentity(identityPath, { label: "workshop" }),
+        loadOrCreateMachineIdentity(identityPath, { label: "workshop" }),
+      ])
+      expect(new Set(identities.map((identity) => identity.id)).size).toBe(1)
+    }
   })
 
   it("falls back to a bounded label when the host name is unusable", async () => {
