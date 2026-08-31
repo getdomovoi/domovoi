@@ -7,6 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
+  type MachineCapability,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonShuttingDownErrorCode,
@@ -383,6 +384,14 @@ export function protectedAnnotationCropRefs(snapshot: WorkspaceSnapshot): string
   return [...refs].sort()
 }
 
+export const localMachineCapabilities = [
+  "sessions",
+  "terminals",
+  "previews",
+  "worktrees",
+  "skills",
+] as const satisfies readonly MachineCapability[]
+
 export type DaemonServerOptions = {
   host?: string
   port?: number
@@ -580,6 +589,25 @@ export class DomovoiDaemon {
     const address = this.#http?.address()
     if (!address || typeof address === "string") return undefined
     return { host: this.host, port: address.port }
+  }
+
+  // The local daemon is the one machine this registry can observe directly, so
+  // its heartbeat is refreshed whenever a client reads the fleet.
+  #recordThisMachine(): void {
+    const machine = this.#snapshot.machine
+    try {
+      this.#store.fleet?.record({
+        id: machine.id,
+        label: machine.name,
+        platform: machine.platform,
+        arch: machine.arch,
+        version: machine.version,
+        connection: "local",
+        capabilities: [...localMachineCapabilities],
+      }, Date.now())
+    } catch (error) {
+      this.#reportError("Domovoi could not record this machine in the fleet", error)
+    }
   }
 
   #credentialAccepted(socket: WebSocket, token: string | undefined): boolean {
@@ -1678,6 +1706,20 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
+        })
+        return
+      }
+
+      if (method === "fleet.list") {
+        rpcMethods[method].params.parse(request.params)
+        this.#recordThisMachine()
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(
+            this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
+              ?? { machines: [] },
+          ),
         })
         return
       }
