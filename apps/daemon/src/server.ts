@@ -992,18 +992,23 @@ export class DomovoiDaemon {
         this.#agentConnections.delete(provider)
         this.#providerEpochs.set(provider, this.#providerEpoch(provider) + 1)
         if (agent.resetConnection) {
-          const reset = withTimeout(
-            Promise.resolve().then(() => agent.resetConnection!()),
+          const reset = Promise.resolve().then(() => agent.resetConnection!())
+          const resetSettlement = reset.catch((resetError) => {
+            this.#reportError(`Agent provider ${provider} connection reset failed`, resetError)
+          })
+          this.#agentConnectionResets.set(provider, resetSettlement)
+          void resetSettlement.then(() => {
+            if (this.#agentConnectionResets.get(provider) === resetSettlement) {
+              this.#agentConnectionResets.delete(provider)
+            }
+          })
+          await withTimeout(
+            resetSettlement,
             this.#agentTimeoutMs,
             "Agent connection reset timed out",
           ).catch((resetError) => {
             this.#reportError(`Agent provider ${provider} connection reset failed`, resetError)
           })
-          this.#agentConnectionResets.set(provider, reset)
-          await reset
-          if (this.#agentConnectionResets.get(provider) === reset) {
-            this.#agentConnectionResets.delete(provider)
-          }
         }
       }
       throw error
