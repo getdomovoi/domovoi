@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, unlink } from "node:fs/promises"
+import { mkdtemp, readFile, unlink } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -13,7 +14,7 @@ const roots: string[] = []
 const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(64, 1)])
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+  await removeScratchDirectories(roots.splice(0))
 })
 
 describe("AnnotationVisualContextService", () => {

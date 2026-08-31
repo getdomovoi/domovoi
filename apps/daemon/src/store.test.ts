@@ -1,4 +1,5 @@
-import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, stat } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -11,7 +12,7 @@ import { SqliteWorkspaceStore } from "./store.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 describe("SqliteWorkspaceStore", () => {

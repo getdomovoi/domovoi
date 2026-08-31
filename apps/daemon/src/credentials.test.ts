@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,7 +10,7 @@ import { loadOrCreateDaemonToken } from "./credentials.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => rm(path, { recursive: true })))
+  await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
 describe("loadOrCreateDaemonToken", () => {
