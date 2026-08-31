@@ -15,11 +15,12 @@ export type DevicePairing = {
 }
 
 export const maximumPairedDevices = 128
-const maximumDeviceLabelLength = 128
+export const maximumPairedDeviceLabelLength = 128
 
 export interface DeviceRegistry {
   pair(input: { label: string }): DevicePairing
   verify(token: string): PairedDevice | undefined
+  isActive(token: string): boolean
   rotate(deviceId: string): DevicePairing
   revoke(deviceId: string): PairedDevice
   list(): PairedDevice[]
@@ -53,7 +54,7 @@ function hashDeviceToken(token: string): string {
 
 function validateLabel(label: string): string {
   const trimmed = label.trim()
-  if (!trimmed || label.length > maximumDeviceLabelLength) {
+  if (!trimmed || trimmed.length > maximumPairedDeviceLabelLength) {
     throw new Error("Device label is invalid")
   }
   return trimmed
@@ -121,6 +122,14 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       .prepare("UPDATE paired_devices SET last_seen_at = ? WHERE id = ?")
       .run(lastSeenAt, row.id)
     return toPairedDevice({ ...row, last_seen_at: lastSeenAt })
+  }
+
+  isActive(token: string): boolean {
+    if (!token) return false
+    const row = this.#database
+      .prepare("SELECT id FROM paired_devices WHERE token_hash = ? AND revoked_at IS NULL")
+      .get(hashDeviceToken(token))
+    return row !== undefined
   }
 
   rotate(deviceId: string): DevicePairing {

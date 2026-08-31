@@ -461,6 +461,7 @@ export class DomovoiDaemon {
   #modelCacheTtlMs: number
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
+  #deviceCredentials = new WeakMap<WebSocket, string>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
   #connectionIds = new WeakMap<WebSocket, string>()
   #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
@@ -581,10 +582,20 @@ export class DomovoiDaemon {
     return { host: this.host, port: address.port }
   }
 
-  #credentialAccepted(token: string | undefined): boolean {
+  #credentialAccepted(socket: WebSocket, token: string | undefined): boolean {
     if (secureTokenMatch(this.#authToken, token)) return true
     if (!token) return false
-    return this.#store.devices?.verify(token) !== undefined
+    if (this.#store.devices?.verify(token) === undefined) return false
+    this.#deviceCredentials.set(socket, token)
+    return true
+  }
+
+  // A paired device can be revoked or rotated while it holds an open socket, so
+  // its credential is rechecked for every request rather than only at connect.
+  #deviceCredentialActive(socket: WebSocket): boolean {
+    const token = this.#deviceCredentials.get(socket)
+    if (token === undefined) return true
+    return this.#store.devices?.isActive(token) === true
   }
 
   get authToken(): string {
@@ -639,7 +650,7 @@ export class DomovoiDaemon {
       const bearerToken = typeof authorization === "string"
         ? /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization)?.[1]
         : undefined
-      if (this.#credentialAccepted(bearerToken)) {
+      if (this.#credentialAccepted(socket, bearerToken)) {
         this.#authenticatedClients.add(socket)
       } else {
         const deadline = setTimeout(() => {
@@ -1262,6 +1273,12 @@ export class DomovoiDaemon {
     }
 
     const method = request.method as RpcMethod
+    if (!this.#deviceCredentialActive(socket)) {
+      this.#authenticatedClients.delete(socket)
+      this.#appendPreAuthAudit("authentication")
+      this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
+      return
+    }
     const paramsResult = rpcMethods[method].params.safeParse(request.params ?? {})
     if (!paramsResult.success) {
       this.#error(socket, request.id, invalidParams, "Method parameters are invalid")
@@ -1271,7 +1288,7 @@ export class DomovoiDaemon {
     if (method === "system.hello") {
       if (!this.#authenticatedClients.has(socket)) {
         const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
-        if (!this.#credentialAccepted(supplied)) {
+        if (!this.#credentialAccepted(socket, supplied)) {
           this.#appendPreAuthAudit("authentication")
           this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
           return

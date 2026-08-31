@@ -6,6 +6,7 @@ import {
   DeviceLimitReachedError,
   DeviceNotFoundError,
   SqliteDeviceRegistry,
+  maximumPairedDeviceLabelLength,
   maximumPairedDevices,
 } from "./device-registry.js"
 
@@ -126,6 +127,13 @@ describe("SqliteDeviceRegistry", () => {
     devices.revoke(paired.device.id)
 
     expect(() => devices.pair({ label: "replacement" })).not.toThrow()
+  })
+
+  it("accepts a maximum-length label with surrounding whitespace", () => {
+    const { registry: devices } = registry()
+
+    expect(devices.pair({ label: `  ${"n".repeat(maximumPairedDeviceLabelLength)}  ` }).device.label)
+      .toBe("n".repeat(maximumPairedDeviceLabelLength))
   })
 
   it.each(["", "   ", "n".repeat(129)])("rejects an unusable device label: %s", (label) => {
