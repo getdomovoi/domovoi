@@ -58,7 +58,10 @@ async function readMachineIdentity(path: string): Promise<MachineIdentity | unde
   return parseMachineIdentity(contents)
 }
 
-async function publishMachineIdentity(path: string, identity: MachineIdentity): Promise<void> {
+async function publishMachineIdentity(
+  path: string,
+  identity: MachineIdentity,
+): Promise<MachineIdentity> {
   const temporaryPath = `${path}.${randomBytes(8).toString("hex")}.tmp`
   try {
     const handle = await open(temporaryPath, "wx", 0o600)
@@ -68,16 +71,26 @@ async function publishMachineIdentity(path: string, identity: MachineIdentity): 
     } finally {
       await handle.close()
     }
-    await rename(temporaryPath, path)
+    try {
+      await rename(temporaryPath, path)
+    } catch (error) {
+      // Windows refuses to rename over a path another start still holds open.
+      const published = await readMachineIdentity(path)
+      if (published) return published
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error
+      await rm(path, { force: true })
+      await rename(temporaryPath, path)
+    }
+    return identity
   } catch (error) {
     await rm(temporaryPath, { force: true })
     throw error
   }
 }
 
-async function claimMachineIdentity(path: string): Promise<boolean> {
+async function claimInitialization(lockPath: string): Promise<boolean> {
   try {
-    await (await open(path, "wx", 0o600)).close()
+    await (await open(lockPath, "wx", 0o600)).close()
     return true
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false
@@ -99,6 +112,7 @@ export async function loadOrCreateMachineIdentity(
   defaults: { label: string },
 ): Promise<MachineIdentity> {
   const directory = dirname(path)
+  const lockPath = `${path}.lock`
   await mkdir(directory, { recursive: true, mode: 0o700 })
   if (process.platform !== "win32") await chmod(directory, 0o700)
 
@@ -109,24 +123,30 @@ export async function loadOrCreateMachineIdentity(
       return existing
     }
 
-    if (await claimMachineIdentity(path)) {
-      await publishMachineIdentity(path, {
-        id: `machine-${randomBytes(16).toString("hex")}`,
-        label: normalizeMachineLabel(defaults.label),
-      })
+    if (await claimInitialization(lockPath)) {
+      try {
+        const published = await publishMachineIdentity(path, {
+          id: `machine-${randomBytes(16).toString("hex")}`,
+          label: normalizeMachineLabel(defaults.label),
+        })
+        if (process.platform !== "win32") await chmod(path, 0o600)
+        return published
+      } finally {
+        await rm(lockPath, { force: true })
+      }
     }
 
-    // The claiming start publishes; every other start waits for that identity so
-    // one machine never reports two identifiers.
+    // Another start is initializing; wait for its identity so one machine never
+    // reports two identifiers.
     const settled = await awaitPublishedIdentity(path)
     if (settled) {
       if (process.platform !== "win32") await chmod(path, 0o600)
       return settled
     }
 
-    // Nothing published within the wait, so the claim belonged to a start that
-    // died before publishing. Discard the abandoned placeholder and try once more.
-    await rm(path, { force: true })
+    // Nothing was published within the wait, so the claim belonged to a start
+    // that died before publishing. Clear its lock and try once more.
+    await rm(lockPath, { force: true })
   }
 
   throw new Error("Machine identity is malformed")

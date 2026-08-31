@@ -104,10 +104,10 @@ describe("loadOrCreateMachineIdentity", () => {
     expect(stored.id).toBe(identities[0]!.id)
   })
 
-  it("waits for the identity published by the start that claimed the file", async () => {
+  it("waits for the identity published by the start that claimed initialization", async () => {
     const root = await scratch()
     const identityPath = join(root, "machine.json")
-    await writeFile(identityPath, "")
+    await writeFile(`${identityPath}.lock`, "")
     const published = { id: `machine-${"c".repeat(32)}`, label: "claimed" }
 
     const pending = loadOrCreateMachineIdentity(identityPath, { label: "second-start" })
@@ -116,6 +116,17 @@ describe("loadOrCreateMachineIdentity", () => {
     await rename(`${identityPath}.publish`, identityPath)
 
     await expect(pending).resolves.toEqual(published)
+  })
+
+  it("takes over an abandoned initialization claim", async () => {
+    const root = await scratch()
+    const identityPath = join(root, "machine.json")
+    await writeFile(`${identityPath}.lock`, "")
+
+    const identity = await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+
+    expect(identity.id).toMatch(/^machine-[0-9a-f]{32}$/)
+    expect(await readdir(root)).toEqual(["machine.json"])
   })
 
   it("gives repeated concurrent starts one identity", async () => {
