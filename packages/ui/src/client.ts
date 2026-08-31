@@ -310,11 +310,11 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.activate", { sessionId, client: this.kind })
   }
 
-  openProject(path: string, discardSessions = false): Promise<WorkspaceSnapshot> {
+  openProject(path: string, confirmation?: ProjectSwitchConfirmation): Promise<WorkspaceSnapshot> {
     return this.request("project.open", {
       path,
       client: this.kind,
-      ...(discardSessions ? { discardSessions: true } : {}),
+      ...(confirmation ? { confirmation } : {}),
     })
   }
 

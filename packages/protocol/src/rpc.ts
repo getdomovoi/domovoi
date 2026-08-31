@@ -800,7 +800,7 @@ export const runtimeModelsParamsSchema = z.object({
 export const projectOpenParamsSchema = z.object({
   path: z.string().min(1),
   client: clientKindSchema,
-  discardSessions: z.boolean().optional(),
+  confirmation: projectSwitchConfirmationSchema.optional(),
 }).strict()
 
 export const sessionCreateParamsSchema = z.object({
