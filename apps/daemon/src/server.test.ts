@@ -3757,7 +3757,7 @@ describe("DomovoiDaemon", () => {
       read: vi.fn(async () => ({ skill: enabledSkill, content: "Audit every change." })),
     } satisfies SkillCatalog
     const agent = {
-      permissionCapabilities: { buildAuto: "pre-execution" as const },
+      permissionCapabilities: { ask: "read-only" as const, buildAuto: "pre-execution" as const },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"),
@@ -5572,7 +5572,7 @@ describe("DomovoiDaemon", () => {
     session.providerThreadId = "thread-build-auto"
     delete session.activeTurnId
     const agent = {
-      permissionCapabilities: { buildAuto: "unsupported" },
+      permissionCapabilities: { ask: "read-only", buildAuto: "unsupported" },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"),
@@ -5623,6 +5623,76 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("rejects Ask before a turn when the provider cannot enforce read-only operation", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "grok",
+      model: "grok-code-fast-1",
+      reasoning: "medium",
+      permissionMode: "ask",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = "/worktrees/ask"
+    session.providerThreadId = "thread-ask"
+    delete session.activeTurnId
+    const agent = {
+      permissionCapabilities: { ask: "unsupported", buildAuto: "unsupported" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "grok",
+        id: "grok-code-fast-1",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-ask"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => snapshot,
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      agents: { grok: agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString())))
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "session.send",
+      params: { sessionId: session.id, prompt: "Inspect only", client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "grok does not support enforceable Ask mode",
+      },
+    })
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.resumeThread).not.toHaveBeenCalled()
+    expect(agent.startTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
   it("auto-allows bounded work but keeps hard gates explicit", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -5648,7 +5718,7 @@ describe("DomovoiDaemon", () => {
     })
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
-      permissionCapabilities: { buildAuto: "pre-execution" },
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => [{
         ...codexModels()[0]!,

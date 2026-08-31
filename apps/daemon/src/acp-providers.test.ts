@@ -9,6 +9,7 @@ describe("ACP provider definitions", () => {
       commands: ["agent", "cursor-agent"],
       launchArgs: ["acp"],
       modelArgs: ["models"],
+      askEnforcement: "read-only",
       modes: { ask: "ask", plan: "plan", build: "agent" },
     })
     expect(GROK_ACP_PROVIDER).toMatchObject({
@@ -16,6 +17,7 @@ describe("ACP provider definitions", () => {
       commands: ["grok"],
       launchArgs: ["agent", "stdio"],
       modelArgs: ["models"],
+      askEnforcement: "unsupported",
       modes: { ask: "default", plan: "plan", build: "default" },
     })
     expect(JSON.stringify([CURSOR_ACP_PROVIDER, GROK_ACP_PROVIDER])).not.toMatch(

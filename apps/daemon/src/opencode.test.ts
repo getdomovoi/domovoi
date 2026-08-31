@@ -98,7 +98,7 @@ function harness() {
 
 describe("openCodeAgentFor", () => {
   it.each([
-    [runtime("ask"), "build"],
+    [runtime("ask"), "domovoi-ask"],
     [runtime("plan"), "plan"],
     [runtime("build"), "build"],
     [runtime("build", true), "domovoi-auto"],
@@ -108,9 +108,10 @@ describe("openCodeAgentFor", () => {
 })
 
 describe("OpenCodeSdkAdapter", () => {
-  it("declares pre-execution Build-auto enforcement", () => {
+  it("declares read-only Ask and pre-execution Build-auto enforcement", () => {
     const { factory } = harness()
     expect(new OpenCodeSdkAdapter(factory).permissionCapabilities).toEqual({
+      ask: "read-only",
       buildAuto: "pre-execution",
     })
   })
@@ -125,6 +126,17 @@ describe("OpenCodeSdkAdapter", () => {
       webfetch: "ask",
       doom_loop: "ask",
       external_directory: "ask",
+    })
+  })
+
+  it.each([
+    ["OpenCode", domovoiOpenCodeConfig],
+    ["Kilo", domovoiKiloConfig],
+  ])("gives %s a distinct non-mutating Ask agent", (_name, config) => {
+    expect(config.agent?.["domovoi-ask"]?.permission).toMatchObject({
+      edit: "deny",
+      bash: "deny",
+      external_directory: "deny",
     })
   })
 

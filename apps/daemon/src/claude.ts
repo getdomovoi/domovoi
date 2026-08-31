@@ -112,6 +112,9 @@ export function claudePermissionFor(runtime: Runtime): {
   permissionMode: ClaudePermissionMode
   allowDangerouslySkipPermissions: boolean
 } {
+  if (runtime.permissionMode === "ask") {
+    return { permissionMode: "dontAsk", allowDangerouslySkipPermissions: false }
+  }
   if (runtime.permissionMode === "plan") {
     return { permissionMode: "plan", allowDangerouslySkipPermissions: false }
   }
@@ -119,7 +122,7 @@ export function claudePermissionFor(runtime: Runtime): {
 }
 
 export class ClaudeAgentSdkAdapter implements AgentAdapter {
-  readonly permissionCapabilities = { buildAuto: "pre-execution" } as const
+  readonly permissionCapabilities = { ask: "read-only", buildAuto: "pre-execution" } as const
   readonly capabilities = { vision: true } as const
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => ClaudeMessageId
