@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient, DomovoiRpcTimeoutError } from "./client"
+import { DomovoiClient, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 
 const skillSecurityMetadata = {
   manifest: { version: 1 as const, capabilities: [] },
@@ -51,6 +51,54 @@ class FakeWebSocket extends EventTarget {
 }
 
 describe("DomovoiClient", () => {
+  it("preserves typed project switch confirmation data", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const opening = client.openProject("/code/elsewhere")
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      error: {
+        code: -32010,
+        message: "Confirm removal before switching projects",
+        data: {
+          kind: "project-switch-confirmation",
+          requestedPath: "/code/elsewhere",
+          sessions: [{ id: "session-1", title: "Keep this", state: "idle", workspacePath: "/worktrees/session-1" }],
+          sessionCount: 1,
+          worktreeCount: 1,
+        },
+      },
+    })
+
+    const confirmationError = await opening.catch((cause: unknown) => cause)
+    expect(confirmationError).toBeInstanceOf(ProjectSwitchConfirmationError)
+    expect(confirmationError).toMatchObject({
+      name: "ProjectSwitchConfirmationError",
+      confirmation: { requestedPath: "/code/elsewhere", sessionCount: 1 },
+    })
+
+    const confirmed = client.openProject(
+      "/code/elsewhere",
+      (confirmationError as ProjectSwitchConfirmationError).confirmation,
+    )
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "project.open",
+      params: {
+        path: "/code/elsewhere",
+        client: "web",
+        confirmation: (confirmationError as ProjectSwitchConfirmationError).confirmation,
+      },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })
+    await expect(confirmed).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
   const NativeWebSocket = globalThis.WebSocket
 
   beforeEach(() => {
