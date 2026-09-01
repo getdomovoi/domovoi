@@ -9,7 +9,8 @@ rather than assumed.
 `license-policy.json` holds the policy. `allowed` lists the license identifiers permitted in the
 production dependency graph of the publishable packages, `@getdomovoi/protocol` and
 `@getdomovoi/daemon`. Every allowed entry is permissive and carries no source-disclosure
-obligation.
+obligation. A dependency that declares an SPDX expression rather than one identifier passes when
+the expression resolves against that list: any branch of an `OR`, every term of an `AND`.
 
 `exceptions` maps a package name to the reason it may stay despite a license outside that list. A
 key may end in `*` to cover a family of packages whose exact name depends on the host, such as the
