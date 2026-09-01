@@ -30,7 +30,7 @@ at full fidelity from any paired surface.
 
 ## Positioning
 
-Domovoi combines a machine-fleet control plane with first-class agent artifacts. Full-fidelity
+Domovoi combines a machine-fleet agent runner with first-class agent artifacts. Full-fidelity
 plan and design previews, structured annotations, scoped approvals, model handoffs, and remote
 clients are parts of one protocol rather than separate editor plugins or file-sync workflows.
 

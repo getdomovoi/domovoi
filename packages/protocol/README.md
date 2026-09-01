@@ -2,13 +2,19 @@
 
 Typed schemas and shared types for the Domovoi daemon and clients.
 
-## Install
+## Workspace use
+
+`@getdomovoi/protocol` is not currently published to a package registry. Until the first release,
+use it from this repository's pnpm workspace. Other workspace packages depend on it with
+`workspace:*`.
 
 ```bash
-pnpm add @getdomovoi/protocol
+pnpm install
+pnpm --filter @getdomovoi/protocol build
 ```
 
-The package is standard ESM and can also be installed with npm or Bun.
+The package is standard ESM, but npm, pnpm, and Bun registry installation will only be supported
+after publication.
 
 ## Usage
 

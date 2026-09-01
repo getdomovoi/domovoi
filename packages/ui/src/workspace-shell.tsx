@@ -31,6 +31,7 @@ import type {
   ApprovalRequest,
   ApprovalDecision,
   Annotation,
+  Artifact,
   ArtifactAccess,
   ClientKind,
   PermissionMode,
@@ -196,10 +197,7 @@ import {
   CommandPalette,
   type CommandPalettePlatform,
 } from "./command-palette"
-import {
-  WorkspaceNotificationTracker,
-  type DesktopNotificationRequest,
-} from "./desktop-notifications"
+import { WorkspaceNotificationTracker } from "./desktop-notifications"
 import {
   copyDesktopText,
   desktopExternalActionLabel,
@@ -276,6 +274,18 @@ export function PreviewVariantThumbnail({ url }: { url?: string | undefined }) {
   return safeUrl
     ? <img className="aspect-video w-full rounded-sm border object-cover" src={safeUrl} alt="" />
     : <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
+}
+
+type ArtifactAuthorizationTarget = Pick<Artifact, "id" | "revision" | "sessionId">
+
+export function artifactAuthorizationKey(targets: readonly ArtifactAuthorizationTarget[]): string {
+  return JSON.stringify(targets.map(({ sessionId, id, revision }) => [sessionId, id, revision]))
+}
+
+function artifactAuthorizationTargets(key: string): ArtifactAuthorizationTarget[] {
+  return (JSON.parse(key) as Array<[string, string, number]>).map(
+    ([sessionId, id, revision]) => ({ sessionId, id, revision }),
+  )
 }
 
 export async function capturePreviewThumbnailState({
@@ -750,7 +760,7 @@ export function ProviderReadinessList({
   )
 }
 
-function LauncherDialog({
+export function LauncherDialog({
   mode,
   providers,
   defaultProviderId,
@@ -781,6 +791,10 @@ function LauncherDialog({
   const [modelsPending, setModelsPending] = useState(false)
   const [modelsError, setModelsError] = useState("")
   const modelRequest = useRef(0)
+  // The effect below reads the latest providers without depending on the
+  // identity of the array they arrive in.
+  const providersRef = useRef(providers)
+  providersRef.current = providers
   const providerReadinessKey = providers
     .map((provider) => `${provider.id}:${provider.status}:${provider.version ?? ""}:${provider.sessionCapable}`)
     .join("|")
@@ -795,9 +809,9 @@ function LauncherDialog({
       return
     }
 
-    const provider = providers.find((candidate) =>
+    const provider = providersRef.current.find((candidate) =>
       candidate.id === defaultProviderId && providerCanStartSession(candidate)
-    ) ?? preferredSessionProvider(providers)
+    ) ?? preferredSessionProvider(providersRef.current)
     if (!provider) {
       setModels([])
       setModelsError("No provider on this machine can start a session")
@@ -829,6 +843,8 @@ function LauncherDialog({
     ).finally(() => {
       if (request === modelRequest.current) setModelsPending(false)
     })
+    // Keyed on what the providers say, not on the array a new snapshot happens
+    // to allocate: an equal list must not reset the model already chosen.
   }, [defaultPermissionMode, defaultProviderId, mode, onListModels, providerReadinessKey])
 
   const selectProvider = (provider: ProviderRuntime) => {
@@ -1800,8 +1816,7 @@ export function HistoryPanel({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
   const requestRef = useRef(0)
-  const filterKey = `${categories.join(",")}:${query.trim()}`
-
+  const normalizedQuery = query.trim()
   useEffect(() => {
     const request = ++requestRef.current
     setPage(undefined)
@@ -1812,7 +1827,7 @@ export function HistoryPanel({
       return
     }
     setLoading(true)
-    void onLoad(sessionId, latestSessionHistoryRequest(categories, query)).then(
+    void onLoad(sessionId, latestSessionHistoryRequest(categories, normalizedQuery)).then(
       (next) => { if (request === requestRef.current) setPage(next) },
       (cause: unknown) => {
         if (request === requestRef.current) {
@@ -1823,7 +1838,7 @@ export function HistoryPanel({
       if (request === requestRef.current) setLoading(false)
     })
     return () => { requestRef.current += 1 }
-  }, [connected, filterKey, historyRefresh, onLoad, sessionId])
+  }, [categories, connected, historyRefresh, normalizedQuery, onLoad, sessionId])
 
   const toggleCategory = (category: SessionHistoryCategory) => {
     if (categories.includes(category) && categories.length === 1) return
@@ -1982,9 +1997,12 @@ export function ArtifactDock({
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | undefined>(previewCandidate?.id)
-  const previewVariants = previewVariantsForActiveSession(snapshot, selectedPreviewId)
+  const previewVariants = useMemo(
+    () => previewVariantsForActiveSession(snapshot, selectedPreviewId),
+    [selectedPreviewId, snapshot],
+  )
   const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
-  const annotations = annotationsForActiveSession(snapshot)
+  const annotations = useMemo(() => annotationsForActiveSession(snapshot), [snapshot])
   const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
   const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
@@ -1996,11 +2014,14 @@ export function ArtifactDock({
   const [compareRequested, setCompareRequested] = useState(false)
   const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
   const previewControlLayout = previewControlLayoutFor(stageContainerWidth)
-  const reviewStages = previewStagesForReview(previewVariants, preview, reviewLayout.stages)
-  const comparisonStages = reviewStages.slice(1)
-  const comparisonStageKey = comparisonStages
-    .map((artifact) => `${artifact.sessionId}:${artifact.id}:${artifact.revision}`)
-    .join(",")
+  const reviewStageCount = reviewLayout.stages
+  const reviewStages = useMemo(
+    () => previewStagesForReview(previewVariants, preview, reviewStageCount),
+    [preview, previewVariants, reviewStageCount],
+  )
+  const comparisonStages = useMemo(() => reviewStages.slice(1), [reviewStages])
+  const previewAuthorizationKey = artifactAuthorizationKey(preview ? [preview] : [])
+  const comparisonAuthorizationKey = artifactAuthorizationKey(comparisonStages)
   const [bridgeState, setBridgeState] = useState(() => ({
     previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
     channel: createPreviewBridgeChannel(),
@@ -2055,8 +2076,9 @@ export function ArtifactDock({
     let active = true
     setPreviewUrl(undefined)
     setPreviewError("")
-    if (!preview || !connected) return () => { active = false }
-    void authorizeArtifact({ sessionId: preview.sessionId, artifactId: preview.id, revision: preview.revision, purpose: "preview", bridgeChannel }).then(
+    const [target] = artifactAuthorizationTargets(previewAuthorizationKey)
+    if (!target || !connected) return () => { active = false }
+    void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel }).then(
       (access) => {
         if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
       },
@@ -2069,23 +2091,24 @@ export function ArtifactDock({
       },
     )
     return () => { active = false }
-  }, [authorizeArtifact, bridgeChannel, connected, preview?.id, preview?.revision, rpcUrl])
+  }, [authorizeArtifact, bridgeChannel, connected, previewAuthorizationKey, rpcUrl])
 
   useEffect(() => {
     let active = true
     setComparisonStageUrls(new Map())
-    if (!comparisonStages.length || !connected) return () => { active = false }
+    const targets = artifactAuthorizationTargets(comparisonAuthorizationKey)
+    if (!targets.length || !connected) return () => { active = false }
     const authorizeComparisonStages = async () => {
       const entries: Array<readonly [string, string]> = []
-      await Promise.all(comparisonStages.map(async (artifact) => {
+      await Promise.all(targets.map(async (target) => {
         try {
           const access = await authorizeArtifact({
-            sessionId: artifact.sessionId,
-            artifactId: artifact.id,
-            revision: artifact.revision,
+            sessionId: target.sessionId,
+            artifactId: target.id,
+            revision: target.revision,
             purpose: "preview",
           })
-          entries.push([artifact.id, artifactUrlFor(rpcUrl, access, window.location.origin)])
+          entries.push([target.id, artifactUrlFor(rpcUrl, access, window.location.origin)])
         } catch {
           // Keep failed comparison stages sandboxed and blank.
         }
@@ -2094,16 +2117,16 @@ export function ArtifactDock({
     }
     void authorizeComparisonStages()
     return () => { active = false }
-  }, [authorizeArtifact, comparisonStageKey, connected, rpcUrl])
+  }, [authorizeArtifact, comparisonAuthorizationKey, connected, rpcUrl])
 
-  const postPickerState = (active: boolean) => {
+  const postPickerState = useCallback((active: boolean) => {
     const message: PreviewBridgePickerMessage = {
       type: "domovoi.preview.picker",
       channel: bridgeChannel,
       active,
     }
     previewFrameRef.current?.contentWindow?.postMessage(message, "*")
-  }
+  }, [bridgeChannel])
 
   const capturePreviewThumbnail = async () => {
     if (!captureAnnotation || !preview || !previewUrl) return
@@ -2147,15 +2170,15 @@ export function ArtifactDock({
     }
   }
 
-  const postNextAnchorResolutionBatch = () => {
+  const postNextAnchorResolutionBatch = useCallback(() => {
     if (pendingAnchorResolutionBatch.current) return
     const message = queuedAnchorResolutionBatches.current.shift()
     if (!message) return
     pendingAnchorResolutionBatch.current = message
     previewFrameRef.current?.contentWindow?.postMessage(message, "*")
-  }
+  }, [])
 
-  const startAnchorResolutionRequests = () => {
+  const startAnchorResolutionRequests = useCallback(() => {
     if (!preview) return
     queuedAnchorResolutionBatches.current = previewResolveAnchorMessages(
       bridgeChannel,
@@ -2167,7 +2190,7 @@ export function ArtifactDock({
     pendingAnchorResolutionBatch.current = undefined
     setAnchorResolutions(new Map())
     postNextAnchorResolutionBatch()
-  }
+  }, [annotations, bridgeChannel, postNextAnchorResolutionBatch, preview])
 
   useEffect(() => {
     let active = true
@@ -2228,7 +2251,7 @@ export function ArtifactDock({
       active = false
       window.removeEventListener("message", receiveSelection)
     }
-  }, [annotations, archiveReadOnly, bridgeChannel, captureAnnotation, pickerActive, preview?.id, preview?.revision])
+  }, [annotations, archiveReadOnly, bridgeChannel, captureAnnotation, pickerActive, postNextAnchorResolutionBatch, postPickerState, preview, previewKey])
 
   useEffect(() => {
     setPickerActive(false)
@@ -2244,7 +2267,7 @@ export function ArtifactDock({
 
   useEffect(() => {
     if (bridgeReadyKey === previewKey) startAnchorResolutionRequests()
-  }, [annotations, bridgeReadyKey, previewKey])
+  }, [annotations, bridgeReadyKey, previewKey, startAnchorResolutionRequests])
 
   const togglePicker = () => {
     if (archiveReadOnly) return
@@ -2890,7 +2913,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [projectSwitchError, setProjectSwitchError] = useState("")
   const [connectionError, setConnectionError] = useState("")
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
-  const [providerRefresh, setProviderRefresh] = useState(0)
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -3194,7 +3216,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       },
     )
     return () => { active = false }
-  }, [connected, listProviderSecrets, providerRefresh, surface])
+  }, [connected, listProviderSecrets, surface])
 
   useEffect(() => {
     if (surface !== "skills") return
