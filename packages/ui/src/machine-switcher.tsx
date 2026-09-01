@@ -32,10 +32,12 @@ export function MachineSwitcher({
   machines,
   currentMachineId,
   currentSessionCount,
+  onPairMachine,
 }: {
   machines: FleetMachine[]
   currentMachineId: string
   currentSessionCount: number
+  onPairMachine?: (() => void) | undefined
 }) {
   const current = machines.find((machine) => machine.id === currentMachineId)
   const others = machines.filter((machine) => machine.id !== currentMachineId)
@@ -73,6 +75,9 @@ export function MachineSwitcher({
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
+        {onPairMachine ? (
+          <DropdownMenuItem onSelect={() => onPairMachine()}>+ Pair a machine</DropdownMenuItem>
+        ) : null}
         <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
           {others.length > 0 ? unavailableReason : "No other machines are paired"}
         </p>
