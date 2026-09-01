@@ -717,7 +717,11 @@ export class DomovoiDaemon {
         Date.now(),
       ).machines ?? [],
       credentials: this.#machineCredentials,
-      open: ({ endpoint, credential }) => openMachineSocket({ endpoint, credential }),
+      open: ({ endpoint, credential, signal }) => openMachineSocket({
+        endpoint,
+        credential,
+        ...(signal ? { signal } : {}),
+      }),
     })
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")

@@ -33,12 +33,16 @@ export function openMachineSocket(input: {
   handshakeTimeoutMs?: number
   callTimeoutMs?: number
   maximumPendingCalls?: number
+  signal?: AbortSignal
   // Tests drive these rather than waiting on a real clock.
   scheduler?: {
     setTimeout: (callback: () => void, delayMs: number) => unknown
     clearTimeout: (handle: unknown) => void
   }
 }): Promise<MachineConnection> {
+  if (input.signal?.aborted) {
+    return Promise.reject(new Error("The transfer was cancelled"))
+  }
   if (refusesPlaintext(input.endpoint)) {
     return Promise.reject(new Error("Refusing to authenticate over an unencrypted connection"))
   }
@@ -64,8 +68,13 @@ export function openMachineSocket(input: {
       socket.close()
     }, input.handshakeTimeoutMs ?? defaultMachineHandshakeTimeoutMs)
 
-    const send = (method: string, params: Record<string, unknown>) =>
+    const send = (method: string, params: Record<string, unknown>, signal?: AbortSignal) =>
       new Promise<unknown>((settle, fail) => {
+        const cancellation = signal ?? input.signal
+        if (cancellation?.aborted) {
+          fail(new Error("The transfer was cancelled"))
+          return
+        }
         // A socket that is closing will not transmit, and a call it never sent
         // would wait forever.
         if (socket.readyState !== WebSocket.OPEN) {
@@ -84,9 +93,21 @@ export function openMachineSocket(input: {
           if (!pending.delete(id)) return
           fail(new Error("That machine stopped answering"))
         }, callTimeoutMs)
+        // A cancelled transfer stops waiting now rather than at the deadline.
+        const abort = () => {
+          if (!pending.delete(id)) return
+          scheduler.clearTimeout(deadline)
+          fail(new Error("The transfer was cancelled"))
+        }
+        cancellation?.addEventListener("abort", abort, { once: true })
+        const settled = (finish: () => void) => {
+          scheduler.clearTimeout(deadline)
+          cancellation?.removeEventListener("abort", abort)
+          finish()
+        }
         pending.set(id, {
-          resolve: (result) => { scheduler.clearTimeout(deadline); settle(result) },
-          reject: (error) => { scheduler.clearTimeout(deadline); fail(error) },
+          resolve: (result) => settled(() => settle(result)),
+          reject: (error) => settled(() => fail(error)),
         })
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       })
@@ -124,6 +145,13 @@ export function openMachineSocket(input: {
       call.resolve(message.result)
     })
 
+    input.signal?.addEventListener("abort", () => {
+      if (ready) return
+      scheduler.clearTimeout(handshake)
+      reject(new Error("The transfer was cancelled"))
+      socket.close()
+    }, { once: true })
+
     socket.on("open", () => {
       // The credential is presented once, in the handshake, before any transfer
       // call is made.
@@ -136,7 +164,7 @@ export function openMachineSocket(input: {
           ready = true
           scheduler.clearTimeout(handshake)
           resolve({
-            call: (method, params) => send(method, params),
+            call: (method, params, signal) => send(method, params, signal),
             close: () => socket.close(),
           })
         },
