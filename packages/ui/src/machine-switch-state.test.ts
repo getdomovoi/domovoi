@@ -14,6 +14,7 @@ const target = {
   credential: "n".repeat(43),
 }
 
+const homeMachineId = `machine-${"a".repeat(32)}`
 const switching: MachineSwitchState = beganMachineSwitch(homeMachineSwitch, target.machineId)
 
 describe("machine switch state", () => {
@@ -43,6 +44,13 @@ describe("machine switch state", () => {
 
   it("ignores an answer that arrives after the client went home", () => {
     expect(attachedMachineSwitch(homeMachineSwitch, target)).toBe(homeMachineSwitch)
+  })
+
+  it("goes home when the machine this client came from is selected again", () => {
+    const attached = attachedMachineSwitch(switching, target)
+
+    expect(beganMachineSwitch(attached, homeMachineId, homeMachineId)).toEqual(homeMachineSwitch)
+    expect(beganMachineSwitch(homeMachineSwitch, homeMachineId, homeMachineId)).toEqual(homeMachineSwitch)
   })
 
   it("returns home from a machine it had attached to", () => {
