@@ -49,6 +49,15 @@ export const deviceIssueCodeResultSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 }).strict()
 
+export const machineCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+
+export const deviceSaveCredentialParamsSchema = z.object({
+  machineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+  credential: machineCredentialSchema,
+}).strict()
+
+export const deviceSaveCredentialResultSchema = z.object({ saved: z.literal(true) }).strict()
+
 export const deviceListParamsSchema = z.object({}).strict()
 
 export const devicesResultSchema = z.object({

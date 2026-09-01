@@ -7,6 +7,7 @@ import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity } from "./machine-identity.js"
 import { loadTlsMaterial } from "./tls-material.js"
+import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
@@ -137,6 +138,7 @@ async function main() {
     machineIdentity,
     ...(tls ? { tls } : {}),
     ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
+    machineCredentials: new MachineCredentialStore(),
   })
 
   const address = await daemon.start()

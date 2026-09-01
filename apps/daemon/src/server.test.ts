@@ -2768,6 +2768,91 @@ describe("DomovoiDaemon", () => {
     return { socket, call }
   }
 
+  it("keeps a credential for a machine it was given", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const credentials = new Map<string, string>()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      machineCredentials: {
+        save: (machineId: string, credential: string) => credentials.set(machineId, credential),
+        forMachine: (machineId: string) => credentials.get(machineId),
+        forget: (machineId: string) => credentials.delete(machineId),
+        machines: () => [...credentials.keys()],
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "device.saveCredential",
+      params: { machineId: `machine-${"b".repeat(32)}`, credential: "n".repeat(43) },
+    }))
+
+    await expect(response).resolves.toMatchObject({ result: { saved: true } })
+    expect(credentials.get(`machine-${"b".repeat(32)}`)).toBe("n".repeat(43))
+    expect(JSON.stringify(store.auditLog.query({ limit: 20 }).entries)).not.toContain("n".repeat(43))
+    socket.close()
+  })
+
+  it("refuses to keep a credential for a client holding only a device credential", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const credentials = new Map<string, string>()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      machineCredentials: {
+        save: (machineId: string, credential: string) => credentials.set(machineId, credential),
+        forMachine: (machineId: string) => credentials.get(machineId),
+        forget: (machineId: string) => credentials.delete(machineId),
+        machines: () => [...credentials.keys()],
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "device.saveCredential",
+      params: { machineId: `machine-${"b".repeat(32)}`, credential: "n".repeat(43) },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      error: { message: "Managing paired devices requires the daemon credential" },
+    })
+    expect(credentials.size).toBe(0)
+    socket.close()
+  })
+
   it("issues a pairing code to an authenticated client", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
