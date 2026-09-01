@@ -594,3 +594,70 @@ describe("GitWorkspaceService session bundles", () => {
       .rejects.toThrow("Bundle path must not traverse")
   })
 })
+
+describe("GitWorkspaceService bundle restore", () => {
+  async function sourceWithBundle(prefix: string) {
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
+    await writeFile(join(workspace.path, "README.md"), "moved\n")
+    const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
+    const bundle = await source.bundleSession(workspace.path, join(scratch, "session.bundle"))
+    return { scratch, checkpoint, bundle }
+  }
+
+  it("rebuilds the session worktree from a bundle", async () => {
+    const { scratch, checkpoint, bundle } = await sourceWithBundle("domovoi-restore-")
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+
+    const restored = await target.restoreSessionFromBundle(bundle.path, "session-1")
+
+    expect(restored.baseCommit).toBe(checkpoint.commit)
+    expect(restored.branch).toBe("domovoi/session-1")
+    await expect(readFile(join(restored.path, "README.md"), "utf8")).resolves.toBe("moved\n")
+  })
+
+  it("keeps the transferred checkpoint restorable on the target", async () => {
+    const { scratch, checkpoint, bundle } = await sourceWithBundle("domovoi-restore-ref-")
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+
+    const restored = await target.restoreSessionFromBundle(bundle.path, "session-1")
+
+    // Restoring later asks for the checkpoint by its Domovoi ref, so the
+    // transfer has to carry that ref, not only the commit.
+    const durable = await execute("git", [
+      "-C", restored.path,
+      "rev-parse", `refs/domovoi/checkpoints/${checkpoint.commit}^{commit}`,
+    ])
+    expect(durable.stdout.trim()).toBe(checkpoint.commit)
+  })
+
+  it("refuses a bundle it cannot verify", async () => {
+    const { scratch } = await sourceWithBundle("domovoi-restore-bad-")
+    const damaged = join(scratch, "damaged.bundle")
+    await writeFile(damaged, "not a bundle\n")
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+
+    await expect(target.restoreSessionFromBundle(damaged, "session-1"))
+      .rejects.toThrow("Bundle could not be verified")
+  })
+
+  it("refuses a session id that could escape the worktree root", async () => {
+    const { scratch, bundle } = await sourceWithBundle("domovoi-restore-escape-")
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+
+    await expect(target.restoreSessionFromBundle(bundle.path, "../escape"))
+      .rejects.toThrow("Session id is not safe for a worktree")
+  })
+})

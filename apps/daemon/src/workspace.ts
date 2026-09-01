@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmod, mkdir, realpath } from "node:fs/promises"
+import { chmod, mkdir, realpath, rm } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
@@ -89,6 +89,11 @@ export interface WorkspaceService {
     sinceCommit?: string,
     signal?: AbortSignal,
   ): Promise<SessionBundle>
+  restoreSessionFromBundle?(
+    bundlePath: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace>
 }
 
 export type SessionBundle = {
@@ -582,6 +587,38 @@ export class GitWorkspaceService implements WorkspaceService {
     await git(worktreePath, ["bundle", "create", resolved, range], signal)
     await restrictBundlePermissions(resolved)
     return { path: resolved, commit, incremental: sinceCommit !== undefined }
+  }
+
+  // The target rebuilds the session from bundle bytes alone, so a transfer
+  // never needs the source repository or a shared remote.
+  async restoreSessionFromBundle(
+    bundlePath: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
+    if (!safeSessionId.test(sessionId)) {
+      throw new Error("Session id is not safe for a worktree")
+    }
+
+    const path = join(this.worktreeRoot, sessionId)
+    const branch = `domovoi/${sessionId}`
+    await mkdir(this.worktreeRoot, { recursive: true })
+    try {
+      await gitDirectory(this.worktreeRoot, ["clone", "--quiet", bundlePath, path], signal)
+    } catch {
+      signal?.throwIfAborted()
+      // The bundle is the only thing the target trusts here, so anything it
+      // cannot read is refused rather than partly applied.
+      await rm(path, { recursive: true, force: true })
+      throw new Error("Bundle could not be verified")
+    }
+
+    await git(path, ["checkout", "--quiet", "-B", branch], signal)
+    const head = await git(path, ["rev-parse", "HEAD"], signal)
+    // The transferred checkpoint has to stay restorable on this machine, which
+    // means carrying the durable ref, not only the commit.
+    await git(path, ["update-ref", `refs/domovoi/checkpoints/${head}`, head], signal)
+    return { path, branch, baseCommit: head }
   }
 
   async restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult> {
