@@ -176,7 +176,7 @@ fleet.
   2. LAN or direct tailnet connection;
   3. SSH tunnel where explicitly configured;
   4. outbound relay fallback after hosted services exist.
-- [ ] Authenticate every connection even inside a tailnet
+- [x] Authenticate every connection even inside a tailnet
 - [ ] Bootstrap `domovoid` through a version-pinned, checksummed install script
 - [ ] Install and supervise the daemon through systemd, launchd, and Windows Services
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
