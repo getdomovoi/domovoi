@@ -63,6 +63,34 @@ describe("MachineCredentialStore", () => {
     expect(JSON.stringify(held)).not.toContain(credential)
   })
 
+  it("still knows its machines after the daemon restarts", () => {
+    const ring = keyring()
+    new MachineCredentialStore(ring).save(machineId, credential)
+
+    const restarted = new MachineCredentialStore(ring)
+
+    expect(restarted.machines()).toEqual([machineId])
+    expect(restarted.forMachine(machineId)).toBe(credential)
+  })
+
+  it("drops a forgotten machine from the list after a restart", () => {
+    const ring = keyring()
+    const store = new MachineCredentialStore(ring)
+    store.save(machineId, credential)
+    store.forget(machineId)
+
+    expect(new MachineCredentialStore(ring).machines()).toEqual([])
+  })
+
+  it("treats an index holding anything but machine identities as empty", () => {
+    for (const stored of ['[["machine-' + "a".repeat(32) + '"]]', '[42]', '[null]', '{"a":1}']) {
+      const ring = keyring()
+      ring.entries.set("domovoi.machine-credential.index", stored)
+
+      expect(new MachineCredentialStore(ring).machines()).toEqual([])
+    }
+  })
+
   it("refuses a credential that is not the issued shape", () => {
     const store = new MachineCredentialStore(keyring())
 
