@@ -30,7 +30,7 @@ export async function reconnectMachine<Connection>(input: {
   const initialDelayMs = input.initialDelayMs ?? defaultMachineReconnectDelayMs
   const maximumDelayMs = input.maximumDelayMs ?? defaultMaximumMachineReconnectDelayMs
 
-  let delayMs = initialDelayMs
+  let delayMs = Math.min(initialDelayMs, maximumDelayMs)
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       return await input.connect()
