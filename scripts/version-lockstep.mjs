@@ -4,7 +4,8 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-const workspaceGlob = /^\s*-\s*["']?([^"'\s/]+)\/\*{1,2}["']?\s*$/
+const packagesKey = /^packages:\s*(\[.*\])?\s*$/
+const listItem = /^\s+-\s*(.+?)\s*$/
 
 function describe(packages) {
   return [...packages]
@@ -38,20 +39,47 @@ export function evaluateVersionLockstep(packages) {
   return failures
 }
 
+function unquote(value) {
+  return value.trim().replace(/^["']|["']$/g, "")
+}
+
 export function workspaceDirectories(workspaceYaml) {
-  const directories = []
+  const entries = []
   let inPackages = false
   for (const line of workspaceYaml.split(/\r?\n/)) {
-    if (/^packages:/.test(line)) {
+    const key = packagesKey.exec(line)
+    if (key) {
       inPackages = true
+      if (key[1]) entries.push(...key[1].slice(1, -1).split(","))
       continue
     }
     if (!inPackages) continue
-    const match = workspaceGlob.exec(line)
-    if (match) directories.push(match[1])
-    else if (line.trim() !== "") break
+    if (/^\S/.test(line)) {
+      inPackages = false
+      continue
+    }
+    const item = listItem.exec(line)
+    if (item) entries.push(item[1])
   }
-  return directories
+
+  const directories = []
+  const unsupported = []
+  for (const entry of entries.map(unquote)) {
+    if (entry === "" || entry === "." || entry.startsWith("!")) continue
+    const [segment] = entry.split("/")
+    if (segment.includes("*")) unsupported.push(entry)
+    else if (!directories.includes(segment)) directories.push(segment)
+  }
+  return { directories, unsupported }
+}
+
+async function readDirectory(path) {
+  try {
+    return await readdir(path, { withFileTypes: true })
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  }
 }
 
 async function readManifest(path) {
@@ -65,9 +93,19 @@ async function readManifest(path) {
 
 export async function collectWorkspacePackages(root = repositoryRoot) {
   const yaml = await readFile(join(root, "pnpm-workspace.yaml"), "utf8")
+  const { directories, unsupported } = workspaceDirectories(yaml)
+  const failures = unsupported.map(
+    (entry) => `pnpm-workspace.yaml: ${entry} names no single workspace directory`,
+  )
   const packages = []
-  for (const directory of workspaceDirectories(yaml)) {
-    for (const entry of await readdir(join(root, directory), { withFileTypes: true })) {
+
+  for (const directory of directories) {
+    const entries = await readDirectory(join(root, directory))
+    if (!entries) {
+      failures.push(`pnpm-workspace.yaml: ${directory}/ is declared but missing`)
+      continue
+    }
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue
       const path = `${directory}/${entry.name}/package.json`
       const manifest = await readManifest(join(root, path))
@@ -75,12 +113,16 @@ export async function collectWorkspacePackages(root = repositoryRoot) {
       packages.push({ name: manifest.name, path, version: manifest.version })
     }
   }
-  return packages
+
+  if (packages.length === 0) {
+    failures.push("pnpm-workspace.yaml: no workspace package was found, so no version was checked")
+  }
+  return { packages, failures }
 }
 
 export async function checkVersionLockstep(root = repositoryRoot) {
-  const packages = await collectWorkspacePackages(root)
-  return { packages, failures: evaluateVersionLockstep(packages) }
+  const { packages, failures } = await collectWorkspacePackages(root)
+  return { packages, failures: [...failures, ...evaluateVersionLockstep(packages)] }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

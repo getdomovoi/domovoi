@@ -46,4 +46,5 @@ deliberately, and no package is published from this repository.
 
 GitHub Actions are pinned by full commit SHA, with the human-readable tag kept in a trailing
 comment. Tags and abbreviated SHAs are mutable references and are rejected by
-`pnpm release:invariants`, which reads every workflow in `.github/workflows`.
+`pnpm release:invariants`, which reads every workflow in `.github/workflows` and every composite
+action in `.github/actions`. Container steps must carry a full `@sha256:` image digest.

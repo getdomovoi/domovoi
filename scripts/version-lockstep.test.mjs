@@ -1,10 +1,27 @@
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import test from "node:test"
 
-import { collectWorkspacePackages, evaluateVersionLockstep, workspaceDirectories } from "./version-lockstep.mjs"
+import {
+  checkVersionLockstep,
+  evaluateVersionLockstep,
+  workspaceDirectories,
+} from "./version-lockstep.mjs"
+
+async function fixture(files) {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-lockstep-"))
+  for (const [path, contents] of Object.entries(files)) {
+    await mkdir(join(root, dirname(path)), { recursive: true })
+    await writeFile(join(root, path), contents)
+  }
+  return root
+}
+
+function manifest(name, version) {
+  return JSON.stringify({ name, version })
+}
 
 test("accepts a workspace released as one unit", () => {
   assert.deepEqual(evaluateVersionLockstep([
@@ -50,20 +67,89 @@ test("reads the workspace roots from the pnpm workspace globs", () => {
     "",
     "catalog:",
     "  typescript: ^5.9.2",
-  ].join("\n")), ["apps", "packages", "tools"])
+  ].join("\n")), { directories: ["apps", "packages", "tools"], unsupported: [] })
 })
 
-test("skips a directory that holds no package manifest", async () => {
-  const root = await mkdtemp(join(tmpdir(), "domovoi-lockstep-"))
-  await writeFile(join(root, "pnpm-workspace.yaml"), "packages:\n  - apps/*\n")
-  await mkdir(join(root, "apps", "daemon"), { recursive: true })
-  await mkdir(join(root, "apps", "leftover"), { recursive: true })
-  await writeFile(
-    join(root, "apps", "daemon", "package.json"),
-    JSON.stringify({ name: "@getdomovoi/daemon", version: "0.0.1" }),
-  )
+test("keeps reading past entries that name no single root", () => {
+  assert.deepEqual(workspaceDirectories([
+    "packages:",
+    "  - \"!**/dist/**\"",
+    "  - .",
+    "  - packages/*/*",
+    "  - apps/*",
+    "  - packages/*",
+  ].join("\n")), { directories: ["packages", "apps"], unsupported: [] })
+})
 
-  assert.deepEqual(await collectWorkspacePackages(root), [
+test("reads a flow-style package list", () => {
+  assert.deepEqual(workspaceDirectories('packages: ["apps/*", "packages/*"]\n'), {
+    directories: ["apps", "packages"],
+    unsupported: [],
+  })
+})
+
+test("reports a glob whose own first segment is not a directory", () => {
+  assert.deepEqual(workspaceDirectories("packages:\n  - packages/*\n  - plugin-*/src\n"), {
+    directories: ["packages"],
+    unsupported: ["plugin-*/src"],
+  })
+})
+
+test("stops reading at the next top-level key", () => {
+  assert.deepEqual(workspaceDirectories([
+    "packages:",
+    "  - apps/*",
+    "onlyBuiltDependencies:",
+    "  - electron",
+  ].join("\n")), { directories: ["apps"], unsupported: [] })
+})
+
+test("skips a directory that holds no package manifest", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages:\n  - apps/*\n",
+    "apps/daemon/package.json": manifest("@getdomovoi/daemon", "0.0.1"),
+  })
+  await mkdir(join(root, "apps", "leftover"), { recursive: true })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = await checkVersionLockstep(root)
+  assert.deepEqual(result.packages, [
     { name: "@getdomovoi/daemon", path: "apps/daemon/package.json", version: "0.0.1" },
+  ])
+  assert.deepEqual(result.failures, [])
+})
+
+test("fails when the workspace declares a root that does not exist", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages:\n  - apps/*\n  - tools/*\n",
+    "apps/daemon/package.json": manifest("@getdomovoi/daemon", "0.0.1"),
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  assert.deepEqual((await checkVersionLockstep(root)).failures, [
+    "pnpm-workspace.yaml: tools/ is declared but missing",
+  ])
+})
+
+test("fails instead of passing when it finds no package at all", async (t) => {
+  const root = await fixture({ "pnpm-workspace.yaml": "packages: []\n" })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  assert.deepEqual((await checkVersionLockstep(root)).failures, [
+    "pnpm-workspace.yaml: no workspace package was found, so no version was checked",
+  ])
+})
+
+test("still reports drift found through the workspace globs", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages:\n  - \"!**/dist/**\"\n  - apps/*\n  - packages/*\n",
+    "apps/daemon/package.json": manifest("@getdomovoi/daemon", "9.9.9"),
+    "packages/protocol/package.json": manifest("@getdomovoi/protocol", "0.0.1"),
+    "packages/ui/package.json": manifest("@getdomovoi/ui", "0.0.1"),
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  assert.deepEqual((await checkVersionLockstep(root)).failures, [
+    "apps/daemon/package.json: @getdomovoi/daemon is 9.9.9, expected 0.0.1",
   ])
 })
