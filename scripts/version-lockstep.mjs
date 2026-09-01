@@ -25,7 +25,7 @@ export function evaluateVersionLockstep(packages) {
   const counts = new Map()
   for (const entry of versioned) counts.set(entry.version, (counts.get(entry.version) ?? 0) + 1)
   const ranked = [...counts].sort(([, left], [, right]) => right - left)
-  if (ranked.length > 1 && ranked[0][1] === ranked[1][1]) {
+  if (ranked.length > 1 && ranked[0][1] * 2 <= versioned.length) {
     failures.push(`workspace versions disagree with no majority: ${describe(versioned)}`)
     return failures
   }
@@ -41,6 +41,18 @@ export function evaluateVersionLockstep(packages) {
 
 function unquote(value) {
   return value.trim().replace(/^["']|["']$/g, "")
+}
+
+function patternToRegExp(pattern) {
+  const source = pattern
+    .split("/")
+    .map((segment) => segment.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*"))
+    .join("/")
+  return new RegExp(`^${source}$`)
+}
+
+function isExcluded(path, exclusions) {
+  return exclusions.some((pattern) => patternToRegExp(pattern).test(path) || path.startsWith(`${pattern}/`))
 }
 
 export function workspaceDirectories(workspaceYaml) {
@@ -63,14 +75,25 @@ export function workspaceDirectories(workspaceYaml) {
   }
 
   const directories = []
+  const exclusions = []
   const unsupported = []
   for (const entry of entries.map(unquote)) {
-    if (entry === "" || entry === "." || entry.startsWith("!")) continue
+    if (entry === "" || entry === ".") continue
+    if (entry.startsWith("!")) {
+      exclusions.push(entry.slice(1))
+      continue
+    }
     const [segment] = entry.split("/")
-    if (segment.includes("*")) unsupported.push(entry)
-    else if (!directories.includes(segment)) directories.push(segment)
+    if (segment.includes("*")) {
+      unsupported.push(entry)
+      continue
+    }
+    const recursive = entry.endsWith("/**") || entry.split("/").length > 2
+    const known = directories.find((known) => known.directory === segment)
+    if (known) known.recursive ||= recursive
+    else directories.push({ directory: segment, recursive })
   }
-  return { directories, unsupported }
+  return { directories, exclusions, unsupported }
 }
 
 async function readDirectory(path) {
@@ -91,27 +114,33 @@ async function readManifest(path) {
   }
 }
 
+async function collectFrom(root, directory, recursive, packages, exclusions) {
+  const entries = await readDirectory(join(root, directory))
+  if (!entries) return false
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const directoryPath = `${directory}/${entry.name}`
+    if (isExcluded(directoryPath, exclusions)) continue
+    const path = `${directoryPath}/package.json`
+    const manifest = await readManifest(join(root, path))
+    if (manifest) packages.push({ name: manifest.name, path, version: manifest.version })
+    else if (recursive) await collectFrom(root, directoryPath, recursive, packages, exclusions)
+  }
+  return true
+}
+
 export async function collectWorkspacePackages(root = repositoryRoot) {
   const yaml = await readFile(join(root, "pnpm-workspace.yaml"), "utf8")
-  const { directories, unsupported } = workspaceDirectories(yaml)
+  const { directories, exclusions, unsupported } = workspaceDirectories(yaml)
   const failures = unsupported.map(
     (entry) => `pnpm-workspace.yaml: ${entry} names no single workspace directory`,
   )
   const packages = []
 
-  for (const directory of directories) {
-    const entries = await readDirectory(join(root, directory))
-    if (!entries) {
-      failures.push(`pnpm-workspace.yaml: ${directory}/ is declared but missing`)
-      continue
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const path = `${directory}/${entry.name}/package.json`
-      const manifest = await readManifest(join(root, path))
-      if (!manifest) continue
-      packages.push({ name: manifest.name, path, version: manifest.version })
-    }
+  for (const { directory, recursive } of directories) {
+    const found = await collectFrom(root, directory, recursive, packages, exclusions)
+    if (!found) failures.push(`pnpm-workspace.yaml: ${directory}/ is declared but missing`)
   }
 
   if (packages.length === 0) {
