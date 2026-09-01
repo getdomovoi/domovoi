@@ -258,7 +258,9 @@ before any public package or application publish.
 ### Distribution and packaging
 
 - [ ] Define compatibility, deprecation, and release-support policy
-- [ ] Verify npm artifacts install and run through npm, pnpm, and Bun
+- [x] Verify npm artifacts install and run through npm, pnpm, and Bun
+  - `pnpm test:install` packs the protocol package, installs the tarball with each package manager,
+    and imports it; a missing package manager fails CI.
 - [ ] Build signed desktop installers for macOS, Windows, and Linux
 - [ ] Add macOS signing/notarization and Windows code signing
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
