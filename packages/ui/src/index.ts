@@ -6,6 +6,7 @@ export {
   type DesktopWindowBridge,
 } from "./desktop-platform"
 export { claimMachine, MachineClaimError, type ClaimConnection } from "./claim-machine"
+export { PairMachineDialog, type PairMachineRequest } from "./pair-machine-dialog"
 export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
 export {
   dialTransport,
