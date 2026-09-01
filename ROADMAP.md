@@ -181,7 +181,7 @@ fleet.
 - [ ] Install and supervise the daemon through systemd, launchd, and Windows Services
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-- [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
+- [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
 - [ ] Add checkpointed machine transfer with live source and target preflight
 - [ ] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
