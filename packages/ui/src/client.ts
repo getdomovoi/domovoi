@@ -41,7 +41,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-class DaemonRpcError extends Error {
+export class DaemonRpcError extends Error {
   readonly code: number
 
   constructor(code: number, message: string) {
