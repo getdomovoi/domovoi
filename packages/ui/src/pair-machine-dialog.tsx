@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react"
 
-import type { DevicePairResult } from "@getdomovoi/protocol"
-
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
 import {
@@ -15,11 +13,9 @@ import {
 import { Field, FieldGroup, FieldLabel } from "./components/ui/field"
 import { Input } from "./components/ui/input"
 
-export type PairMachineRequest = {
-  endpoint: string
-  code: string
-  label: string
-}
+import type { PairMachineRequest, PairedMachine } from "./pair-machine.js"
+
+export type { PairMachineRequest }
 
 export function PairMachineDialog({
   open,
@@ -29,8 +25,8 @@ export function PairMachineDialog({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onClaim: (request: PairMachineRequest) => Promise<DevicePairResult>
-  onPaired: (paired: DevicePairResult) => void
+  onClaim: (request: PairMachineRequest) => Promise<PairedMachine>
+  onPaired: (paired: PairedMachine) => void
 }) {
   const [endpoint, setEndpoint] = useState("")
   const [code, setCode] = useState("")
