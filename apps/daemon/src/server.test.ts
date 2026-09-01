@@ -1,5 +1,6 @@
 import { access, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -8480,5 +8481,177 @@ describe("adversarially deep JSON-RPC payloads", () => {
       process.off("unhandledRejection", recordRejection)
       socket.close()
     }
+  })
+})
+
+describe("DomovoiDaemon transfers", () => {
+  const running: DomovoiDaemon[] = []
+
+  function stubWorkspaceService() {
+    return {
+      inspect: async () => ({ root: "/repo", name: "repo", branch: "main", head: "a".repeat(40) }),
+      createSessionWorkspace: async (_repository: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "a".repeat(40),
+      }),
+      removeSessionWorkspace: async () => {},
+      checkpoint: async () => ({ commit: "b".repeat(40), changedFiles: [] }),
+      restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
+    }
+  }
+
+  function rpcCaller(socket: WebSocket) {
+    let id = 0
+    return (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+  }
+
+  afterEach(async () => {
+    await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
+  })
+
+  function bundleBytes() {
+    return Buffer.from("PACK a session worktree")
+  }
+
+  it("restores a session streamed from another machine", async () => {
+    const bytes = bundleBytes()
+    const restored: { bundlePath: string; sessionId: string }[] = []
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        ...stubWorkspaceService(),
+        restoreSessionFromBundle: async (bundlePath: string, sessionId: string) => {
+          restored.push({ bundlePath, sessionId })
+          return {
+            path: `/worktrees/${sessionId}`,
+            branch: `domovoi/${sessionId}`,
+            baseCommit: "c".repeat(40),
+          }
+        },
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const call = rpcCaller(socket)
+
+    const begun = await call("transfer.begin", {
+      sessionId: "session-1",
+      sourceMachineId: `machine-${"a".repeat(32)}`,
+      method: "git-bundle",
+      digest: createHash("sha256").update(bytes).digest("hex"),
+      totalBytes: bytes.length,
+      client: "desktop",
+    })
+    const transferId = (begun.result as { transferId: string }).transferId
+    const finished = await call("transfer.chunk", {
+      transferId,
+      sequence: 0,
+      bytes: bytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+
+    expect(finished.result).toMatchObject({
+      state: "restored",
+      workspacePath: "/worktrees/session-1",
+      checkpointCommit: "c".repeat(40),
+    })
+    expect(restored).toHaveLength(1)
+    socket.close()
+  })
+
+  it("reports a refusal instead of restoring bytes it cannot verify", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        ...stubWorkspaceService(),
+        restoreSessionFromBundle: async () => {
+          throw new Error("restore must not run")
+        },
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const call = rpcCaller(socket)
+
+    const begun = await call("transfer.begin", {
+      sessionId: "session-1",
+      sourceMachineId: `machine-${"a".repeat(32)}`,
+      method: "git-bundle",
+      digest: createHash("sha256").update("something else").digest("hex"),
+      totalBytes: 32,
+      client: "desktop",
+    })
+    const transferId = (begun.result as { transferId: string }).transferId
+    const finished = await call("transfer.chunk", {
+      transferId,
+      sequence: 0,
+      bytes: bundleBytes().toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+
+    expect(finished.result).toEqual({ state: "refused", reason: "digest-mismatch" })
+    socket.close()
+  })
+
+  it("refuses a transfer from a client holding only a device credential", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const call = rpcCaller(socket)
+
+    const refusal = await call("transfer.begin", {
+      sessionId: "session-1",
+      sourceMachineId: `machine-${"a".repeat(32)}`,
+      method: "git-bundle",
+      digest: "d".repeat(64),
+      totalBytes: 32,
+      client: "desktop",
+    })
+
+    expect(refusal).toMatchObject({
+      error: { message: "Accepting a session transfer requires the daemon credential" },
+    })
+    socket.close()
   })
 })
