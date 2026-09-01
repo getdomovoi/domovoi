@@ -21,10 +21,17 @@ export class MachineCredentialUnavailableError extends Error {
   }
 }
 
+export interface MachineCredentials {
+  save(machineId: string, credential: string): void
+  forMachine(machineId: string): string | undefined
+  forget(machineId: string): void
+  machines(): string[]
+}
+
 // A credential for another machine is a secret like any provider key, so it
 // lives in the OS keychain rather than in the state database, and no error
 // carries its bytes.
-export class MachineCredentialStore {
+export class MachineCredentialStore implements MachineCredentials {
   readonly #keyring: MachineKeyring
 
   constructor(keyring: MachineKeyring = new NativeMachineKeyring()) {
