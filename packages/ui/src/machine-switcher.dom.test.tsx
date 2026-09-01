@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, expect, it } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
 
 import type { FleetMachine } from "@getdomovoi/protocol"
 
@@ -116,6 +116,30 @@ it("names a machine that is reconnecting", async () => {
   await openMenu([local, { ...tailnet, health: "reconnecting" }])
 
   expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Reconnecting")
+})
+
+it("offers to pair a machine, as the handoff's device menu does", async () => {
+  const onPairMachine = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <MachineSwitcher
+      machines={[local]}
+      currentMachineId={local.id}
+      currentSessionCount={1}
+      onPairMachine={onPairMachine}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /workshop/ }))
+
+  await user.click(screen.getByRole("menuitem", { name: /pair a machine/i }))
+
+  expect(onPairMachine).toHaveBeenCalledTimes(1)
+})
+
+it("omits the pairing entry where nothing can act on it", async () => {
+  await openMenu([local])
+
+  expect(screen.queryByRole("menuitem", { name: /pair a machine/i })).toBeNull()
 })
 
 it("describes a fleet holding only this machine", async () => {
