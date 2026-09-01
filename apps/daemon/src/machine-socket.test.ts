@@ -1,7 +1,7 @@
 import { once } from "node:events"
 
 import { WebSocketServer } from "ws"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { openMachineSocket } from "./machine-socket.js"
 
@@ -129,6 +129,69 @@ describe("openMachineSocket", () => {
       .rejects.toThrow("The machine closed the connection")
   })
 
+  it("refuses a plaintext endpoint that leaves this machine", async () => {
+    await expect(openMachineSocket({
+      endpoint: "ws://studio.tailnet:47831/rpc",
+      credential: "n".repeat(43),
+    })).rejects.toThrow("Refusing to authenticate over an unencrypted connection")
+  })
+
+  it("refuses a call once the connection is closed", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      return { state: "receiving" }
+    })
+
+    const connection = await openMachineSocket({
+      endpoint: machine.endpoint,
+      credential: "n".repeat(43),
+    })
+    connection.close()
+
+    await expect(connection.call("transfer.chunk", {}))
+      .rejects.toThrow("The machine connection is closed")
+  })
+
+  it("gives up on a call the machine never answers", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      return undefined
+    })
+
+    const connection = await openMachineSocket({
+      endpoint: machine.endpoint,
+      credential: "n".repeat(43),
+      callTimeoutMs: 100,
+    })
+
+    await expect(connection.call("transfer.chunk", {}))
+      .rejects.toThrow("That machine stopped answering")
+    connection.close()
+  })
+
+  it("refuses more calls than it will keep waiting for", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      return undefined
+    })
+
+    const connection = await openMachineSocket({
+      endpoint: machine.endpoint,
+      credential: "n".repeat(43),
+      callTimeoutMs: 5_000,
+      maximumPendingCalls: 2,
+    })
+    const pending = [
+      connection.call("transfer.chunk", { sequence: 0 }).catch(() => "settled"),
+      connection.call("transfer.chunk", { sequence: 1 }).catch(() => "settled"),
+    ]
+
+    await expect(connection.call("transfer.chunk", { sequence: 2 }))
+      .rejects.toThrow("Too many calls are waiting on that machine")
+    connection.close()
+    await Promise.all(pending)
+  })
+
   it("gives up on a machine that never answers the handshake", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
     servers.push(server)
@@ -136,10 +199,23 @@ describe("openMachineSocket", () => {
     const address = server.address()
     const port = typeof address === "object" && address ? address.port : 0
 
-    await expect(openMachineSocket({
+    // The deadline is driven rather than waited on, so the test does not
+    // depend on how busy the machine running it is.
+    const fired: (() => void)[] = []
+    const opening = openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
       credential: "n".repeat(43),
-      handshakeTimeoutMs: 200,
-    })).rejects.toThrow("That machine did not answer")
+      scheduler: {
+        setTimeout: (callback: () => void) => {
+          fired.push(callback)
+          return fired.length
+        },
+        clearTimeout: () => {},
+      },
+    })
+    await vi.waitFor(() => expect(fired.length).toBeGreaterThan(0))
+    for (const callback of fired) callback()
+
+    await expect(opening).rejects.toThrow("That machine did not answer")
   })
 })
