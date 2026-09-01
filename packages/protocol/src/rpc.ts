@@ -48,6 +48,7 @@ export const requestIdSchema = z.union([
 ])
 export const daemonAuthenticationErrorCode = -32001 as const
 export const daemonShuttingDownErrorCode = -32002 as const
+export const machineCredentialMissingErrorCode = -32011 as const
 export const projectSwitchConfirmationErrorCode = -32010 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
