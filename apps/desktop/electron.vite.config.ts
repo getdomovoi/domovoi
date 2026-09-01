@@ -9,8 +9,9 @@ import { vendorChunkFor } from "../../packages/ui/src/vite-chunks"
 
 // Node builtins were externalized for us until vite 8 changed how a bundled
 // require of a builtin resolves, which left the preload asking for
-// child_process at runtime.
-const nodeBuiltins = [
+// child_process at runtime. Electron itself is supplied by the runtime the
+// same way, so it belongs in the same list.
+const runtimeProvided = [
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
   "electron",
@@ -23,7 +24,7 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
-      rollupOptions: { external: nodeBuiltins, output: { format: "cjs" } },
+      rollupOptions: { external: runtimeProvided, output: { format: "cjs" } },
     },
   },
   renderer: {
