@@ -1,40 +1,15 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readdirSync, rmSync } from "node:fs"
-import { execFile } from "node:child_process"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { promisify } from "node:util"
 
-import { pnpmInvocation } from "./package-artifact-command.mjs"
-
-const pnpm = pnpmInvocation()
-const repositoryRoot = new URL("../", import.meta.url)
-const run = promisify(execFile)
+import { inspectArchive, packPackage } from "./pack-package.mjs"
 
 async function packedPackage(selector) {
   const destination = mkdtempSync(join(tmpdir(), "domovoi pack-"))
 
   try {
-    await run(
-      pnpm.command,
-      ["--filter", selector, "pack", "--json", "--pack-destination", destination],
-      { cwd: repositoryRoot, encoding: "utf8", shell: pnpm.shell },
-    )
-
-    const archives = readdirSync(destination).filter((file) => file.endsWith(".tgz"))
-    assert.equal(archives.length, 1, `${selector} must produce one package archive`)
-    const filename = join(destination, archives[0])
-    const manifest = JSON.parse(
-      (await run("tar", ["-xOf", filename, "package/package.json"], {
-        encoding: "utf8",
-      })).stdout,
-    )
-    const files = (await run("tar", ["-tf", filename], { encoding: "utf8" })).stdout
-      .trim()
-      .split(/\r?\n/)
-      .map((file) => file.replace(/^package\//, ""))
-
-    return { files: new Set(files), manifest }
+    return await inspectArchive(await packPackage(selector, destination))
   } finally {
     rmSync(destination, { force: true, recursive: true })
   }
