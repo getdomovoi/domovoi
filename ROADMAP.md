@@ -203,8 +203,8 @@ fleet.
 - [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
 - [x] Add device pairing, revocation, and credential rotation
-- [ ] Add a fleet registry and machine selector to the shared protocol and UI
-- [ ] Implement one transport abstraction with this order:
+- [x] Add a fleet registry and machine selector to the shared protocol and UI
+- [x] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
   2. LAN or direct tailnet connection;
   3. SSH tunnel where explicitly configured;
@@ -305,7 +305,7 @@ before any public package or application publish.
 - [ ] Add daemon and desktop update checks with explicit user control
 - [ ] Add rollback and compatibility handling for daemon/client protocol mismatches
 - [x] Pin GitHub Actions by immutable commit SHA, verified by `pnpm release:invariants`
-- [ ] Replace the no-op lint gate with real TypeScript/React linting
+- [x] Replace the no-op lint gate with real TypeScript/React linting
 - [ ] Review or replace dependencies whose licenses do not fit the public daemon
   - `pnpm license:audit` holds the publishable production graph to a permissive allowlist in CI.
   - One recorded exception remains: the proprietary Claude Code agent SDK. See
