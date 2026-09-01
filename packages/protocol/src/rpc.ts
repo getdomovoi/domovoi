@@ -19,6 +19,8 @@ import {
 import {
   deviceClaimParamsSchema,
   deviceIssueCodeResultSchema,
+  deviceSaveCredentialParamsSchema,
+  deviceSaveCredentialResultSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -963,6 +965,10 @@ export const rpcMethods = {
   // yet. Gated on an open pairing code and nothing else.
   "device.claim": { params: deviceClaimParamsSchema, result: devicePairResultSchema },
   "device.issueCode": { params: deviceListParamsSchema, result: deviceIssueCodeResultSchema },
+  "device.saveCredential": {
+    params: deviceSaveCredentialParamsSchema,
+    result: deviceSaveCredentialResultSchema,
+  },
   "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
   "device.revoke": {
     params: deviceRevokeParamsSchema,
