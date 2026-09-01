@@ -34,6 +34,7 @@ import {
   type RpcParams,
   type RpcMethod,
   type SessionHistoryPage,
+  workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SystemEmergencyStopResult,
   type ClientKind,
