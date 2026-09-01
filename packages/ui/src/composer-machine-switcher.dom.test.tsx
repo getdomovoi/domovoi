@@ -36,6 +36,9 @@ it("opens the device menu from the composer machine chip", async () => {
         connection: "local",
         capabilities: ["sessions"],
         protocolVersion: "0.1.0",
+        transports: [
+          { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const },
+        ],
         heartbeat: { state: "online", lastSeenAt: "2026-08-31T12:00:00.000Z" },
         health: "healthy",
         self: true,
