@@ -625,7 +625,10 @@ describe("GitWorkspaceService bundle restore", () => {
 
     expect(restored.baseCommit).toBe(checkpoint.commit)
     expect(restored.branch).toBe("domovoi/session-1")
-    await expect(readFile(join(restored.path, "README.md"), "utf8")).resolves.toBe("moved\n")
+    // Git checks out with the platform's line endings, so the transferred
+    // content is compared rather than its exact bytes.
+    const contents = await readFile(join(restored.path, "README.md"), "utf8")
+    expect(contents.replace(/\r\n/g, "\n")).toBe("moved\n")
   })
 
   it("keeps the transferred checkpoint restorable on the target", async () => {
