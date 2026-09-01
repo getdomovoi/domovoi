@@ -50,6 +50,8 @@ import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { TransferAssembler } from "./transfer-assembler.js"
+import { createMachineDialer } from "./machine-dial.js"
+import { openMachineSocket } from "./machine-socket.js"
 import { sendSessionToMachine } from "./transfer-source.js"
 import {
   CodexAppServerAdapter,
@@ -706,8 +708,16 @@ export class DomovoiDaemon {
     this.#advertiseHost = options.advertiseHost
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
-    this.#connectToMachine = options.connectToMachine ?? (() => {
-      throw new Error("This machine cannot reach other machines yet")
+    // With nothing supplied, this daemon reaches other machines itself: the
+    // fleet says where they are, pairing left the credential here, and the
+    // socket carries the transfer calls.
+    this.#connectToMachine = options.connectToMachine ?? createMachineDialer({
+      machines: () => this.#store.fleet?.snapshot(
+        this.#snapshot.machine.id,
+        Date.now(),
+      ).machines ?? [],
+      credentials: this.#machineCredentials,
+      open: ({ endpoint, credential }) => openMachineSocket({ endpoint, credential }),
     })
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
@@ -2170,7 +2180,15 @@ export class DomovoiDaemon {
             bundleSession: (worktreePath, bundlePath) =>
               this.#workspaceService.bundleSession!(worktreePath, bundlePath, undefined, signal),
             readBundle: this.#readTransferBundle,
-            recordReceipt: (receipt) => this.#store.transferReceipts?.record(receipt),
+            recordReceipt: (receipt) => {
+              // The receipt records what happened; it does not decide it. A
+              // daemon that cannot store one still answers with the outcome.
+              try {
+                this.#store.transferReceipts?.record(receipt)
+              } catch (error) {
+                this.#reportError("Domovoi could not record a transfer receipt", error)
+              }
+            },
             now: () => new Date().toISOString(),
           })
           this.#send(socket, {
