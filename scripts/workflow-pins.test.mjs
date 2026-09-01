@@ -51,6 +51,22 @@ test("reports a quoted tag reference without its quotes", () => {
   ])
 })
 
+test("accepts a self-repository reference, which resolves to the running commit", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: "      - uses: $/.github/actions/setup",
+  }]), [])
+})
+
+test("reads a quoted uses key, which YAML treats as the same key", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: "      - \"uses\": actions/checkout@v7",
+  }]), [
+    ".github/workflows/ci.yml:1: actions/checkout@v7 is not pinned to a commit SHA",
+  ])
+})
+
 test("reports a tag reference with its file and line", () => {
   assert.deepEqual(evaluateWorkflowPins([{
     path: ".github/workflows/ci.yml",
