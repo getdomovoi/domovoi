@@ -6,17 +6,24 @@
   "engines": {
     "node": ">=22"
   },
+  "devDependencies": {
+    "@changesets/cli": "^3.0.1"
+  },
   "scripts": {
     "build": "pnpm -r --if-present build",
+    "changeset": "changeset",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "pnpm --parallel --filter @getdomovoi/daemon --filter @getdomovoi/web dev",
     "dev:desktop": "pnpm --filter @getdomovoi/desktop dev",
     "lint": "pnpm -r --if-present lint",
     "performance:budget": "node scripts/performance-budgets.mjs",
+    "release:invariants": "node scripts/version-lockstep.mjs && node scripts/workflow-pins.mjs",
+    "release:status": "changeset status",
+    "release:version": "changeset version",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "pretest:packages": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "test": "pnpm --filter @getdomovoi/protocol test && pnpm --filter @getdomovoi/ui test && pnpm --filter @getdomovoi/web test && pnpm --filter @getdomovoi/daemon test && pnpm --filter @getdomovoi/desktop test && pnpm test:packages && pnpm --filter @getdomovoi/desktop test:launch",
-    "test:packages": "node --test scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs && node scripts/test-package-artifacts.mjs",
+    "test:packages": "node --test scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs scripts/version-lockstep.test.mjs scripts/workflow-pins.test.mjs && node scripts/test-package-artifacts.mjs",
     "typecheck": "pnpm -r --if-present typecheck"
   }
 }
