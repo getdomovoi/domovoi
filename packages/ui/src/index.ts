@@ -5,6 +5,7 @@ export {
   type DesktopOpenExternalRequest,
   type DesktopWindowBridge,
 } from "./desktop-platform"
+export { claimMachine, MachineClaimError, type ClaimConnection } from "./claim-machine"
 export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
 export {
   dialTransport,
