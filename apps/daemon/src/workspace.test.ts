@@ -698,3 +698,100 @@ describe("GitWorkspaceService bundle restore", () => {
       .rejects.toThrow("Session id is not safe for a worktree")
   })
 })
+
+describe("GitWorkspaceService session refs", () => {
+  async function sessionWithRemote(prefix: string) {
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const remotePath = join(scratch, "remote.git")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["init", "--bare", remotePath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", remotePath])
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
+    await writeFile(join(workspace.path, "README.md"), "moved\n")
+    const checkpoint = await service.checkpoint(workspace.path, "before-transfer")
+    return { scratch, service, workspace, checkpoint, remotePath }
+  }
+
+  it("pushes the session checkpoint to the remote the caller named", async () => {
+    const { service, workspace, checkpoint, remotePath } = await sessionWithRemote("domovoi-ref-")
+
+    const pushed = await service.pushSessionRef(workspace.path, "origin", "session-1")
+
+    expect(pushed.ref).toBe("refs/domovoi/sessions/session-1")
+    expect(pushed.commit).toBe(checkpoint.commit)
+    const listed = await execute("git", ["-C", remotePath, "rev-parse", pushed.ref])
+    expect(listed.stdout.trim()).toBe(checkpoint.commit)
+  })
+
+  it("refuses a remote the repository does not have", async () => {
+    const { service, workspace } = await sessionWithRemote("domovoi-ref-missing-")
+
+    await expect(service.pushSessionRef(workspace.path, "nowhere", "session-1"))
+      .rejects.toThrow("Repository has no remote named nowhere")
+  })
+
+  it("refuses a remote name that could be read as an option", async () => {
+    const { service, workspace } = await sessionWithRemote("domovoi-ref-option-")
+
+    await expect(service.pushSessionRef(workspace.path, "--upload-pack=touch", "session-1"))
+      .rejects.toThrow("Remote name is not safe")
+  })
+
+  it("refuses to push work that is not checkpointed", async () => {
+    const { service, workspace } = await sessionWithRemote("domovoi-ref-dirty-")
+    await writeFile(join(workspace.path, "README.md"), "uncommitted\n")
+
+    await expect(service.pushSessionRef(workspace.path, "origin", "session-1"))
+      .rejects.toThrow("Session worktree has work that is not checkpointed")
+  })
+})
+
+describe("GitWorkspaceService session ref restore", () => {
+  it("restores a session the source pushed to a shared remote", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-ref-restore-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const remotePath = join(scratch, "remote.git")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["init", "--bare", remotePath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", remotePath])
+    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
+    await writeFile(join(workspace.path, "README.md"), "moved\n")
+    const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
+    await source.pushSessionRef(workspace.path, "origin", "session-1")
+
+    const targetClone = join(scratch, "target-project")
+    await execute("git", ["clone", "--quiet", remotePath, targetClone])
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    const restored = await target.restoreSessionFromRef(targetClone, "origin", "session-1")
+
+    expect(restored.baseCommit).toBe(checkpoint.commit)
+    const contents = await readFile(join(restored.path, "README.md"), "utf8")
+    expect(contents.replace(/\r\n/g, "\n")).toBe("moved\n")
+    const durable = await execute("git", [
+      "-C", restored.path,
+      "rev-parse", `refs/domovoi/checkpoints/${checkpoint.commit}^{commit}`,
+    ])
+    expect(durable.stdout.trim()).toBe(checkpoint.commit)
+  })
+})
