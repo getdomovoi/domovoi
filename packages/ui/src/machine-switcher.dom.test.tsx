@@ -18,6 +18,9 @@ const local: FleetMachine = {
   capabilities: ["sessions", "terminals"],
   heartbeat: { state: "online", lastSeenAt: "2026-08-31T12:00:00.000Z" },
   protocolVersion: "0.1.0",
+  transports: [
+    { kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true },
+  ],
   health: "healthy",
   self: true,
 }
