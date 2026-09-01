@@ -21,6 +21,7 @@ import {
   type AuditExportParams,
   type AuditExportResult,
   type DeviceMachineCredentialParams,
+  type FleetSnapshot,
   type DeviceMachineCredentialResult,
   type DeviceSaveCredentialParams,
   type DeviceSaveCredentialResult,
@@ -516,6 +517,10 @@ export class DomovoiClient extends EventTarget {
     options?: DomovoiRequestOptions,
   ): Promise<AuditQueryPage> {
     return this.request("audit.query", params, options)
+  }
+
+  listFleet(options?: DomovoiRequestOptions): Promise<FleetSnapshot> {
+    return this.request("fleet.list", {}, options)
   }
 
   machineCredential(
