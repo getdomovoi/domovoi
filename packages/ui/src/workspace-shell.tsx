@@ -1822,6 +1822,10 @@ export function HistoryPanel({
     requestControllerRef.current = new SessionHistoryRequestController<SessionHistoryPage>()
   }
   const previousSearchRef = useRef<{ context: string; query: string } | null>(null)
+  // The effect below runs on what the filters say, not on the identity of the
+  // arrays and strings they arrive in, so it reads the latest through a ref.
+  const filtersRef = useRef({ categories, query })
+  filtersRef.current = { categories, query }
   const filterKey = `${categories.join(",")}:${query.trim()}`
 
   useEffect(() => {
@@ -1833,8 +1837,9 @@ export function HistoryPanel({
       setLoading(false)
       return
     }
-    const context = `${sessionId}:${categories.join(",")}`
-    const trimmedQuery = query.trim()
+    const { categories: activeCategories, query: activeQuery } = filtersRef.current
+    const context = `${sessionId}:${activeCategories.join(",")}`
+    const trimmedQuery = activeQuery.trim()
     const previous = previousSearchRef.current
     const debounce = previous?.context === context && previous.query !== trimmedQuery
     previousSearchRef.current = { context, query: trimmedQuery }
@@ -1843,7 +1848,7 @@ export function HistoryPanel({
       debounce,
       load: (signal) => onLoad(
         sessionId,
-        latestSessionHistoryRequest(categories, trimmedQuery),
+        latestSessionHistoryRequest(activeCategories, trimmedQuery),
         { signal },
       ),
       onSuccess: setPage,
