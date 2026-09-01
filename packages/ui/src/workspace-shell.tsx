@@ -760,7 +760,7 @@ export function ProviderReadinessList({
   )
 }
 
-function LauncherDialog({
+export function LauncherDialog({
   mode,
   providers,
   defaultProviderId,
@@ -791,6 +791,10 @@ function LauncherDialog({
   const [modelsPending, setModelsPending] = useState(false)
   const [modelsError, setModelsError] = useState("")
   const modelRequest = useRef(0)
+  // The effect below reads the latest providers without depending on the
+  // identity of the array they arrive in.
+  const providersRef = useRef(providers)
+  providersRef.current = providers
   const providerReadinessKey = providers
     .map((provider) => `${provider.id}:${provider.status}:${provider.version ?? ""}:${provider.sessionCapable}`)
     .join("|")
@@ -805,9 +809,9 @@ function LauncherDialog({
       return
     }
 
-    const provider = providers.find((candidate) =>
+    const provider = providersRef.current.find((candidate) =>
       candidate.id === defaultProviderId && providerCanStartSession(candidate)
-    ) ?? preferredSessionProvider(providers)
+    ) ?? preferredSessionProvider(providersRef.current)
     if (!provider) {
       setModels([])
       setModelsError("No provider on this machine can start a session")
@@ -839,7 +843,9 @@ function LauncherDialog({
     ).finally(() => {
       if (request === modelRequest.current) setModelsPending(false)
     })
-  }, [defaultPermissionMode, defaultProviderId, mode, onListModels, providerReadinessKey, providers])
+    // Keyed on what the providers say, not on the array a new snapshot happens
+    // to allocate: an equal list must not reset the model already chosen.
+  }, [defaultPermissionMode, defaultProviderId, mode, onListModels, providerReadinessKey])
 
   const selectProvider = (provider: ProviderRuntime) => {
     if (!providerCanStartSession(provider)) return
