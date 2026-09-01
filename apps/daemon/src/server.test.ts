@@ -8714,3 +8714,171 @@ describe("DomovoiDaemon transfers", () => {
     socket.close()
   })
 })
+
+describe("DomovoiDaemon session transfer requests", () => {
+  const running: DomovoiDaemon[] = []
+
+  function rpcCaller(socket: WebSocket) {
+    let id = 0
+    return (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+  }
+
+
+  afterEach(async () => {
+    await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
+  })
+
+  function transferDaemon(options: {
+    connectToMachine?: (machineId: string) => Promise<{
+      call: (method: string, params: Record<string, unknown>) => Promise<unknown>
+      close: () => void
+    }>
+  } = {}) {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        inspect: async () => ({ root: "/repo", name: "repo", branch: "main", head: "a".repeat(40) }),
+        createSessionWorkspace: async (_repository: string, sessionId: string) => ({
+          path: `/worktrees/${sessionId}`,
+          branch: `domovoi/${sessionId}`,
+          baseCommit: "a".repeat(40),
+        }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => ({ commit: "b".repeat(40), changedFiles: [] }),
+        restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
+        bundleSession: async (_worktree: string, bundlePath: string) => ({
+          path: bundlePath,
+          commit: "b".repeat(40),
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK bundle"),
+      ...(options.connectToMachine ? { connectToMachine: options.connectToMachine } : {}),
+    })
+    running.push(daemon)
+    return { daemon, store }
+  }
+
+  it("refuses to move a session to a machine the fleet does not know", async () => {
+    const { daemon } = transferDaemon()
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: demoWorkspace.sessions[0]!.id,
+      targetMachineId: `machine-${"f".repeat(32)}`,
+      client: "desktop",
+    })
+
+    expect(answer.result).toEqual({ outcome: "refused", reason: "target-unreachable" })
+    socket.close()
+  })
+
+  it("does not reach for a machine before the transfer is allowed", async () => {
+    let dialed = 0
+    const targetMachineId = `machine-${"b".repeat(32)}`
+    const { daemon, store } = transferDaemon({
+      connectToMachine: async () => {
+        dialed += 1
+        return { call: async () => ({}), close: () => {} }
+      },
+    })
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "tailnet",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [
+        { kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true },
+      ],
+    }, Date.now())
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    // The target is known and healthy; the session is the problem, and that
+    // has to be settled before anything reaches for the other machine.
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: demoWorkspace.sessions.find((candidate) => candidate.state === "active")!.id,
+      targetMachineId: targetMachineId,
+      client: "desktop",
+    })
+
+    expect(answer).toMatchObject({ result: { outcome: "refused", reason: "session-turn-active" } })
+    expect(dialed).toBe(0)
+    socket.close()
+  })
+
+  it("refuses a transfer from a client holding only a device credential", async () => {
+    const { daemon, store } = transferDaemon()
+    const address = await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: demoWorkspace.sessions[0]!.id,
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      client: "desktop",
+    })
+
+    expect(answer).toMatchObject({
+      error: { message: "Moving a session requires the daemon credential" },
+    })
+    socket.close()
+  })
+
+  it("refuses to move a session this machine does not have", async () => {
+    const { daemon } = transferDaemon()
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: "session-does-not-exist",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      client: "desktop",
+    })
+
+    expect(answer).toMatchObject({ error: { message: "Session does not exist" } })
+    socket.close()
+  })
+})
