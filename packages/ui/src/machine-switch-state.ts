@@ -11,7 +11,11 @@ export const homeMachineSwitch: MachineSwitchState = { state: "home" }
 export function beganMachineSwitch(
   _current: MachineSwitchState,
   machineId: string,
+  homeMachineId?: string,
 ): MachineSwitchState {
+  // Selecting the machine this client is already attached through is not a
+  // dial: it is going back to the connection it started with.
+  if (homeMachineId !== undefined && machineId === homeMachineId) return homeMachineSwitch
   return { state: "switching", machineId }
 }
 
