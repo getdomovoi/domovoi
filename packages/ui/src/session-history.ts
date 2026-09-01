@@ -7,6 +7,56 @@ import type {
 import { maximumRetainedSessionHistoryItems as retainedHistoryBudget } from "@getdomovoi/protocol"
 
 export const maximumRetainedSessionHistoryItems = retainedHistoryBudget
+export const sessionHistorySearchDebounceMs = 250
+
+export type SessionHistoryRequest<T> = {
+  debounce: boolean
+  load: (signal: AbortSignal) => Promise<T>
+  onSuccess: (value: T) => void
+  onError?: (cause: unknown) => void
+  onSettled?: () => void
+}
+
+export class SessionHistoryRequestController<T> {
+  #generation = 0
+  #timer: ReturnType<typeof setTimeout> | undefined
+  #abort: AbortController | undefined
+
+  schedule(request: SessionHistoryRequest<T>): void {
+    this.cancel()
+    const generation = this.#generation
+    const run = () => {
+      this.#timer = undefined
+      const abort = new AbortController()
+      this.#abort = abort
+      void request.load(abort.signal).then(
+        (value) => {
+          if (generation === this.#generation && !abort.signal.aborted) request.onSuccess(value)
+        },
+        (cause: unknown) => {
+          if (generation === this.#generation && !abort.signal.aborted) request.onError?.(cause)
+        },
+      ).finally(() => {
+        if (generation === this.#generation && !abort.signal.aborted) request.onSettled?.()
+        if (this.#abort === abort) this.#abort = undefined
+      })
+    }
+    if (request.debounce) this.#timer = setTimeout(run, sessionHistorySearchDebounceMs)
+    else run()
+  }
+
+  cancel(): void {
+    this.#generation += 1
+    if (this.#timer !== undefined) clearTimeout(this.#timer)
+    this.#timer = undefined
+    this.#abort?.abort()
+    this.#abort = undefined
+  }
+
+  dispose(): void {
+    this.cancel()
+  }
+}
 
 export type SessionHistoryWindowState = {
   page: SessionHistoryPage | undefined

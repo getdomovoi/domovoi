@@ -16,6 +16,32 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("keeps the event loop responsive while persisting long history", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-long-history-"))
+    scratchDirectories.push(scratch)
+    const store = new SqliteWorkspaceStore(join(scratch, "state.sqlite"), demoWorkspace)
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread = Array.from({ length: 6_000 }, (_, index) => ({
+      id: `long-history-${index}`,
+      sessionId: snapshot.sessions[0]!.id,
+      kind: "user" as const,
+      body: `message-${index}-${"x".repeat(2_048)}`,
+      createdAt: "2026-08-30T12:00:00.000Z",
+    }))
+    let heartbeats = 0
+    const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
+    const startedAt = performance.now()
+
+    await store.saveAsync(snapshot)
+
+    const elapsedMs = performance.now() - startedAt
+    clearInterval(heartbeat)
+    expect(store.load().thread).toHaveLength(6_000)
+    expect(heartbeats).toBeGreaterThanOrEqual(2)
+    expect(elapsedMs).toBeLessThan(5_000)
+    await store.close()
+  }, 10_000)
+
   it("redacts every durable command copy and drops legacy secret-bearing rules", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-redaction-"))
     scratchDirectories.push(scratch)
@@ -386,4 +412,65 @@ describe("SqliteWorkspaceStore", () => {
     expect((await stat(store.path)).mode & 0o777).toBe(0o600)
     store.close()
   })
+})
+
+it("waits for a busy database instead of failing immediately", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-busy-"))
+  scratchDirectories.push(root)
+  const path = join(root, "state.sqlite")
+  const store = new SqliteWorkspaceStore(path, demoWorkspace)
+  try {
+    // Boot the writer first, so the contention below is with a live worker
+    // rather than with worker startup.
+    await store.saveAsync?.({ ...demoWorkspace })
+
+    const held = new DatabaseSync(path)
+    held.exec("PRAGMA busy_timeout = 0;")
+    held.exec("BEGIN IMMEDIATE;")
+    held.exec("INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, '{}', 'now') " +
+      "ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at")
+    const writing = store.saveAsync?.({ ...demoWorkspace })
+    const released = new Promise<void>((resolve) => setTimeout(() => {
+      held.exec("COMMIT;")
+      held.close()
+      resolve()
+    }, 300))
+
+    await expect(writing).resolves.toBeUndefined()
+    await released
+  } finally {
+    await store.close()
+  }
+})
+
+it("fails a write posted after the persistence worker is closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-dead-writer-"))
+  scratchDirectories.push(root)
+  const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), demoWorkspace)
+  await store.saveAsync?.({ ...demoWorkspace })
+  await store.close()
+
+  // Posting to a worker that has been terminated would otherwise never settle.
+  await expect(store.saveAsync?.({ ...demoWorkspace })).rejects.toThrow(
+    "Workspace persistence worker is closed",
+  )
+})
+
+it("releases the database once the store is closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-close-"))
+  scratchDirectories.push(root)
+  const path = join(root, "state.sqlite")
+  const store = new SqliteWorkspaceStore(path, demoWorkspace)
+  await store.saveAsync?.({ ...demoWorkspace })
+  await store.close()
+
+  // Nothing may still hold the write lock, and a closing worker that failed
+  // must not keep the handle either.
+  const reopened = new DatabaseSync(path)
+  reopened.exec("PRAGMA busy_timeout = 0;")
+  reopened.exec("BEGIN IMMEDIATE; COMMIT;")
+  reopened.close()
+  await expect(store.saveAsync?.({ ...demoWorkspace })).rejects.toThrow(
+    "Workspace persistence worker is closed",
+  )
 })

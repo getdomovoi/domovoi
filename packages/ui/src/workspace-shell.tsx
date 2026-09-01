@@ -178,6 +178,7 @@ import {
   historyWindowedAfterMerge,
   mergeOlderHistory,
   resetSessionHistoryWindow,
+  SessionHistoryRequestController,
   sessionHistoryCategories,
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
@@ -1804,6 +1805,7 @@ export function HistoryPanel({
   onLoad: (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
+    requestOptions?: { signal?: AbortSignal },
   ) => Promise<SessionHistoryPage>
 }) {
   const [categories, setCategories] = useState<SessionHistoryCategory[]>(() =>
@@ -1815,30 +1817,49 @@ export function HistoryPanel({
   const [historyRefresh, setHistoryRefresh] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
-  const requestRef = useRef(0)
-  const normalizedQuery = query.trim()
+  const requestControllerRef = useRef<SessionHistoryRequestController<SessionHistoryPage> | null>(null)
+  if (!requestControllerRef.current) {
+    requestControllerRef.current = new SessionHistoryRequestController<SessionHistoryPage>()
+  }
+  const previousSearchRef = useRef<{ context: string; query: string } | null>(null)
+  // The effect below runs on what the filters say, not on the identity of the
+  // arrays and strings they arrive in, so it reads the latest through a ref.
+  const filtersRef = useRef({ categories, query })
+  filtersRef.current = { categories, query }
+  const filterKey = `${categories.join(",")}:${query.trim()}`
+
   useEffect(() => {
-    const request = ++requestRef.current
     setPage(undefined)
     setHistoryWindowed(false)
     setError("")
     if (!sessionId || !connected) {
+      requestControllerRef.current!.cancel()
       setLoading(false)
       return
     }
+    const { categories: activeCategories, query: activeQuery } = filtersRef.current
+    const context = `${sessionId}:${activeCategories.join(",")}`
+    const trimmedQuery = activeQuery.trim()
+    const previous = previousSearchRef.current
+    const debounce = previous?.context === context && previous.query !== trimmedQuery
+    previousSearchRef.current = { context, query: trimmedQuery }
     setLoading(true)
-    void onLoad(sessionId, latestSessionHistoryRequest(categories, normalizedQuery)).then(
-      (next) => { if (request === requestRef.current) setPage(next) },
-      (cause: unknown) => {
-        if (request === requestRef.current) {
-          setError(cause instanceof Error ? cause.message : "Session history could not be loaded")
-        }
+    requestControllerRef.current!.schedule({
+      debounce,
+      load: (signal) => onLoad(
+        sessionId,
+        latestSessionHistoryRequest(activeCategories, trimmedQuery),
+        { signal },
+      ),
+      onSuccess: setPage,
+      onError: (cause) => {
+        setError(cause instanceof Error ? cause.message : "Session history could not be loaded")
       },
-    ).finally(() => {
-      if (request === requestRef.current) setLoading(false)
+      onSettled: () => setLoading(false),
     })
-    return () => { requestRef.current += 1 }
-  }, [categories, connected, historyRefresh, normalizedQuery, onLoad, sessionId])
+  }, [connected, filterKey, historyRefresh, onLoad, sessionId])
+
+  useEffect(() => () => requestControllerRef.current?.dispose(), [])
 
   const toggleCategory = (category: SessionHistoryCategory) => {
     if (categories.includes(category) && categories.length === 1) return
@@ -1850,29 +1871,31 @@ export function HistoryPanel({
       ))
   }
 
-  const loadOlder = async () => {
+  const loadOlder = () => {
     if (!sessionId || !page?.hasMore || !page.nextCursor || loading) return
-    const request = ++requestRef.current
     setLoading(true)
     setError("")
-    try {
-      const older = await onLoad(sessionId, {
-        categories,
-        ...(query.trim() ? { query: query.trim() } : {}),
-        before: page.nextCursor,
-        limit: 50,
-      })
-      if (request === requestRef.current) {
+    requestControllerRef.current!.schedule({
+      debounce: false,
+      load: (signal) => onLoad(
+        sessionId,
+        {
+          categories,
+          ...(query.trim() ? { query: query.trim() } : {}),
+          before: page.nextCursor,
+          limit: 50,
+        },
+        { signal },
+      ),
+      onSuccess: (older) => {
         setHistoryWindowed((current) => historyWindowedAfterMerge(current, page, older))
         setPage(mergeOlderHistory(page, older))
-      }
-    } catch (cause) {
-      if (request === requestRef.current) {
+      },
+      onError: (cause) => {
         setError(cause instanceof Error ? cause.message : "Older history could not be loaded")
-      }
-    } finally {
-      if (request === requestRef.current) setLoading(false)
-    }
+      },
+      onSettled: () => setLoading(false),
+    })
   }
 
   const backToLatest = () => {
@@ -1991,6 +2014,7 @@ export function ArtifactDock({
   onLoadSessionHistory: (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
+    requestOptions?: { signal?: AbortSignal },
   ) => Promise<SessionHistoryPage>
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
 }) {
