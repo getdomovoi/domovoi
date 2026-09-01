@@ -326,10 +326,12 @@ dependent work starts.
 - Domovoi is open-core. The daemon, protocol, clients, and local transports are Apache-2.0; hosted
   account, billing, relay, vault, and team services may remain separate.
 - Claude Design's app and brand handoffs remain the design source of truth.
-- A session transfer to a machine that is not answering is refused at the moment it is requested and
-  is never queued, so a session never changes hands later and unattended. This resolves open
-  question 1 in the signed design handoff, whose `UNREACHABLE` and unselectable treatment of offline
-  machines already showed this path.
+- A session transfer is refused at the moment it is requested rather than queued, so a session never
+  changes hands later and unattended. Transfer preflight refuses an unreachable target, a target
+  that is not answering, a target on an incompatible protocol in either direction, a target that
+  needs an upgrade, a target that does not run sessions, and the machine already holding the
+  session. This resolves open question 1 in the signed design handoff, whose `UNREACHABLE` and
+  unselectable treatment of offline machines already showed this path.
 
 ## First public alpha definition of done
 
