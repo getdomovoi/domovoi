@@ -2808,8 +2808,32 @@ describe("DomovoiDaemon", () => {
     const { socket, call } = await unauthenticatedSocket(daemon)
 
     await expect(call(1, "device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad" }))
-      .resolves.toMatchObject({ error: { message: "Pairing code is not valid" } })
+      .resolves.toMatchObject({ error: { message: "Pairing was refused" } })
     expect(store.devices.list()).toHaveLength(0)
+    socket.close()
+  })
+
+  it("refuses every rejected claim with the same words", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    const withNoPairingOpen = await call(1, "device.claim", {
+      code: "hearth-quiet-ember-42",
+      label: "studio-ipad",
+    })
+    daemon.issuePairingCode()
+    const withWrongCode = await call(2, "device.claim", {
+      code: "willow-harbor-cedar-11",
+      label: "studio-ipad",
+    })
+
+    const refusal = (response: Record<string, unknown>) =>
+      (response.error as { message: string }).message
+    expect(refusal(withNoPairingOpen)).toBe("Pairing was refused")
+    expect(refusal(withWrongCode)).toBe(refusal(withNoPairingOpen))
     socket.close()
   })
 
