@@ -34,6 +34,22 @@ The daemon is not part of this check. Its production graph builds native modules
 per package manager on every CI run costs far more than it proves; its packaged contents are
 covered by `pnpm test:packages`.
 
+## Release artifacts
+
+`pnpm release:artifacts` writes the files a GitHub Release carries into `release/`:
+
+- one npm tarball per publishable package, packed exactly as `pnpm publish` would;
+- a CycloneDX 1.6 SBOM beside each tarball, listing every production dependency with its version,
+  package URL, and declared license, and recording the tarball's own SHA-256 in the metadata; and
+- `SHA256SUMS` over both, in the format `sha256sum -c` and `shasum -a 256 -c` verify.
+
+A dependency that declares no license appears in the SBOM with an empty `licenses` array rather
+than an invented one. Today that is the proprietary Claude Code agent SDK described in
+[licensing.md](licensing.md), so the SBOM shows the same constraint the license audit records.
+
+The generator runs on Linux in CI so it cannot rot, but nothing publishes yet. Attaching these
+files to a GitHub Release is part of the release workflow, which does not exist.
+
 ## Versioning and release metadata
 
 Every package in this workspace carries the same version and is released as one compatibility

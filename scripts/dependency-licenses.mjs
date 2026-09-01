@@ -7,7 +7,7 @@ import { pnpmInvocation } from "./package-artifact-command.mjs"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
+export const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
 
 function exceptionMatcher(key) {
   if (!key.includes("*")) return (name) => name === key
@@ -62,9 +62,9 @@ export function evaluateDependencyLicenses(graph, policy) {
   return failures
 }
 
-export function collectDependencyLicenses(root = repositoryRoot) {
+export function collectDependencyLicenses(root = repositoryRoot, packages = publishablePackages) {
   const { command } = pnpmInvocation()
-  const filters = publishablePackages.flatMap((name) => ["--filter", name])
+  const filters = packages.flatMap((name) => ["--filter", name])
   const output = execFileSync(command, [...filters, "licenses", "list", "--json", "--prod"], {
     cwd: root,
     encoding: "utf8",
@@ -73,7 +73,7 @@ export function collectDependencyLicenses(root = repositoryRoot) {
 
   if (output.trim() === "") {
     throw new Error(
-      `pnpm reported no dependency for ${publishablePackages.join(", ")}; check that every publishable package still exists`,
+      `pnpm reported no dependency for ${packages.join(", ")}; check that every publishable package still exists`,
     )
   }
   return JSON.parse(output)
