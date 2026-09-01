@@ -9,6 +9,8 @@ import {
 import {
   sessionTransferParamsSchema,
   sessionTransferResultSchema,
+  transferFromRefParamsSchema,
+  transferFromRefResultSchema,
 } from "./transfer-request.js"
 
 import {
@@ -986,6 +988,10 @@ export const rpcMethods = {
   "session.transfer": {
     params: sessionTransferParamsSchema,
     result: sessionTransferResultSchema,
+  },
+  "transfer.fromRef": {
+    params: transferFromRefParamsSchema,
+    result: transferFromRefResultSchema,
   },
   "transfer.begin": {
     params: transferBeginParamsSchema,
