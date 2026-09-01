@@ -604,6 +604,7 @@ export class DomovoiDaemon {
         version: machine.version,
         connection: "local",
         capabilities: [...localMachineCapabilities],
+        protocolVersion,
       }, Date.now())
     } catch (error) {
       this.#reportError("Domovoi could not record this machine in the fleet", error)

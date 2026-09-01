@@ -19,6 +19,7 @@ const localMachine = {
   version: "0.0.1",
   connection: "local" as const,
   capabilities: ["sessions", "terminals"] as const,
+  protocolVersion: "0.1.0",
 }
 
 function registry(database = new DatabaseSync(":memory:")): {
@@ -39,6 +40,7 @@ describe("SqliteFleetRegistry", () => {
       ...localMachine,
       capabilities: [...localMachine.capabilities],
       heartbeat: { state: "online", lastSeenAt: new Date(1_000).toISOString() },
+      health: "healthy",
       self: true,
     }])
   })
@@ -131,6 +133,37 @@ describe("SqliteFleetRegistry", () => {
       ...localMachine,
       capabilities: ["mine-bitcoin"] as unknown as MachineCapability[],
     }, 1_000)).toThrow()
+  })
+
+  it("reports a machine that stopped answering as unreachable", () => {
+    const { registry: fleet } = registry()
+    fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
+
+    const aged = fleet.snapshot(localMachine.id, 1_000 + offlineHeartbeatMs + 1).machines[0]
+
+    expect(aged?.health).toBe("unreachable")
+  })
+
+  it("reports a machine on an older protocol as needing an upgrade", () => {
+    const { registry: fleet } = registry()
+    fleet.record({
+      ...localMachine,
+      capabilities: [...localMachine.capabilities],
+      protocolVersion: "0.0.1",
+    }, 1_000)
+
+    expect(fleet.snapshot(localMachine.id, 1_000).machines[0]?.health).toBe("upgrade-required")
+  })
+
+  it("reports a machine on a newer protocol as a version mismatch", () => {
+    const { registry: fleet } = registry()
+    fleet.record({
+      ...localMachine,
+      capabilities: [...localMachine.capabilities],
+      protocolVersion: "9.0.0",
+    }, 1_000)
+
+    expect(fleet.snapshot(localMachine.id, 1_000).machines[0]?.health).toBe("version-mismatch")
   })
 
   it("returns a snapshot the protocol accepts", () => {

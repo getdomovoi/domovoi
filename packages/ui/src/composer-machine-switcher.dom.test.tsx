@@ -35,7 +35,9 @@ it("opens the device menu from the composer machine chip", async () => {
         version: snapshot.machine.version,
         connection: "local",
         capabilities: ["sessions"],
+        protocolVersion: "0.1.0",
         heartbeat: { state: "online", lastSeenAt: "2026-08-31T12:00:00.000Z" },
+        health: "healthy",
         self: true,
       }]}
       currentMachineId={`machine-${"a".repeat(32)}`}
