@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
+import { openClaimConnection } from "./claim-socket"
+import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { applyWorkspaceDelta } from "./workspace-delta"
 
 type WorkspaceSnapshotState = {
@@ -365,6 +367,27 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.exportAudit(params, options)
   }, [])
 
+  // Pairing reaches two machines: the one being paired answers the claim and
+  // names itself, and this daemon keeps the credential that came back.
+  const pairMachine = useCallback(async (request: PairMachineRequest): Promise<PairedMachine> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return completePairing({
+      request,
+      open: openClaimConnection,
+      identify: async ({ endpoint, credential }) => {
+        const paired = new DomovoiClient(endpoint, kind, { authToken: credential })
+        try {
+          const snapshot = await paired.connect()
+          return { id: snapshot.machine.id, name: snapshot.machine.name }
+        } finally {
+          paired.disconnect()
+        }
+      },
+      saveCredential: (saved) => client.saveMachineCredential(saved).then(() => {}),
+    })
+  }, [kind])
+
   const authorizeArtifact = useCallback(async (
     input: {
       sessionId: string
@@ -513,6 +536,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     listModels,
     listProviderSecrets,
     openProject,
+    pairMachine,
     pauseAll,
     pauseSession,
     queryAudit,

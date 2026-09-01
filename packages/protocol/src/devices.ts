@@ -68,3 +68,5 @@ export type DeviceIssueCodeResult = z.infer<typeof deviceIssueCodeResultSchema>
 export type PairedDeviceSummary = z.infer<typeof pairedDeviceSchema>
 export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>
+export type DeviceSaveCredentialParams = z.infer<typeof deviceSaveCredentialParamsSchema>
+export type DeviceSaveCredentialResult = z.infer<typeof deviceSaveCredentialResultSchema>

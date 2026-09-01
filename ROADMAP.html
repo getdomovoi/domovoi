@@ -613,6 +613,10 @@ td { color: var(--ink2); }
 <li>[ ] Replace the no-op lint gate with real TypeScript/React linting
 </li>
 <li>[ ] Review or replace dependencies whose licenses do not fit the public daemon
+<ul>
+<li><code>pnpm license:audit</code> holds the publishable production graph to a permissive allowlist in CI.</li>
+<li>One recorded exception remains: the proprietary Claude Code agent SDK. See <code>docs/licensing.md</code> for the removal options.</li>
+</ul>
 </li>
 <li>[x] Move build-time tooling such as the shadcn CLI out of production dependency graphs
 </li>

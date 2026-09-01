@@ -7,12 +7,8 @@ import { PairMachineDialog } from "./pair-machine-dialog.js"
 afterEach(cleanup)
 
 const paired = {
-  device: {
-    id: `device-${"a".repeat(32)}`,
-    label: "studio-ipad",
-    pairedAt: "2026-08-31T12:00:00.000Z",
-  },
-  token: "n".repeat(43),
+  machineId: `machine-${"c".repeat(32)}`,
+  label: "workshop",
 }
 
 async function openDialog(onClaim = vi.fn(async () => paired)) {
@@ -46,7 +42,7 @@ it("pairs with what was entered", async () => {
   await waitFor(() => expect(onPaired).toHaveBeenCalledWith(paired))
 })
 
-it("never shows the credential it received", async () => {
+it("keeps no pairing code once the machine is paired", async () => {
   const { user } = await openDialog()
 
   await user.type(screen.getByLabelText(/machine address/i), "wss://workshop.tailnet:47831/rpc")
@@ -54,7 +50,7 @@ it("never shows the credential it received", async () => {
   await user.type(screen.getByLabelText(/name for this device/i), "studio-ipad")
   await user.click(screen.getByRole("button", { name: /pair machine/i }))
 
-  await waitFor(() => expect(document.body.textContent).not.toContain(paired.token))
+  await waitFor(() => expect((screen.getByLabelText(/pairing code/i) as HTMLInputElement).value).toBe(""))
 })
 
 it("will not pair until every field is filled", async () => {

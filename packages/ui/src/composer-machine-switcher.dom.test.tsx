@@ -72,3 +72,34 @@ it("keeps naming the machine when the fleet has not loaded", () => {
 
   expect(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeTruthy()
 })
+
+it("pairs a machine from the composer device menu", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const onPairMachine = vi.fn(async () => ({
+    machineId: `machine-${"c".repeat(32)}`,
+    label: "workshop",
+  }))
+  render(
+    <Thread
+      snapshot={snapshot}
+      connected
+      currentMachineId={snapshot.machine.id}
+      onPairMachine={onPairMachine}
+      {...handlers}
+    />,
+  )
+
+  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("menuitem", { name: "+ Pair a machine" }))
+  await user.type(screen.getByLabelText("Machine address"), "wss://workshop.tailnet:47831/rpc")
+  await user.type(screen.getByLabelText("Pairing code"), "hearth-quiet-ember-42")
+  await user.type(screen.getByLabelText("Name for this device"), "studio-ipad")
+  await user.click(screen.getByRole("button", { name: "Pair machine" }))
+
+  expect(onPairMachine).toHaveBeenCalledWith({
+    endpoint: "wss://workshop.tailnet:47831/rpc",
+    code: "hearth-quiet-ember-42",
+    label: "studio-ipad",
+  })
+})
