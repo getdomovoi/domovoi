@@ -11,6 +11,7 @@ import {
   type MachineCapability,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
+  machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
   demoWorkspace,
   maximumSessionHistoryPageItems,
@@ -1838,7 +1839,12 @@ export class DomovoiDaemon {
         }
         const credential = this.#machineCredentials.forMachine(params.machineId)
         if (credential === undefined) {
-          this.#error(socket, request.id, invalidParams, "No credential is kept for that machine")
+          this.#error(
+            socket,
+            request.id,
+            machineCredentialMissingErrorCode,
+            "No credential is kept for that machine",
+          )
           return
         }
         this.#send(socket, {
