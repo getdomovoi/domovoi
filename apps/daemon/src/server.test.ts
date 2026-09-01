@@ -244,7 +244,7 @@ describe("DomovoiDaemon", () => {
     let durable = false
     const save = vi.fn(() => { throw new Error("synchronous persistence used") })
     const saveAsync = vi.fn(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
       durable = true
     })
     const daemon = new DomovoiDaemon({
@@ -280,7 +280,10 @@ describe("DomovoiDaemon", () => {
     expect(durable).toBe(true)
     expect(save).not.toHaveBeenCalled()
     expect(saveAsync).toHaveBeenCalledOnce()
-    expect(heartbeats).toBeGreaterThanOrEqual(5)
+    // Timers must keep firing during persistence. The count stays low because
+    // Windows resolves timers to roughly 15 ms, so this asserts they ran at
+    // all rather than a rate the platform does not promise.
+    expect(heartbeats).toBeGreaterThanOrEqual(2)
     expect(elapsedMs).toBeLessThan(500)
     socket.close()
   })
