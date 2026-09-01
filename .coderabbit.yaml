@@ -1,0 +1,188 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en-US"
+early_access: false
+tone_instructions: >-
+  Be concise and evidence-first. Report only actionable defects introduced by
+  the diff. Skip praise, repeated summaries, CI-enforced style or naming,
+  speculative refactors, and out-of-scope work. Consolidate repeated findings
+  by root cause.
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  review_details: false
+  review_progress: false
+  commit_status: true
+  fail_commit_status: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: false
+  abort_on_close: true
+
+  slop_detection:
+    enabled: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 10
+    labels:
+      - "!skip-coderabbit"
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+      - "[skip review]"
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "github-actions[bot]"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+
+  tools:
+    github-checks:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    gitleaks:
+      enabled: true
+    semgrep:
+      enabled: true
+    yamllint:
+      enabled: true
+    eslint:
+      enabled: false
+    biome:
+      enabled: false
+    oxc:
+      enabled: false
+    markdownlint:
+      enabled: false
+    languagetool:
+      enabled: false
+    htmlhint:
+      enabled: false
+    stylelint:
+      enabled: false
+    opengrep:
+      enabled: false
+    trufflehog:
+      enabled: false
+    osvScanner:
+      enabled: false
+
+  path_filters:
+    - "!**/dist/**"
+    - "!**/node_modules/**"
+    - "!pnpm-lock.yaml"
+    - "!ROADMAP.html"
+    - "!design/**/designs/**/*.dc.html"
+    - "!design/**/designs/support.js"
+    - "!design/**/screenshots/**"
+    - "!apps/web/public/icons/**"
+    - "!**/*.png"
+
+  path_instructions:
+    - path: "packages/protocol/**"
+      instructions: |
+        Treat this as the wire-compatibility boundary.
+        - Keep TypeScript types, Zod schemas, exports, fixtures, and tests aligned.
+        - Check strict optional-property semantics, payload bounds, malformed input, and protocol compatibility.
+        - Require runtime validation for every new RPC or remotely supplied value.
+
+    - path: "apps/daemon/**"
+      instructions: |
+        Treat the daemon as the security boundary and canonical source of state.
+        - Check authentication before privileged work, encrypted remote transport, permission gates, secret redaction, capability expiry, and worktree/path containment.
+        - Check bounded admission, buffers, persistence, and listings; atomic state transitions; cancellation; late-result cleanup; restart recovery; corrupt durable input; and concurrent callers.
+        - Never assume loopback, LAN, or a tailnet removes authentication requirements. Require focused adversarial tests for changed trust boundaries.
+
+    - path: "apps/desktop/**"
+      instructions: |
+        Treat Electron main, preload, and renderer boundaries as privileged.
+        - Check sandboxing, context isolation, narrow validated IPC, navigation/external-link restrictions, secret confinement, and owned-daemon lifecycle cleanup.
+        - Check deep links and filesystem inputs for validation and containment.
+        - Preserve Linux, macOS, and Windows behavior; shared product behavior belongs in packages/ui behind a narrow adapter.
+
+    - path: "packages/ui/**"
+      instructions: |
+        Preserve daemon-owned truth and ordered cross-client state.
+        - Check stale asynchronous results, cancellation, reconnect or machine switching, bounded rendering, artifact URL safety, and failure/retry behavior.
+        - Check keyboard, touch, focus, reduced-motion, loading, empty, and error states without requesting subjective redesigns.
+        - Follow DESIGN.md and existing shadcn/ui primitives. Mobile layouts may collapse information but must retain safety facts.
+
+    - path: "apps/web/**"
+      instructions: |
+        Apply the shared UI rules plus browser and PWA security.
+        - Reject long-lived credential persistence and unsafe service-worker caching, artifact embedding, or reconnect behavior.
+        - Check install and update behavior, authenticated transport, sandbox boundaries, and phone/tablet widths.
+        - Request interface evidence only when visible behavior changes.
+
+    - path: "**/*.test.*"
+      instructions: |
+        Review tests for observable behavior and the actual failure mode, not implementation details.
+        - Check failure, timeout, cancellation, restart, concurrency, and cleanup paths affected by the change.
+        - Require deterministic time, portable paths and line endings, isolated temporary state, and cleanup of sockets, timers, processes, databases, and listeners.
+        - Do not request redundant tests when an existing test already exercises the changed branch.
+
+    - path: ".github/**"
+      instructions: |
+        Enforce least-privilege permissions, persist-credentials false, immutable full action SHAs with readable tag comments, frozen-lockfile installs, and Linux/macOS/Windows parity.
+        Do not repeat CI lint, typecheck, test, or build output unless it exposes a behavioral or security defect.
+
+    - path: "**/package.json"
+      instructions: |
+        Preserve Node 22, pnpm workspace, ESM exports, package files, lockstep versions, native-module, license, and build-before-consume contracts.
+        For dependency changes, report demonstrated API, security, license, platform, or artifact impact rather than release-note speculation.
+        Publishable behavior changes require Changesets metadata; documentation and repository tooling do not.
+
+    - path: "scripts/**"
+      instructions: |
+        Treat release, packaging, license, workflow-pin, install, and performance scripts as supply-chain gates.
+        Check deterministic cross-platform behavior, bounded file access, safe subprocess arguments, exact artifact contents, checksums, immutable references, and failure propagation.
+
+    - path: "**/*.md"
+      instructions: |
+        Check claims against current code and repository contracts. Keep README, PRODUCT, DESIGN, CONTRIBUTING, SECURITY, distribution docs, and ROADMAP consistent.
+        ROADMAP.md is the reviewed source; ROADMAP.html must be regenerated with it but is excluded from generated-file comments.
+        Changeset Markdown is release metadata, not prose documentation.
+
+chat:
+  auto_reply: true
+  art: false
+  allow_non_org_members: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "SECURITY.md"
+      - "CONTRIBUTING.md"
+      - "DESIGN.md"
+      - "PRODUCT.md"
