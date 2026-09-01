@@ -149,6 +149,29 @@ describe("sendSessionToMachine", () => {
     expect(recorded).toEqual([expect.objectContaining({ outcome: "failed" })])
   })
 
+  it("does not call a transfer done before the last chunk was sent", async () => {
+    // A target claiming the session arrived while bytes remain has not taken
+    // the whole worktree, whatever it says.
+    const call = vi.fn<TransferCall>(async (method: string) => {
+      if (method === "transfer.begin") return { transferId: `transfer-${"c".repeat(32)}` }
+      return { state: "restored", workspacePath: "/worktrees/session-1", checkpointCommit: "d".repeat(40) }
+    })
+    const { recorded, ...io } = transferIo({ call })
+    const large = Buffer.alloc(maximumTransferChunkBytes * 2, 7)
+    io.readBundle = vi.fn(async () => large)
+
+    const outcome = await sendSessionToMachine({
+      session,
+      sourceMachineId,
+      target,
+      client: "desktop",
+      ...io,
+    })
+
+    expect(outcome).toMatchObject({ outcome: "failed" })
+    expect(recorded).toEqual([expect.objectContaining({ outcome: "failed" })])
+  })
+
   it("keeps the source worktree whatever happens", async () => {
     const { recorded, ...io } = transferIo({
       call: async () => { throw new Error("the machine went away") },
