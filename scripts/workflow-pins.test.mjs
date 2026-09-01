@@ -1,7 +1,19 @@
 import assert from "node:assert/strict"
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import test from "node:test"
 
-import { evaluateWorkflowPins } from "./workflow-pins.mjs"
+import { checkWorkflowPins, evaluateWorkflowPins } from "./workflow-pins.mjs"
+
+async function fixture(files) {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-pins-"))
+  for (const [path, contents] of Object.entries(files)) {
+    await mkdir(join(root, dirname(path)), { recursive: true })
+    await writeFile(join(root, path), contents)
+  }
+  return root
+}
 
 test("accepts actions pinned to a full commit SHA", () => {
   assert.deepEqual(evaluateWorkflowPins([{
@@ -102,5 +114,35 @@ test("reports a Docker image with a truncated digest", () => {
     content: "      - uses: docker://alpine@sha256:1234",
   }]), [
     ".github/workflows/ci.yml:1: docker://alpine@sha256:1234 is not pinned to an image digest",
+  ])
+})
+
+test("reads composite actions kept in this repository", async (t) => {
+  const root = await fixture({
+    ".github/workflows/ci.yml": "jobs:\n  verify:\n    steps:\n      - uses: ./.github/actions/setup\n",
+    ".github/actions/setup/action.yml": "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  assert.deepEqual((await checkWorkflowPins(root)).failures, [
+    ".github/actions/setup/action.yml:4: actions/checkout@v4 is not pinned to a commit SHA",
+  ])
+})
+
+test("fails instead of passing when it finds no workflow at all", async (t) => {
+  const root = await fixture({ ".github/workflows/notes.txt": "not a workflow\n" })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  assert.deepEqual((await checkWorkflowPins(root)).failures, [
+    ".github: no workflow or action definition was found, so no reference was checked",
+  ])
+})
+
+test("fails instead of crashing when the workflow directory is missing", async (t) => {
+  const root = await fixture({ "README.md": "no workflows here\n" })
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  assert.deepEqual((await checkWorkflowPins(root)).failures, [
+    ".github: no workflow or action definition was found, so no reference was checked",
   ])
 })
