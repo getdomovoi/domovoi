@@ -872,6 +872,16 @@ describe("DomovoiClient", () => {
     expect(scheduler.delays[2]).toBe(firstDelay)
   })
 
+  it("stops reconnecting once a machine revokes this device", () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+
+    client.connect()
+    FakeWebSocket.instances[0]!.drop(1008, "device credential revoked")
+
+    expect(scheduler.callbacks.size).toBe(0)
+  })
+
   it("cancels reconnect work after explicit disconnect", () => {
     const scheduler = new ManualScheduler()
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
