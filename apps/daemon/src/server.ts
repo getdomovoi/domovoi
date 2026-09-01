@@ -1404,12 +1404,16 @@ export class DomovoiDaemon {
         })
       } catch (error) {
         if (!(error instanceof PairingCodeError)) throw error
+        // The reason is recorded for an operator but never returned: an
+        // unauthenticated caller must not learn whether a code exists, has
+        // expired, or was simply wrong.
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
           outcome: "denied",
+          detail: error.message,
         })
-        this.#error(socket, request.id, daemonAuthenticationErrorCode, error.message)
+        this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
       }
       return
     } else if (!this.#authenticatedClients.has(socket)) {
