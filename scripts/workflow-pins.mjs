@@ -6,7 +6,8 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
 const workflowDirectory = ".github/workflows"
 const usesPattern = /^\s*(?:-\s*)?uses:\s*(\S+)/
-const commitSha = /^[0-9a-f]{40}$/
+const commitSha = /^[0-9a-f]{40}$/i
+const imageDigest = /@sha256:[0-9a-f]{64}$/i
 
 export function evaluateWorkflowPins(files) {
   const failures = []
@@ -14,8 +15,14 @@ export function evaluateWorkflowPins(files) {
     file.content.split(/\r?\n/).forEach((line, index) => {
       const match = usesPattern.exec(line)
       if (!match) return
-      const reference = match[1]
-      if (reference.startsWith("./") || reference.startsWith("docker://")) return
+      const reference = match[1].replace(/^["']|["']$/g, "")
+      if (reference.startsWith("./")) return
+      if (reference.startsWith("docker://")) {
+        if (!imageDigest.test(reference)) {
+          failures.push(`${file.path}:${index + 1}: ${reference} is not pinned to an image digest`)
+        }
+        return
+      }
       const [, ref] = reference.split("@")
       if (ref && commitSha.test(ref)) return
       failures.push(`${file.path}:${index + 1}: ${reference} is not pinned to a commit SHA`)

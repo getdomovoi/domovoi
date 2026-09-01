@@ -18,7 +18,7 @@
     "lint": "pnpm -r --if-present lint",
     "performance:budget": "node scripts/performance-budgets.mjs",
     "release:invariants": "node scripts/version-lockstep.mjs && node scripts/workflow-pins.mjs",
-    "release:status": "changeset status --since=origin/main",
+    "release:status": "changeset status",
     "release:version": "changeset version",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "pretest:packages": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",

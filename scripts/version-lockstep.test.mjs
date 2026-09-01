@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
-import { evaluateVersionLockstep } from "./version-lockstep.mjs"
+import { collectWorkspacePackages, evaluateVersionLockstep, workspaceDirectories } from "./version-lockstep.mjs"
 
 test("accepts a workspace released as one unit", () => {
   assert.deepEqual(evaluateVersionLockstep([
@@ -35,5 +38,32 @@ test("refuses to guess when no version holds a majority", () => {
     { name: "@getdomovoi/daemon", path: "apps/daemon/package.json", version: "0.1.0" },
   ]), [
     "workspace versions disagree with no majority: @getdomovoi/daemon 0.1.0, @getdomovoi/protocol 0.0.1",
+  ])
+})
+
+test("reads the workspace roots from the pnpm workspace globs", () => {
+  assert.deepEqual(workspaceDirectories([
+    "packages:",
+    "  - apps/*",
+    "  - packages/*",
+    "  - tools/**",
+    "",
+    "catalog:",
+    "  typescript: ^5.9.2",
+  ].join("\n")), ["apps", "packages", "tools"])
+})
+
+test("skips a directory that holds no package manifest", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-lockstep-"))
+  await writeFile(join(root, "pnpm-workspace.yaml"), "packages:\n  - apps/*\n")
+  await mkdir(join(root, "apps", "daemon"), { recursive: true })
+  await mkdir(join(root, "apps", "leftover"), { recursive: true })
+  await writeFile(
+    join(root, "apps", "daemon", "package.json"),
+    JSON.stringify({ name: "@getdomovoi/daemon", version: "0.0.1" }),
+  )
+
+  assert.deepEqual(await collectWorkspacePackages(root), [
+    { name: "@getdomovoi/daemon", path: "apps/daemon/package.json", version: "0.0.1" },
   ])
 })

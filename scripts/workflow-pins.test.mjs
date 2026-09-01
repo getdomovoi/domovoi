@@ -13,6 +13,32 @@ test("accepts actions pinned to a full commit SHA", () => {
   }]), [])
 })
 
+test("accepts an uppercase commit SHA, which GitHub resolves the same", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: "      - uses: actions/checkout@3D3C42E5AAC5BA805825DA76410C181273BA90B1",
+  }]), [])
+})
+
+test("accepts a quoted reference, which YAML treats the same as unquoted", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: [
+      "      - uses: \"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\"",
+      "      - uses: 'pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2'",
+    ].join("\n"),
+  }]), [])
+})
+
+test("reports a quoted tag reference without its quotes", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: "      - uses: \"actions/setup-node@v7\"",
+  }]), [
+    ".github/workflows/ci.yml:1: actions/setup-node@v7 is not pinned to a commit SHA",
+  ])
+})
+
 test("reports a tag reference with its file and line", () => {
   assert.deepEqual(evaluateWorkflowPins([{
     path: ".github/workflows/ci.yml",
@@ -54,9 +80,27 @@ test("allows actions and reusable workflows kept inside this repository", () => 
   }]), [])
 })
 
-test("allows a Docker image reference, which carries its own digest rules", () => {
+test("allows a Docker image pinned to a full digest", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: "      - uses: docker://alpine@sha256:beefcafe0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+  }]), [])
+})
+
+test("reports a Docker image pinned only to a moving tag", () => {
+  assert.deepEqual(evaluateWorkflowPins([{
+    path: ".github/workflows/ci.yml",
+    content: "      - uses: docker://alpine:3.19",
+  }]), [
+    ".github/workflows/ci.yml:1: docker://alpine:3.19 is not pinned to an image digest",
+  ])
+})
+
+test("reports a Docker image with a truncated digest", () => {
   assert.deepEqual(evaluateWorkflowPins([{
     path: ".github/workflows/ci.yml",
     content: "      - uses: docker://alpine@sha256:1234",
-  }]), [])
+  }]), [
+    ".github/workflows/ci.yml:1: docker://alpine@sha256:1234 is not pinned to an image digest",
+  ])
 })
