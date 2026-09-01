@@ -217,10 +217,10 @@ fleet.
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
 - [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
-- [ ] Add checkpointed machine transfer with live source and target preflight
+- [x] Add checkpointed machine transfer with live source and target preflight
 - [ ] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
-- [ ] Record transfer receipts and retain the source recovery checkpoint
+- [x] Record transfer receipts and retain the source recovery checkpoint
 
 Completion proof:
 
