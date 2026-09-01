@@ -23,7 +23,7 @@ const tailnet: TransportCandidate = {
 const credential = "n".repeat(43)
 
 function fakeClients(failing: string[] = []) {
-  const created: { url: string; authToken?: string; disconnected: boolean }[] = []
+  const created: { url: string; authToken: string | undefined; disconnected: boolean }[] = []
   const createClient = vi.fn((url: string, _kind: unknown, options: { authToken?: string }) => {
     const record = { url, authToken: options.authToken, disconnected: false }
     created.push(record)
