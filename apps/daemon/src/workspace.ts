@@ -562,6 +562,22 @@ export class GitWorkspaceService implements WorkspaceService {
     }
 
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    // A bundle carries commits, so anything not committed would be left behind
+    // on the source. The session must be at a checkpoint before it travels.
+    let durableCommit: string | undefined
+    try {
+      durableCommit = await git(worktreePath, [
+        "rev-parse",
+        `refs/domovoi/checkpoints/${commit}^{commit}`,
+      ], signal)
+    } catch {
+      signal?.throwIfAborted()
+    }
+    const status = await git(worktreePath, ["status", "--porcelain"], signal)
+    if (durableCommit !== commit || status.length > 0) {
+      throw new Error("Session worktree has work that is not checkpointed")
+    }
+
     const range = sinceCommit === undefined ? "HEAD" : `${sinceCommit}..HEAD`
     await git(worktreePath, ["bundle", "create", resolved, range], signal)
     await restrictBundlePermissions(resolved)
