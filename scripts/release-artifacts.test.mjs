@@ -39,6 +39,12 @@ test("records an SPDX expression as an expression, not an identifier", () => {
   })[0].licenses, [{ expression: "(MIT OR Apache-2.0)" }])
 })
 
+test("records a WITH exception clause as an expression", () => {
+  assert.deepEqual(sbomComponents({
+    "GPL-2.0-only WITH Classpath-exception-2.0": [{ name: "exception-carrying", versions: ["1.0.0"] }],
+  })[0].licenses, [{ expression: "GPL-2.0-only WITH Classpath-exception-2.0" }])
+})
+
 test("omits a license the package never declared", () => {
   assert.deepEqual(sbomComponents({
     "Unknown": [{ name: "mystery", versions: ["1.0.0"] }],
