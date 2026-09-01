@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
-import { createHash } from "node:crypto"
-import { chmod, mkdir, realpath } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { chmod, mkdir, realpath, rename, rm } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
@@ -54,6 +54,13 @@ export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
 
+export class SessionWorktreeExistsError extends Error {
+  constructor() {
+    super("Session worktree already exists")
+    this.name = "SessionWorktreeExistsError"
+  }
+}
+
 export class WorkspaceEvidenceUnstableError extends Error {
   constructor() {
     super("Workspace changed while evidence was collected")
@@ -89,6 +96,11 @@ export interface WorkspaceService {
     sinceCommit?: string,
     signal?: AbortSignal,
   ): Promise<SessionBundle>
+  restoreSessionFromBundle?(
+    bundlePath: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace>
 }
 
 export type SessionBundle = {
@@ -582,6 +594,56 @@ export class GitWorkspaceService implements WorkspaceService {
     await git(worktreePath, ["bundle", "create", resolved, range], signal)
     await restrictBundlePermissions(resolved)
     return { path: resolved, commit, incremental: sinceCommit !== undefined }
+  }
+
+  // The target rebuilds the session from bundle bytes alone, so a transfer
+  // never needs the source repository or a shared remote.
+  async restoreSessionFromBundle(
+    bundlePath: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
+    if (!safeSessionId.test(sessionId)) {
+      throw new Error("Session id is not safe for a worktree")
+    }
+
+    const path = join(this.worktreeRoot, sessionId)
+    const branch = `domovoi/${sessionId}`
+    await mkdir(this.worktreeRoot, { recursive: true })
+
+    // The clone happens somewhere this restore owns outright, so nothing it
+    // cleans up can belong to another restore or to an existing session. The
+    // finished worktree is then claimed with a rename, which the filesystem
+    // settles between concurrent restores: only one can win.
+    const staging = join(this.worktreeRoot, `.incoming-${sessionId}-${randomUUID()}`)
+    try {
+      await gitDirectory(this.worktreeRoot, ["clone", "--quiet", bundlePath, staging], signal)
+    } catch {
+      signal?.throwIfAborted()
+      // The bundle is the only thing the target trusts here, so anything it
+      // cannot read is refused rather than partly applied.
+      await rm(staging, { recursive: true, force: true })
+      throw new Error("Bundle could not be verified")
+    }
+
+    try {
+      await git(staging, ["checkout", "--quiet", "-B", branch], signal)
+      const staged = await git(staging, ["rev-parse", "HEAD"], signal)
+      // The transferred checkpoint has to stay restorable on this machine,
+      // which means carrying the durable ref, not only the commit.
+      await git(staging, ["update-ref", `refs/domovoi/checkpoints/${staged}`, staged], signal)
+      await rename(staging, path)
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true })
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === "ENOTEMPTY" || code === "EEXIST" || code === "EPERM" || code === "EACCES") {
+        throw new SessionWorktreeExistsError()
+      }
+      throw error
+    }
+
+    const head = await git(path, ["rev-parse", "HEAD"], signal)
+    return { path, branch, baseCommit: head }
   }
 
   async restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult> {
