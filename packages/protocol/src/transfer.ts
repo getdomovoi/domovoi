@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { clientKindSchema, type SessionSummary } from "./schema.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
+import { transferStreamRefusalSchema } from "./transfer-stream.js"
 
 export const transferMethodSchema = z.enum(["git-bundle", "remote-ref"])
 
@@ -104,7 +105,13 @@ export const transferReceiptSchema = z.object({
   // undone from the machine that sent it. A receipt cannot say otherwise.
   recoveryCheckpointRetained: z.literal(true),
   outcome: z.enum(["succeeded", "failed", "refused"]),
-  reason: z.union([transferRefusalSchema, sourceRefusalSchema]).optional(),
+  // A transfer can be refused before it starts, or by the target once the
+  // bytes arrive, and a receipt records whichever it was.
+  reason: z.union([
+    transferRefusalSchema,
+    sourceRefusalSchema,
+    transferStreamRefusalSchema,
+  ]).optional(),
   decidedBy: z.object({
     client: clientKindSchema,
     clientId: z.string().trim().min(1).max(128).optional(),
