@@ -1,4 +1,6 @@
-import type { FleetMachine, TransportCandidate } from "@getdomovoi/protocol"
+import { machineCredentialMissingErrorCode, type FleetMachine, type TransportCandidate } from "@getdomovoi/protocol"
+
+import { DaemonRpcError } from "./client.js"
 
 import { machineSelection } from "./machine-selection.js"
 import { reconnectMachine } from "./machine-reconnect.js"
@@ -25,10 +27,14 @@ export async function openMachine<Connection>(input: {
   let credential: string
   try {
     credential = await input.readCredential(input.machine.id)
-  } catch {
-    // The daemon keeps these, so the only reason one is missing is that this
-    // machine was never paired or has been forgotten.
-    throw new MachineOpenError("That machine has to be paired again")
+  } catch (error) {
+    // Only the daemon's own "nothing kept for that machine" means pairing is
+    // the fix. A keychain that cannot be read is a different problem, and
+    // pairing again would not solve it.
+    if (error instanceof DaemonRpcError && error.code === machineCredentialMissingErrorCode) {
+      throw new MachineOpenError("That machine has to be paired again")
+    }
+    throw new MachineOpenError("The credential for that machine could not be read")
   }
 
   return reconnectMachine({

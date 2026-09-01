@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonAuthenticationErrorCode, type FleetMachine } from "@getdomovoi/protocol"
+import {
+  daemonAuthenticationErrorCode,
+  machineCredentialMissingErrorCode,
+  type FleetMachine,
+} from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
 import { MachineOpenError, openMachine } from "./open-machine.js"
@@ -59,12 +63,27 @@ describe("openMachine", () => {
   it("reports a missing credential as needing pairing again", async () => {
     const io = opening({
       readCredential: vi.fn(async () => {
-        throw new Error("No credential is kept for that machine")
+        throw new DaemonRpcError(
+          machineCredentialMissingErrorCode,
+          "No credential is kept for that machine",
+        )
       }),
     })
 
     await expect(openMachine({ machine, ...io }))
       .rejects.toThrow("That machine has to be paired again")
+    expect(io.connect).not.toHaveBeenCalled()
+  })
+
+  it("does not blame pairing when the credential cannot be read at all", async () => {
+    const io = opening({
+      readCredential: vi.fn(async () => {
+        throw new Error("Keychain is locked")
+      }),
+    })
+
+    await expect(openMachine({ machine, ...io }))
+      .rejects.toThrow("The credential for that machine could not be read")
     expect(io.connect).not.toHaveBeenCalled()
   })
 
