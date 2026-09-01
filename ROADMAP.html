@@ -599,6 +599,10 @@ td { color: var(--ink2); }
 <li>[ ] Add macOS signing/notarization and Windows code signing
 </li>
 <li>[ ] Publish SHA-256 checksums and SBOMs for release artifacts
+<ul>
+<li><code>pnpm release:artifacts</code> generates the tarballs, per-artifact CycloneDX SBOMs, and <code>SHA256SUMS</code>, and runs on Linux in CI.</li>
+<li>Attaching them to a GitHub Release waits on the release workflow.</li>
+</ul>
 </li>
 <li>[ ] Add a Windows package-manager manifest after installer signing is stable
 </li>
