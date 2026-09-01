@@ -16,6 +16,19 @@ function exceptionMatcher(key) {
   return (name) => pattern.test(name)
 }
 
+function satisfiesPolicy(license, allowed) {
+  if (allowed.includes(license)) return true
+
+  const expression = license.replace(/[()]/g, " ").trim()
+  if (/\bOR\b/.test(expression) && !/\bAND\b/.test(expression)) {
+    return expression.split(/\bOR\b/).some((term) => allowed.includes(term.trim()))
+  }
+  if (/\bAND\b/.test(expression) && !/\bOR\b/.test(expression)) {
+    return expression.split(/\bAND\b/).every((term) => allowed.includes(term.trim()))
+  }
+  return false
+}
+
 export function evaluateDependencyLicenses(graph, policy) {
   const failures = []
   const seen = new Set()
@@ -28,11 +41,16 @@ export function evaluateDependencyLicenses(graph, policy) {
     for (const entry of packages) {
       seen.add(entry.name)
       if (exceptions.some((exception) => exception.matches(entry.name))) continue
-      if (policy.allowed.includes(license)) continue
+      if (satisfiesPolicy(license, policy.allowed)) continue
       for (const version of entry.versions) {
         failures.push(`${entry.name}@${version}: ${license} is not an allowed license`)
       }
     }
+  }
+
+  if (seen.size === 0) {
+    failures.push("pnpm licenses list returned no package, so no license was checked")
+    return failures
   }
 
   for (const { key, matches } of exceptions) {
@@ -52,12 +70,32 @@ export function collectDependencyLicenses(root = repositoryRoot) {
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
   })
+
+  if (output.trim() === "") {
+    throw new Error(
+      `pnpm reported no dependency for ${publishablePackages.join(", ")}; check that every publishable package still exists`,
+    )
+  }
   return JSON.parse(output)
 }
 
+async function readPolicy(root) {
+  try {
+    return JSON.parse(await readFile(join(root, "license-policy.json"), "utf8"))
+  } catch (error) {
+    throw new Error(`license-policy.json could not be read: ${error.message}`)
+  }
+}
+
 export async function checkDependencyLicenses(root = repositoryRoot) {
-  const policy = JSON.parse(await readFile(join(root, "license-policy.json"), "utf8"))
-  const graph = collectDependencyLicenses(root)
+  let policy
+  let graph
+  try {
+    policy = await readPolicy(root)
+    graph = collectDependencyLicenses(root)
+  } catch (error) {
+    return { licenses: [], failures: [error.message] }
+  }
   return { licenses: Object.keys(graph).sort(), failures: evaluateDependencyLicenses(graph, policy) }
 }
 
