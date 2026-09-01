@@ -2,9 +2,15 @@ import { join } from "node:path"
 
 export type DaemonEnvironment = Readonly<Record<string, string | undefined>>
 
+export type DaemonTlsMaterial = {
+  certPath: string
+  keyPath: string
+}
+
 export type DaemonEnvironmentConfig = {
   host: string
   port: number
+  tls?: DaemonTlsMaterial
   credentialPath: string
   machineIdentityPath: string
   authToken?: string
@@ -34,6 +40,15 @@ export function parseDaemonEnvironment(
     )
   }
 
+  const tls = parseTlsMaterial(environment)
+  // A listener that leaves this machine must be encrypted. Loopback may stay
+  // plaintext because nothing it carries reaches a network.
+  if (!loopbackHosts.has(host) && !tls) {
+    throw new DaemonConfigurationError(
+      "Non-loopback DOMOVOI_HOST requires TLS: set DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH",
+    )
+  }
+
   const credentialPath = parseCredentialPath(
     environment.DOMOVOI_CREDENTIAL_PATH,
     homeDirectory,
@@ -49,6 +64,7 @@ export function parseDaemonEnvironment(
   return {
     host,
     port,
+    ...(tls ? { tls } : {}),
     credentialPath,
     machineIdentityPath,
     ...(authToken !== undefined ? { authToken } : {}),
@@ -81,6 +97,23 @@ function parseRemoteTransport(value: string | undefined): boolean {
   if (value === undefined || value === "0") return false
   if (value === "1") return true
   throw new DaemonConfigurationError("DOMOVOI_ALLOW_REMOTE_TRANSPORT must be 0 or 1")
+}
+
+function parseTlsMaterial(
+  environment: DaemonEnvironment,
+): DaemonTlsMaterial | undefined {
+  const certPath = environment.DOMOVOI_TLS_CERT_PATH
+  const keyPath = environment.DOMOVOI_TLS_KEY_PATH
+  if (certPath === undefined && keyPath === undefined) return undefined
+  if (certPath === undefined || keyPath === undefined) {
+    throw new DaemonConfigurationError(
+      "DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH must be set together",
+    )
+  }
+  return {
+    certPath: parseStatePath(certPath, "DOMOVOI_TLS_CERT_PATH", ""),
+    keyPath: parseStatePath(keyPath, "DOMOVOI_TLS_KEY_PATH", ""),
+  }
 }
 
 function parseCredentialPath(value: string | undefined, homeDirectory: string): string {
