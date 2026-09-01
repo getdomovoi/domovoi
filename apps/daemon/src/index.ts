@@ -7,11 +7,48 @@ import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity } from "./machine-identity.js"
 import { loadTlsMaterial } from "./tls-material.js"
+import { runPairCommand } from "./pair-command.js"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 
+async function requestPairingCode(
+  config: { host: string; port: number; tls?: unknown },
+  token: string,
+): Promise<{ code: string; expiresAt: string }> {
+  const { WebSocket } = await import("ws")
+  const scheme = config.tls ? "wss" : "ws"
+  const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = await new Promise<{ result?: { code: string; expiresAt: string }; error?: unknown }>(
+      (resolve, reject) => {
+        socket.once("message", (data: { toString(): string }) => {
+          resolve(JSON.parse(data.toString()) as { result?: { code: string; expiresAt: string } })
+        })
+        socket.once("error", reject)
+        socket.send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "device.issueCode",
+          params: {},
+        }))
+      },
+    )
+    if (!response.result) throw new Error("Daemon refused the pairing request")
+    return response.result
+  } finally {
+    socket.close()
+  }
+}
+
 const help = `Usage: domovoid [options]
+       domovoid pair
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
@@ -50,6 +87,16 @@ async function main() {
     process.exitCode = await runProviderSecretCommand(args, {
       manager: new ProviderSecretManager(),
       readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "pair") {
+    const config = parseDaemonEnvironment(process.env, homedir())
+    const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
+    process.exitCode = await runPairCommand(args, {
+      issue: () => requestPairingCode(config, token),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
