@@ -131,6 +131,25 @@ describe("parseDaemonEnvironment", () => {
     })
   })
 
+  it("reads the name an encrypted listener is reachable by", () => {
+    expect(parseDaemonEnvironment({
+      DOMOVOI_HOST: "0.0.0.0",
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TLS_CERT_PATH: "/etc/domovoi/cert.pem",
+      DOMOVOI_TLS_KEY_PATH: "/etc/domovoi/key.pem",
+      DOMOVOI_ADVERTISE_HOST: "workshop.tailnet",
+    }, "/home/tester").advertiseHost).toBe("workshop.tailnet")
+  })
+
+  it("advertises nothing by name when none is configured", () => {
+    expect(parseDaemonEnvironment({}, "/home/tester").advertiseHost).toBeUndefined()
+  })
+
+  it("refuses an empty advertised name", () => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_ADVERTISE_HOST: "  " }, "/home/tester"))
+      .toThrow("DOMOVOI_ADVERTISE_HOST cannot be empty")
+  })
+
   it("overrides the machine identity path", () => {
     expect(() => parseDaemonEnvironment({ DOMOVOI_MACHINE_IDENTITY_PATH: "  " }, "/home/tester"))
       .toThrow("DOMOVOI_MACHINE_IDENTITY_PATH")

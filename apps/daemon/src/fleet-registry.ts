@@ -8,6 +8,7 @@ import {
   maximumFleetMachines,
   protocolVersion,
   type FleetMachineFacts,
+  type TransportCandidate,
   type FleetSnapshot,
   type MachineCapability,
 } from "@getdomovoi/protocol"
@@ -28,6 +29,7 @@ type StoredFleetMachine = {
   connection: string
   capabilities: string
   protocol_version: string
+  transports: string
   last_seen_ms: number
 }
 
@@ -51,6 +53,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
         connection TEXT NOT NULL,
         capabilities TEXT NOT NULL,
         protocol_version TEXT NOT NULL,
+        transports TEXT NOT NULL,
         last_seen_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS fleet_machines_last_seen ON fleet_machines (last_seen_ms DESC);
@@ -75,8 +78,8 @@ export class SqliteFleetRegistry implements FleetRegistry {
       .prepare(`
         INSERT INTO fleet_machines (
           id, label, platform, arch, version, connection, capabilities, protocol_version,
-          last_seen_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          transports, last_seen_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           label = excluded.label,
           platform = excluded.platform,
@@ -85,6 +88,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
           connection = excluded.connection,
           capabilities = excluded.capabilities,
           protocol_version = excluded.protocol_version,
+          transports = excluded.transports,
           last_seen_ms = excluded.last_seen_ms
       `)
       .run(
@@ -96,6 +100,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
         machine.connection,
         JSON.stringify(machine.capabilities),
         machine.protocolVersion,
+        JSON.stringify(machine.transports),
         nowMs,
       )
   }
@@ -116,6 +121,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
         connection: row.connection,
         capabilities: JSON.parse(row.capabilities) as MachineCapability[],
         protocolVersion: row.protocol_version,
+        transports: JSON.parse(row.transports) as TransportCandidate[],
         heartbeat: {
           state: heartbeat,
           lastSeenAt: new Date(row.last_seen_ms).toISOString(),

@@ -94,6 +94,7 @@ import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
   ArtifactWatcher,
@@ -420,6 +421,7 @@ export type DaemonServerOptions = {
   annotationVisualContext?: AnnotationVisualContextStore
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
+  advertiseHost?: string
 }
 
 export type DaemonErrorEntry = {
@@ -499,6 +501,7 @@ export class DomovoiDaemon {
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
+  #advertiseHost: string | undefined
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
@@ -509,6 +512,7 @@ export class DomovoiDaemon {
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
+    this.#advertiseHost = options.advertiseHost
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
@@ -610,6 +614,12 @@ export class DomovoiDaemon {
         connection: "local",
         capabilities: [...localMachineCapabilities],
         protocolVersion,
+        transports: advertisedTransports({
+          host: this.host,
+          port: this.address?.port ?? this.requestedPort,
+          ...(this.#tls ? { tls: true } : {}),
+          ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
+        }),
       }, Date.now())
     } catch (error) {
       this.#reportError("Domovoi could not record this machine in the fleet", error)

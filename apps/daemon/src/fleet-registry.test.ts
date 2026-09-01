@@ -20,6 +20,9 @@ const localMachine = {
   connection: "local" as const,
   capabilities: ["sessions", "terminals"] as const,
   protocolVersion: "0.1.0",
+  transports: [
+    { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const },
+  ],
 }
 
 function registry(database = new DatabaseSync(":memory:")): {
@@ -38,6 +41,7 @@ describe("SqliteFleetRegistry", () => {
 
     expect(snapshot.machines).toEqual([{
       ...localMachine,
+      transports: [...localMachine.transports],
       capabilities: [...localMachine.capabilities],
       heartbeat: { state: "online", lastSeenAt: new Date(1_000).toISOString() },
       health: "healthy",

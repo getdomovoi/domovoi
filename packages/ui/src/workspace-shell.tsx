@@ -1467,6 +1467,7 @@ function localMachineEntry(snapshot: WorkspaceSnapshot): FleetMachine {
     connection: "local",
     capabilities: [],
     protocolVersion,
+    transports: [],
     heartbeat: { state: "online", lastSeenAt: new Date(0).toISOString() },
     health: "healthy",
     self: true,
