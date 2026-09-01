@@ -8718,6 +8718,26 @@ describe("DomovoiDaemon transfers", () => {
 describe("DomovoiDaemon session transfer requests", () => {
   const running: DomovoiDaemon[] = []
 
+  function stubWorkspaceService() {
+    return {
+      inspect: async () => ({ root: "/repo", name: "repo", branch: "main", head: "a".repeat(40) }),
+      createSessionWorkspace: async (_repository: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "a".repeat(40),
+      }),
+      removeSessionWorkspace: async () => {},
+      checkpoint: async () => ({ commit: "b".repeat(40), changedFiles: [] }),
+      restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
+      restoreSessionFromBundle: async (_bundlePath: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "c".repeat(40),
+      }),
+    }
+  }
+
+
   function rpcCaller(socket: WebSocket) {
     let id = 0
     return (method: string, params: Record<string, unknown>) => {
@@ -8774,6 +8794,98 @@ describe("DomovoiDaemon session transfer requests", () => {
     running.push(daemon)
     return { daemon, store }
   }
+
+  it("moves a session to another daemon with no dialer supplied", async () => {
+    const targetMachineId = `machine-${"e".repeat(32)}`
+    const targetSecret = "target-horse-battery-staple"
+    const restored: string[] = []
+    const target = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: targetSecret,
+      workspaceService: {
+        ...stubWorkspaceService(),
+        restoreSessionFromBundle: async (_bundlePath: string, sessionId: string) => {
+          restored.push(sessionId)
+          return {
+            path: `/worktrees/${sessionId}`,
+            branch: `domovoi/${sessionId}`,
+            baseCommit: "f".repeat(40),
+          }
+        },
+      },
+    })
+    running.push(target)
+    const targetAddress = await target.start()
+
+    // A session only moves when it has a worktree to move.
+    const snapshot = structuredClone(demoWorkspace)
+    const moved = snapshot.sessions.find((candidate) => candidate.state === "idle")!
+    moved.workspacePath = "/worktrees/session-audit"
+    // The machine id must be one the transfer protocol accepts, and the
+    // project belongs to that machine.
+    snapshot.machine.id = `machine-${"a".repeat(32)}`
+    if (snapshot.project) snapshot.project.machineId = snapshot.machine.id
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const credentials = new Map<string, string>([[targetMachineId, targetSecret]])
+    const source = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      machineCredentials: {
+        save: (id: string, credential: string) => credentials.set(id, credential),
+        forMachine: (id: string) => credentials.get(id),
+        forget: (id: string) => credentials.delete(id),
+        machines: () => [...credentials.keys()],
+      },
+      workspaceService: {
+        ...stubWorkspaceService(),
+        bundleSession: async (_worktree: string, bundlePath: string) => ({
+          path: bundlePath,
+          commit: "b".repeat(40),
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK a session worktree"),
+    })
+    running.push(source)
+    // The target is reachable on this machine, which is the only way plaintext
+    // is allowed to carry a credential.
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{
+        kind: "local",
+        endpoint: `ws://127.0.0.1:${targetAddress.port}/rpc`,
+        authenticated: true,
+      }],
+    }, Date.now())
+    const sourceAddress = await source.start()
+    const socket = authenticatedSocket(source, `ws://${sourceAddress.host}:${sourceAddress.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: moved.id,
+      targetMachineId,
+      client: "desktop",
+    })
+
+    expect(answer).toMatchObject({
+      result: { outcome: "succeeded", workspacePath: `/worktrees/${moved.id}` },
+    })
+    expect(restored).toEqual([moved.id])
+    socket.close()
+  }, 30_000)
 
   it("refuses to move a session to a machine the fleet does not know", async () => {
     const { daemon } = transferDaemon()
