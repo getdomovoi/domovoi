@@ -853,6 +853,25 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("starts a fresh connection at the first backoff delay", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler, random: () => 0.5 })
+
+    client.connect()
+    FakeWebSocket.instances[0]!.drop()
+    const firstDelay = scheduler.delays[0]!
+    await scheduler.runNext()
+    FakeWebSocket.instances[1]!.drop()
+    const escalatedDelay = scheduler.delays[1]!
+    expect(escalatedDelay).toBeGreaterThan(firstDelay)
+
+    client.disconnect()
+    client.connect()
+    FakeWebSocket.instances[2]!.drop()
+
+    expect(scheduler.delays[2]).toBe(firstDelay)
+  })
+
   it("cancels reconnect work after explicit disconnect", () => {
     const scheduler = new ManualScheduler()
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })

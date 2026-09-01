@@ -105,6 +105,7 @@ async function start() {
   const { workspaceSnapshotSchema } = await import(workerData.protocolUrl)
   const database = new DatabaseSync(workerData.path)
   database.exec("PRAGMA journal_mode = WAL;")
+  database.exec("PRAGMA busy_timeout = 5000;")
   const save = database.prepare(
     "INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, ?, ?) " +
     "ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at",
@@ -141,6 +142,9 @@ class AsyncWorkspaceWriter {
   readonly #pending = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
   #nextId = 0
   #closing: Promise<void> | undefined
+  // Once the worker is gone, nothing will ever answer a posted message, so the
+  // reason it went is kept and every later request is refused with it.
+  #terminal: Error | undefined
 
   constructor(path: string) {
     this.#worker = new Worker(workspaceWriterSource, {
@@ -154,11 +158,15 @@ class AsyncWorkspaceWriter {
       if (response.error) pending.reject(new Error(response.error))
       else pending.resolve()
     })
-    this.#worker.on("error", (error) => this.#rejectPending(error))
+    this.#worker.on("error", (error) => {
+      this.#terminal = error
+      this.#rejectPending(error)
+    })
     this.#worker.on("exit", (code) => {
-      if (code !== 0 && !this.#closing) {
-        this.#rejectPending(new Error(`Workspace persistence worker exited with code ${code}`))
-      }
+      this.#terminal ??= this.#closing
+        ? new Error("Workspace persistence worker is closed")
+        : new Error(`Workspace persistence worker exited with code ${code}`)
+      if (code !== 0 && !this.#closing) this.#rejectPending(this.#terminal)
     })
   }
 
@@ -170,11 +178,13 @@ class AsyncWorkspaceWriter {
     if (this.#closing) return this.#closing
     this.#closing = this.#request({ close: true }).then(async () => {
       await this.#worker.terminate()
+      this.#terminal ??= new Error("Workspace persistence worker is closed")
     })
     return this.#closing
   }
 
   #request(message: Record<string, unknown>): Promise<void> {
+    if (this.#terminal) return Promise.reject(this.#terminal)
     const id = ++this.#nextId
     return new Promise<void>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject })
@@ -202,6 +212,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#database = new DatabaseSync(path)
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS workspace_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         snapshot TEXT NOT NULL,

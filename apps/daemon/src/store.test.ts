@@ -413,3 +413,45 @@ describe("SqliteWorkspaceStore", () => {
     store.close()
   })
 })
+
+it("waits for a busy database instead of failing immediately", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-busy-"))
+  scratchDirectories.push(root)
+  const path = join(root, "state.sqlite")
+  const store = new SqliteWorkspaceStore(path, demoWorkspace)
+  try {
+    // Boot the writer first, so the contention below is with a live worker
+    // rather than with worker startup.
+    await store.saveAsync?.({ ...demoWorkspace })
+
+    const held = new DatabaseSync(path)
+    held.exec("PRAGMA busy_timeout = 0;")
+    held.exec("BEGIN IMMEDIATE;")
+    held.exec("INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, '{}', 'now') " +
+      "ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at")
+    const writing = store.saveAsync?.({ ...demoWorkspace })
+    const released = new Promise<void>((resolve) => setTimeout(() => {
+      held.exec("COMMIT;")
+      held.close()
+      resolve()
+    }, 300))
+
+    await expect(writing).resolves.toBeUndefined()
+    await released
+  } finally {
+    await store.close()
+  }
+})
+
+it("fails a write posted after the persistence worker is closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-dead-writer-"))
+  scratchDirectories.push(root)
+  const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), demoWorkspace)
+  await store.saveAsync?.({ ...demoWorkspace })
+  await store.close()
+
+  // Posting to a worker that has been terminated would otherwise never settle.
+  await expect(store.saveAsync?.({ ...demoWorkspace })).rejects.toThrow(
+    "Workspace persistence worker is closed",
+  )
+})
