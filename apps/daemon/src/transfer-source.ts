@@ -110,6 +110,12 @@ export async function sendSessionToMachine(input: {
         return { outcome: "failed" }
       }
       if (answer.state === "restored") {
+        // A session cannot have arrived while bytes remain here, whatever the
+        // target says, so an early claim ends the transfer as a failure.
+        if (!final) {
+          receipt("failed", checkpointCommit)
+          return { outcome: "failed" }
+        }
         receipt("succeeded", checkpointCommit)
         return {
           outcome: "succeeded",
