@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdir, realpath } from "node:fs/promises"
+import { chmod, mkdir, realpath } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
@@ -83,6 +83,25 @@ export interface WorkspaceService {
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
   evidence?(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence>
+  bundleSession?(
+    worktreePath: string,
+    bundlePath: string,
+    sinceCommit?: string,
+    signal?: AbortSignal,
+  ): Promise<SessionBundle>
+}
+
+export type SessionBundle = {
+  path: string
+  commit: string
+  incremental: boolean
+}
+
+async function restrictBundlePermissions(path: string): Promise<void> {
+  // A bundle holds every byte of the session worktree, so it is readable only
+  // by the account that made it.
+  if (process.platform === "win32") return
+  await chmod(path, 0o600)
 }
 
 async function git(
@@ -522,6 +541,47 @@ export class GitWorkspaceService implements WorkspaceService {
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     return { commit, changedFiles }
+  }
+
+  // Repository bytes travel daemon to daemon as a Git bundle, so a transfer
+  // never puts them on a remote the user did not choose.
+  async bundleSession(
+    worktreePath: string,
+    bundlePath: string,
+    sinceCommit?: string,
+    signal?: AbortSignal,
+  ): Promise<SessionBundle> {
+    // The caller names where the bundle goes, but a path that walks upward can
+    // land somewhere it was never meant to, so traversal is refused outright.
+    if (!isAbsolute(bundlePath) || bundlePath.split(/[\\/]/).includes("..")) {
+      throw new Error("Bundle path must not traverse")
+    }
+    const resolved = resolve(bundlePath)
+    if (sinceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sinceCommit)) {
+      throw new Error("Bundle base commit is invalid")
+    }
+
+    const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    // A bundle carries commits, so anything not committed would be left behind
+    // on the source. The session must be at a checkpoint before it travels.
+    let durableCommit: string | undefined
+    try {
+      durableCommit = await git(worktreePath, [
+        "rev-parse",
+        `refs/domovoi/checkpoints/${commit}^{commit}`,
+      ], signal)
+    } catch {
+      signal?.throwIfAborted()
+    }
+    const status = await git(worktreePath, ["status", "--porcelain"], signal)
+    if (durableCommit !== commit || status.length > 0) {
+      throw new Error("Session worktree has work that is not checkpointed")
+    }
+
+    const range = sinceCommit === undefined ? "HEAD" : `${sinceCommit}..HEAD`
+    await git(worktreePath, ["bundle", "create", resolved, range], signal)
+    await restrictBundlePermissions(resolved)
+    return { path: resolved, commit, incremental: sinceCommit !== undefined }
   }
 
   async restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult> {
