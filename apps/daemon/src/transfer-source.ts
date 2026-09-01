@@ -106,8 +106,10 @@ export async function sendSessionToMachine(input: {
       }))
       sequence += 1
       if (answer.state === "refused") {
-        receipt("failed", checkpointCommit)
-        return { outcome: "failed" }
+        // The target looked at the bytes and would not take them, which is a
+        // refusal with a reason rather than a transfer that broke.
+        receipt("refused", checkpointCommit, answer.reason)
+        return { outcome: "refused", reason: answer.reason }
       }
       if (answer.state === "restored") {
         // A session cannot have arrived while bytes remain here, whatever the
