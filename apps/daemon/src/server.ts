@@ -549,10 +549,9 @@ export class DomovoiDaemon {
           context: "annotation crop retention",
           detail: `Protected crop retention exceeds bounds (${fileCount} files, ${totalBytes} bytes)`,
         }),
-        reportRetentionError: (error) => this.#errorSink({
-          context: "annotation crop retention",
-          detail: error instanceof Error ? error.message : String(error),
-        }),
+        // Every other error this daemon reports goes through one bounded,
+        // secret-redacting path, and these are no different.
+        reportRetentionError: (error) => this.#reportError("annotation crop retention", error),
       })
     this.#store = options.store ?? new SqliteWorkspaceStore(
       statePath,
