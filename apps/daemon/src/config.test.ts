@@ -29,6 +29,8 @@ describe("parseDaemonEnvironment", () => {
     expect(parseDaemonEnvironment({
       DOMOVOI_HOST: "0.0.0.0",
       DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TLS_CERT_PATH: "/etc/domovoi/cert.pem",
+      DOMOVOI_TLS_KEY_PATH: "/etc/domovoi/key.pem",
     }, "/home/tester")).toMatchObject({
       host: "0.0.0.0",
       allowRemoteTransport: true,
@@ -76,6 +78,56 @@ describe("parseDaemonEnvironment", () => {
     }, "/home/tester")).toMatchObject({
       authToken: "secret-token",
       credentialPath: "/run/secrets/domovoi-token",
+    })
+  })
+
+  it("reads TLS material for an encrypted listener", () => {
+    expect(parseDaemonEnvironment({
+      DOMOVOI_TLS_CERT_PATH: "/etc/domovoi/cert.pem",
+      DOMOVOI_TLS_KEY_PATH: "/etc/domovoi/key.pem",
+    }, "/home/tester").tls).toEqual({
+      certPath: "/etc/domovoi/cert.pem",
+      keyPath: "/etc/domovoi/key.pem",
+    })
+  })
+
+  it("serves plaintext on loopback when no TLS material is given", () => {
+    expect(parseDaemonEnvironment({}, "/home/tester").tls).toBeUndefined()
+  })
+
+  it("refuses half-configured TLS material", () => {
+    expect(() => parseDaemonEnvironment({
+      DOMOVOI_TLS_CERT_PATH: "/etc/domovoi/cert.pem",
+    }, "/home/tester")).toThrow("DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH must be set together")
+    expect(() => parseDaemonEnvironment({
+      DOMOVOI_TLS_KEY_PATH: "/etc/domovoi/key.pem",
+    }, "/home/tester")).toThrow("DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH must be set together")
+  })
+
+  it("refuses an empty TLS path", () => {
+    expect(() => parseDaemonEnvironment({
+      DOMOVOI_TLS_CERT_PATH: "  ",
+      DOMOVOI_TLS_KEY_PATH: "/etc/domovoi/key.pem",
+    }, "/home/tester")).toThrow("DOMOVOI_TLS_CERT_PATH cannot be empty")
+  })
+
+  it("refuses to serve a non-loopback listener without TLS", () => {
+    expect(() => parseDaemonEnvironment({
+      DOMOVOI_HOST: "0.0.0.0",
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+    }, "/home/tester")).toThrow("Non-loopback DOMOVOI_HOST requires TLS")
+  })
+
+  it("accepts a non-loopback listener that is opted in and encrypted", () => {
+    expect(parseDaemonEnvironment({
+      DOMOVOI_HOST: "0.0.0.0",
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TLS_CERT_PATH: "/etc/domovoi/cert.pem",
+      DOMOVOI_TLS_KEY_PATH: "/etc/domovoi/key.pem",
+    }, "/home/tester")).toMatchObject({
+      host: "0.0.0.0",
+      allowRemoteTransport: true,
+      tls: { certPath: "/etc/domovoi/cert.pem", keyPath: "/etc/domovoi/key.pem" },
     })
   })
 
