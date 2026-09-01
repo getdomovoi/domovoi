@@ -1,6 +1,13 @@
 import { z } from "zod"
 
 import {
+  transferBeginParamsSchema,
+  transferBeginResultSchema,
+  transferChunkParamsSchema,
+  transferChunkResultSchema,
+} from "./transfer-rpc.js"
+
+import {
   maximumSessionHistoryPageItems,
   maximumTerminalOutputChunkCharacters,
 } from "./performance.js"
@@ -971,6 +978,14 @@ export const rpcMethods = {
   "device.saveCredential": {
     params: deviceSaveCredentialParamsSchema,
     result: deviceSaveCredentialResultSchema,
+  },
+  "transfer.begin": {
+    params: transferBeginParamsSchema,
+    result: transferBeginResultSchema,
+  },
+  "transfer.chunk": {
+    params: transferChunkParamsSchema,
+    result: transferChunkResultSchema,
   },
   "device.machineCredential": {
     params: deviceMachineCredentialParamsSchema,
