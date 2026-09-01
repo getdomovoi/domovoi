@@ -7,11 +7,60 @@ import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity } from "./machine-identity.js"
 import { loadTlsMaterial } from "./tls-material.js"
+import { runPairCommand } from "./pair-command.js"
+import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 
+async function requestPairingCode(
+  config: { host: string; port: number; tls?: unknown },
+  token: string,
+): Promise<DeviceIssueCodeResult> {
+  const { WebSocket } = await import("ws")
+  const scheme = config.tls ? "wss" : "ws"
+  const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  const requestId = 1
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const result = await new Promise<DeviceIssueCodeResult>((resolve, reject) => {
+      // The daemon broadcasts notifications on the same socket, so only the
+      // reply carrying this request's id may settle it, and a socket that
+      // closes first must reject rather than leave the caller waiting.
+      const receive = (data: { toString(): string }) => {
+        const message = JSON.parse(data.toString()) as {
+          id?: number
+          result?: DeviceIssueCodeResult
+          error?: { message?: string }
+        }
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        if (message.result) resolve(message.result)
+        else reject(new Error(message.error?.message ?? "Daemon refused the pairing request"))
+      }
+      socket.on("message", receive)
+      socket.once("close", () => reject(new Error("Daemon connection closed")))
+      socket.once("error", reject)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: requestId,
+        method: "device.issueCode",
+        params: {},
+      }))
+    })
+    return result
+  } finally {
+    socket.close()
+  }
+}
+
 const help = `Usage: domovoid [options]
+       domovoid pair
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
@@ -50,6 +99,16 @@ async function main() {
     process.exitCode = await runProviderSecretCommand(args, {
       manager: new ProviderSecretManager(),
       readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "pair") {
+    const config = parseDaemonEnvironment(process.env, homedir())
+    const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
+    process.exitCode = await runPairCommand(args, {
+      issue: () => requestPairingCode(config, token),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

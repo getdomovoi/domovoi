@@ -2768,6 +2768,74 @@ describe("DomovoiDaemon", () => {
     return { socket, call }
   }
 
+  it("issues a pairing code to an authenticated client", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 5, method: "device.issueCode", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      result: {
+        code: expect.stringMatching(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/),
+        expiresAt: expect.any(String),
+      },
+    })
+    socket.close()
+  })
+
+  it("refuses to issue a pairing code to a client holding only a device credential", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const issued = store.devices.pair({ label: "studio-ipad" })
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${issued.token}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "device.issueCode", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      error: { message: "Managing paired devices requires the daemon credential" },
+    })
+    socket.close()
+  })
+
+  it("refuses to issue a pairing code to an unauthenticated socket", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    await expect(call(1, "device.issueCode", {})).resolves.toMatchObject({
+      error: { message: "Daemon authentication required" },
+    })
+    socket.close()
+  })
+
   it("pairs an unauthenticated machine that presents the pairing code", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })

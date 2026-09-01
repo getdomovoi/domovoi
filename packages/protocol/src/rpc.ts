@@ -18,6 +18,7 @@ import {
 } from "./schema.js"
 import {
   deviceClaimParamsSchema,
+  deviceIssueCodeResultSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -961,6 +962,7 @@ export const rpcMethods = {
   // Reachable before authentication: a machine being paired has no credential
   // yet. Gated on an open pairing code and nothing else.
   "device.claim": { params: deviceClaimParamsSchema, result: devicePairResultSchema },
+  "device.issueCode": { params: deviceListParamsSchema, result: deviceIssueCodeResultSchema },
   "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
   "device.revoke": {
     params: deviceRevokeParamsSchema,
