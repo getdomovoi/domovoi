@@ -206,9 +206,11 @@ fleet.
 - [x] Add a fleet registry and machine selector to the shared protocol and UI
 - [x] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
-  2. LAN or direct tailnet connection;
-  3. SSH tunnel where explicitly configured;
-  4. outbound relay fallback after hosted services exist.
+  2. WSL interop to a distro daemon on the same machine;
+  3. LAN connection;
+  4. direct tailnet connection;
+  5. SSH tunnel where explicitly configured;
+  6. outbound relay fallback after hosted services exist.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Bootstrap `domovoid` through a version-pinned, checksummed install script
 - [ ] Install and supervise the daemon through systemd, launchd, and Windows Services
