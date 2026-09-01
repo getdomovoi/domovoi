@@ -5,6 +5,7 @@ export {
   type DesktopOpenExternalRequest,
   type DesktopWindowBridge,
 } from "./desktop-platform"
+export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
 export {
   dialTransport,
   isLoopbackEndpoint,
