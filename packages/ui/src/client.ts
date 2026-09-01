@@ -20,6 +20,8 @@ import {
   type ArtifactAccess,
   type AuditExportParams,
   type AuditExportResult,
+  type DeviceMachineCredentialParams,
+  type DeviceMachineCredentialResult,
   type DeviceSaveCredentialParams,
   type DeviceSaveCredentialResult,
   type AuditQueryPage,
@@ -514,6 +516,13 @@ export class DomovoiClient extends EventTarget {
     options?: DomovoiRequestOptions,
   ): Promise<AuditQueryPage> {
     return this.request("audit.query", params, options)
+  }
+
+  machineCredential(
+    params: DeviceMachineCredentialParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<DeviceMachineCredentialResult> {
+    return this.request("device.machineCredential", params, options)
   }
 
   saveMachineCredential(

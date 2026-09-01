@@ -1221,6 +1221,22 @@ describe("DomovoiClient machine credentials", () => {
     globalThis.WebSocket = NativeWebSocket
   })
 
+  it("reads a kept machine credential through the daemon", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const reading = client.machineCredential({ machineId: `machine-${"c".repeat(32)}` })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { credential: "n".repeat(43) } })
+
+    await expect(reading).resolves.toEqual({ credential: "n".repeat(43) })
+    expect(sent.method).toBe("device.machineCredential")
+  })
+
   it("saves a machine credential through the daemon", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
     const connecting = client.connect()
