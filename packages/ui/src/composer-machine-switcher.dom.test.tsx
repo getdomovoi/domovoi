@@ -34,7 +34,7 @@ it("opens the device menu from the composer machine chip", async () => {
         arch: snapshot.machine.arch,
         version: snapshot.machine.version,
         connection: "local",
-        capabilities: ["sessions"],
+        capabilities: ["sessions" as const],
         protocolVersion: "0.1.0",
         transports: [
           { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const },
@@ -102,4 +102,56 @@ it("pairs a machine from the composer device menu", async () => {
     code: "hearth-quiet-ember-42",
     label: "studio-ipad",
   })
+})
+
+it("selects another machine from the composer device menu", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const onSelectMachine = vi.fn()
+  const studio = {
+    id: `machine-${"b".repeat(32)}`,
+    label: "studio",
+    platform: "linux",
+    arch: "x64",
+    version: snapshot.machine.version,
+    connection: "tailnet" as const,
+    capabilities: ["sessions" as const],
+    protocolVersion: "0.1.0" as const,
+    transports: [
+      { kind: "tailnet" as const, endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true as const },
+    ],
+    heartbeat: { state: "online" as const, lastSeenAt: "2026-08-31T12:00:00.000Z" },
+    health: "healthy" as const,
+    self: false,
+  }
+  render(
+    <Thread
+      snapshot={snapshot}
+      connected
+      fleet={[{
+        id: snapshot.machine.id,
+        label: snapshot.machine.name,
+        platform: snapshot.machine.platform,
+        arch: snapshot.machine.arch,
+        version: snapshot.machine.version,
+        connection: "local" as const,
+        capabilities: ["sessions" as const],
+        protocolVersion: "0.1.0" as const,
+        transports: [
+          { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const },
+        ],
+        heartbeat: { state: "online" as const, lastSeenAt: "2026-08-31T12:00:00.000Z" },
+        health: "healthy" as const,
+        self: true,
+      }, studio]}
+      currentMachineId={snapshot.machine.id}
+      onSelectMachine={onSelectMachine}
+      {...handlers}
+    />,
+  )
+
+  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("menuitem", { name: /studio/ }))
+
+  expect(onSelectMachine).toHaveBeenCalledWith(studio.id)
 })
