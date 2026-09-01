@@ -39,6 +39,25 @@ describe("reconnectMachine", () => {
     expect(clock.waited).toEqual([500, 1_000, 2_000, 2_000])
   })
 
+  it("never waits longer than the cap, even on the first retry", async () => {
+    const clock = waiter()
+    let attempts = 0
+    const connect = vi.fn(async () => {
+      attempts += 1
+      if (attempts < 3) throw new Error("Cannot reach that machine")
+      return "connection"
+    })
+
+    await expect(reconnectMachine({
+      connect,
+      wait: clock.wait,
+      attempts: 5,
+      initialDelayMs: 30_000,
+      maximumDelayMs: 2_000,
+    })).resolves.toBe("connection")
+    expect(clock.waited).toEqual([2_000, 2_000])
+  })
+
   it("gives up after the attempt limit without quoting the failure", async () => {
     const clock = waiter()
     const credential = "n".repeat(43)
