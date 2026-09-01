@@ -2,11 +2,9 @@ import { createHash } from "node:crypto"
 
 import { describe, expect, it } from "vitest"
 
-import {
-  maximumTransferChunkBytes,
-  TransferAssembler,
-  transferChunkSchema,
-} from "./transfer-stream.js"
+import { maximumTransferChunkBytes, transferChunkSchema } from "@getdomovoi/protocol"
+
+import { TransferAssembler } from "./transfer-assembler.js"
 
 const bundle = Buffer.from("PACK bundle bytes for one session worktree")
 const digest = createHash("sha256").update(bundle).digest("hex")
