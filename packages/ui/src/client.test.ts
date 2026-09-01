@@ -1221,6 +1221,23 @@ describe("DomovoiClient machine credentials", () => {
     globalThis.WebSocket = NativeWebSocket
   })
 
+  it("lists the fleet through the daemon", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const listing = client.listFleet()
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { machines: [] } })
+
+    await expect(listing).resolves.toEqual({ machines: [] })
+    expect(sent.method).toBe("fleet.list")
+    expect(sent.params).toEqual({})
+  })
+
   it("reads a kept machine credential through the daemon", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
     const connecting = client.connect()
