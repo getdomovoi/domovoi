@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { fleetHealthSchema } from "./fleet-health.js"
+import { transportCandidateSchema } from "./transport.js"
 import { connectionKindSchema } from "./schema.js"
 
 export const maximumFleetMachines = 128
@@ -46,6 +47,9 @@ const fleetMachineFactsObject = z.object({
   connection: connectionKindSchema,
   capabilities: z.array(machineCapabilitySchema).max(16),
   protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  // Only endpoints the dialer would accept: the schema refuses an
+  // unauthenticated candidate, so a machine cannot advertise one.
+  transports: z.array(transportCandidateSchema).max(8),
 }).strict()
 
 export const fleetMachineFactsSchema = fleetMachineFactsObject.superRefine(refineCapabilities)
