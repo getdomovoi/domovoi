@@ -30,9 +30,9 @@ class FakeWebSocket extends EventTarget {
     this.sent.push(data)
   }
 
-  close(): void {
+  close(code = 1000, reason = ""): void {
     this.readyState = FakeWebSocket.CLOSED
-    this.dispatchEvent(new Event("close"))
+    this.dispatchClose(code, reason)
   }
 
   open(): void {
@@ -44,9 +44,43 @@ class FakeWebSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(message) }))
   }
 
-  drop(): void {
+  drop(code = 1006, reason = ""): void {
     this.readyState = FakeWebSocket.CLOSED
-    this.dispatchEvent(new Event("close"))
+    this.dispatchClose(code, reason)
+  }
+
+  private dispatchClose(code: number, reason: string): void {
+    const event = new Event("close")
+    Object.defineProperties(event, {
+      code: { value: code },
+      reason: { value: reason },
+    })
+    this.dispatchEvent(event)
+  }
+}
+
+class ManualScheduler {
+  readonly delays: number[] = []
+  readonly callbacks = new Map<number, () => void>()
+  #nextId = 0
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.#nextId
+    this.delays.push(delayMs)
+    this.callbacks.set(id, callback)
+    return id
+  }
+
+  clearTimeout(id: unknown): void {
+    if (typeof id === "number") this.callbacks.delete(id)
+  }
+
+  async runNext(): Promise<void> {
+    const next = this.callbacks.entries().next().value as [number, () => void] | undefined
+    if (!next) throw new Error("No scheduled reconnect")
+    this.callbacks.delete(next[0])
+    await Promise.resolve()
+    next[1]()
   }
 }
 
@@ -115,6 +149,7 @@ describe("DomovoiClient", () => {
   it("reconnects after an unexpected close and publishes the recovered snapshot", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
       reconnectDelayMs: 25,
+      reconnectJitterRatio: 0,
     })
     const connected = vi.fn()
     const snapshots: WorkspaceSnapshot[] = []
@@ -324,6 +359,28 @@ describe("DomovoiClient", () => {
     })
 
     await expect(loading).resolves.toMatchObject({ hasMore: false })
+    client.disconnect()
+  })
+
+  it("cancels session history through its request signal", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const controller = new AbortController()
+
+    const loading = client.loadSessionHistory(
+      demoWorkspace.sessions[0]!.id,
+      { query: "newest", limit: 50 },
+      { signal: controller.signal },
+    )
+    const cancellation = loading.catch((cause: unknown) => cause)
+    controller.abort()
+
+    await expect(cancellation).resolves.toMatchObject({ name: "AbortError" })
+    expect(vi.getTimerCount()).toBe(0)
     client.disconnect()
   })
 
@@ -744,6 +801,186 @@ describe("DomovoiClient", () => {
     await retry
     await vi.advanceTimersByTimeAsync(25)
 
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    client.disconnect()
+  })
+
+  it("uses capped exponential reconnect delays with deterministic jitter", async () => {
+    const scheduler = new ManualScheduler()
+    const randomValues = [0.5, 0, 1, 0.5]
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      reconnectDelayMs: 1_000,
+      reconnectMaxDelayMs: 4_000,
+      reconnectJitterRatio: 0.2,
+      random: () => randomValues.shift() ?? 0.5,
+      scheduler,
+    })
+
+    client.connect()
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      FakeWebSocket.instances.at(-1)!.drop()
+      await scheduler.runNext()
+    }
+
+    expect(scheduler.delays).toEqual([1_000, 1_600, 4_000, 4_000])
+    expect(FakeWebSocket.instances).toHaveLength(5)
+    client.disconnect()
+  })
+
+  it("resets reconnect backoff only after confirmed authentication", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      reconnectDelayMs: 100,
+      reconnectMaxDelayMs: 800,
+      reconnectJitterRatio: 0,
+      scheduler,
+    })
+
+    client.connect()
+    FakeWebSocket.instances[0]!.drop()
+    await scheduler.runNext()
+    const unauthenticated = FakeWebSocket.instances[1]!
+    unauthenticated.open()
+    unauthenticated.drop()
+    await scheduler.runNext()
+    const authenticated = FakeWebSocket.instances[2]!
+    authenticated.open()
+    authenticated.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await Promise.resolve()
+    authenticated.drop()
+
+    expect(scheduler.delays).toEqual([100, 200, 100])
+    client.disconnect()
+  })
+
+  it("starts a fresh connection at the first backoff delay", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler, random: () => 0.5 })
+
+    client.connect()
+    FakeWebSocket.instances[0]!.drop()
+    const firstDelay = scheduler.delays[0]!
+    await scheduler.runNext()
+    FakeWebSocket.instances[1]!.drop()
+    const escalatedDelay = scheduler.delays[1]!
+    expect(escalatedDelay).toBeGreaterThan(firstDelay)
+
+    client.disconnect()
+    client.connect()
+    FakeWebSocket.instances[2]!.drop()
+
+    expect(scheduler.delays[2]).toBe(firstDelay)
+  })
+
+  it("stops reconnecting once a machine revokes this device", () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+
+    client.connect()
+    FakeWebSocket.instances[0]!.drop(1008, "device credential revoked")
+
+    expect(scheduler.callbacks.size).toBe(0)
+  })
+
+  it("cancels reconnect work after explicit disconnect", () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+
+    client.connect()
+    FakeWebSocket.instances[0]!.drop()
+    expect(scheduler.callbacks).toHaveLength(1)
+    client.disconnect()
+    expect(scheduler.callbacks).toHaveLength(0)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it("publishes terminal authentication rejection without retrying", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      authToken: "expired-token",
+      scheduler,
+    })
+    const authenticationRequired = vi.fn()
+    client.addEventListener("authentication-required", authenticationRequired)
+
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32001, message: "Daemon authentication failed" },
+    })
+    await expect(connecting).rejects.toThrow("Daemon authentication failed")
+
+    expect(authenticationRequired).toHaveBeenCalledOnce()
+    expect((authenticationRequired.mock.calls[0]![0] as CustomEvent).detail).toEqual({
+      message: "Daemon authentication failed",
+      action: "update-credentials-or-reconnect",
+    })
+    expect(scheduler.callbacks).toHaveLength(0)
+  })
+
+  it("stops an authenticated connection when credentials expire", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { scheduler })
+    const authenticationRequired = vi.fn()
+    client.addEventListener("authentication-required", authenticationRequired)
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const request = client.activateSession("session-audit")
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { code: -32001, message: "Daemon authentication expired" },
+    })
+
+    await expect(request).rejects.toThrow("Daemon authentication expired")
+    expect(authenticationRequired).toHaveBeenCalledOnce()
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(scheduler.callbacks).toHaveLength(0)
+  })
+
+  it("does not let stale socket callbacks create or revive a connection", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+
+    client.connect()
+    const stale = FakeWebSocket.instances[0]!
+    stale.drop()
+    await scheduler.runNext()
+    const current = FakeWebSocket.instances[1]!
+    stale.open()
+    stale.drop()
+
+    expect(stale.sent).toHaveLength(0)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(scheduler.callbacks).toHaveLength(0)
+    expect(current.readyState).toBe(FakeWebSocket.CONNECTING)
+    client.disconnect()
+  })
+
+  it("retries a 1013 slow-client close", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      reconnectDelayMs: 50,
+      reconnectJitterRatio: 0,
+      scheduler,
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    socket.drop(1013, "slow client")
+
+    expect(scheduler.delays).toEqual([50])
+    await scheduler.runNext()
     expect(FakeWebSocket.instances).toHaveLength(2)
     client.disconnect()
   })

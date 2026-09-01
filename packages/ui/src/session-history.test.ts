@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionHistoryEntry, SessionHistoryPage } from "@getdomovoi/protocol"
 
 import {
   latestSessionHistoryRequest,
+  SessionHistoryRequestController,
+  sessionHistorySearchDebounceMs,
   historyWindowedAfterMerge,
   maximumRetainedSessionHistoryItems,
   mergeOlderHistory,
@@ -12,6 +14,10 @@ import {
   sessionHistoryEntryDetail,
   sessionHistoryEntryTitle,
 } from "./session-history"
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const message = (id: string): SessionHistoryEntry => ({
   id: `thread:${id}`,
@@ -151,5 +157,74 @@ describe("session history view model", () => {
       limit: 50,
     })
     expect(latestSessionHistoryRequest(["messages"], "")).not.toHaveProperty("before")
+  })
+
+  it("debounces search by the exact delay and aborts a stale request", async () => {
+    vi.useFakeTimers()
+    const loads: Array<{ query: string; signal: AbortSignal }> = []
+    const completions: string[] = []
+    const controller = new SessionHistoryRequestController<string>()
+
+    controller.schedule({
+      debounce: true,
+      load: (signal) => {
+        loads.push({ query: "a", signal })
+        return new Promise(() => undefined)
+      },
+      onSuccess: (value) => completions.push(value),
+    })
+    await vi.advanceTimersByTimeAsync(sessionHistorySearchDebounceMs - 1)
+    expect(loads).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(loads).toHaveLength(1)
+
+    controller.schedule({
+      debounce: true,
+      load: async (signal) => {
+        loads.push({ query: "ab", signal })
+        return "new"
+      },
+      onSuccess: (value) => completions.push(value),
+    })
+    expect(loads[0]?.signal.aborted).toBe(true)
+    await vi.advanceTimersByTimeAsync(sessionHistorySearchDebounceMs)
+    await Promise.resolve()
+    expect(loads.map(({ query }) => query)).toEqual(["a", "ab"])
+    expect(completions).toEqual(["new"])
+  })
+
+  it("starts session/filter changes immediately and suppresses stale completion", async () => {
+    const pending: Array<{ resolve: (value: string) => void; signal: AbortSignal }> = []
+    const completions: string[] = []
+    const controller = new SessionHistoryRequestController<string>()
+    const schedule = () => controller.schedule({
+      debounce: false,
+      load: (signal) => new Promise<string>((resolve) => pending.push({ resolve, signal })),
+      onSuccess: (value) => completions.push(value),
+    })
+
+    schedule()
+    schedule()
+    expect(pending[0]?.signal.aborted).toBe(true)
+    pending[0]!.resolve("stale")
+    pending[1]!.resolve("current")
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(completions).toEqual(["current"])
+  })
+
+  it("cancels timers and active work during cleanup", async () => {
+    vi.useFakeTimers()
+    const load = vi.fn((_signal: AbortSignal) => new Promise<string>(() => undefined))
+    const controller = new SessionHistoryRequestController<string>()
+    controller.schedule({ debounce: true, load, onSuccess: vi.fn() })
+    controller.dispose()
+    await vi.runAllTimersAsync()
+    expect(load).not.toHaveBeenCalled()
+
+    controller.schedule({ debounce: false, load, onSuccess: vi.fn() })
+    const signal = load.mock.calls[0]![0]
+    controller.dispose()
+    expect(signal.aborted).toBe(true)
   })
 })
