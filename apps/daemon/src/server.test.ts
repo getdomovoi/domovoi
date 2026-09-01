@@ -17,6 +17,8 @@ import {
   projectSwitchConfirmationSchema,
   workspaceSnapshotSchema,
   type ProviderModel,
+  type RpcMethod,
+  type RpcResult,
   type SkillSummary,
 } from "@getdomovoi/protocol"
 
@@ -55,6 +57,7 @@ const skillSecurityMetadata = {
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
+type TestRpcResponse<M extends RpcMethod> = Record<string, unknown> & { result: RpcResult<M> }
 
 function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   const turns = snapshot.sessions.flatMap((session) => session.activeTurnId
@@ -314,13 +317,13 @@ describe("DomovoiDaemon", () => {
       if (message.id === undefined) notifications.push(message)
     })
     let id = 0
-    const rpc = (method: string, params: object) => new Promise<Record<string, any>>((resolve) => {
+    const rpc = <M extends RpcMethod>(method: M, params: object) => new Promise<TestRpcResponse<M>>((resolve) => {
       const requestId = ++id
       const receive = (data: WebSocket.RawData) => {
-        const message = JSON.parse(data.toString()) as Record<string, any>
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
         if (message.id !== requestId) return
         socket.off("message", receive)
-        resolve(message)
+        resolve(message as TestRpcResponse<M>)
       }
       socket.on("message", receive)
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
@@ -354,7 +357,7 @@ describe("DomovoiDaemon", () => {
         directory: "https://[REDACTED]@example.test/repo",
       }),
     ])
-    const approvalId = pending.result.approvals[0].id as string
+    const approvalId = pending.result.approvals[0]!.id as string
     await expect(rpc("approval.resolve", {
       approvalId,
       decision: "always-project",
@@ -1177,6 +1180,8 @@ describe("DomovoiDaemon", () => {
     const archivedBefore = structuredClone(archived)
 
     const saves: typeof snapshot[] = []
+    // The store closure below reads the daemon that is constructed after it.
+    // eslint-disable-next-line prefer-const
     let daemon: DomovoiDaemon
     const store = {
       load: vi.fn(() => structuredClone(snapshot)),
@@ -1325,12 +1330,12 @@ describe("DomovoiDaemon", () => {
     let requestId = 0
     const rpc = (method: string, params: Record<string, unknown>) => {
       const id = ++requestId
-      const response = new Promise<Record<string, any>>((resolve) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
         const receive = (data: WebSocket.RawData) => {
           const message = JSON.parse(data.toString()) as { id?: number }
           if (message.id !== id) return
           socket.off("message", receive)
-          resolve(message as Record<string, any>)
+          resolve(message as Record<string, unknown>)
         }
         socket.on("message", receive)
       })
@@ -6161,8 +6166,8 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    const unauthenticated = new Promise<Record<string, any>>((resolve) => {
-      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, any>))
+    const unauthenticated = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
     })
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
@@ -6176,7 +6181,7 @@ describe("DomovoiDaemon", () => {
     expect(agent.startThread).not.toHaveBeenCalled()
     await identifyClient(socket)
     let id = 0
-    const rpc = (sessionId: string) => new Promise<Record<string, any>>((resolve) => {
+    const rpc = (sessionId: string) => new Promise<Record<string, unknown>>((resolve) => {
       const requestId = ++id
       socket.on("message", function receive(data) {
         const message = JSON.parse(data.toString()) as { id?: number }
@@ -7779,7 +7784,7 @@ describe("DomovoiDaemon", () => {
       intruder.once("open", resolve)
       intruder.once("error", reject)
     })
-    const deniedResponse = new Promise<Record<string, any>>((resolve) => {
+    const deniedResponse = new Promise<Record<string, unknown>>((resolve) => {
       intruder.once("message", (data) => resolve(JSON.parse(data.toString())))
     })
     intruder.send(JSON.stringify({ jsonrpc: "2.0", id: 999, method: "workspace.get", params: {} }))
@@ -7791,14 +7796,14 @@ describe("DomovoiDaemon", () => {
       socket.once("error", reject)
     })
     let id = 0
-    const rpc = (method: string, params: object) => new Promise<Record<string, any>>((resolve) => {
+    const rpc = <M extends RpcMethod>(method: M, params: object) => new Promise<TestRpcResponse<M>>((resolve) => {
       id += 1
       const requestId = id
       const listener = (data: WebSocket.RawData) => {
-        const message = JSON.parse(data.toString()) as Record<string, any>
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
         if (message.id !== requestId) return
         socket.off("message", listener)
-        resolve(message)
+        resolve(message as TestRpcResponse<M>)
       }
       socket.on("message", listener)
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
@@ -7930,10 +7935,10 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    const responses = new Promise<Array<Record<string, any>>>((resolve) => {
-      const collected: Array<Record<string, any>> = []
+    const responses = new Promise<Array<Record<string, unknown>>>((resolve) => {
+      const collected: Array<Record<string, unknown>> = []
       socket.on("message", (data) => {
-        const message = JSON.parse(data.toString()) as Record<string, any>
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
         if (message.id !== 88) return
         collected.push(message)
         if (collected.length === 2) resolve(collected)
@@ -8023,16 +8028,16 @@ describe("adversarially deep JSON-RPC payloads", () => {
     process.on("unhandledRejection", recordRejection)
     try {
       const nested = `${"[".repeat(100_000)}1${"]".repeat(100_000)}`
-      const rejected = new Promise<Record<string, any>>((resolve) => {
-        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, any>))
+      const rejected = new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
       })
       socket.send(`{"jsonrpc":"2.0","id":1,"method":"workspace.get","params":{"nested":${nested}}}`)
       await expect(rejected).resolves.toMatchObject({
         error: { code: -32600, message: "Request does not match JSON-RPC 2.0" },
       })
 
-      const served = new Promise<Record<string, any>>((resolve) => {
-        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, any>))
+      const served = new Promise<Record<string, unknown>>((resolve) => {
+        socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
       })
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "workspace.get", params: {} }))
       await expect(served).resolves.toMatchObject({ id: 2 })

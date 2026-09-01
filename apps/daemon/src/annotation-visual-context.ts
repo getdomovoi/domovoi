@@ -165,7 +165,9 @@ export class AnnotationVisualContextService implements AnnotationVisualContextRe
   #reportReconciliationError(error: unknown): void {
     try {
       this.#reportRetentionError?.(error)
-    } catch {}
+    } catch {
+      // Reporting a retention failure must never become a failure of its own.
+    }
   }
 
   #releasePublication(ref: string): void {

@@ -175,12 +175,13 @@ export function AuditLogView({
   const requestRef = useRef(0)
   const loadControllerRef = useRef<AbortController | undefined>(undefined)
   const exportControllerRef = useRef<AbortController | undefined>(undefined)
+  const normalizedQuery = query.trim()
+  const normalizedAction = action.trim()
   const filters = useMemo(() => ({
-    ...(query.trim() ? { query: query.trim() } : {}),
-    ...(action.trim() ? { action: action.trim() } : {}),
+    ...(normalizedQuery ? { query: normalizedQuery } : {}),
+    ...(normalizedAction ? { action: normalizedAction } : {}),
     ...(outcome !== "all" ? { outcome: outcome as AuditOutcome } : {}),
-  }), [action, outcome, query])
-  const filterKey = JSON.stringify(filters)
+  }), [normalizedAction, normalizedQuery, outcome])
 
   useEffect(() => {
     loadControllerRef.current?.abort()
@@ -212,7 +213,7 @@ export function AuditLogView({
       loadControllerRef.current = undefined
       requestRef.current += 1
     }
-  }, [connected, filterKey, onQuery])
+  }, [connected, filters, onQuery])
 
   useEffect(() => () => {
     loadControllerRef.current?.abort()

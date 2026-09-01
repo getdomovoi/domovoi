@@ -3,18 +3,23 @@
 Execution daemon for Domovoi agent sessions. It owns repository state, terminals, approvals,
 artifacts, and the authenticated JSON-RPC endpoint beside the code.
 
-## Install
+## Workspace use
+
+`@getdomovoi/daemon` is not currently published to a package registry. Until the first release,
+use it from this repository's pnpm workspace:
 
 ```bash
-pnpm add --global @getdomovoi/daemon
+pnpm install
+pnpm --filter @getdomovoi/daemon build
 ```
 
-The package is standard ESM and can also be installed with npm or Bun.
+The package is standard ESM, but npm, pnpm, and Bun registry installation will only be supported
+after publication.
 
 ## Run
 
 ```bash
-domovoid
+pnpm --filter @getdomovoi/daemon start
 ```
 
 The daemon listens on `127.0.0.1:47831` by default. Configure it with these environment variables:
