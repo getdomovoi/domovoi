@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http"
+import { createServer as createSecureServer } from "node:https"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { lstat, readFile, realpath, stat } from "node:fs/promises"
 import { arch, homedir, hostname, platform } from "node:os"
@@ -92,6 +93,7 @@ import { permissionDecisionFor } from "./permission-policy.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
+import type { TlsMaterial } from "./tls-material.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
   ArtifactWatcher,
@@ -417,6 +419,7 @@ export type DaemonServerOptions = {
   artifactWatcherFactory?: SessionArtifactWatcherFactory
   annotationVisualContext?: AnnotationVisualContextStore
   machineIdentity?: MachineIdentity
+  tls?: TlsMaterial
 }
 
 export type DaemonErrorEntry = {
@@ -495,6 +498,7 @@ export class DomovoiDaemon {
   #stopped = false
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
+  #tls: TlsMaterial | undefined
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
@@ -504,6 +508,7 @@ export class DomovoiDaemon {
     this.requestedPort = options.port ?? 47831
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
+    this.#tls = options.tls
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
@@ -650,7 +655,13 @@ export class DomovoiDaemon {
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
 
-    this.#http = createServer((request, response) => {
+    const listen = this.#tls
+      ? (requestHandler: Parameters<typeof createServer>[1]) => createSecureServer(
+        { cert: this.#tls!.cert, key: this.#tls!.key },
+        requestHandler,
+      )
+      : (requestHandler: Parameters<typeof createServer>[1]) => createServer(requestHandler)
+    this.#http = listen((request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
         response.end(JSON.stringify({ status: "ok", protocolVersion }))
