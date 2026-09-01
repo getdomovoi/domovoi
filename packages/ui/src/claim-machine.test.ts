@@ -78,6 +78,17 @@ describe("claimMachine", () => {
     expect(io.open).not.toHaveBeenCalled()
   })
 
+  it.each(["wss://", "ws://", "not a url"])(
+    "refuses an endpoint with no machine to reach: %s",
+    async (endpoint) => {
+      const io = transport()
+
+      await expect(claimMachine({ endpoint, code, label: "studio-ipad", open: io.open }))
+        .rejects.toThrow(MachineClaimError)
+      expect(io.open).not.toHaveBeenCalled()
+    },
+  )
+
   it("closes the connection once the claim is done", async () => {
     const io = transport()
 
