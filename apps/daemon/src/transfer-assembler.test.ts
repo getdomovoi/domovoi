@@ -65,6 +65,19 @@ describe("transfer stream", () => {
     })
   })
 
+  it("hands back nothing once a late chunk refuses a completed transfer", () => {
+    const assembler = new TransferAssembler({ digest, totalBytes: bundle.length })
+    assembler.accept(chunk(0, bundle, true))
+
+    expect(assembler.accept(chunk(1, bundle))).toEqual({
+      state: "refused",
+      reason: "chunk-out-of-order",
+    })
+    // A refused transfer must not look complete, or its empty bytes would
+    // restore as an empty worktree.
+    expect(() => assembler.bytes()).toThrow("Transfer is not complete")
+  })
+
   it("refuses to hand back bytes it has not finished verifying", () => {
     const assembler = new TransferAssembler({ digest, totalBytes: bundle.length })
     assembler.accept(chunk(0, bundle.subarray(0, 4)))

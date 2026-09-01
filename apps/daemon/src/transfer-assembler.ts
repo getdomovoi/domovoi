@@ -52,6 +52,9 @@ export class TransferAssembler {
 
   #refuse(reason: TransferStreamRefusal): TransferAcceptance {
     this.#refused = true
+    // A refused transfer is not a delivered one, whatever it had accepted
+    // before, so it can no longer hand back bytes.
+    this.#complete = false
     // Nothing partial is kept: a refused transfer must not leave bytes behind
     // that could be mistaken for a delivered worktree.
     this.#chunks.length = 0
