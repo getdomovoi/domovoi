@@ -2745,6 +2745,92 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  async function unauthenticatedSocket(daemon: DomovoiDaemon) {
+    const address = daemon.address!
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const call = (id: number, method: string, params: Record<string, unknown>) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    return { socket, call }
+  }
+
+  it("pairs an unauthenticated machine that presents the pairing code", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const issued = daemon.issuePairingCode()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    const claimed = await call(1, "device.claim", { code: issued.code, label: "studio-ipad" })
+
+    const token = (claimed.result as { token: string }).token
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(store.devices.verify(token)?.label).toBe("studio-ipad")
+    socket.close()
+  })
+
+  it("lets an unauthenticated socket do nothing but claim", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    daemon.issuePairingCode()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    for (const method of ["workspace.get", "device.list", "fleet.list"]) {
+      await expect(call(1, method, {})).resolves.toMatchObject({
+        error: { message: "Daemon authentication required" },
+      })
+    }
+    socket.close()
+  })
+
+  it("refuses a claim when no pairing is open", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    await expect(call(1, "device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad" }))
+      .resolves.toMatchObject({ error: { message: "Pairing code is not valid" } })
+    expect(store.devices.list()).toHaveLength(0)
+    socket.close()
+  })
+
+  it("audits a pairing without recording the code or the credential", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const issued = daemon.issuePairingCode()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    const claimed = await call(1, "device.claim", { code: issued.code, label: "studio-ipad" })
+
+    const token = (claimed.result as { token: string }).token
+    const entries = store.auditLog.query({ limit: 50 }).entries
+    expect(entries.some((entry) => entry.action === "device.claim")).toBe(true)
+    expect(JSON.stringify(entries)).not.toContain(token)
+    expect(JSON.stringify(entries)).not.toContain(issued.code)
+    socket.close()
+  })
+
   it("requires the configured token before serving daemon state", async () => {
     const agent = {
       connect: vi.fn(async () => {}),
