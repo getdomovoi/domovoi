@@ -113,6 +113,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
+import { PairMachineDialog } from "./pair-machine-dialog.js"
+import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
@@ -1116,6 +1118,7 @@ export function Thread({
   onPauseSession,
   onArchiveSession,
   onOpenExternal,
+  onPairMachine,
   externalEditor = "system",
 }: {
   snapshot: WorkspaceSnapshot
@@ -1138,6 +1141,7 @@ export function Thread({
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
+  onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   externalEditor?: DesktopExternalEditor | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
@@ -1145,6 +1149,7 @@ export function Thread({
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
+  const [pairingMachine, setPairingMachine] = useState(false)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
@@ -1435,7 +1440,16 @@ export function Thread({
                 machines={fleet ?? [localMachineEntry(snapshot)]}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
                 currentSessionCount={activeSessionCount(snapshot)}
+                onPairMachine={onPairMachine ? () => setPairingMachine(true) : undefined}
               />
+              {onPairMachine ? (
+                <PairMachineDialog
+                  open={pairingMachine}
+                  onOpenChange={setPairingMachine}
+                  onClaim={onPairMachine}
+                  onPaired={() => setPairingMachine(false)}
+                />
+              ) : null}
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
               {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
@@ -2711,6 +2725,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     loadSessionHistory,
     loadSessionEvidence,
     openProject,
+    pairMachine,
     pauseSession,
     queryAudit,
     readSkill,
@@ -3225,7 +3240,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={rpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
