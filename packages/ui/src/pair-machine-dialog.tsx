@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react"
+import { useEffect, useRef, useState, type FormEvent } from "react"
 
 import type { DevicePairResult } from "@getdomovoi/protocol"
 
@@ -39,6 +39,19 @@ export function PairMachineDialog({
   const [error, setError] = useState("")
 
   const ready = endpoint.trim() && code.trim() && label.trim()
+
+  // A parent may close this dialog without going through onOpenChange, and the
+  // code must not be sitting here waiting to reappear when it opens again.
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (wasOpen.current && !open) {
+      setEndpoint("")
+      setCode("")
+      setLabel("")
+      setError("")
+    }
+    wasOpen.current = open
+  }, [open])
 
   const forget = () => {
     // The code is a live credential while it lasts, so nothing is kept once the

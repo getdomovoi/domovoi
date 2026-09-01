@@ -80,6 +80,40 @@ it("shows why a pairing was refused", async () => {
   expect(await screen.findByText("Pairing was refused")).toBeTruthy()
 })
 
+it("forgets the code when the parent closes it", async () => {
+  const user = userEvent.setup()
+  const view = render(
+    <PairMachineDialog
+      open
+      onOpenChange={vi.fn()}
+      onClaim={vi.fn(async () => paired)}
+      onPaired={vi.fn()}
+    />,
+  )
+  await user.type(screen.getByLabelText(/pairing code/i), "hearth-quiet-ember-42")
+
+  view.rerender(
+    <PairMachineDialog
+      open={false}
+      onOpenChange={vi.fn()}
+      onClaim={vi.fn(async () => paired)}
+      onPaired={vi.fn()}
+    />,
+  )
+  view.rerender(
+    <PairMachineDialog
+      open
+      onOpenChange={vi.fn()}
+      onClaim={vi.fn(async () => paired)}
+      onPaired={vi.fn()}
+    />,
+  )
+
+  await waitFor(() => expect(
+    (screen.getByLabelText(/pairing code/i) as HTMLInputElement).value,
+  ).toBe(""))
+})
+
 it("says a code is used once and lasts minutes", async () => {
   await openDialog()
 
