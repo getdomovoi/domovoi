@@ -113,8 +113,11 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-01 (America/Boise):
   `MERGED`: closes audit concerns I1–I5 and adds the workspace lint gate. Before it, `pnpm lint`
   matched no package script and passed without linting anything.
 - [#101](https://github.com/getdomovoi/domovoi/pull/101) — `perf: bound desktop alpha hot paths` —
-  `OPEN` (pending): offloads snapshot persistence, bounds RPC output, and backs off reconnects.
-  Goal 1 is not complete until it merges.
+  `MERGED`: offloads snapshot persistence to a worker that waits for a busy database and refuses
+  work once it is gone, bounds RPC output, debounces history search, and backs off reconnects
+  without retrying a device a machine has revoked.
+
+Every ledger entry is now merged.
 
 ### Sessions and worktrees
 
