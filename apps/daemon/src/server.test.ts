@@ -8975,6 +8975,79 @@ describe("DomovoiDaemon session transfer requests", () => {
     socket.close()
   }, 20_000)
 
+  it("stops a git operation that outlives the transfer deadline", async () => {
+    const targetMachineId = `machine-${"e".repeat(32)}`
+    const snapshot = structuredClone(demoWorkspace)
+    const moved = snapshot.sessions.find((candidate) => candidate.state === "idle")!
+    moved.workspacePath = "/worktrees/session-audit"
+    snapshot.machine.id = `machine-${"a".repeat(32)}`
+    if (snapshot.project) snapshot.project.machineId = snapshot.machine.id
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    let checkpointSignal: AbortSignal | undefined
+    const source = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      machineCredentials: {
+        save: () => {},
+        forMachine: () => "n".repeat(43),
+        forget: () => {},
+        machines: () => [targetMachineId],
+      },
+      connectToMachine: async () => ({ call: async () => ({}), close: () => {} }),
+      workspaceService: {
+        ...stubWorkspaceService(),
+        checkpoint: async (_worktree: string, _label: string, signal?: AbortSignal) => {
+          // A git call that never returns must still be reachable by the
+          // deadline the transfer runs under.
+          checkpointSignal = signal
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener("abort", () => resolve(), { once: true })
+          })
+          return { commit: "b".repeat(40), changedFiles: [] }
+        },
+        bundleSession: async (_worktree: string, bundlePath: string) => ({
+          path: bundlePath,
+          commit: "b".repeat(40),
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK"),
+      sessionTransferTimeoutMs: 200,
+    })
+    running.push(source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true }],
+    }, Date.now())
+    const address = await source.start()
+    const socket = authenticatedSocket(source, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: moved.id,
+      targetMachineId,
+      client: "desktop",
+    })
+
+    // What matters is that the deadline reached the git call and the daemon
+    // answered, rather than the transfer holding the queue open.
+    expect(checkpointSignal?.aborted).toBe(true)
+    expect(answer).toMatchObject({ id: 1 })
+    socket.close()
+  }, 20_000)
+
   it("refuses to move a session to a machine the fleet does not know", async () => {
     const { daemon } = transferDaemon()
     const address = await daemon.start()

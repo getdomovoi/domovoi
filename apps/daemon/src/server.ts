@@ -139,7 +139,7 @@ export const maximumIncomingTransfers = 4
 const incomingTransferIdleMs = 60_000
 // A transfer that has stopped making progress is abandoned rather than left
 // holding the request that asked for it.
-const sessionTransferTimeoutMs = 600_000
+const defaultSessionTransferTimeoutMs = 600_000
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
@@ -595,6 +595,7 @@ export type DaemonServerOptions = {
   advertiseHost?: string
   machineCredentials?: MachineCredentials
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
+  sessionTransferTimeoutMs?: number
   connectToMachine?: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -683,6 +684,7 @@ export class DomovoiDaemon {
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
+  #sessionTransferTimeoutMs: number
   #connectToMachine: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -708,6 +710,7 @@ export class DomovoiDaemon {
     this.#advertiseHost = options.advertiseHost
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
+    this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
     // With nothing supplied, this daemon reaches other machines itself: the
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
@@ -2168,7 +2171,7 @@ export class DomovoiDaemon {
         // A target that stops answering must not hold this request open, and a
         // cancelled request must not keep talking to the other machine.
         const transferDeadline = new AbortController()
-        const timeout = setTimeout(() => transferDeadline.abort(), sessionTransferTimeoutMs)
+        const timeout = setTimeout(() => transferDeadline.abort(), this.#sessionTransferTimeoutMs)
         timeout.unref?.()
         const transferSignal = signal
           ? AbortSignal.any([signal, transferDeadline.signal])
@@ -2184,11 +2187,18 @@ export class DomovoiDaemon {
               remote: params.remote!,
               call: (remoteMethod, remoteParams) =>
                 connection.call(remoteMethod, remoteParams, transferSignal),
+              // The git work runs under the transfer's own deadline, so a call
+              // that hangs cannot outlive the transfer and hold the queue.
               checkpoint: (worktreePath, label) =>
-                this.#workspaceService.checkpoint(worktreePath, label, signal),
+                this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
               pushSessionRef: this.#workspaceService.pushSessionRef
                 ? (worktreePath, remote, sessionId) =>
-                  this.#workspaceService.pushSessionRef!(worktreePath, remote, sessionId, signal)
+                  this.#workspaceService.pushSessionRef!(
+                    worktreePath,
+                    remote,
+                    sessionId,
+                    transferSignal,
+                  )
                 : undefined,
               recordReceipt: (receipt) => {
                 try {
@@ -2220,9 +2230,9 @@ export class DomovoiDaemon {
             call: (remoteMethod, remoteParams) =>
               connection.call(remoteMethod, remoteParams, transferSignal),
             checkpoint: (worktreePath, label) =>
-              this.#workspaceService.checkpoint(worktreePath, label, signal),
+              this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
             bundleSession: (worktreePath, bundlePath) =>
-              bundleSession(worktreePath, bundlePath, undefined, signal),
+              bundleSession(worktreePath, bundlePath, undefined, transferSignal),
             readBundle,
             recordReceipt: (receipt) => {
               // The receipt records what happened; it does not decide it. A
