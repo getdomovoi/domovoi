@@ -11,9 +11,12 @@ production dependency graph of the publishable packages, `@getdomovoi/protocol` 
 `@getdomovoi/daemon`. Every allowed entry is permissive and carries no source-disclosure
 obligation.
 
-`exceptions` maps a package name to the reason it may stay despite a license outside that list.
-An exception is a recorded decision, not a silencer: the audit fails when an exception names a
-package that is no longer in the graph, so the file cannot drift into a list of stale excuses.
+`exceptions` maps a package name to the reason it may stay despite a license outside that list. A
+key may end in `*` to cover a family of packages whose exact name depends on the host, such as the
+per-platform binaries of a native dependency. An exception is a recorded decision, not a silencer:
+the audit fails when an exact-name exception is no longer in the graph, so the file cannot drift
+into a list of stale excuses. Pattern exceptions are exempt from that rule, because the platform
+binary present on a Linux runner is by definition absent on a macOS one.
 
 Run the audit with:
 
@@ -27,8 +30,8 @@ and Windows.
 
 ## Current exceptions
 
-`@anthropic-ai/claude-agent-sdk` and its platform binary
-`@anthropic-ai/claude-agent-sdk-darwin-x64` publish no SPDX license. Their `LICENSE.md` reads
+`@anthropic-ai/claude-agent-sdk` and its per-platform binaries, covered by
+`@anthropic-ai/claude-agent-sdk-*`, publish no SPDX license. Their `LICENSE.md` reads
 "© Anthropic PBC. All rights reserved.", with use governed by the Claude Code legal agreements.
 They are proprietary, and they are a runtime dependency of the Claude Code session adapter in the
 Apache-2.0 daemon.

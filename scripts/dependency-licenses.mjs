@@ -9,14 +9,25 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
 const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
 
+function exceptionMatcher(key) {
+  if (!key.includes("*")) return (name) => name === key
+  const source = key.split("*").map((part) => part.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join(".*")
+  const pattern = new RegExp(`^${source}$`)
+  return (name) => pattern.test(name)
+}
+
 export function evaluateDependencyLicenses(graph, policy) {
   const failures = []
   const seen = new Set()
+  const exceptions = Object.keys(policy.exceptions ?? {}).map((key) => ({
+    key,
+    matches: exceptionMatcher(key),
+  }))
 
   for (const [license, packages] of Object.entries(graph)) {
     for (const entry of packages) {
       seen.add(entry.name)
-      if (policy.exceptions?.[entry.name]) continue
+      if (exceptions.some((exception) => exception.matches(entry.name))) continue
       if (policy.allowed.includes(license)) continue
       for (const version of entry.versions) {
         failures.push(`${entry.name}@${version}: ${license} is not an allowed license`)
@@ -24,9 +35,10 @@ export function evaluateDependencyLicenses(graph, policy) {
     }
   }
 
-  for (const name of Object.keys(policy.exceptions ?? {})) {
-    if (!seen.has(name)) {
-      failures.push(`license-policy.json: ${name} is an exception but no longer in the dependency graph`)
+  for (const { key, matches } of exceptions) {
+    if (key.includes("*")) continue
+    if (![...seen].some((name) => matches(name))) {
+      failures.push(`license-policy.json: ${key} is an exception but no longer in the dependency graph`)
     }
   }
   return failures
