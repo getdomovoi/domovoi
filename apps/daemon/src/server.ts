@@ -1819,6 +1819,36 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "device.machineCredential") {
+        const params = rpcMethods[method].params.parse(request.params)
+        // Handing out another machine's credential is device management, so a
+        // device credential must not reach it.
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Managing paired devices requires the daemon credential",
+          )
+          return
+        }
+        if (!this.#machineCredentials) {
+          this.#error(socket, request.id, internalError, "Machine credentials are unavailable")
+          return
+        }
+        const credential = this.#machineCredentials.forMachine(params.machineId)
+        if (credential === undefined) {
+          this.#error(socket, request.id, invalidParams, "No credential is kept for that machine")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ credential }),
+        })
+        return
+      }
+
       if (method === "device.issueCode") {
         rpcMethods[method].params.parse(request.params)
         // Opening a pairing enrols a new device, so it is device management and
