@@ -6822,7 +6822,13 @@ describe("DomovoiDaemon", () => {
     await writeFile(join(worktree, "preview.html"), "<h1>Domovoi preview</h1>")
 
     await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: artifact!.revision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
-    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: artifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    // The writes above can raise the artifact's revision before this point, so
+    // the revision the daemon does not have is read now rather than assumed.
+    const currentSnapshot = await rpc("workspace.get", {})
+    const currentArtifact = (currentSnapshot.result as {
+      artifacts: Array<{ id: string; revision: number }>
+    }).artifacts.find((candidate) => candidate.id === artifact!.id)
+    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: currentArtifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
     const invalidBridge = await fetch(
       `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,
