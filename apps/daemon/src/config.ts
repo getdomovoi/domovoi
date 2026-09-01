@@ -11,6 +11,7 @@ export type DaemonEnvironmentConfig = {
   host: string
   port: number
   tls?: DaemonTlsMaterial
+  advertiseHost?: string
   credentialPath: string
   machineIdentityPath: string
   authToken?: string
@@ -58,6 +59,9 @@ export function parseDaemonEnvironment(
     "DOMOVOI_MACHINE_IDENTITY_PATH",
     join(homeDirectory, ".domovoi", "machine.json"),
   )
+  const advertiseHost = environment.DOMOVOI_ADVERTISE_HOST === undefined
+    ? undefined
+    : parseStatePath(environment.DOMOVOI_ADVERTISE_HOST, "DOMOVOI_ADVERTISE_HOST", "")
   const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
   const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
 
@@ -65,6 +69,7 @@ export function parseDaemonEnvironment(
     host,
     port,
     ...(tls ? { tls } : {}),
+    ...(advertiseHost ? { advertiseHost } : {}),
     credentialPath,
     machineIdentityPath,
     ...(authToken !== undefined ? { authToken } : {}),

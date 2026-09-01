@@ -13,6 +13,9 @@ import {
 const machine = {
   id: `machine-${"a".repeat(32)}`,
   protocolVersion: "0.1.0",
+  transports: [
+    { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const },
+  ],
   health: "healthy" as const,
   label: "workshop",
   platform: "linux",
@@ -55,6 +58,26 @@ describe("fleetMachineSchema", () => {
     expect(fleetMachineSchema.safeParse({
       ...machine,
       heartbeat: { state: "online", lastSeenAt: "not-a-time" },
+    }).success).toBe(false)
+  })
+})
+
+describe("fleet machine transports", () => {
+  it("carries the endpoints a client may dial", () => {
+    expect(fleetMachineSchema.parse(machine).transports).toEqual(machine.transports)
+  })
+
+  it("refuses an endpoint the dialer would reject", () => {
+    expect(fleetMachineSchema.safeParse({
+      ...machine,
+      transports: [{ kind: "lan", endpoint: "ws://workshop.local:47831/rpc", authenticated: false }],
+    }).success).toBe(false)
+  })
+
+  it("bounds how many endpoints a machine may advertise", () => {
+    expect(fleetMachineSchema.safeParse({
+      ...machine,
+      transports: Array.from({ length: 9 }, () => machine.transports[0]),
     }).success).toBe(false)
   })
 })
