@@ -36,15 +36,27 @@ export class SqliteTransferReceipts {
   }
 
   list(options: { limit?: number } = {}): TransferReceipt[] {
-    const limit = Math.min(options.limit ?? maximumListedTransferReceipts, maximumListedTransferReceipts)
+    const limit = options.limit ?? maximumListedTransferReceipts
+    // Asking for more than this listing serves is refused rather than quietly
+    // answered with fewer rows, which is how the audit listing behaves.
+    if (!Number.isInteger(limit) || limit < 1 || limit > maximumListedTransferReceipts) {
+      throw new Error("Transfer receipt limit is out of range")
+    }
     const rows = this.#database
       .prepare(
         "SELECT receipt FROM transfer_receipts ORDER BY completed_at DESC, id DESC LIMIT ?",
       )
-      .all(Math.max(limit, 0)) as { receipt: string }[]
+      .all(limit) as { receipt: string }[]
     return rows.flatMap((row) => {
-      const described = transferReceiptSchema.safeParse(JSON.parse(row.receipt))
-      // A row this build cannot describe is not reported as a transfer.
+      // A row this build cannot read is not reported as a transfer, and one
+      // damaged row must not take the readable ones down with it.
+      let stored: unknown
+      try {
+        stored = JSON.parse(row.receipt)
+      } catch {
+        return []
+      }
+      const described = transferReceiptSchema.safeParse(stored)
       return described.success ? [described.data] : []
     })
   }

@@ -55,8 +55,21 @@ describe("SqliteTransferReceipts", () => {
     }
 
     expect(store.list({ limit: 2 })).toHaveLength(2)
-    expect(store.list({ limit: maximumListedTransferReceipts + 100 }).length)
-      .toBeLessThanOrEqual(maximumListedTransferReceipts)
+    // The audit listing refuses a limit beyond its bound rather than quietly
+    // returning fewer rows than were asked for, and this listing matches it.
+    expect(() => store.list({ limit: maximumListedTransferReceipts + 1 }))
+      .toThrow("Transfer receipt limit is out of range")
+  })
+
+  it("still lists the receipts it can read when a stored row is damaged", () => {
+    const database = new DatabaseSync(":memory:")
+    const store = new SqliteTransferReceipts(database)
+    store.record(receipt)
+    database
+      .prepare("INSERT INTO transfer_receipts (session_id, completed_at, receipt) VALUES (?, ?, ?)")
+      .run("session-damaged", "2026-09-01T09:10:00.000Z", "{not json")
+
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(["session-1"])
   })
 
   it("refuses a receipt that claims the source kept no recovery checkpoint", () => {
