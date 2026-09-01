@@ -8887,6 +8887,94 @@ describe("DomovoiDaemon session transfer requests", () => {
     socket.close()
   }, 30_000)
 
+  it("moves a session through the remote both machines share when asked", async () => {
+    const targetMachineId = `machine-${"e".repeat(32)}`
+    const targetSecret = "target-horse-battery-staple"
+    const fetched: { remote: string; sessionId: string }[] = []
+    // The target fetches into the repository it already has.
+    const targetSnapshot = structuredClone(demoWorkspace)
+    const target = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", targetSnapshot),
+      authToken: targetSecret,
+      workspaceService: {
+        ...stubWorkspaceService(),
+        restoreSessionFromRef: async (_repository: string, remote: string, sessionId: string) => {
+          fetched.push({ remote, sessionId })
+          return {
+            path: `/worktrees/${sessionId}`,
+            branch: `domovoi/${sessionId}`,
+            baseCommit: "d".repeat(40),
+          }
+        },
+      },
+    })
+    running.push(target)
+    const targetAddress = await target.start()
+
+    const snapshot = structuredClone(demoWorkspace)
+    const moved = snapshot.sessions.find((candidate) => candidate.state === "idle")!
+    moved.workspacePath = "/worktrees/session-audit"
+    snapshot.machine.id = `machine-${"a".repeat(32)}`
+    if (snapshot.project) snapshot.project.machineId = snapshot.machine.id
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const pushed: { remote: string; sessionId: string }[] = []
+    const source = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      machineCredentials: {
+        save: () => {},
+        forMachine: () => targetSecret,
+        forget: () => {},
+        machines: () => [targetMachineId],
+      },
+      workspaceService: {
+        ...stubWorkspaceService(),
+        pushSessionRef: async (_worktree: string, remote: string, sessionId: string) => {
+          pushed.push({ remote, sessionId })
+          return { ref: `refs/domovoi/sessions/${sessionId}`, commit: "d".repeat(40), remote }
+        },
+      },
+    })
+    running.push(source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{
+        kind: "local",
+        endpoint: `ws://127.0.0.1:${targetAddress.port}/rpc`,
+        authenticated: true,
+      }],
+    }, Date.now())
+    const sourceAddress = await source.start()
+    const socket = authenticatedSocket(source, `ws://${sourceAddress.host}:${sourceAddress.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: moved.id,
+      targetMachineId,
+      client: "desktop",
+      method: "remote-ref",
+      remote: "origin",
+    })
+
+    expect(answer).toMatchObject({ result: { outcome: "succeeded" } })
+    expect(pushed).toEqual([{ remote: "origin", sessionId: moved.id }])
+    expect(fetched).toEqual([{ remote: "origin", sessionId: moved.id }])
+    socket.close()
+  }, 20_000)
+
   it("refuses to move a session to a machine the fleet does not know", async () => {
     const { daemon } = transferDaemon()
     const address = await daemon.start()

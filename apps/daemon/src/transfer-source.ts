@@ -4,6 +4,7 @@ import {
   sourcePreflight,
   transferPreflight,
   transferChunkResultSchema,
+  transferFromRefResultSchema,
   transferBeginResultSchema,
   type ClientKind,
   type FleetMachine,
@@ -11,7 +12,7 @@ import {
   type TransferReceipt,
 } from "@getdomovoi/protocol"
 
-import type { Checkpoint, SessionBundle } from "./workspace.js"
+import type { Checkpoint, SessionBundle, SessionRef } from "./workspace.js"
 
 // Chunks are small enough that a stalled transfer wastes little, and large
 // enough that a worktree does not arrive one packet at a time.
@@ -21,6 +22,89 @@ export type TransferOutcome =
   | { outcome: "succeeded"; workspacePath: string; checkpointCommit: string }
   | { outcome: "refused"; reason: string }
   | { outcome: "failed" }
+
+// The opt-in path. The bytes travel through the remote both machines already
+// share, so this daemon pushes a session ref and asks the target to take it.
+export async function sendSessionThroughRemote(input: {
+  session: SessionSummary
+  sourceMachineId: string
+  target: FleetMachine
+  client: ClientKind
+  remote: string
+  call: (method: string, params: Record<string, unknown>) => Promise<unknown>
+  checkpoint: (worktreePath: string, label: string) => Promise<Checkpoint>
+  pushSessionRef: ((
+    worktreePath: string,
+    remote: string,
+    sessionId: string,
+  ) => Promise<SessionRef>) | undefined
+  recordReceipt: (receipt: TransferReceipt) => void
+  now: () => string
+}): Promise<TransferOutcome> {
+  const startedAt = input.now()
+  const unknownCommit = "0".repeat(40)
+  const receipt = (
+    outcome: TransferReceipt["outcome"],
+    checkpointCommit: string,
+    reason?: TransferReceipt["reason"],
+  ): void => {
+    input.recordReceipt({
+      sessionId: input.session.id,
+      sourceMachineId: input.sourceMachineId,
+      targetMachineId: input.target.id,
+      method: "remote-ref",
+      checkpointId: `checkpoint-${checkpointCommit}`,
+      checkpointCommit,
+      recoveryCheckpointRetained: true,
+      outcome,
+      ...(reason ? { reason } : {}),
+      decidedBy: { client: input.client },
+      startedAt,
+      completedAt: input.now(),
+    })
+  }
+
+  const source = sourcePreflight({ session: input.session })
+  if (!source.allowed) {
+    receipt("refused", unknownCommit, source.reason)
+    return { outcome: "refused", reason: source.reason }
+  }
+  const reachable = transferPreflight({
+    source: { ...input.target, id: input.sourceMachineId },
+    target: input.target,
+  })
+  if (!reachable.allowed) {
+    receipt("refused", unknownCommit, reachable.reason)
+    return { outcome: "refused", reason: reachable.reason }
+  }
+  if (!input.pushSessionRef) {
+    receipt("failed", unknownCommit)
+    return { outcome: "failed" }
+  }
+
+  let checkpointCommit = unknownCommit
+  try {
+    const checkpoint = await input.checkpoint(input.session.workspacePath!, "before-transfer")
+    checkpointCommit = checkpoint.commit
+    await input.pushSessionRef(input.session.workspacePath!, input.remote, input.session.id)
+    const taken = transferFromRefResultSchema.parse(await input.call("transfer.fromRef", {
+      sessionId: input.session.id,
+      remote: input.remote,
+      client: input.client,
+    }))
+    receipt("succeeded", checkpointCommit)
+    return {
+      outcome: "succeeded",
+      workspacePath: taken.workspacePath,
+      checkpointCommit: taken.checkpointCommit,
+    }
+  } catch {
+    // The session is still here: nothing on this machine is removed because a
+    // remote or a target did not cooperate.
+    receipt("failed", checkpointCommit)
+    return { outcome: "failed" }
+  }
+}
 
 export async function sendSessionToMachine(input: {
   session: SessionSummary

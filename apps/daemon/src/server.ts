@@ -52,7 +52,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { TransferAssembler } from "./transfer-assembler.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
-import { sendSessionToMachine } from "./transfer-source.js"
+import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-source.js"
 import {
   CodexAppServerAdapter,
 } from "./codex.js"
@@ -2109,7 +2109,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (!this.#workspaceService.bundleSession || !this.#readTransferBundle) {
+        const canSend = params.method === "remote-ref"
+          ? this.#workspaceService.pushSessionRef !== undefined
+          : this.#workspaceService.bundleSession !== undefined && this.#readTransferBundle !== undefined
+        if (!canSend) {
           this.#error(socket, request.id, internalError, "This machine cannot send transfers")
           return
         }
@@ -2172,6 +2175,43 @@ export class DomovoiDaemon {
           : transferDeadline.signal
         const connection = await this.#connectToMachine(target.id, transferSignal)
         try {
+          if (params.method === "remote-ref") {
+            const outcome = await sendSessionThroughRemote({
+              session,
+              sourceMachineId: this.#snapshot.machine.id,
+              target,
+              client: params.client,
+              remote: params.remote!,
+              call: (remoteMethod, remoteParams) =>
+                connection.call(remoteMethod, remoteParams, transferSignal),
+              checkpoint: (worktreePath, label) =>
+                this.#workspaceService.checkpoint(worktreePath, label, signal),
+              pushSessionRef: this.#workspaceService.pushSessionRef
+                ? (worktreePath, remote, sessionId) =>
+                  this.#workspaceService.pushSessionRef!(worktreePath, remote, sessionId, signal)
+                : undefined,
+              recordReceipt: (receipt) => {
+                try {
+                  this.#store.transferReceipts?.record(receipt)
+                } catch (error) {
+                  this.#reportError("Domovoi could not record a transfer receipt", error)
+                }
+              },
+              now: () => new Date().toISOString(),
+            })
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse(outcome),
+            })
+            return
+          }
+          const readBundle = this.#readTransferBundle
+          const bundleSession = this.#workspaceService.bundleSession
+          if (!readBundle || !bundleSession) {
+            this.#error(socket, request.id, internalError, "This machine cannot send transfers")
+            return
+          }
           const outcome = await sendSessionToMachine({
             session,
             sourceMachineId: this.#snapshot.machine.id,
@@ -2182,8 +2222,8 @@ export class DomovoiDaemon {
             checkpoint: (worktreePath, label) =>
               this.#workspaceService.checkpoint(worktreePath, label, signal),
             bundleSession: (worktreePath, bundlePath) =>
-              this.#workspaceService.bundleSession!(worktreePath, bundlePath, undefined, signal),
-            readBundle: this.#readTransferBundle,
+              bundleSession(worktreePath, bundlePath, undefined, signal),
+            readBundle,
             recordReceipt: (receipt) => {
               // The receipt records what happened; it does not decide it. A
               // daemon that cannot store one still answers with the outcome.
@@ -2204,6 +2244,40 @@ export class DomovoiDaemon {
           clearTimeout(timeout)
           connection.close()
         }
+        return
+      }
+
+      if (method === "transfer.fromRef") {
+        const params = rpcMethods[method].params.parse(request.params)
+        // Taking a session writes a worktree here, which is machine management.
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires the daemon credential",
+          )
+          return
+        }
+        const repositoryPath = this.#snapshot.project?.path
+        if (!this.#workspaceService.restoreSessionFromRef || !repositoryPath) {
+          this.#error(socket, request.id, internalError, "This machine cannot take a session from a remote")
+          return
+        }
+        const workspace = await this.#workspaceService.restoreSessionFromRef(
+          repositoryPath,
+          params.remote,
+          params.sessionId,
+          signal,
+        )
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            workspacePath: workspace.path,
+            checkpointCommit: workspace.baseCommit,
+          }),
+        })
         return
       }
 
