@@ -8795,6 +8795,49 @@ describe("DomovoiDaemon session transfer requests", () => {
     socket.close()
   })
 
+  it("does not reach for a machine before the transfer is allowed", async () => {
+    let dialed = 0
+    const targetMachineId = `machine-${"b".repeat(32)}`
+    const { daemon, store } = transferDaemon({
+      connectToMachine: async () => {
+        dialed += 1
+        return { call: async () => ({}), close: () => {} }
+      },
+    })
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "tailnet",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [
+        { kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true },
+      ],
+    }, Date.now())
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+
+    // The target is known and healthy; the session is the problem, and that
+    // has to be settled before anything reaches for the other machine.
+    const answer = await rpcCaller(socket)("session.transfer", {
+      sessionId: demoWorkspace.sessions.find((candidate) => candidate.state === "active")!.id,
+      targetMachineId: targetMachineId,
+      client: "desktop",
+    })
+
+    expect(answer).toMatchObject({ result: { outcome: "refused", reason: "session-turn-active" } })
+    expect(dialed).toBe(0)
+    socket.close()
+  })
+
   it("refuses a transfer from a client holding only a device credential", async () => {
     const { daemon, store } = transferDaemon()
     const address = await daemon.start()
