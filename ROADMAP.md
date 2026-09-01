@@ -269,6 +269,9 @@ before any public package or application publish.
 - [x] Pin GitHub Actions by immutable commit SHA, verified by `pnpm release:invariants`
 - [ ] Replace the no-op lint gate with real TypeScript/React linting
 - [ ] Review or replace dependencies whose licenses do not fit the public daemon
+  - `pnpm license:audit` holds the publishable production graph to a permissive allowlist in CI.
+  - One recorded exception remains: the proprietary Claude Code agent SDK. See
+    [docs/licensing.md](docs/licensing.md) for the removal options.
 - [x] Move build-time tooling such as the shadcn CLI out of production dependency graphs
 
 ## Goal 5: public product and ecosystem
