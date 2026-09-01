@@ -44,6 +44,11 @@ export const deviceClaimParamsSchema = z.object({
   label: deviceLabelSchema,
 }).strict()
 
+export const deviceIssueCodeResultSchema = z.object({
+  code: pairingCodeSchema,
+  expiresAt: z.string().datetime({ offset: true }),
+}).strict()
+
 export const deviceListParamsSchema = z.object({}).strict()
 
 export const devicesResultSchema = z.object({

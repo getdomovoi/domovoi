@@ -1789,6 +1789,20 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "device.issueCode") {
+        rpcMethods[method].params.parse(request.params)
+        if (!this.#pairing) {
+          this.#error(socket, request.id, internalError, "Device pairing is unavailable")
+          return
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(this.#pairing.issue(Date.now())),
+        })
+        return
+      }
+
       if (
         method === "device.pair"
         || method === "device.list"
