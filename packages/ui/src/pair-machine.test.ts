@@ -51,6 +51,19 @@ describe("pairMachine", () => {
     expect(io.saved).toEqual([])
   })
 
+  it("never quotes the credential when the machine fails to name itself", async () => {
+    const io = pairing({
+      identify: vi.fn(async () => {
+        throw new Error(`Handshake with ${credential} failed`)
+      }),
+    })
+
+    await expect(pairMachine({ request, ...io })).rejects.toThrow(
+      "The machine did not name itself after pairing",
+    )
+    expect(io.saved).toEqual([])
+  })
+
   it("never quotes the credential when saving it fails", async () => {
     const io = pairing({
       saveCredential: vi.fn(async () => {

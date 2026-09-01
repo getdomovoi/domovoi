@@ -8,19 +8,33 @@ type PendingClaim = {
 // Pairing happens before this device holds any credential, so it cannot use the
 // authenticated client. This is a single pre-authentication socket that carries
 // one request and closes.
-export function openClaimConnection(endpoint: string): Promise<ClaimConnection> {
+export const defaultClaimOpenTimeoutMs = 10_000
+
+export function openClaimConnection(
+  endpoint: string,
+  options: { openTimeoutMs?: number } = {},
+): Promise<ClaimConnection> {
   return new Promise<ClaimConnection>((resolve, reject) => {
     const socket = new WebSocket(endpoint)
     const pending = new Map<number, PendingClaim>()
     let requestId = 0
     let opened = false
+    // A machine that accepts the socket and then says nothing would leave the
+    // pairing dialog waiting with no way to report the failure.
+    const openTimer = setTimeout(() => {
+      if (opened) return
+      reject(new Error(`Cannot reach ${endpoint}`))
+      socket.close()
+    }, options.openTimeoutMs ?? defaultClaimOpenTimeoutMs)
 
     socket.addEventListener("error", () => {
+      clearTimeout(openTimer)
       if (!opened) reject(new Error(`Cannot reach ${endpoint}`))
       socket.close()
     }, { once: true })
 
     socket.addEventListener("close", () => {
+      clearTimeout(openTimer)
       const closed = new Error("The machine closed the connection")
       for (const claim of pending.values()) claim.reject(closed)
       pending.clear()
@@ -50,6 +64,7 @@ export function openClaimConnection(endpoint: string): Promise<ClaimConnection> 
 
     socket.addEventListener("open", () => {
       opened = true
+      clearTimeout(openTimer)
       resolve({
         call: (method, params) => new Promise<unknown>((settle, fail) => {
           requestId += 1
