@@ -33,4 +33,5 @@ jobs:
       - run: pnpm build
       - run: pnpm performance:budget
       - run: pnpm release:invariants
+      - run: pnpm license:audit
       - run: pnpm test:install

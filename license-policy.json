@@ -1,0 +1,18 @@
+{
+  "allowed": [
+    "0BSD",
+    "Apache-2.0",
+    "BlueOak-1.0.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Python-2.0",
+    "Unlicense"
+  ],
+  "exceptions": {
+    "@anthropic-ai/claude-agent-sdk": "Proprietary: 'All rights reserved', used under the Claude Code legal agreements. Required by the Claude Code session adapter and reviewed as a runtime dependency of the Apache-2.0 daemon.",
+    "@anthropic-ai/claude-agent-sdk-*": "Per-platform binaries of @anthropic-ai/claude-agent-sdk. Which one is installed depends on the host, so this is a pattern rather than one name, and it carries the same terms."
+  }
+}
