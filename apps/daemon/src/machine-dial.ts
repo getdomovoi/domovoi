@@ -3,7 +3,11 @@ import { selectTransport, type FleetMachine } from "@getdomovoi/protocol"
 import type { MachineCredentials } from "./machine-credentials.js"
 
 export type MachineConnection = {
-  call: (method: string, params: Record<string, unknown>) => Promise<unknown>
+  call: (
+    method: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => Promise<unknown>
   close: () => void
 }
 
@@ -24,10 +28,14 @@ function leavesThisMachine(endpoint: string): boolean {
 export function createMachineDialer(input: {
   machines: () => FleetMachine[]
   credentials: MachineCredentials | undefined
-  open: (input: { endpoint: string; credential: string }) => Promise<MachineConnection>
+  open: (input: {
+    endpoint: string
+    credential: string
+    signal?: AbortSignal
+  }) => Promise<MachineConnection>
   relayAvailable?: boolean
-}): (machineId: string) => Promise<MachineConnection> {
-  return async (machineId: string) => {
+}): (machineId: string, signal?: AbortSignal) => Promise<MachineConnection> {
+  return async (machineId: string, signal?: AbortSignal) => {
     const machine = input.machines().find((candidate) => candidate.id === machineId)
     if (!machine) throw new Error("That machine cannot be reached")
 
@@ -50,6 +58,10 @@ export function createMachineDialer(input: {
       throw new Error("Refusing to authenticate over an unencrypted connection")
     }
 
-    return input.open({ endpoint: transport.endpoint, credential })
+    return input.open({
+      endpoint: transport.endpoint,
+      credential,
+      ...(signal ? { signal } : {}),
+    })
   }
 }
