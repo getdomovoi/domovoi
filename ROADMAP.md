@@ -237,13 +237,19 @@ Priority: `P2`. Every install channel must wrap the same immutable release.
 
 ### Release engineering and semantic versioning
 
-This remains future work. Complete it before any public package or application publish.
+Release tooling exists; no package is published from this repository yet. Finish this section
+before any public package or application publish.
 
 - [ ] Add Changesets and require release metadata for every publishable change before any public
   publish
+  - Changesets, the `@getdomovoi/*` fixed version group, `pnpm changeset`, and `pnpm release:status`
+    are in place.
+  - The blocking pull-request gate lands with the publish workflow.
 - [ ] Make `0.1.0-alpha.1` the first public alpha release
-- [ ] Keep package, app, daemon, protocol, and CLI versions in lockstep through `0.x`, and treat
+- [x] Keep package, app, daemon, protocol, and CLI versions in lockstep through `0.x`, and treat
   compatibility as one release unit
+  - A fixed Changesets group moves every workspace version together.
+  - `pnpm release:invariants` fails CI when a manifest version drifts.
 - [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
   GitHub Releases from the same immutable commit
 - [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
@@ -260,10 +266,10 @@ This remains future work. Complete it before any public package or application p
 - [ ] Choose and publish the Linux AppImage/native package set
 - [ ] Add daemon and desktop update checks with explicit user control
 - [ ] Add rollback and compatibility handling for daemon/client protocol mismatches
-- [ ] Pin GitHub Actions by immutable commit SHA
+- [x] Pin GitHub Actions by immutable commit SHA, verified by `pnpm release:invariants`
 - [ ] Replace the no-op lint gate with real TypeScript/React linting
 - [ ] Review or replace dependencies whose licenses do not fit the public daemon
-- [ ] Move build-time tooling such as the shadcn CLI out of production dependency graphs
+- [x] Move build-time tooling such as the shadcn CLI out of production dependency graphs
 
 ## Goal 5: public product and ecosystem
 
