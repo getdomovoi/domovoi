@@ -8,6 +8,7 @@ import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/pro
 
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
 import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
+import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
 import { SqliteFleetRegistry, type FleetRegistry } from "./fleet-registry.js"
 import { redactWorkspaceCopies } from "./secret-redaction.js"
 
@@ -19,6 +20,7 @@ export interface WorkspaceStore {
   readonly auditLog?: AuditLog
   readonly devices?: DeviceRegistry
   readonly fleet?: FleetRegistry
+  readonly transferReceipts?: TransferReceipts
   load(): WorkspaceSnapshot
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
@@ -206,6 +208,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly auditLog: SqliteAuditLog
   readonly devices: SqliteDeviceRegistry
   readonly fleet: SqliteFleetRegistry
+  readonly transferReceipts: SqliteTransferReceipts
   #database: DatabaseSync
   #writer: AsyncWorkspaceWriter | undefined
   #databaseClosed = false
@@ -226,6 +229,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.auditLog = new SqliteAuditLog(this.#database)
     this.devices = new SqliteDeviceRegistry(this.#database)
     this.fleet = new SqliteFleetRegistry(this.#database)
+    this.transferReceipts = new SqliteTransferReceipts(this.#database)
 
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
