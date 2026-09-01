@@ -41,7 +41,13 @@ export class MachineCredentialStore {
     if (!stored) return []
     try {
       const parsed: unknown = JSON.parse(stored)
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => machineIdPattern.test(id)) : []
+      if (!Array.isArray(parsed)) return []
+      // Anything but a machine identity means the index is not ours to trust,
+      // so it is discarded rather than partly believed.
+      const identities = parsed.filter(
+        (id): id is string => typeof id === "string" && machineIdPattern.test(id),
+      )
+      return identities.length === parsed.length ? identities : []
     } catch {
       return []
     }
