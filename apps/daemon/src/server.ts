@@ -95,7 +95,7 @@ import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
+import type { MachineCredentials } from "./machine-credentials.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -424,7 +424,7 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
-  machineCredentials?: MachineCredentialStore
+  machineCredentials?: MachineCredentials
 }
 
 export type DaemonErrorEntry = {
@@ -506,7 +506,7 @@ export class DomovoiDaemon {
   #tls: TlsMaterial | undefined
   #advertiseHost: string | undefined
   #pairing: PairingCodeService | undefined
-  #machineCredentials: MachineCredentialStore | undefined
+  #machineCredentials: MachineCredentials | undefined
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
