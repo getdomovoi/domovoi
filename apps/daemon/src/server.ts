@@ -95,6 +95,7 @@ import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
+import { MachineCredentialStore } from "./machine-credentials.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -423,6 +424,7 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
+  machineCredentials?: MachineCredentialStore
 }
 
 export type DaemonErrorEntry = {
@@ -504,6 +506,7 @@ export class DomovoiDaemon {
   #tls: TlsMaterial | undefined
   #advertiseHost: string | undefined
   #pairing: PairingCodeService | undefined
+  #machineCredentials: MachineCredentialStore | undefined
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
@@ -515,6 +518,7 @@ export class DomovoiDaemon {
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
     this.#advertiseHost = options.advertiseHost
+    this.#machineCredentials = options.machineCredentials
     if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
@@ -1785,6 +1789,32 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
+        })
+        return
+      }
+
+      if (method === "device.saveCredential") {
+        const params = rpcMethods[method].params.parse(request.params)
+        // Keeping another machine's credential is device management, so a
+        // device credential must not reach it.
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Managing paired devices requires the daemon credential",
+          )
+          return
+        }
+        if (!this.#machineCredentials) {
+          this.#error(socket, request.id, internalError, "Machine credentials are unavailable")
+          return
+        }
+        this.#machineCredentials.save(params.machineId, params.credential)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ saved: true }),
         })
         return
       }
