@@ -145,8 +145,13 @@ describe("sendSessionToMachine", () => {
       ...io,
     })
 
-    expect(outcome).toMatchObject({ outcome: "failed" })
-    expect(recorded).toEqual([expect.objectContaining({ outcome: "failed" })])
+    // A bundle the target rejected is a refusal with a reason, not a transfer
+    // that broke on the way.
+    expect(outcome).toMatchObject({ outcome: "refused", reason: "digest-mismatch" })
+    expect(recorded).toEqual([expect.objectContaining({
+      outcome: "refused",
+      reason: "digest-mismatch",
+    })])
   })
 
   it("does not call a transfer done before the last chunk was sent", async () => {
