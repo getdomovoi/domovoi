@@ -9,10 +9,10 @@ import { fileURLToPath } from "node:url"
 
 import electronPath from "electron"
 
-import { launchSmokeElectronArgs } from "./launch-smoke-args.mjs"
+import { launchSmokeElectronArgs, launchSmokeTimeoutMs } from "./launch-smoke-args.mjs"
 
 const successMarker = "DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK"
-const timeoutMs = 15_000
+const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
 const desktopRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
 async function executableOnPath(name) {
