@@ -256,7 +256,10 @@ export class DomovoiClient extends EventTarget {
         const error = new Error("Daemon connection closed")
         rejectOpening(error)
         this.#rejectPending(error)
-        if (event.code === 1008 && /auth/i.test(event.reason)) {
+        // A policy close is terminal whatever it says: a revoked device is
+        // refused for the same reason a bad credential is, and retrying only
+        // presents a credential the machine will keep refusing.
+        if (event.code === 1008) {
           this.#markAuthenticationRequired(event.reason || "Daemon authentication required")
         }
         this.dispatchEvent(new Event("disconnected"))

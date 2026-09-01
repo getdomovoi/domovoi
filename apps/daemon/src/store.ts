@@ -208,6 +208,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly fleet: SqliteFleetRegistry
   #database: DatabaseSync
   #writer: AsyncWorkspaceWriter | undefined
+  #databaseClosed = false
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
@@ -292,10 +293,18 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   close(): void | Promise<void> {
     if (!this.#writer) {
-      this.#database.close()
+      this.#closeDatabase()
       return
     }
-    return this.#writer.close().then(() => this.#database.close())
+    // The worker can fail to shut down, and the main connection still has to be
+    // released, so the failure is reported after the handle is closed.
+    return this.#writer.close().finally(() => this.#closeDatabase())
+  }
+
+  #closeDatabase(): void {
+    if (this.#databaseClosed) return
+    this.#databaseClosed = true
+    this.#database.close()
   }
 
   #restrictFilePermissions(): void {

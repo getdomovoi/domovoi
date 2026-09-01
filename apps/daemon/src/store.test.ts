@@ -455,3 +455,22 @@ it("fails a write posted after the persistence worker is closed", async () => {
     "Workspace persistence worker is closed",
   )
 })
+
+it("releases the database once the store is closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-close-"))
+  scratchDirectories.push(root)
+  const path = join(root, "state.sqlite")
+  const store = new SqliteWorkspaceStore(path, demoWorkspace)
+  await store.saveAsync?.({ ...demoWorkspace })
+  await store.close()
+
+  // Nothing may still hold the write lock, and a closing worker that failed
+  // must not keep the handle either.
+  const reopened = new DatabaseSync(path)
+  reopened.exec("PRAGMA busy_timeout = 0;")
+  reopened.exec("BEGIN IMMEDIATE; COMMIT;")
+  reopened.close()
+  await expect(store.saveAsync?.({ ...demoWorkspace })).rejects.toThrow(
+    "Workspace persistence worker is closed",
+  )
+})
