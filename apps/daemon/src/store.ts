@@ -158,7 +158,10 @@ class AsyncWorkspaceWriter {
       if (response.error) pending.reject(new Error(response.error))
       else pending.resolve()
     })
-    this.#worker.on("error", (error) => {
+    this.#worker.on("error", (cause: unknown) => {
+      const error = cause instanceof Error
+        ? cause
+        : new Error("Workspace persistence worker failed")
       this.#terminal = error
       this.#rejectPending(error)
     })
