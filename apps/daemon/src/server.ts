@@ -127,7 +127,10 @@ const methodNotFound = -32601
 const invalidParams = -32602
 // A machine accepts a bounded number of arriving transfers, so a source cannot
 // fill this machine with half-delivered worktrees.
-const maximumIncomingTransfers = 4
+export const maximumIncomingTransfers = 4
+// An arrival that goes quiet for this long has been abandoned, and its slot
+// belongs to the next machine that needs it.
+const incomingTransferIdleMs = 60_000
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
@@ -668,7 +671,12 @@ export class DomovoiDaemon {
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
-  #incomingTransfers = new Map<string, { sessionId: string; assembler: TransferAssembler }>()
+  #incomingTransfers = new Map<string, {
+    sessionId: string
+    assembler: TransferAssembler
+    socket: WebSocket
+    idle: ReturnType<typeof setTimeout>
+  }>()
   #rpcOutbound: RpcOutboundBackpressure
   #sessionHistory = new SessionHistoryIndex()
 
@@ -1189,6 +1197,25 @@ export class DomovoiDaemon {
       id,
       error: { code, message, ...(data ? { data } : {}) },
     })
+  }
+
+  #scheduleTransferExpiry(transferId: string): ReturnType<typeof setTimeout> {
+    const expiry = setTimeout(() => this.#forgetTransfer(transferId), incomingTransferIdleMs)
+    expiry.unref?.()
+    return expiry
+  }
+
+  #forgetTransfer(transferId: string): void {
+    const incoming = this.#incomingTransfers.get(transferId)
+    if (!incoming) return
+    clearTimeout(incoming.idle)
+    this.#incomingTransfers.delete(transferId)
+  }
+
+  #forgetTransfersFrom(socket: WebSocket): void {
+    for (const [transferId, incoming] of this.#incomingTransfers) {
+      if (incoming.socket === socket) this.#forgetTransfer(transferId)
+    }
   }
 
   #reportError(context: string, error: unknown): void {
@@ -2030,7 +2057,12 @@ export class DomovoiDaemon {
               digest: params.digest,
               totalBytes: params.totalBytes,
             }),
+            socket,
+            idle: this.#scheduleTransferExpiry(transferId),
           })
+          // A source that stops sending, or goes away, must not hold a slot
+          // that other machines need.
+          socket.once("close", () => this.#forgetTransfersFrom(socket))
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -2045,9 +2077,11 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "That transfer is not arriving")
           return
         }
+        clearTimeout(incoming.idle)
+        incoming.idle = this.#scheduleTransferExpiry(params.transferId)
         const accepted = incoming.assembler.accept(params)
         if (accepted.state === "refused") {
-          this.#incomingTransfers.delete(params.transferId)
+          this.#forgetTransfer(params.transferId)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -2066,7 +2100,7 @@ export class DomovoiDaemon {
 
         // The bundle is only reported as restored once it actually is, so the
         // source never learns a session moved before it did.
-        this.#incomingTransfers.delete(params.transferId)
+        this.#forgetTransfer(params.transferId)
         const directory = await mkdtemp(join(tmpdir(), "domovoi-transfer-"))
         const bundlePath = join(directory, "session.bundle")
         try {
@@ -2074,6 +2108,7 @@ export class DomovoiDaemon {
           const workspace = await this.#workspaceService.restoreSessionFromBundle(
             bundlePath,
             incoming.sessionId,
+            signal,
           )
           this.#send(socket, {
             jsonrpc: "2.0",

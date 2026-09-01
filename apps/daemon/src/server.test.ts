@@ -25,6 +25,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import {
+  maximumIncomingTransfers,
   appendPlanDelta,
   artifactAccessMatches,
   canServeArtifacts,
@@ -8498,6 +8499,11 @@ describe("DomovoiDaemon transfers", () => {
       removeSessionWorkspace: async () => {},
       checkpoint: async () => ({ commit: "b".repeat(40), changedFiles: [] }),
       restore: async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) }),
+      restoreSessionFromBundle: async (_bundlePath: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "c".repeat(40),
+      }),
     }
   }
 
@@ -8623,6 +8629,59 @@ describe("DomovoiDaemon transfers", () => {
 
     expect(finished.result).toEqual({ state: "refused", reason: "digest-mismatch" })
     socket.close()
+  })
+
+  it("frees a transfer slot when the client that opened it goes away", { timeout: 15_000 }, async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "correct-horse-battery-staple",
+      workspaceService: stubWorkspaceService(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+
+    const begin = async () => {
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      const answer = await rpcCaller(socket)("transfer.begin", {
+        sessionId: "session-1",
+        sourceMachineId: `machine-${"a".repeat(32)}`,
+        method: "git-bundle",
+        digest: "d".repeat(64),
+        totalBytes: 32,
+        client: "desktop",
+      })
+      return { socket, answer }
+    }
+
+    // Fill every slot from clients that then disappear without sending a byte.
+    const abandoned = []
+    for (let index = 0; index < maximumIncomingTransfers; index += 1) {
+      abandoned.push(await begin())
+    }
+    for (const { socket } of abandoned) {
+      socket.close()
+      await new Promise<void>((resolve) => socket.once("close", () => resolve()))
+    }
+
+    // The daemon sees the close a moment after the client does, so this waits
+    // for the slot to come back rather than assuming it already has.
+    const reopened = await vi.waitFor(async () => {
+      const attempt = await begin()
+      if (!attempt.answer.result) {
+        attempt.socket.close()
+        throw new Error(`transfer slots are still held: ${JSON.stringify(attempt.answer.error)}`)
+      }
+      return attempt
+    }, { timeout: 3_000, interval: 50 })
+
+    expect(reopened.answer.result).toMatchObject({ transferId: expect.any(String) })
+    reopened.socket.close()
   })
 
   it("refuses a transfer from a client holding only a device credential", async () => {
