@@ -19,6 +19,8 @@ import {
 import {
   deviceClaimParamsSchema,
   deviceIssueCodeResultSchema,
+  deviceMachineCredentialParamsSchema,
+  deviceMachineCredentialResultSchema,
   deviceSaveCredentialParamsSchema,
   deviceSaveCredentialResultSchema,
   deviceListParamsSchema,
@@ -968,6 +970,10 @@ export const rpcMethods = {
   "device.saveCredential": {
     params: deviceSaveCredentialParamsSchema,
     result: deviceSaveCredentialResultSchema,
+  },
+  "device.machineCredential": {
+    params: deviceMachineCredentialParamsSchema,
+    result: deviceMachineCredentialResultSchema,
   },
   "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
   "device.revoke": {

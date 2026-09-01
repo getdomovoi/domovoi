@@ -56,6 +56,14 @@ export const deviceSaveCredentialParamsSchema = z.object({
   credential: machineCredentialSchema,
 }).strict()
 
+export const deviceMachineCredentialParamsSchema = z.object({
+  machineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+}).strict()
+
+export const deviceMachineCredentialResultSchema = z.object({
+  credential: machineCredentialSchema,
+}).strict()
+
 export const deviceSaveCredentialResultSchema = z.object({ saved: z.literal(true) }).strict()
 
 export const deviceListParamsSchema = z.object({}).strict()
@@ -70,3 +78,5 @@ export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>
 export type DeviceSaveCredentialParams = z.infer<typeof deviceSaveCredentialParamsSchema>
 export type DeviceSaveCredentialResult = z.infer<typeof deviceSaveCredentialResultSchema>
+export type DeviceMachineCredentialParams = z.infer<typeof deviceMachineCredentialParamsSchema>
+export type DeviceMachineCredentialResult = z.infer<typeof deviceMachineCredentialResultSchema>
