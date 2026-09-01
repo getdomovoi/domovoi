@@ -3,6 +3,9 @@ import { createRequire } from "node:module"
 const machineIdPattern = /^machine-[0-9a-f]{32}$/
 const credentialPattern = /^[A-Za-z0-9_-]{43}$/
 const keychainService = "domovoi.machine-credential"
+// The index lives in the keychain beside the credentials, so the daemon still
+// knows which machines it holds after a restart.
+const indexAccount = "domovoi.machine-credential.index"
 
 export interface MachineKeyring {
   get(account: string): string | undefined
@@ -23,10 +26,33 @@ export class MachineCredentialUnavailableError extends Error {
 // carries its bytes.
 export class MachineCredentialStore {
   readonly #keyring: MachineKeyring
-  readonly #held = new Set<string>()
 
   constructor(keyring: MachineKeyring = new NativeMachineKeyring()) {
     this.#keyring = keyring
+  }
+
+  #index(): string[] {
+    let stored: string | undefined
+    try {
+      stored = this.#keyring.get(indexAccount)
+    } catch {
+      throw new MachineCredentialUnavailableError()
+    }
+    if (!stored) return []
+    try {
+      const parsed: unknown = JSON.parse(stored)
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => machineIdPattern.test(id)) : []
+    } catch {
+      return []
+    }
+  }
+
+  #writeIndex(machineIds: string[]): void {
+    try {
+      this.#keyring.set(indexAccount, JSON.stringify([...new Set(machineIds)].sort()))
+    } catch {
+      throw new MachineCredentialUnavailableError()
+    }
   }
 
   save(machineId: string, credential: string): void {
@@ -37,7 +63,7 @@ export class MachineCredentialStore {
     } catch {
       throw new MachineCredentialUnavailableError()
     }
-    this.#held.add(machineId)
+    this.#writeIndex([...this.#index(), machineId])
   }
 
   forMachine(machineId: string): string | undefined {
@@ -56,11 +82,11 @@ export class MachineCredentialStore {
     } catch {
       throw new MachineCredentialUnavailableError()
     }
-    this.#held.delete(machineId)
+    this.#writeIndex(this.#index().filter((held) => held !== machineId))
   }
 
   machines(): string[] {
-    return [...this.#held].sort()
+    return this.#index()
   }
 }
 
