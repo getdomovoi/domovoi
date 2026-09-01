@@ -33,10 +33,17 @@ export async function pairMachine(input: {
     open: input.open,
   })
 
-  const identified = await input.identify({
-    endpoint: input.request.endpoint,
-    credential: claimed.token,
-  })
+  let identified: { id: string; name: string }
+  try {
+    identified = await input.identify({
+      endpoint: input.request.endpoint,
+      credential: claimed.token,
+    })
+  } catch {
+    // Naming the machine is done over the credential, so a handshake or
+    // transport failure can quote it. Only this build's own words are reported.
+    throw new MachinePairingError("The machine did not name itself after pairing")
+  }
   // The credential is stored under the machine's own identity, so an identity
   // this build cannot address is refused before anything is written.
   const machineId = machineIdSchema.safeParse(identified.id)

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { openClaimConnection } from "./claim-socket.js"
 
@@ -83,6 +83,19 @@ describe("openClaimConnection", () => {
     FakeWebSocket.instances[0]!.close()
 
     await expect(claiming).rejects.toThrow("The machine closed the connection")
+  })
+
+  it("gives up on a socket that never opens", async () => {
+    vi.useFakeTimers()
+    try {
+      const connecting = openClaimConnection("wss://workshop.tailnet:47831/rpc", { openTimeoutMs: 5_000 })
+      const settled = expect(connecting).rejects.toThrow("Cannot reach wss://workshop.tailnet:47831/rpc")
+      await vi.advanceTimersByTimeAsync(5_000)
+      await settled
+      expect(FakeWebSocket.instances[0]!.closed).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("fails to open when the machine cannot be reached", async () => {
