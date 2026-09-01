@@ -3,6 +3,21 @@ import { WebSocket } from "ws"
 import type { MachineConnection } from "./machine-dial.js"
 
 export const defaultMachineHandshakeTimeoutMs = 15_000
+export const defaultMachineCallTimeoutMs = 120_000
+export const defaultMaximumPendingCalls = 64
+
+const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
+
+// The dialer decides which endpoint to use; this refuses to carry a credential
+// over one that could be watched, whatever decided it.
+function refusesPlaintext(endpoint: string): boolean {
+  if (endpoint.startsWith("wss://")) return false
+  try {
+    return !loopbackHosts.has(new URL(endpoint).hostname)
+  } catch {
+    return true
+  }
+}
 
 type PendingCall = {
   resolve: (result: unknown) => void
@@ -16,25 +31,63 @@ export function openMachineSocket(input: {
   endpoint: string
   credential: string
   handshakeTimeoutMs?: number
+  callTimeoutMs?: number
+  maximumPendingCalls?: number
+  // Tests drive these rather than waiting on a real clock.
+  scheduler?: {
+    setTimeout: (callback: () => void, delayMs: number) => unknown
+    clearTimeout: (handle: unknown) => void
+  }
 }): Promise<MachineConnection> {
+  if (refusesPlaintext(input.endpoint)) {
+    return Promise.reject(new Error("Refusing to authenticate over an unencrypted connection"))
+  }
+  const scheduler = input.scheduler ?? {
+    setTimeout: (callback: () => void, delayMs: number) => {
+      const handle = setTimeout(callback, delayMs)
+      handle.unref?.()
+      return handle
+    },
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  }
+  const callTimeoutMs = input.callTimeoutMs ?? defaultMachineCallTimeoutMs
+  const maximumPendingCalls = input.maximumPendingCalls ?? defaultMaximumPendingCalls
   return new Promise<MachineConnection>((resolve, reject) => {
     const socket = new WebSocket(input.endpoint)
     const pending = new Map<number, PendingCall>()
     let requestId = 0
     let ready = false
 
-    const handshake = setTimeout(() => {
+    const handshake = scheduler.setTimeout(() => {
       if (ready) return
       reject(new Error("That machine did not answer"))
       socket.close()
     }, input.handshakeTimeoutMs ?? defaultMachineHandshakeTimeoutMs)
-    handshake.unref?.()
 
     const send = (method: string, params: Record<string, unknown>) =>
       new Promise<unknown>((settle, fail) => {
+        // A socket that is closing will not transmit, and a call it never sent
+        // would wait forever.
+        if (socket.readyState !== WebSocket.OPEN) {
+          fail(new Error("The machine connection is closed"))
+          return
+        }
+        // A machine that answers the handshake and then says nothing must not
+        // be able to grow this daemon's memory one call at a time.
+        if (pending.size >= maximumPendingCalls) {
+          fail(new Error("Too many calls are waiting on that machine"))
+          return
+        }
         requestId += 1
         const id = requestId
-        pending.set(id, { resolve: settle, reject: fail })
+        const deadline = scheduler.setTimeout(() => {
+          if (!pending.delete(id)) return
+          fail(new Error("That machine stopped answering"))
+        }, callTimeoutMs)
+        pending.set(id, {
+          resolve: (result) => { scheduler.clearTimeout(deadline); settle(result) },
+          reject: (error) => { scheduler.clearTimeout(deadline); fail(error) },
+        })
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       })
 
@@ -43,7 +96,7 @@ export function openMachineSocket(input: {
     })
 
     socket.on("close", () => {
-      clearTimeout(handshake)
+      scheduler.clearTimeout(handshake)
       const closed = new Error("The machine closed the connection")
       for (const call of pending.values()) call.reject(closed)
       pending.clear()
@@ -81,14 +134,14 @@ export function openMachineSocket(input: {
       }).then(
         () => {
           ready = true
-          clearTimeout(handshake)
+          scheduler.clearTimeout(handshake)
           resolve({
             call: (method, params) => send(method, params),
             close: () => socket.close(),
           })
         },
         (error: unknown) => {
-          clearTimeout(handshake)
+          scheduler.clearTimeout(handshake)
           reject(error instanceof Error ? error : new Error("That machine refused this daemon"))
           socket.close()
         },
