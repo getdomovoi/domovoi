@@ -54,3 +54,33 @@ test("reports an exception the graph no longer contains, so the policy stays hon
     "license-policy.json: removed-thing is an exception but no longer in the dependency graph",
   ])
 })
+
+test("allows every platform binary covered by a pattern exception", () => {
+  const patternPolicy = {
+    allowed: ["MIT"],
+    exceptions: { "@anthropic-ai/claude-agent-sdk-*": "platform binaries of a reviewed package" },
+  }
+
+  assert.deepEqual(evaluateDependencyLicenses({
+    "Unknown": [
+      { name: "@anthropic-ai/claude-agent-sdk-linux-x64", versions: ["0.3.247"] },
+      { name: "@anthropic-ai/claude-agent-sdk-win32-x64", versions: ["0.3.247"] },
+    ],
+  }, patternPolicy), [])
+})
+
+test("does not call a pattern exception stale, since platform binaries differ per runner", () => {
+  assert.deepEqual(evaluateDependencyLicenses({ "MIT": [{ name: "ws", versions: ["8.18.3"] }] }, {
+    allowed: ["MIT"],
+    exceptions: { "@anthropic-ai/claude-agent-sdk-*": "platform binaries of a reviewed package" },
+  }), [])
+})
+
+test("still reports an exact exception that left the graph", () => {
+  assert.deepEqual(evaluateDependencyLicenses({ "MIT": [{ name: "ws", versions: ["8.18.3"] }] }, {
+    allowed: ["MIT"],
+    exceptions: { "gone": "was needed once", "kept-*": "pattern" },
+  }), [
+    "license-policy.json: gone is an exception but no longer in the dependency graph",
+  ])
+})

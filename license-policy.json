@@ -13,6 +13,6 @@
   ],
   "exceptions": {
     "@anthropic-ai/claude-agent-sdk": "Proprietary: 'All rights reserved', used under the Claude Code legal agreements. Required by the Claude Code session adapter and reviewed as a runtime dependency of the Apache-2.0 daemon.",
-    "@anthropic-ai/claude-agent-sdk-darwin-x64": "Platform binary of @anthropic-ai/claude-agent-sdk and carries the same terms."
+    "@anthropic-ai/claude-agent-sdk-*": "Per-platform binaries of @anthropic-ai/claude-agent-sdk. Which one is installed depends on the host, so this is a pattern rather than one name, and it carries the same terms."
   }
 }
