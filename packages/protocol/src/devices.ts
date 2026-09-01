@@ -37,6 +37,13 @@ export const deviceRevokeParamsSchema = z.object({
 
 export const deviceRotateParamsSchema = deviceRevokeParamsSchema
 
+export const pairingCodeSchema = z.string().regex(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/)
+
+export const deviceClaimParamsSchema = z.object({
+  code: pairingCodeSchema,
+  label: deviceLabelSchema,
+}).strict()
+
 export const deviceListParamsSchema = z.object({}).strict()
 
 export const devicesResultSchema = z.object({

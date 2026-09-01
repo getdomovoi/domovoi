@@ -94,6 +94,7 @@ import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -502,6 +503,7 @@ export class DomovoiDaemon {
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
   #advertiseHost: string | undefined
+  #pairing: PairingCodeService | undefined
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
@@ -556,6 +558,9 @@ export class DomovoiDaemon {
       : join(dirname(statePath), "usage.sqlite")
     this.#usageLedger = options.usageLedger ?? new UsageLedger(usagePath)
     this.#auditLog = options.auditLog ?? this.#store.auditLog
+    this.#pairing = this.#store.devices
+      ? new PairingCodeService(this.#store.devices)
+      : undefined
     this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
       options.agents ?? {
@@ -651,6 +656,11 @@ export class DomovoiDaemon {
     const token = this.#deviceCredentials.get(socket)
     if (token === undefined) return true
     return this.#store.devices?.isActive(token) === true
+  }
+
+  issuePairingCode(): { code: string; expiresAt: string } {
+    if (!this.#pairing) throw new Error("Device pairing is unavailable")
+    return this.#pairing.issue(Date.now())
   }
 
   get authToken(): string {
@@ -1371,6 +1381,41 @@ export class DomovoiDaemon {
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
+    } else if (method === "device.claim") {
+      // The one method a machine may reach before it has a credential, because
+      // presenting the pairing code is how it gets one. It grants nothing else.
+      const params = rpcMethods[method].params.parse(request.params)
+      if (!this.#pairing) {
+        this.#error(socket, request.id, internalError, "Device pairing is unavailable")
+        return
+      }
+      try {
+        const paired = this.#pairing.claim(params.code, { label: params.label }, Date.now())
+        this.#appendAudit({
+          actor: { kind: "daemon", component: "rpc" },
+          action: "device.claim",
+          outcome: "succeeded",
+          target: paired.device.id,
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(paired),
+        })
+      } catch (error) {
+        if (!(error instanceof PairingCodeError)) throw error
+        // The reason is recorded for an operator but never returned: an
+        // unauthenticated caller must not learn whether a code exists, has
+        // expired, or was simply wrong.
+        this.#appendAudit({
+          actor: { kind: "daemon", component: "rpc" },
+          action: "device.claim",
+          outcome: "denied",
+          detail: error.message,
+        })
+        this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
+      }
+      return
     } else if (!this.#authenticatedClients.has(socket)) {
       this.#appendPreAuthAudit("authentication")
       this.#rejectAuthentication(socket, request.id, "Daemon authentication required")
