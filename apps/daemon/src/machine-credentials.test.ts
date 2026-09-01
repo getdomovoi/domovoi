@@ -82,6 +82,15 @@ describe("MachineCredentialStore", () => {
     expect(new MachineCredentialStore(ring).machines()).toEqual([])
   })
 
+  it("treats an index holding anything but machine identities as empty", () => {
+    for (const stored of ['[["machine-' + "a".repeat(32) + '"]]', '[42]', '[null]', '{"a":1}']) {
+      const ring = keyring()
+      ring.entries.set("domovoi.machine-credential.index", stored)
+
+      expect(new MachineCredentialStore(ring).machines()).toEqual([])
+    }
+  })
+
   it("refuses a credential that is not the issued shape", () => {
     const store = new MachineCredentialStore(keyring())
 
