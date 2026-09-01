@@ -2688,6 +2688,63 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("serves an encrypted listener when given TLS material", async () => {
+    const { execFileSync } = await import("node:child_process")
+    let openssl = true
+    try {
+      execFileSync("openssl", ["version"], { stdio: "ignore" })
+    } catch {
+      openssl = false
+    }
+    if (!openssl) return
+
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-tls-server-"))
+    scratchDirectories.push(scratch)
+    const certPath = join(scratch, "cert.pem")
+    const keyPath = join(scratch, "key.pem")
+    execFileSync("openssl", [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", keyPath, "-out", certPath,
+      "-days", "1", "-subj", "/CN=localhost",
+    ], { stdio: "ignore" })
+    const { loadTlsMaterial } = await import("./tls-material.js")
+    const tls = await loadTlsMaterial({ certPath, keyPath })
+
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: "correct-horse-battery-staple",
+      tls,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+
+    const socket = new WebSocket(`wss://127.0.0.1:${address.port}/rpc`, {
+      rejectUnauthorized: false,
+      headers: { authorization: "Bearer correct-horse-battery-staple" },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { client: "desktop", clientVersion: "0.0.1" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      result: { machine: { id: expect.any(String) } },
+    })
+    socket.close()
+  })
+
   it("requires the configured token before serving daemon state", async () => {
     const agent = {
       connect: vi.fn(async () => {}),

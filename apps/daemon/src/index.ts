@@ -6,6 +6,7 @@ import { DomovoiDaemon } from "./server.js"
 import { CliProviderProbe } from "./providers.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity } from "./machine-identity.js"
+import { loadTlsMaterial } from "./tls-material.js"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -65,6 +66,7 @@ async function main() {
   const machineIdentity = await loadOrCreateMachineIdentity(config.machineIdentityPath, {
     label: hostname(),
   })
+  const tls = config.tls ? await loadTlsMaterial(config.tls) : undefined
   const daemon = new DomovoiDaemon({
     host: config.host,
     port: config.port,
@@ -73,10 +75,13 @@ async function main() {
     ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
     providerProbe: new CliProviderProbe(),
     machineIdentity,
+    ...(tls ? { tls } : {}),
   })
 
   const address = await daemon.start()
-  process.stdout.write(`domovoid listening on ws://${address.host}:${address.port}/rpc\n`)
+  process.stdout.write(
+    `domovoid listening on ${tls ? "wss" : "ws"}://${address.host}:${address.port}/rpc\n`,
+  )
   if (!config.authToken) {
     process.stdout.write(`domovoid credential stored at ${config.credentialPath}\n`)
   }
