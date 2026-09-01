@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { installPlan, packageManagers } from "./package-install-plan.mjs"
+import { installPlan, isContinuousIntegration, packageManagers, shellArguments } from "./package-install-plan.mjs"
 
 test("plans an install and a run for every package manager", () => {
   assert.deepEqual(installPlan("npm", "/tmp/pkg.tgz"), {
@@ -44,4 +44,27 @@ test("fails on a missing manager in CI, where the distribution claim is proven",
     skipped: ["bun"],
     failures: ["bun is not installed, so the published artifact was not verified against it"],
   })
+})
+
+test("quotes an argument containing a space when a shell will parse it", () => {
+  assert.deepEqual(
+    shellArguments(["add", "C:\\Temp\\domovoi pack-1E0\\protocol.tgz"], "win32"),
+    ["add", '"C:\\Temp\\domovoi pack-1E0\\protocol.tgz"'],
+  )
+})
+
+test("leaves arguments alone where no shell is involved", () => {
+  assert.deepEqual(
+    shellArguments(["add", "/tmp/domovoi pack-1E0/protocol.tgz"], "darwin"),
+    ["add", "/tmp/domovoi pack-1E0/protocol.tgz"],
+  )
+})
+
+test("reads CI as set only when its value means yes", () => {
+  assert.equal(isContinuousIntegration({ CI: "true" }), true)
+  assert.equal(isContinuousIntegration({ CI: "1" }), true)
+  assert.equal(isContinuousIntegration({ CI: "false" }), false)
+  assert.equal(isContinuousIntegration({ CI: "0" }), false)
+  assert.equal(isContinuousIntegration({ CI: "" }), false)
+  assert.equal(isContinuousIntegration({}), false)
 })
