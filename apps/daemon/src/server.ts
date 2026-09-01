@@ -52,7 +52,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { TransferAssembler } from "./transfer-assembler.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
-import { sendSessionToMachine } from "./transfer-source.js"
+import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-source.js"
 import {
   CodexAppServerAdapter,
 } from "./codex.js"
@@ -139,7 +139,7 @@ export const maximumIncomingTransfers = 4
 const incomingTransferIdleMs = 60_000
 // A transfer that has stopped making progress is abandoned rather than left
 // holding the request that asked for it.
-const sessionTransferTimeoutMs = 600_000
+const defaultSessionTransferTimeoutMs = 600_000
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
@@ -595,6 +595,7 @@ export type DaemonServerOptions = {
   advertiseHost?: string
   machineCredentials?: MachineCredentials
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
+  sessionTransferTimeoutMs?: number
   connectToMachine?: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -683,6 +684,7 @@ export class DomovoiDaemon {
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
+  #sessionTransferTimeoutMs: number
   #connectToMachine: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -708,6 +710,7 @@ export class DomovoiDaemon {
     this.#advertiseHost = options.advertiseHost
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
+    this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
     // With nothing supplied, this daemon reaches other machines itself: the
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
@@ -2109,7 +2112,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (!this.#workspaceService.bundleSession || !this.#readTransferBundle) {
+        const canSend = params.method === "remote-ref"
+          ? this.#workspaceService.pushSessionRef !== undefined
+          : this.#workspaceService.bundleSession !== undefined && this.#readTransferBundle !== undefined
+        if (!canSend) {
           this.#error(socket, request.id, internalError, "This machine cannot send transfers")
           return
         }
@@ -2165,13 +2171,57 @@ export class DomovoiDaemon {
         // A target that stops answering must not hold this request open, and a
         // cancelled request must not keep talking to the other machine.
         const transferDeadline = new AbortController()
-        const timeout = setTimeout(() => transferDeadline.abort(), sessionTransferTimeoutMs)
+        const timeout = setTimeout(() => transferDeadline.abort(), this.#sessionTransferTimeoutMs)
         timeout.unref?.()
         const transferSignal = signal
           ? AbortSignal.any([signal, transferDeadline.signal])
           : transferDeadline.signal
         const connection = await this.#connectToMachine(target.id, transferSignal)
         try {
+          if (params.method === "remote-ref") {
+            const outcome = await sendSessionThroughRemote({
+              session,
+              sourceMachineId: this.#snapshot.machine.id,
+              target,
+              client: params.client,
+              remote: params.remote!,
+              call: (remoteMethod, remoteParams) =>
+                connection.call(remoteMethod, remoteParams, transferSignal),
+              // The git work runs under the transfer's own deadline, so a call
+              // that hangs cannot outlive the transfer and hold the queue.
+              checkpoint: (worktreePath, label) =>
+                this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
+              pushSessionRef: this.#workspaceService.pushSessionRef
+                ? (worktreePath, remote, sessionId) =>
+                  this.#workspaceService.pushSessionRef!(
+                    worktreePath,
+                    remote,
+                    sessionId,
+                    transferSignal,
+                  )
+                : undefined,
+              recordReceipt: (receipt) => {
+                try {
+                  this.#store.transferReceipts?.record(receipt)
+                } catch (error) {
+                  this.#reportError("Domovoi could not record a transfer receipt", error)
+                }
+              },
+              now: () => new Date().toISOString(),
+            })
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse(outcome),
+            })
+            return
+          }
+          const readBundle = this.#readTransferBundle
+          const bundleSession = this.#workspaceService.bundleSession
+          if (!readBundle || !bundleSession) {
+            this.#error(socket, request.id, internalError, "This machine cannot send transfers")
+            return
+          }
           const outcome = await sendSessionToMachine({
             session,
             sourceMachineId: this.#snapshot.machine.id,
@@ -2180,10 +2230,10 @@ export class DomovoiDaemon {
             call: (remoteMethod, remoteParams) =>
               connection.call(remoteMethod, remoteParams, transferSignal),
             checkpoint: (worktreePath, label) =>
-              this.#workspaceService.checkpoint(worktreePath, label, signal),
+              this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
             bundleSession: (worktreePath, bundlePath) =>
-              this.#workspaceService.bundleSession!(worktreePath, bundlePath, undefined, signal),
-            readBundle: this.#readTransferBundle,
+              bundleSession(worktreePath, bundlePath, undefined, transferSignal),
+            readBundle,
             recordReceipt: (receipt) => {
               // The receipt records what happened; it does not decide it. A
               // daemon that cannot store one still answers with the outcome.
@@ -2204,6 +2254,40 @@ export class DomovoiDaemon {
           clearTimeout(timeout)
           connection.close()
         }
+        return
+      }
+
+      if (method === "transfer.fromRef") {
+        const params = rpcMethods[method].params.parse(request.params)
+        // Taking a session writes a worktree here, which is machine management.
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires the daemon credential",
+          )
+          return
+        }
+        const repositoryPath = this.#snapshot.project?.path
+        if (!this.#workspaceService.restoreSessionFromRef || !repositoryPath) {
+          this.#error(socket, request.id, internalError, "This machine cannot take a session from a remote")
+          return
+        }
+        const workspace = await this.#workspaceService.restoreSessionFromRef(
+          repositoryPath,
+          params.remote,
+          params.sessionId,
+          signal,
+        )
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            workspacePath: workspace.path,
+            checkpointCommit: workspace.baseCommit,
+          }),
+        })
         return
       }
 
