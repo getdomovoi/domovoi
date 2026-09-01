@@ -521,3 +521,66 @@ describe("GitWorkspaceService", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 })
+
+describe("GitWorkspaceService session bundles", () => {
+  async function repositoryWithSession(prefix: string) {
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const base = (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim()
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
+    return { scratch, service, workspace, base }
+  }
+
+  it("bundles the session checkpoint so a target can restore it", async () => {
+    const { scratch, service, workspace } = await repositoryWithSession("domovoi-bundle-")
+    await writeFile(join(workspace.path, "README.md"), "moved\n")
+    const checkpoint = await service.checkpoint(workspace.path, "before-transfer")
+
+    const bundle = await service.bundleSession(workspace.path, join(scratch, "session.bundle"))
+
+    expect(bundle.commit).toBe(checkpoint.commit)
+    const listed = await execute("git", ["bundle", "list-heads", bundle.path])
+    expect(listed.stdout).toContain(checkpoint.commit)
+  })
+
+  it("carries only what the target does not already have", async () => {
+    const { scratch, service, workspace, base } = await repositoryWithSession("domovoi-bundle-since-")
+    await writeFile(join(workspace.path, "README.md"), "moved\n")
+    await service.checkpoint(workspace.path, "before-transfer")
+
+    const incremental = await service.bundleSession(
+      workspace.path,
+      join(scratch, "incremental.bundle"),
+      base,
+    )
+
+    // A bundle that starts at a commit the target holds cannot be verified
+    // against a repository that lacks it.
+    const empty = join(scratch, "empty")
+    await execute("git", ["init", "--initial-branch=main", empty])
+    await expect(execute("git", ["-C", empty, "bundle", "verify", incremental.path]))
+      .rejects.toThrow()
+  })
+
+  it("refuses to write a bundle outside the directory it was given", async () => {
+    const { service, workspace } = await repositoryWithSession("domovoi-bundle-escape-")
+    await service.checkpoint(workspace.path, "before-transfer")
+
+    await expect(service.bundleSession(workspace.path, `${workspace.path}/../escape.bundle`))
+      .rejects.toThrow("Bundle path must not traverse")
+    await expect(service.bundleSession(workspace.path, "relative.bundle"))
+      .rejects.toThrow("Bundle path must not traverse")
+  })
+})
