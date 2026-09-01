@@ -574,6 +574,16 @@ describe("GitWorkspaceService session bundles", () => {
       .rejects.toThrow()
   })
 
+  it("refuses to bundle a worktree whose work is not checkpointed", async () => {
+    const { scratch, service, workspace } = await repositoryWithSession("domovoi-bundle-dirty-")
+    await service.checkpoint(workspace.path, "before-transfer")
+    // Work done after the checkpoint would not travel in the bundle.
+    await writeFile(join(workspace.path, "README.md"), "uncommitted\n")
+
+    await expect(service.bundleSession(workspace.path, join(scratch, "dirty.bundle")))
+      .rejects.toThrow("Session worktree has work that is not checkpointed")
+  })
+
   it("refuses to write a bundle outside the directory it was given", async () => {
     const { service, workspace } = await repositoryWithSession("domovoi-bundle-escape-")
     await service.checkpoint(workspace.path, "before-transfer")
