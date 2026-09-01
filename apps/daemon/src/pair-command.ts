@@ -1,7 +1,9 @@
+import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
+
 import { pairingCodeTtlMs } from "./pairing-codes.js"
 
 export type PairCommandDependencies = {
-  issue: () => Promise<{ code: string; expiresAt: string }>
+  issue: () => Promise<DeviceIssueCodeResult>
   stdout: (text: string) => void
   stderr: (text: string) => void
 }
@@ -18,7 +20,7 @@ export async function runPairCommand(
     return 1
   }
 
-  let issued: { code: string; expiresAt: string }
+  let issued: DeviceIssueCodeResult
   try {
     issued = await dependencies.issue()
   } catch {

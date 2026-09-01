@@ -55,6 +55,7 @@ export const devicesResultSchema = z.object({
   devices: z.array(pairedDeviceSchema).max(maximumListedDevices),
 }).strict()
 
+export type DeviceIssueCodeResult = z.infer<typeof deviceIssueCodeResultSchema>
 export type PairedDeviceSummary = z.infer<typeof pairedDeviceSchema>
 export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>

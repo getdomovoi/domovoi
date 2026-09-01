@@ -1791,6 +1791,18 @@ export class DomovoiDaemon {
 
       if (method === "device.issueCode") {
         rpcMethods[method].params.parse(request.params)
+        // Opening a pairing enrols a new device, so it is device management and
+        // a device credential must not reach it: otherwise one paired device
+        // could mint codes and enrol more.
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Managing paired devices requires the daemon credential",
+          )
+          return
+        }
         if (!this.#pairing) {
           this.#error(socket, request.id, internalError, "Device pairing is unavailable")
           return
