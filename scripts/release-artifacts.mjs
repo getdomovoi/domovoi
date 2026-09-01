@@ -44,7 +44,7 @@ export function sbomComponents(graph) {
 
 function licenseEntries(license) {
   if (license === "Unknown") return []
-  if (/[()]|\bOR\b|\bAND\b/.test(license)) return [{ expression: license }]
+  if (/[()]|\bOR\b|\bAND\b|\bWITH\b/.test(license)) return [{ expression: license }]
   return [{ license: { id: license } }]
 }
 
