@@ -186,6 +186,9 @@ export class DomovoiClient extends EventTarget {
   connect(): Promise<WorkspaceSnapshot> {
     this.#shouldReconnect = true
     this.#authenticationTerminal = false
+    // A connection asked for explicitly is a fresh start, so the next failure
+    // waits the first backoff rather than one escalated by earlier attempts.
+    this.#reconnectAttempt = 0
     this.#clearReconnectTimer()
     return this.#open()
   }
