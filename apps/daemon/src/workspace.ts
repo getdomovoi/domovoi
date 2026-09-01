@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 
 const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+const safeRemoteName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 
 export type RepositoryInfo = {
   root: string
@@ -101,6 +102,24 @@ export interface WorkspaceService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace>
+  pushSessionRef?(
+    worktreePath: string,
+    remote: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRef>
+  restoreSessionFromRef?(
+    repositoryPath: string,
+    remote: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace>
+}
+
+export type SessionRef = {
+  ref: string
+  commit: string
+  remote: string
 }
 
 export type SessionBundle = {
@@ -553,6 +572,81 @@ export class GitWorkspaceService implements WorkspaceService {
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     return { commit, changedFiles }
+  }
+
+  // The opt-in path: pushing a session to a Git remote the caller names. It is
+  // never the default, because a remote is a third place the repository lands
+  // and the user has to choose it deliberately.
+  async pushSessionRef(
+    worktreePath: string,
+    remote: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionRef> {
+    if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
+    // A remote name that begins with a dash would be read as an option by git.
+    if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
+
+    const remotes = await git(worktreePath, ["remote"], signal)
+    if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
+      throw new Error(`Repository has no remote named ${remote}`)
+    }
+
+    const commit = await this.#checkpointedHead(worktreePath, signal)
+    const ref = `refs/domovoi/sessions/${sessionId}`
+    await git(worktreePath, ["push", "--", remote, `${commit}:${ref}`], signal)
+    return { ref, commit, remote }
+  }
+
+  // The target side of the opt-in path: the session arrives through the remote
+  // both machines already share, not as bytes over the daemon connection.
+  async restoreSessionFromRef(
+    repositoryPath: string,
+    remote: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
+    if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
+    if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
+
+    const ref = `refs/domovoi/sessions/${sessionId}`
+    await git(repositoryPath, ["fetch", "--quiet", "--", remote, `${ref}:${ref}`], signal)
+    const commit = await git(repositoryPath, ["rev-parse", `${ref}^{commit}`], signal)
+
+    const path = join(this.worktreeRoot, sessionId)
+    const branch = `domovoi/${sessionId}`
+    await mkdir(this.worktreeRoot, { recursive: true })
+    try {
+      await realpath(path)
+      throw new SessionWorktreeExistsError()
+    } catch (error) {
+      if (error instanceof SessionWorktreeExistsError) throw error
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+
+    await git(repositoryPath, ["worktree", "add", "-b", branch, path, commit], signal)
+    // The transferred checkpoint stays restorable here, as it does when a
+    // session arrives as a bundle.
+    await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
+    return { path, branch, baseCommit: commit }
+  }
+
+  async #checkpointedHead(worktreePath: string, signal?: AbortSignal): Promise<string> {
+    const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    let durableCommit: string | undefined
+    try {
+      durableCommit = await git(worktreePath, [
+        "rev-parse",
+        `refs/domovoi/checkpoints/${commit}^{commit}`,
+      ], signal)
+    } catch {
+      signal?.throwIfAborted()
+    }
+    const status = await git(worktreePath, ["status", "--porcelain"], signal)
+    if (durableCommit !== commit || status.length > 0) {
+      throw new Error("Session worktree has work that is not checkpointed")
+    }
+    return commit
   }
 
   // Repository bytes travel daemon to daemon as a Git bundle, so a transfer
