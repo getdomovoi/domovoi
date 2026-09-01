@@ -19,6 +19,21 @@ Package managers wrap the same versioned release artifacts. Formulae and manifes
 from a moving branch or run an unpinned install script. Release automation will publish npm first,
 attach checksummed binaries, then update downstream package manifests.
 
+## Verifying the published artifact
+
+`pnpm test:install` packs `@getdomovoi/protocol` exactly as `pnpm publish` would, then installs the
+resulting tarball into a throwaway project with npm, pnpm, and Bun in turn and imports it. The
+import is a real one: it reads `protocolVersion` and parses a value through a published schema, so
+a package that resolves but cannot be imported fails the check.
+
+Outside CI a package manager that is not installed is skipped and named in the output. In CI a
+missing package manager is a failure, because that is where the distribution contract in this
+document is proven rather than assumed.
+
+The daemon is not part of this check. Its production graph builds native modules, so a cold install
+per package manager on every CI run costs far more than it proves; its packaged contents are
+covered by `pnpm test:packages`.
+
 ## Versioning and release metadata
 
 Every package in this workspace carries the same version and is released as one compatibility

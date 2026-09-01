@@ -589,7 +589,10 @@ td { color: var(--ink2); }
 <ul>
 <li>[ ] Define compatibility, deprecation, and release-support policy
 </li>
-<li>[ ] Verify npm artifacts install and run through npm, pnpm, and Bun
+<li>[x] Verify npm artifacts install and run through npm, pnpm, and Bun
+<ul>
+<li><code>pnpm test:install</code> packs the protocol package, installs the tarball with each package manager, and imports it; a missing package manager fails CI.</li>
+</ul>
 </li>
 <li>[ ] Build signed desktop installers for macOS, Windows, and Linux
 </li>
