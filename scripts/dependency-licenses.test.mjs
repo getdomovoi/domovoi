@@ -84,3 +84,37 @@ test("still reports an exact exception that left the graph", () => {
     "license-policy.json: gone is an exception but no longer in the dependency graph",
   ])
 })
+
+test("accepts a dual license whose either branch satisfies the policy", () => {
+  assert.deepEqual(evaluateDependencyLicenses({
+    "(MIT OR Apache-2.0)": [{ name: "dual", versions: ["1.0.0"] }],
+  }, policy), [])
+})
+
+test("accepts a conjunction whose every term satisfies the policy", () => {
+  assert.deepEqual(evaluateDependencyLicenses({
+    "MIT AND BSD-2-Clause": [{ name: "both", versions: ["1.0.0"] }],
+  }, policy), [])
+})
+
+test("reports a conjunction that drags in a license outside the policy", () => {
+  assert.deepEqual(evaluateDependencyLicenses({
+    "MIT AND GPL-3.0": [{ name: "tainted", versions: ["1.0.0"] }],
+  }, policy), [
+    "tainted@1.0.0: MIT AND GPL-3.0 is not an allowed license",
+  ])
+})
+
+test("reports a disjunction where no branch satisfies the policy", () => {
+  assert.deepEqual(evaluateDependencyLicenses({
+    "(GPL-3.0 OR LGPL-3.0)": [{ name: "copyleft-either-way", versions: ["1.0.0"] }],
+  }, policy), [
+    "copyleft-either-way@1.0.0: (GPL-3.0 OR LGPL-3.0) is not an allowed license",
+  ])
+})
+
+test("fails instead of passing when the graph holds no package at all", () => {
+  assert.deepEqual(evaluateDependencyLicenses({}, { allowed: ["MIT"], exceptions: {} }), [
+    "pnpm licenses list returned no package, so no license was checked",
+  ])
+})
