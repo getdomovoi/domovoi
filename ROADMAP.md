@@ -264,6 +264,9 @@ before any public package or application publish.
 - [ ] Build signed desktop installers for macOS, Windows, and Linux
 - [ ] Add macOS signing/notarization and Windows code signing
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
+  - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
+    and runs on Linux in CI.
+  - Attaching them to a GitHub Release waits on the release workflow.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set
 - [ ] Add daemon and desktop update checks with explicit user control
