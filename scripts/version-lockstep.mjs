@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-const workspaceDirectories = ["apps", "packages"]
+const workspaceGlob = /^\s*-\s*["']?([^"'\s/]+)\/\*{1,2}["']?\s*$/
 
 function describe(packages) {
   return [...packages]
@@ -38,13 +38,40 @@ export function evaluateVersionLockstep(packages) {
   return failures
 }
 
+export function workspaceDirectories(workspaceYaml) {
+  const directories = []
+  let inPackages = false
+  for (const line of workspaceYaml.split(/\r?\n/)) {
+    if (/^packages:/.test(line)) {
+      inPackages = true
+      continue
+    }
+    if (!inPackages) continue
+    const match = workspaceGlob.exec(line)
+    if (match) directories.push(match[1])
+    else if (line.trim() !== "") break
+  }
+  return directories
+}
+
+async function readManifest(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"))
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  }
+}
+
 export async function collectWorkspacePackages(root = repositoryRoot) {
+  const yaml = await readFile(join(root, "pnpm-workspace.yaml"), "utf8")
   const packages = []
-  for (const directory of workspaceDirectories) {
+  for (const directory of workspaceDirectories(yaml)) {
     for (const entry of await readdir(join(root, directory), { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
       const path = `${directory}/${entry.name}/package.json`
-      const manifest = JSON.parse(await readFile(join(root, path), "utf8"))
+      const manifest = await readManifest(join(root, path))
+      if (!manifest) continue
       packages.push({ name: manifest.name, path, version: manifest.version })
     }
   }
