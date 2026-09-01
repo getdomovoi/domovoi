@@ -4671,7 +4671,23 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = "/worktrees/session-billing"
     session.providerThreadId = "provider-thread-billing"
     snapshot.annotations[1]!.status = "resolved"
+    const cropBytes = new Uint8Array([137, 80, 78, 71])
+    snapshot.annotations[0]!.visualContext = {
+      status: "available",
+      ref: `crop-${"a".repeat(64)}`,
+      artifactRevision: 3,
+      mimeType: "image/png",
+      width: 320,
+      height: 56,
+      byteLength: cropBytes.byteLength,
+    }
+    const annotationVisualContext = {
+      capture: vi.fn(),
+      storeUpload: vi.fn(),
+      read: vi.fn(async () => cropBytes),
+    }
     const agent = {
+      capabilities: { vision: true },
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "provider-thread-unused"),
@@ -4688,6 +4704,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
+      annotationVisualContext,
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -4717,7 +4734,14 @@ describe("DomovoiDaemon", () => {
     expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "provider-thread-billing",
       prompt: expect.stringContaining('"annotationId":"annotation-migration-machine"'),
+      visualContexts: [{
+        annotationId: "annotation-migration-machine",
+        mimeType: "image/png",
+        bytes: cropBytes,
+      }],
     }))
+    expect(agent.startTurn.mock.calls[0]![0].prompt).toContain('"delivery":"image-attached"')
+    expect(annotationVisualContext.read).toHaveBeenCalledWith(`crop-${"a".repeat(64)}`, "image/png")
     expect(agent.startTurn.mock.calls[0]![0].prompt).not.toContain("annotation-replay-copy")
     socket.close()
   })
