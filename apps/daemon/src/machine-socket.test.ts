@@ -192,6 +192,42 @@ describe("openMachineSocket", () => {
     await Promise.all(pending)
   })
 
+  it("stops waiting when the transfer is cancelled", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      return undefined
+    })
+    const cancelled = new AbortController()
+
+    const connection = await openMachineSocket({
+      endpoint: machine.endpoint,
+      credential: "n".repeat(43),
+    })
+    const call = connection.call("transfer.chunk", {}, cancelled.signal)
+    cancelled.abort()
+
+    await expect(call).rejects.toThrow("The transfer was cancelled")
+    connection.close()
+  })
+
+  it("gives up on a handshake the caller cancels", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+    servers.push(server)
+    await once(server, "listening")
+    const address = server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+    const cancelled = new AbortController()
+
+    const opening = openMachineSocket({
+      endpoint: `ws://127.0.0.1:${port}/rpc`,
+      credential: "n".repeat(43),
+      signal: cancelled.signal,
+    })
+    cancelled.abort()
+
+    await expect(opening).rejects.toThrow("The transfer was cancelled")
+  })
+
   it("gives up on a machine that never answers the handshake", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
     servers.push(server)
