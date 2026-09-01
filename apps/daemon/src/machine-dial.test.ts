@@ -111,6 +111,24 @@ describe("createMachineDialer", () => {
     expect(io.opened).toEqual([])
   })
 
+  it("refuses a remote machine that claims a loopback address", async () => {
+    // Nothing ties an advertised endpoint to the transport it claims, so a
+    // machine elsewhere can name a loopback address and be handed a credential
+    // meant for it by whatever is listening here.
+    const io = dialer({
+      machines: [machine({
+        connection: "tailnet",
+        transports: [
+          { kind: "tailnet", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true },
+        ],
+      })],
+    })
+
+    await expect(io.dial(machineId))
+      .rejects.toThrow("Refusing to authenticate over an unencrypted connection")
+    expect(io.opened).toEqual([])
+  })
+
   it("dials loopback without encryption, where nothing leaves the machine", async () => {
     const io = dialer({
       machines: [machine({

@@ -39,9 +39,14 @@ export function createMachineDialer(input: {
     })
     if (!transport) throw new Error("That machine advertises no usable transport")
 
-    // A credential must never cross a network in the clear, so plaintext is
-    // only dialed where it never leaves this machine.
-    if (leavesThisMachine(transport.endpoint)) {
+    // A credential must never cross a network in the clear. An endpoint is not
+    // proof of where it leads: nothing stops a machine elsewhere from
+    // advertising a loopback address, so plaintext is dialed only when the
+    // machine and the transport both say this is the local machine.
+    const staysHere = transport.kind === "local"
+      && machine.connection === "local"
+      && !leavesThisMachine(transport.endpoint)
+    if (!transport.endpoint.startsWith("wss://") && !staysHere) {
       throw new Error("Refusing to authenticate over an unencrypted connection")
     }
 
