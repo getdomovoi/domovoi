@@ -300,20 +300,18 @@ These are valuable but must not displace the secure single-user fleet workflow:
 These remain decisions, not implementation tasks. Resolve them through an issue or RFC before the
 dependent work starts.
 
-1. **Offline machine transfer:** refuse immediately or queue with TTL, cancellation, source
-   write-lock behavior, and divergence rules.
-2. **Provider handoff disclosure:** required pre-switch loss disclosure, safe-boundary behavior,
+1. **Provider handoff disclosure:** required pre-switch loss disclosure, safe-boundary behavior,
    and the warning difference between switch and fork.
-3. **Skill trust:** capability vocabulary, signature authority, privileged installation, unsigned
+2. **Skill trust:** capability vocabulary, signature authority, privileged installation, unsigned
    Build-auto behavior, and fleet declaration semantics.
-4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
+3. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
-5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
+4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
    hosted service exists.
-6. **Public site direction:** architecture-led or folklore-led narrative after real product
+5. **Public site direction:** architecture-led or folklore-led narrative after real product
    screenshots are available.
-7. **Packaging formats:** final Linux package set and Windows package-manager targets.
-8. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
+6. **Packaging formats:** final Linux package set and Windows package-manager targets.
+7. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
    and security backport duration.
 
 ## Resolved architecture decisions
@@ -328,6 +326,10 @@ dependent work starts.
 - Domovoi is open-core. The daemon, protocol, clients, and local transports are Apache-2.0; hosted
   account, billing, relay, vault, and team services may remain separate.
 - Claude Design's app and brand handoffs remain the design source of truth.
+- A session transfer to a machine that is not answering is refused at the moment it is requested and
+  is never queued, so a session never changes hands later and unattended. This resolves open
+  question 1 in the signed design handoff, whose `UNREACHABLE` and unselectable treatment of offline
+  machines already showed this path.
 
 ## First public alpha definition of done
 
