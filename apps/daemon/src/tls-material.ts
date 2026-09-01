@@ -17,6 +17,7 @@ async function readPrivateFile(path: string, description: string): Promise<Buffe
     // The path is named so an operator can fix it; the file contents never are.
     throw new Error(
       `Domovoi could not read the ${description} at ${path}: ${(error as NodeJS.ErrnoException).code ?? "unreadable"}`,
+      { cause: error },
     )
   }
 }
