@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createEmptyWorkspace,
   demoWorkspace,
+  machineIdSchema,
   maximumEffectiveClientThreadItems,
   maximumWorkspaceDeltaChunkLength,
   projectSwitchConfirmationSchema,
@@ -2390,6 +2391,34 @@ describe("DomovoiDaemon", () => {
     await expect(response).resolves.toMatchObject({
       result: { machine: { id: `machine-${"7".repeat(32)}`, name: "workshop" } },
     })
+    socket.close()
+  })
+
+  it("reports a protocol-valid machine identity without a persisted one", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { client: "web", clientVersion: "0.0.1" },
+    }))
+
+    const hello = await response
+    const machine = (hello.result as { machine: { id: string } }).machine
+    expect(machineIdSchema.safeParse(machine.id).success).toBe(true)
     socket.close()
   })
 

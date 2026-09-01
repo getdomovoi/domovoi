@@ -530,7 +530,7 @@ export class DomovoiDaemon {
     const machineName = options.machineIdentity?.label ?? hostname()
     const initialSnapshot = createEmptyWorkspace({
       id: options.machineIdentity?.id
-        ?? `machine-${createHash("sha256").update(`${hostname()}:${machinePlatform}:${machineArch}`).digest("hex").slice(0, 12)}`,
+        ?? `machine-${createHash("sha256").update(`${hostname()}:${machinePlatform}:${machineArch}`).digest("hex").slice(0, 32)}`,
       name: machineName,
       platform: machinePlatform,
       arch: machineArch,
