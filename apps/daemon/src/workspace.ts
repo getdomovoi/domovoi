@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process"
-import { createHash } from "node:crypto"
-import { chmod, mkdir, realpath, rm } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { chmod, mkdir, realpath, rename, rm } from "node:fs/promises"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
@@ -610,31 +610,39 @@ export class GitWorkspaceService implements WorkspaceService {
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
-    // Nothing that was already here belongs to this transfer, so an occupied
-    // path is refused rather than cleaned up: the cleanup below must only ever
-    // remove what this restore created.
+
+    // The clone happens somewhere this restore owns outright, so nothing it
+    // cleans up can belong to another restore or to an existing session. The
+    // finished worktree is then claimed with a rename, which the filesystem
+    // settles between concurrent restores: only one can win.
+    const staging = join(this.worktreeRoot, `.incoming-${sessionId}-${randomUUID()}`)
     try {
-      await realpath(path)
-      throw new SessionWorktreeExistsError()
-    } catch (error) {
-      if (error instanceof SessionWorktreeExistsError) throw error
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-    }
-    try {
-      await gitDirectory(this.worktreeRoot, ["clone", "--quiet", bundlePath, path], signal)
+      await gitDirectory(this.worktreeRoot, ["clone", "--quiet", bundlePath, staging], signal)
     } catch {
       signal?.throwIfAborted()
       // The bundle is the only thing the target trusts here, so anything it
       // cannot read is refused rather than partly applied.
-      await rm(path, { recursive: true, force: true })
+      await rm(staging, { recursive: true, force: true })
       throw new Error("Bundle could not be verified")
     }
 
-    await git(path, ["checkout", "--quiet", "-B", branch], signal)
+    try {
+      await git(staging, ["checkout", "--quiet", "-B", branch], signal)
+      const staged = await git(staging, ["rev-parse", "HEAD"], signal)
+      // The transferred checkpoint has to stay restorable on this machine,
+      // which means carrying the durable ref, not only the commit.
+      await git(staging, ["update-ref", `refs/domovoi/checkpoints/${staged}`, staged], signal)
+      await rename(staging, path)
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true })
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === "ENOTEMPTY" || code === "EEXIST" || code === "EPERM" || code === "EACCES") {
+        throw new SessionWorktreeExistsError()
+      }
+      throw error
+    }
+
     const head = await git(path, ["rev-parse", "HEAD"], signal)
-    // The transferred checkpoint has to stay restorable on this machine, which
-    // means carrying the durable ref, not only the commit.
-    await git(path, ["update-ref", `refs/domovoi/checkpoints/${head}`, head], signal)
     return { path, branch, baseCommit: head }
   }
 

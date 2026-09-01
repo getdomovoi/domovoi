@@ -660,6 +660,26 @@ describe("GitWorkspaceService bundle restore", () => {
       .resolves.toContain("work in progress")
   })
 
+  it("lets only one concurrent restore claim a session", async () => {
+    const { scratch, bundle } = await sourceWithBundle("domovoi-restore-race-")
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+
+    const [first, second] = await Promise.allSettled([
+      target.restoreSessionFromBundle(bundle.path, "session-1"),
+      target.restoreSessionFromBundle(bundle.path, "session-1"),
+    ])
+
+    const outcomes = [first, second].map((settled) => settled.status)
+    expect(outcomes.filter((status) => status === "fulfilled")).toHaveLength(1)
+    const rejected = [first, second].find((settled) => settled.status === "rejected")
+    expect((rejected as PromiseRejectedResult).reason.message)
+      .toContain("Session worktree already exists")
+    // The winner's worktree is intact, not removed by the loser's cleanup.
+    const claimed = join(scratch, "target-worktrees", "session-1")
+    const contents = await readFile(join(claimed, "README.md"), "utf8")
+    expect(contents.replace(/\r\n/g, "\n")).toBe("moved\n")
+  })
+
   it("refuses a bundle it cannot verify", async () => {
     const { scratch } = await sourceWithBundle("domovoi-restore-bad-")
     const damaged = join(scratch, "damaged.bundle")
