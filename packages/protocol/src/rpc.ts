@@ -17,6 +17,7 @@ import {
   workspaceSnapshotSchema,
 } from "./schema.js"
 import {
+  deviceClaimParamsSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -957,6 +958,9 @@ export const rpcMethods = {
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
+  // Reachable before authentication: a machine being paired has no credential
+  // yet. Gated on an open pairing code and nothing else.
+  "device.claim": { params: deviceClaimParamsSchema, result: devicePairResultSchema },
   "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
   "device.revoke": {
     params: deviceRevokeParamsSchema,
