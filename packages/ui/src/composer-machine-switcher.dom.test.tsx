@@ -77,12 +77,8 @@ it("pairs a machine from the composer device menu", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
   const onPairMachine = vi.fn(async () => ({
-    device: {
-      id: `device-${"a".repeat(32)}`,
-      label: "studio-ipad",
-      pairedAt: "2026-08-31T12:00:00.000Z",
-    },
-    token: "n".repeat(43),
+    machineId: `machine-${"c".repeat(32)}`,
+    label: "workshop",
   }))
   render(
     <Thread

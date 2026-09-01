@@ -1,13 +1,18 @@
 import { machineIdSchema } from "@getdomovoi/protocol"
 
 import { claimMachine, type ClaimConnection } from "./claim-machine.js"
-import type { PairMachineRequest } from "./pair-machine-dialog.js"
 
 export class MachinePairingError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "MachinePairingError"
   }
+}
+
+export type PairMachineRequest = {
+  endpoint: string
+  code: string
+  label: string
 }
 
 export type PairedMachine = {
