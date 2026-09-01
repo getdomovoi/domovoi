@@ -69,6 +69,17 @@ system and accessibility behavior.
 Include screenshots or a short recording for visible changes at relevant desktop and mobile
 widths. Describe keyboard, touch, loading, empty, and failure states when they are affected.
 
+## Release metadata
+
+Every workspace package shares one version and is released as one compatibility unit. Record the
+release intent of a change with `pnpm changeset` and commit the generated file alongside the
+change. `pnpm release:status` lists changed packages that still lack metadata, and
+`pnpm release:invariants` fails when package versions drift apart or a workflow references an
+action by a mutable tag.
+
+Documentation-only and repository-tooling changes do not need a changeset. See
+[docs/distribution.md](docs/distribution.md) for the release model.
+
 ## Commits and pull requests
 
 Treat commits as small savepoints. Use concise Conventional Commit subjects, such as:
