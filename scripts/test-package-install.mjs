@@ -5,7 +5,13 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { packPackage } from "./pack-package.mjs"
-import { installPlan, packageManagers, supportedManagers } from "./package-install-plan.mjs"
+import {
+  installPlan,
+  isContinuousIntegration,
+  packageManagers,
+  shellArguments,
+  supportedManagers,
+} from "./package-install-plan.mjs"
 
 const run = promisify(execFile)
 const selector = "@getdomovoi/protocol"
@@ -39,8 +45,8 @@ async function verify(manager, archive) {
       JSON.stringify({ name: "domovoi-install-check", private: true, type: "module" }),
     )
     writeFileSync(join(project, "smoke.mjs"), smokeTest)
-    await run(plan.install.command, plan.install.args, options)
-    const { stdout } = await run(plan.run.command, plan.run.args, options)
+    await run(plan.install.command, shellArguments(plan.install.args), options)
+    const { stdout } = await run(plan.run.command, shellArguments(plan.run.args), options)
     return stdout.trim()
   } finally {
     rmSync(project, { force: true, recursive: true })
@@ -57,7 +63,7 @@ try {
 
   const { run: managers, skipped, failures: missing } = packageManagers({
     present,
-    ci: Boolean(process.env.CI),
+    ci: isContinuousIntegration(),
   })
   failures.push(...missing)
 

@@ -21,6 +21,17 @@ export function installPlan(manager, archive) {
   return plan(archive)
 }
 
+export function shellArguments(args, platform = process.platform) {
+  if (platform !== "win32") return args
+  return args.map((argument) => (/[\s"]/.test(argument) ? `"${argument.replace(/"/g, '\\"')}"` : argument))
+}
+
+export function isContinuousIntegration(env = process.env) {
+  const value = env.CI
+  if (value === undefined) return false
+  return !["", "0", "false"].includes(value.toLowerCase())
+}
+
 export function packageManagers({ present, ci }) {
   const run = supportedManagers.filter((manager) => present.includes(manager))
   const skipped = supportedManagers.filter((manager) => !present.includes(manager))
