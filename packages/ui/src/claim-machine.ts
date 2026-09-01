@@ -20,12 +20,20 @@ export async function claimMachine(input: {
   label: string
   open: (endpoint: string) => Promise<ClaimConnection>
 }): Promise<DevicePairResult> {
-  if (!input.endpoint.startsWith("ws://") && !input.endpoint.startsWith("wss://")) {
+  // Parsed rather than prefix-matched, so an address with no machine behind it
+  // never reaches the network layer.
+  let endpoint: URL
+  try {
+    endpoint = new URL(input.endpoint)
+  } catch {
+    throw new MachineClaimError("A machine endpoint must be a WebSocket URL")
+  }
+  if (!["ws:", "wss:"].includes(endpoint.protocol) || !endpoint.hostname) {
     throw new MachineClaimError("A machine endpoint must be a WebSocket URL")
   }
   // A pairing code is a credential in its own right for the few minutes it
   // lives, so it never crosses a network in the clear.
-  if (input.endpoint.startsWith("ws://") && !isLoopbackEndpoint(input.endpoint)) {
+  if (endpoint.protocol === "ws:" && !isLoopbackEndpoint(input.endpoint)) {
     throw new MachineClaimError("Refusing to send a pairing code over an unencrypted connection")
   }
 
