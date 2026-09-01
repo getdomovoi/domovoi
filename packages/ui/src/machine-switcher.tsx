@@ -1,5 +1,6 @@
 import type { FleetHealth, FleetMachine } from "@getdomovoi/protocol"
 
+import { machineSelection } from "./machine-selection.js"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
@@ -22,8 +23,6 @@ const healthLabel: Record<FleetHealth, string> = {
   "upgrade-required": "Upgrade required",
 }
 
-const unavailableReason = "Machine transfer is not available yet"
-
 function sessionSummary(count: number): string {
   return `${count} ${count === 1 ? "session" : "sessions"}`
 }
@@ -33,11 +32,13 @@ export function MachineSwitcher({
   currentMachineId,
   currentSessionCount,
   onPairMachine,
+  onSelectMachine,
 }: {
   machines: FleetMachine[]
   currentMachineId: string
   currentSessionCount: number
   onPairMachine?: (() => void) | undefined
+  onSelectMachine?: ((machineId: string) => void) | undefined
 }) {
   const current = machines.find((machine) => machine.id === currentMachineId)
   const others = machines.filter((machine) => machine.id !== currentMachineId)
@@ -66,21 +67,35 @@ export function MachineSwitcher({
           </DropdownMenuItem>
         ) : null}
         {others.length > 0 ? <DropdownMenuSeparator /> : null}
-        {others.map((machine) => (
-          <DropdownMenuItem key={machine.id} disabled className="flex-col items-start gap-0.5">
-            <span className="font-medium text-strong">{machine.label}</span>
-            <span className="font-machine text-[10px] text-faint">
-              {machine.connection} · {healthLabel[machine.health]}
-            </span>
-          </DropdownMenuItem>
-        ))}
+        {others.map((machine) => {
+          const selection = machineSelection(machine)
+          const selectable = selection.selectable && Boolean(onSelectMachine)
+          return (
+            <DropdownMenuItem
+              key={machine.id}
+              disabled={!selectable}
+              className="flex-col items-start gap-0.5"
+              {...(selectable && onSelectMachine
+                ? { onSelect: () => onSelectMachine(machine.id) }
+                : {})}
+            >
+              <span className="font-medium text-strong">{machine.label}</span>
+              <span className="font-machine text-[10px] text-faint">
+                {machine.connection} · {healthLabel[machine.health]}
+                {selection.selectable ? "" : ` · ${selection.reason}`}
+              </span>
+            </DropdownMenuItem>
+          )
+        })}
         <DropdownMenuSeparator />
         {onPairMachine ? (
           <DropdownMenuItem onSelect={() => onPairMachine()}>+ Pair a machine</DropdownMenuItem>
         ) : null}
-        <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
-          {others.length > 0 ? unavailableReason : "No other machines are paired"}
-        </p>
+        {others.length > 0 ? null : (
+          <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+            No other machines are paired
+          </p>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
