@@ -646,6 +646,20 @@ describe("GitWorkspaceService bundle restore", () => {
     expect(durable.stdout.trim()).toBe(checkpoint.commit)
   })
 
+  it("never destroys a session worktree that is already there", async () => {
+    const { scratch, bundle } = await sourceWithBundle("domovoi-restore-occupied-")
+    const targetRoot = join(scratch, "target-worktrees")
+    const target = new GitWorkspaceService(targetRoot)
+    await target.restoreSessionFromBundle(bundle.path, "session-1")
+    const occupied = join(targetRoot, "session-1")
+    await writeFile(join(occupied, "uncommitted.txt"), "work in progress\n")
+
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1"))
+      .rejects.toThrow("Session worktree already exists")
+    await expect(readFile(join(occupied, "uncommitted.txt"), "utf8"))
+      .resolves.toContain("work in progress")
+  })
+
   it("refuses a bundle it cannot verify", async () => {
     const { scratch } = await sourceWithBundle("domovoi-restore-bad-")
     const damaged = join(scratch, "damaged.bundle")

@@ -54,6 +54,13 @@ export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
 
+export class SessionWorktreeExistsError extends Error {
+  constructor() {
+    super("Session worktree already exists")
+    this.name = "SessionWorktreeExistsError"
+  }
+}
+
 export class WorkspaceEvidenceUnstableError extends Error {
   constructor() {
     super("Workspace changed while evidence was collected")
@@ -603,6 +610,16 @@ export class GitWorkspaceService implements WorkspaceService {
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
+    // Nothing that was already here belongs to this transfer, so an occupied
+    // path is refused rather than cleaned up: the cleanup below must only ever
+    // remove what this restore created.
+    try {
+      await realpath(path)
+      throw new SessionWorktreeExistsError()
+    } catch (error) {
+      if (error instanceof SessionWorktreeExistsError) throw error
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
     try {
       await gitDirectory(this.worktreeRoot, ["clone", "--quiet", bundlePath, path], signal)
     } catch {
