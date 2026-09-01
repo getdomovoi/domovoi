@@ -42,13 +42,18 @@ const offline: FleetMachine = {
   health: "unreachable",
 }
 
-async function openMenu(machines: FleetMachine[], sessionCount = 2) {
+async function openMenu(
+  machines: FleetMachine[],
+  sessionCount = 2,
+  onSelectMachine?: (machineId: string) => void,
+) {
   const user = userEvent.setup()
   render(
     <MachineSwitcher
       machines={machines}
       currentMachineId={local.id}
       currentSessionCount={sessionCount}
+      {...(onSelectMachine ? { onSelectMachine } : {})}
     />,
   )
   await user.click(screen.getByRole("button", { name: /workshop/ }))
@@ -91,12 +96,28 @@ it("reports the active session count of this machine", async () => {
   expect(screen.getByRole("menuitem", { name: /workshop/ }).textContent).toContain("3 sessions")
 })
 
-it("explains that a reachable machine cannot be selected yet", async () => {
+it("selects a reachable machine", async () => {
+  const onSelectMachine = vi.fn()
+  const user = await openMenu([local, tailnet], 2, onSelectMachine)
+
+  await user.click(screen.getByRole("menuitem", { name: /studio/ }))
+
+  expect(onSelectMachine).toHaveBeenCalledWith(tailnet.id)
+})
+
+it("says why a machine cannot be selected", async () => {
+  const onSelectMachine = vi.fn()
+  await openMenu([local, offline], 2, onSelectMachine)
+
+  const machine = screen.getByRole("menuitem", { name: /hetzner/ })
+  expect(machine.getAttribute("aria-disabled")).toBe("true")
+  expect(machine.textContent).toContain("That machine cannot be reached")
+})
+
+it("offers nothing to select where no handler can act on it", async () => {
   await openMenu([local, tailnet])
 
-  const studio = screen.getByRole("menuitem", { name: /studio/ })
-  expect(studio.getAttribute("aria-disabled")).toBe("true")
-  expect(screen.getByText("Machine transfer is not available yet")).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: /studio/ }).getAttribute("aria-disabled")).toBe("true")
 })
 
 it("names a machine that needs an upgrade", async () => {
