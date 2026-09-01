@@ -88,7 +88,7 @@ workflow without becoming a code editor.
 
 ### Completion-audit remediation ledger
 
-Live-verified against `getdomovoi/domovoi` on 2026-08-30 (America/Boise):
+Live-verified against `getdomovoi/domovoi` on 2026-09-01 (America/Boise):
 
 - [#94](https://github.com/getdomovoi/domovoi/pull/94) — `fix: bound daemon request admission` —
   `MERGED`: closes unbounded pre-authentication request admission and inherited RPC method dispatch.
@@ -106,11 +106,15 @@ Live-verified against `getdomovoi/domovoi` on 2026-08-30 (America/Boise):
   `test: verify bundled desktop launch` — `MERGED`: closes missing built-desktop launch proof and
   Windows skill-link safety coverage.
 - [#97](https://github.com/getdomovoi/domovoi/pull/97) —
-  `fix: harden preview annotation context` — `OPEN` (pending): fixes annotation-crop retention
-  races, but the tested reservation and serialization changes must merge before this concern is
-  complete.
-- This local docs/infra branch remediates audit concerns I1–I5 but has no PR yet; parent will update
-  this ledger after merge.
+  `fix: harden preview annotation context` — `MERGED`: closes annotation-crop retention races
+  through reserved concurrent crops and serialized reconciliation, and reports retention failures
+  through the one bounded, secret-redacting error path.
+- [#100](https://github.com/getdomovoi/domovoi/pull/100) — `build: enforce workspace quality gates` —
+  `MERGED`: closes audit concerns I1–I5 and adds the workspace lint gate. Before it, `pnpm lint`
+  matched no package script and passed without linting anything.
+- [#101](https://github.com/getdomovoi/domovoi/pull/101) — `perf: bound desktop alpha hot paths` —
+  `OPEN` (pending): offloads snapshot persistence, bounds RPC output, and backs off reconnects.
+  Goal 1 is not complete until it merges.
 
 ### Sessions and worktrees
 
