@@ -30,6 +30,7 @@ Environment:
   DOMOVOI_ALLOW_REMOTE_TRANSPORT  Set to 1 to permit non-loopback listeners
   DOMOVOI_TLS_CERT_PATH           TLS certificate chain, required off loopback
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
+  DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
 `
 
 async function main() {
@@ -76,6 +77,7 @@ async function main() {
     providerProbe: new CliProviderProbe(),
     machineIdentity,
     ...(tls ? { tls } : {}),
+    ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
   })
 
   const address = await daemon.start()

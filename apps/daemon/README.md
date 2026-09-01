@@ -28,6 +28,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_MACHINE_IDENTITY_PATH` | Stable machine identity file path |
 | `DOMOVOI_TLS_CERT_PATH` | TLS certificate chain, required for a non-loopback listener |
 | `DOMOVOI_TLS_KEY_PATH` | TLS private key, required for a non-loopback listener |
+| `DOMOVOI_ADVERTISE_HOST` | Name an encrypted listener is advertised as reachable by |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
