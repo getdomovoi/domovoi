@@ -35,3 +35,5 @@ jobs:
       - run: pnpm release:invariants
       - run: pnpm license:audit
       - run: pnpm test:install
+      - run: pnpm release:artifacts
+        if: matrix.os == 'ubuntu-latest'
