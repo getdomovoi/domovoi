@@ -6,6 +6,10 @@ import {
   transferChunkParamsSchema,
   transferChunkResultSchema,
 } from "./transfer-rpc.js"
+import {
+  sessionTransferParamsSchema,
+  sessionTransferResultSchema,
+} from "./transfer-request.js"
 
 import {
   maximumSessionHistoryPageItems,
@@ -978,6 +982,10 @@ export const rpcMethods = {
   "device.saveCredential": {
     params: deviceSaveCredentialParamsSchema,
     result: deviceSaveCredentialResultSchema,
+  },
+  "session.transfer": {
+    params: sessionTransferParamsSchema,
+    result: sessionTransferResultSchema,
   },
   "transfer.begin": {
     params: transferBeginParamsSchema,

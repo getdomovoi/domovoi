@@ -4,11 +4,16 @@ import { transferReceiptSchema, type TransferReceipt } from "@getdomovoi/protoco
 
 export const maximumListedTransferReceipts = 200
 
+export interface TransferReceipts {
+  record(receipt: TransferReceipt): void
+  list(options?: { limit?: number }): TransferReceipt[]
+}
+
 // A transfer moves a session between machines, so what happened is recorded
 // where it can be read back: which session, which machines, and the checkpoint
 // it travelled at. The source keeps its recovery checkpoint, and a receipt that
 // claims otherwise is not a receipt this daemon will store.
-export class SqliteTransferReceipts {
+export class SqliteTransferReceipts implements TransferReceipts {
   #database: DatabaseSync
 
   constructor(database: DatabaseSync) {
