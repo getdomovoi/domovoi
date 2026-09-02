@@ -43,7 +43,10 @@ export async function listWslDistributions(input: WslListInput = {}): Promise<Ws
   if (platform !== "win32") return []
 
   const run = input.run ?? runWsl
-  const timeoutMs = input.timeoutMs ?? defaultTimeoutMs
+  // A timeout of zero or less would leave the child with no deadline at all,
+  // which is the opposite of what asking for one means.
+  const requested = input.timeoutMs ?? defaultTimeoutMs
+  const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : defaultTimeoutMs
   try {
     const listing = await withDeadline(
       run("wsl.exe", ["--list", "--verbose"], { timeoutMs }),
