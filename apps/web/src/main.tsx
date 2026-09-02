@@ -1,8 +1,10 @@
 import { StrictMode, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import { DaemonCredentialPrompt, WorkspaceShell } from "@getdomovoi/ui"
+import { applyStoredAppearanceTheme, DaemonCredentialPrompt, WorkspaceShell } from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
+
+applyStoredAppearanceTheme()
 
 import { clientKindForBrowser } from "./client-kind"
 import { registerDomovoiServiceWorker } from "./pwa"

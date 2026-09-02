@@ -21,6 +21,8 @@ function bridge(overrides: Partial<DesktopWindowBridge> = {}): DesktopWindowBrid
     writeClipboardText: vi.fn(async () => true),
     openExternal: vi.fn(async () => true),
     onDeepLink: vi.fn(() => vi.fn()),
+    getWindowDecoration: vi.fn(async () => "domovoi" as const),
+    setWindowDecoration: vi.fn(async () => true),
     minimize: vi.fn(),
     maximize: vi.fn(),
     close: vi.fn(),

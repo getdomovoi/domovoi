@@ -1135,6 +1135,7 @@ export type AuditQueryParams = z.infer<typeof auditQueryParamsSchema>
 export type AuditQueryPage = z.infer<typeof auditQueryPageSchema>
 export type AuditExportParams = z.infer<typeof auditExportParamsSchema>
 export type AuditExportResult = z.infer<typeof auditExportResultSchema>
+export type SessionUsage = z.infer<typeof sessionUsageSchema>
 export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
 export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
 export type TestRunEvidence = z.infer<typeof testRunEvidenceSchema>

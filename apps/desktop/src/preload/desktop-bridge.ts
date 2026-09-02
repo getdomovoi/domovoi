@@ -2,6 +2,7 @@ import type {
   DesktopDirectoryResult,
   DesktopOpenExternalRequest,
   DesktopWindowBridge,
+  WorkspaceWindowDecoration,
 } from "@getdomovoi/ui"
 
 export type IpcRendererAdapter = {
@@ -47,6 +48,12 @@ function externalRequest(value: DesktopOpenExternalRequest, platform: DesktopPla
     || !["system", "vscode", "vscode-insiders", "cursor", "zed"].includes(value.editor)
   ) throw new Error("External editor request is invalid")
   return value
+}
+
+const windowDecorations = ["domovoi", "system"]
+
+function isWindowDecoration(value: unknown): value is WorkspaceWindowDecoration {
+  return typeof value === "string" && windowDecorations.includes(value)
 }
 
 function booleanResult(value: unknown, action: string): boolean {
@@ -100,6 +107,18 @@ export function createDesktopWindowBridge(
         ipc.send("domovoi:deep-link-paused")
         ipc.removeListener("domovoi:deep-link", handler)
       }
+    },
+    getWindowDecoration: async () => {
+      const result = await ipc.invoke("domovoi:window-decoration-get")
+      if (!isWindowDecoration(result)) throw new Error("Desktop returned an invalid window decoration")
+      return result
+    },
+    setWindowDecoration: async (decoration) => {
+      if (!isWindowDecoration(decoration)) throw new Error("Window decoration is invalid")
+      return booleanResult(
+        await ipc.invoke("domovoi:window-decoration-set", decoration),
+        "window decoration",
+      )
     },
     minimize: () => ipc.send("window:minimize"),
     maximize: () => ipc.send("window:maximize"),
