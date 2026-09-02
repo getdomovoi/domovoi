@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { listWslDistributions } from "./wsl-list.js"
+import { listWslDistributions, type WslListInput } from "./wsl-list.js"
 
 const listing = [
   "  NAME            STATE           VERSION",
@@ -52,6 +52,13 @@ describe("listWslDistributions when wsl.exe does not answer", () => {
       return wslOutput(listing)
     })
     expect(await listWslDistributions({ run, platform: "win32", timeoutMs: 1 })).toEqual([])
+  })
+
+  it("gives the child a real deadline even when asked for none", async () => {
+    const run = vi.fn<NonNullable<WslListInput["run"]>>(async () => wslOutput(listing))
+    await listWslDistributions({ run, platform: "win32", timeoutMs: 0 })
+    const options = run.mock.calls[0]?.[2] as { timeoutMs: number } | undefined
+    expect(options?.timeoutMs).toBeGreaterThan(0)
   })
 
   it("tells the runner how long it is allowed to take", async () => {
