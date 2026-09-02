@@ -1,20 +1,19 @@
 const label = "sh.domovoi.domovoid"
-const serviceName = "domovoid"
-const displayName = "Domovoi daemon"
 const description = "Domovoi execution daemon"
 const secretName = /TOKEN|SECRET|KEY|PASSWORD|PASSPHRASE|CREDENTIAL/i
 const forbidden = /["\u0000-\u001f]/
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-function assertExecutable(execPath, platform) {
+// Both service files this writes are read by a unix service manager, so an
+// absolute path here is a posix one.
+function assertExecutable(execPath) {
   if (typeof execPath !== "string" || execPath === "") {
     throw new Error("the service needs an absolute path to domovoid")
   }
   if (forbidden.test(execPath)) {
     throw new Error("a service exec path cannot contain quotes, newlines, or control characters")
   }
-  const absolute = platform === "win32" ? /^[A-Za-z]:\\/.test(execPath) : execPath.startsWith("/")
-  if (!absolute) throw new Error(`${execPath} is not an absolute path to domovoid`)
+  if (!execPath.startsWith("/")) throw new Error(`${execPath} is not an absolute path to domovoid`)
   return execPath
 }
 
@@ -42,7 +41,7 @@ function escapeXml(value) {
 }
 
 export function systemdUnit({ execPath, environment = {} }) {
-  assertExecutable(execPath, "linux")
+  assertExecutable(execPath)
   assertNoSecrets(environment, { names: true })
 
   const settings = Object.entries(environment).map(([key, value]) => `Environment="${key}=${value}"`)
@@ -65,7 +64,7 @@ export function systemdUnit({ execPath, environment = {} }) {
 }
 
 export function launchdPlist({ execPath, environment = {} }) {
-  assertExecutable(execPath, "darwin")
+  assertExecutable(execPath)
   assertNoSecrets(environment)
 
   const settings = Object.entries(environment).flatMap(([key, value]) => [
@@ -99,12 +98,4 @@ export function launchdPlist({ execPath, environment = {} }) {
     "</plist>",
     "",
   ].join("\n")
-}
-
-export function windowsServiceCommand({ execPath }) {
-  assertExecutable(execPath, "win32")
-  return {
-    command: "sc.exe",
-    args: ["create", serviceName, "binPath=", `"${execPath}"`, "start=", "auto", "DisplayName=", displayName],
-  }
 }
