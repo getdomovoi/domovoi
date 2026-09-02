@@ -24,7 +24,7 @@ const skill = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
-describe("skill fleet comparison", () => {
+describe("skill fleet comparison comparator unit", () => {
   it("compares supplied inventories deterministically", () => {
     const sources: SkillInventorySource[] = [
       { state: "available", inventory: { machine: machine("machine-b", "Beta"), skills: [skill({ contentDigest: digest("b") })] } },
