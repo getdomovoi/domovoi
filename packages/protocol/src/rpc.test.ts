@@ -18,6 +18,7 @@ import {
   systemEmergencyStoppedNotificationSchema,
   sessionEvidenceSchema,
   sessionHistoryCategorySchema,
+  sessionHistoryEntrySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
 } from "./index.js"
@@ -341,7 +342,7 @@ describe("JSON-RPC envelopes", () => {
       ...base,
       failures: [
         { target: "provider", targetId: "codex", message: "reset failed" },
-        { target: "mutation", targetId: "mutation-1", message: "cancel failed" },
+        { target: "terminal", targetId: "terminal-1", message: "close failed" },
         { target: "persistence", message: "snapshot save failed" },
       ],
     }).failures).toHaveLength(3)
@@ -349,6 +350,19 @@ describe("JSON-RPC envelopes", () => {
       ...base,
       failures: [{ target: "queued-turn", message: "legacy target" }],
     }).success).toBe(false)
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      failures: [{ target: "mutation", message: "legacy target" }],
+    }).success).toBe(false)
+  })
+
+  it("only carries command tool rows in session history", () => {
+    const entry = {
+      id: "history-1", sourceId: "tool-1", sessionId: "session-a", category: "tools",
+      status: "completed", title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "command" }).success).toBe(true)
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "file-change" }).success).toBe(false)
   })
 
   it("registers archive as a typed session mutation", () => {
