@@ -238,7 +238,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("tool"),
-    tool: z.enum(["command", "file-change"]),
+    tool: z.enum(["command"]),
     status: z.enum(["running", "completed", "failed", "declined"]),
     title: z.string(),
     output: z.string().optional(),
@@ -251,16 +251,6 @@ export const artifactVariantSchema = z.object({
   groupId: z.string().min(1).max(256),
   label: z.string().min(1).max(120),
   order: z.number().int().min(0).max(1_023),
-  thumbnail: z.object({
-    path: z.string().min(1).max(1_024).refine((path) => {
-      if (path.startsWith("/") || path.includes("\\") || path.includes("?") || path.includes("#")) return false
-      if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return false
-      const segments = path.split("/")
-      return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..")
-    }, "Thumbnail must be a normalized relative file reference"),
-    mimeType: z.enum(["image/png", "image/webp"]),
-    revision: z.number().int().positive(),
-  }).optional(),
 })
 
 export const artifactSchema = z.object({

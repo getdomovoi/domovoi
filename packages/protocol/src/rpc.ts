@@ -237,7 +237,7 @@ const historyEntryBase = {
 }
 
 const historyToolFields = {
-  tool: z.enum(["command", "file-change"]),
+  tool: z.enum(["command"]),
   status: z.enum(["running", "completed", "failed", "declined"]),
   title: z.string(),
   output: z.string().optional(),
@@ -780,7 +780,6 @@ export const emergencyStopFailureSchema = z.object({
     "terminal",
     "approval",
     "provider",
-    "mutation",
     "persistence",
   ]),
   targetId: z.string().trim().min(1).max(512).optional(),
