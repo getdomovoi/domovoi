@@ -19,6 +19,19 @@ export type DesktopOpenExternalRequest = {
   path: string
 }
 
+export type WorkspaceWindowDecoration = "domovoi" | "system"
+
+const workspaceWindowDecorations = new Set<WorkspaceWindowDecoration>(["domovoi", "system"])
+
+export function isWorkspaceWindowDecoration(value: unknown): value is WorkspaceWindowDecoration {
+  return typeof value === "string"
+    && workspaceWindowDecorations.has(value as WorkspaceWindowDecoration)
+}
+
+export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecoration): string {
+  return decoration === "domovoi" ? "Domovoi" : "System"
+}
+
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
   getRpcToken(): Promise<string>
@@ -35,6 +48,8 @@ export type DesktopWindowBridge = {
   writeClipboardText(value: string): Promise<boolean>
   openExternal(request: DesktopOpenExternalRequest): Promise<boolean>
   onDeepLink(listener: (sessionId: string) => void): () => void
+  getWindowDecoration(): Promise<WorkspaceWindowDecoration>
+  setWindowDecoration(decoration: WorkspaceWindowDecoration): Promise<boolean>
   minimize(): void
   maximize(): void
   close(): void

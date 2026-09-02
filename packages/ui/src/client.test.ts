@@ -1231,6 +1231,55 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("asks the daemon for session token and cost totals", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const usage = client.sessionUsage("session-1")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.usage",
+      params: { sessionId: "session-1" },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessionId: "session-1",
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningTokens: 0,
+        totalTokens: 1200,
+        costMicros: 4500,
+        currency: "USD",
+        reportedCostTurns: 1,
+        unavailableCostTurns: 2,
+        byRuntime: [{
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300,
+          reasoningTokens: 0,
+          totalTokens: 1200,
+          costMicros: 4500,
+          currency: "USD",
+          turns: 3,
+        }],
+      },
+    })
+    await expect(usage).resolves.toMatchObject({
+      totalTokens: 1200,
+      reportedCostTurns: 1,
+      unavailableCostTurns: 2,
+    })
+    client.disconnect()
+  })
+
   it("reads skill source by discovered ID", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()

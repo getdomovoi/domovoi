@@ -1,4 +1,17 @@
-import { isDesktopExternalEditor, type DesktopExternalEditor } from "./desktop-platform"
+import {
+  applyAppearanceTheme,
+  colorSchemeQuery,
+  isWorkspaceTheme,
+  resolveAppearanceTheme,
+  themeRootElement,
+  type WorkspaceTheme,
+} from "./appearance"
+import {
+  isDesktopExternalEditor,
+  isWorkspaceWindowDecoration,
+  type DesktopExternalEditor,
+  type WorkspaceWindowDecoration,
+} from "./desktop-platform"
 
 export const workspaceUiStorageKey = "domovoi.workspace-ui"
 
@@ -9,13 +22,15 @@ const layoutKeys = new Set(["sidebar.dock", "sidebar.rail", "rail.dock", "rail.r
 const panelIds = new Set(["sessions", "thread", "dock"])
 
 export type WorkspaceUiState = {
-  version: 2
+  version: 3
   sidebarCollapsed: boolean
   dockCollapsed: boolean
   surface: WorkspaceSurface
   projectId: string | null
   sessionId: string | null
   externalEditor: DesktopExternalEditor
+  theme: WorkspaceTheme
+  windowDecoration: WorkspaceWindowDecoration
   layouts: Record<string, Record<string, number>>
 }
 
@@ -27,13 +42,15 @@ export type WorkspaceUiDaemonTruth = {
 
 export function defaultWorkspaceUiState(): WorkspaceUiState {
   return {
-    version: 2,
+    version: 3,
     sidebarCollapsed: false,
     dockCollapsed: false,
     surface: "workspace",
     projectId: null,
     sessionId: null,
     externalEditor: "system",
+    theme: "system",
+    windowDecoration: "domovoi",
     layouts: {},
   }
 }
@@ -78,7 +95,7 @@ function parseLayouts(value: unknown): WorkspaceUiState["layouts"] | undefined {
 }
 
 export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefined {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return undefined
+  if (!isRecord(value) || ![1, 2, 3].includes(value.version as number)) return undefined
   if (typeof value.sidebarCollapsed !== "boolean" || typeof value.dockCollapsed !== "boolean") {
     return undefined
   }
@@ -89,15 +106,19 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
   const layouts = parseLayouts(value.layouts)
   if (!layouts) return undefined
   return {
-    version: 2,
+    version: 3,
     sidebarCollapsed: value.sidebarCollapsed,
     dockCollapsed: value.dockCollapsed,
     surface: value.surface as WorkspaceSurface,
     projectId: value.projectId,
     sessionId: value.sessionId,
-    externalEditor: value.version === 2 && isDesktopExternalEditor(value.externalEditor)
+    externalEditor: value.version !== 1 && isDesktopExternalEditor(value.externalEditor)
       ? value.externalEditor
       : "system",
+    theme: isWorkspaceTheme(value.theme) ? value.theme : "system",
+    windowDecoration: isWorkspaceWindowDecoration(value.windowDecoration)
+      ? value.windowDecoration
+      : "domovoi",
     layouts,
   }
 }
@@ -133,6 +154,18 @@ export function saveWorkspaceUiState(
   } catch {
     // Private browsing, policy controls, and full storage must not break the workspace.
   }
+}
+
+export function applyStoredAppearanceTheme(
+  storage: Pick<Storage, "getItem"> | undefined = browserWorkspaceUiStorage(),
+): void {
+  const element = themeRootElement()
+  if (!element) return
+  const { theme } = loadWorkspaceUiState(storage)
+  applyAppearanceTheme(
+    element,
+    resolveAppearanceTheme(theme, colorSchemeQuery()?.matches ?? true),
+  )
 }
 
 export function reconcileWorkspaceUiState(
