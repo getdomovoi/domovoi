@@ -25,7 +25,7 @@
     "test": "pnpm --filter @getdomovoi/protocol test && pnpm --filter @getdomovoi/ui test && pnpm --filter @getdomovoi/web test && pnpm --filter @getdomovoi/daemon test && pnpm --filter @getdomovoi/desktop test && pnpm test:packages && pnpm --filter @getdomovoi/desktop test:launch",
     "pretest:install": "pnpm --filter @getdomovoi/protocol build",
     "test:install": "node scripts/test-package-install.mjs",
-    "test:packages": "node --test scripts/bootstrap-plan.test.mjs scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs scripts/dependency-licenses.test.mjs scripts/package-install-plan.test.mjs scripts/release-artifacts.test.mjs scripts/version-lockstep.test.mjs scripts/workflow-pins.test.mjs && node scripts/test-package-artifacts.mjs",
+    "test:packages": "node --test scripts/bootstrap-plan.test.mjs scripts/service-units.test.mjs scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs scripts/dependency-licenses.test.mjs scripts/package-install-plan.test.mjs scripts/release-artifacts.test.mjs scripts/version-lockstep.test.mjs scripts/workflow-pins.test.mjs && node scripts/test-package-artifacts.mjs",
     "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {
