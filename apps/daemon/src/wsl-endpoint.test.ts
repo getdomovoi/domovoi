@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { readDistroEndpoint } from "./wsl-endpoint.js"
+import { readDistroEndpoint, type DistroEndpointInput } from "./wsl-endpoint.js"
 
 const distribution = "Ubuntu-24.04"
 const token = "s3cr3t-daemon-token"
 
 function reader(answer: string | (() => never)) {
-  return vi.fn(async () => (typeof answer === "string" ? answer : answer()))
+  return vi.fn<NonNullable<DistroEndpointInput["run"]>>(
+    async () => (typeof answer === "string" ? answer : answer()),
+  )
 }
 
 describe("readDistroEndpoint", () => {
@@ -76,6 +78,13 @@ describe("readDistroEndpoint", () => {
       return "{}"
     })
     await expect(readDistroEndpoint({ distribution, run, timeoutMs: 1 })).rejects.toThrow(/in time/)
+  })
+
+  it("gives the child a real deadline even when asked for none", async () => {
+    const run = reader(JSON.stringify({ host: "127.0.0.1", port: 47831, token }))
+    await readDistroEndpoint({ distribution, run, timeoutMs: 0 })
+    const options = run.mock.calls[0]?.[2] as { timeoutMs: number } | undefined
+    expect(options?.timeoutMs).toBeGreaterThan(0)
   })
 
   it("tells the runner how long it is allowed to take", async () => {
