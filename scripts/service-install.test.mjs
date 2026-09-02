@@ -54,6 +54,14 @@ test("registers a Windows service without writing a file", () => {
   ])
 })
 
+test("names a posix path whatever machine planned the install", () => {
+  for (const platform of ["linux", "darwin"]) {
+    const plan = servicePlan({ platform, execPath, home, uid: 501 })
+    assert.doesNotMatch(plan.path, /\\/)
+    assert.match(plan.path, /^\/home\/me\//)
+  }
+})
+
 test("refuses a platform with no service manager it knows", () => {
   assert.throws(() => servicePlan({ platform: "aix", execPath, home, uid: 1000 }), /aix/)
 })
