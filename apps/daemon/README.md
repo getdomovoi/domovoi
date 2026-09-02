@@ -45,6 +45,25 @@ as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
 The bearer token protects RPC access. Health checks remain public and preview documents use their
 own short-lived signed capabilities.
 
+## Supervise
+
+Install the daemon as a service for the user who asks for it:
+
+```bash
+domovoid service install
+domovoid service status
+domovoid service remove
+```
+
+`install` writes a systemd user unit on Linux, a launch agent in the user's own `LaunchAgents` on
+macOS, and a logon task on Windows, then asks the platform's service manager to load it. Nothing is
+written to a system-wide location and no step asks for elevation. `status` reports whether the
+service file is present and whether the manager currently runs it, and exits non-zero when nothing
+is installed. `remove` stops the service and deletes the file it pointed at.
+
+A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
+user-private files the daemon already reads.
+
 ## Programmatic use
 
 ```ts
