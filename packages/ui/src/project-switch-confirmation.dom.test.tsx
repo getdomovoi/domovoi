@@ -42,14 +42,17 @@ function RetryHarness({ retry }: { retry: Promise<void> }) {
 }
 
 describe("ProjectSwitchConfirmationDialog", () => {
-  it("lists exact impact and cancels without retry", async () => {
+  it("names the preserved state and the stopped work, and cancels without retry", async () => {
     const user = userEvent.setup()
     const onCancel = vi.fn()
     const onConfirm = vi.fn()
     render(<ProjectSwitchConfirmationDialog confirmation={confirmation} onCancel={onCancel} onConfirm={onConfirm} />)
 
-    expect(screen.getByText(/2 sessions and their saved history/i)).not.toBeNull()
+    expect(screen.getByText(/keeps 2 sessions and their saved history/i)).not.toBeNull()
     expect(screen.getByText(/1 isolated worktree/i)).not.toBeNull()
+    expect(screen.getByText(/restores them when you reopen this project/i)).not.toBeNull()
+    expect(screen.getByText(/stops any turn, provider thread, and terminal that is still running/i)).not.toBeNull()
+    expect(screen.queryByText(/removes/i)).toBeNull()
     expect(screen.getByText("First task")).not.toBeNull()
     expect(screen.getByText("Second task")).not.toBeNull()
     await user.click(screen.getByRole("button", { name: "Keep current project" }))
@@ -62,7 +65,7 @@ describe("ProjectSwitchConfirmationDialog", () => {
     const onConfirm = vi.fn()
     render(<ProjectSwitchConfirmationDialog confirmation={confirmation} onCancel={vi.fn()} onConfirm={onConfirm} />)
 
-    await user.click(screen.getByRole("button", { name: "Remove sessions and switch" }))
+    await user.click(screen.getByRole("button", { name: "Stop work and switch" }))
     expect(onConfirm).toHaveBeenCalledOnce()
     expect(onConfirm).toHaveBeenCalledWith("/code/elsewhere")
   })
@@ -75,7 +78,7 @@ describe("ProjectSwitchConfirmationDialog", () => {
     })
 
     render(<RetryHarness retry={retry} />)
-    await user.click(screen.getByRole("button", { name: "Remove sessions and switch" }))
+    await user.click(screen.getByRole("button", { name: "Stop work and switch" }))
     rejectRetry(new Error("Project switch retry failed"))
 
     expect((await screen.findByRole("alert")).textContent).toContain("Project switch retry failed")
@@ -86,7 +89,7 @@ describe("ProjectSwitchConfirmationDialog", () => {
     const user = userEvent.setup()
     render(<RetryHarness retry={new Promise(() => undefined)} />)
 
-    await user.click(screen.getByRole("button", { name: "Remove sessions and switch" }))
+    await user.click(screen.getByRole("button", { name: "Stop work and switch" }))
 
     expect((await screen.findByRole<HTMLButtonElement>("button", { name: "Keep current project" })).disabled).toBe(true)
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Switching…" }).disabled).toBe(true)

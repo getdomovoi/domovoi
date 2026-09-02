@@ -3274,7 +3274,7 @@ export class DomovoiDaemon {
               socket,
               request.id,
               projectSwitchConfirmationErrorCode,
-              "Confirm session removal before switching projects",
+              "Confirm stopping this project's running work before switching",
               confirmation,
             )
             return
@@ -3283,8 +3283,10 @@ export class DomovoiDaemon {
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
           }
-          await this.#cleanupSessions()
+          await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
+          if (this.#snapshot.project) await this.#persistSnapshot()
+          const restored = this.#store.loadProject?.(projectId)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -3292,13 +3294,13 @@ export class DomovoiDaemon {
             path: repository.root,
             branch: repository.branch,
           }
-          this.#snapshot.sessions = []
-          this.#snapshot.activeSessionId = null
-          this.#snapshot.approvals = []
-          this.#snapshot.approvalRules = []
-          this.#snapshot.thread = []
-          this.#snapshot.artifacts = []
-          this.#snapshot.annotations = []
+          this.#snapshot.sessions = restored?.sessions ?? []
+          this.#snapshot.activeSessionId = restored?.activeSessionId ?? null
+          this.#snapshot.approvals = restored?.approvals ?? []
+          this.#snapshot.approvalRules = restored?.approvalRules ?? []
+          this.#snapshot.thread = restored?.thread ?? []
+          this.#snapshot.artifacts = restored?.artifacts ?? []
+          this.#snapshot.annotations = restored?.annotations ?? []
           changed = true
         }
       }
@@ -5132,41 +5134,56 @@ export class DomovoiDaemon {
     }
   }
 
-  async #cleanupSessions(): Promise<void> {
-    const errors: unknown[] = []
+  async #suspendProjectSessions(): Promise<void> {
+    const suspendedAt = new Date().toISOString()
+    const interruptedSessionIds = new Set<string>()
     for (const session of this.#snapshot.sessions) {
-      if (session.providerThreadId) {
-        try {
-          await withTimeout(
-            this.#agents.require(session.runtime.provider).stopThread(session.providerThreadId),
-            this.#agentTimeoutMs,
-            "Agent cleanup timed out",
-          )
-        } catch (error) {
-          errors.push(error)
-          this.#reportError("Domovoi could not stop a provider thread", error)
+      const threadId = session.providerThreadId
+      const turnId = session.activeTurnId
+      if (turnId) {
+        interruptedSessionIds.add(session.id)
+        if (threadId) {
+          try {
+            await withTimeout(
+              this.#agents.require(session.runtime.provider).interruptTurn(threadId, turnId),
+              this.#agentTimeoutMs,
+              "Project switch turn interrupt timed out",
+            )
+          } catch (error) {
+            this.#reportError("Domovoi could not interrupt a turn before switching projects", error)
+          }
         }
-        this.#loadedAgentThreads.delete(
-          providerThreadKey(session.runtime.provider, session.providerThreadId),
+        delete session.activeTurnId
+        if (session.state !== "archiving" && session.state !== "archived") {
+          session.state = "idle"
+        }
+        session.updatedAt = suspendedAt
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "system",
+          body: "Switching projects interrupted the active turn.",
+          detail: "Pending approval requests were expired. The worktree, session history, checkpoints, and artifacts were preserved. Reopen this project and send another message to continue with a new provider turn.",
+          createdAt: suspendedAt,
+        })
+      }
+      if (!threadId) continue
+      try {
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).stopThread(threadId),
+          this.#agentTimeoutMs,
+          "Project switch provider cleanup timed out",
         )
+      } catch (error) {
+        this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
       }
-      if (session.workspacePath) {
-        try {
-          await this.#withAbortTimeout(
-            (signal) => this.#workspaceService.removeSessionWorkspace(
-              session.workspacePath!,
-              signal,
-            ),
-            this.#agentTimeoutMs,
-            "Session workspace cleanup timed out",
-          )
-        } catch (error) {
-          errors.push(error)
-          this.#reportError("Domovoi could not remove a session worktree", error)
-        }
-      }
+      this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
     }
-    if (errors.length) throw new AggregateError(errors, "Domovoi could not clean up all sessions")
+    if (interruptedSessionIds.size > 0) {
+      this.#snapshot.approvals = this.#snapshot.approvals.filter(
+        (approval) => !interruptedSessionIds.has(approval.sessionId),
+      )
+    }
   }
 }
 
