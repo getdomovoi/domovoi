@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { Worker } from "node:worker_threads"
@@ -16,20 +16,34 @@ type StoredWorkspace = {
   snapshot: string
 }
 
+export type WorkspaceStoreRecovery = {
+  kind: "database" | "snapshot"
+  quarantinedPath: string
+  reason: string
+}
+
 export interface WorkspaceStore {
   readonly auditLog?: AuditLog
   readonly devices?: DeviceRegistry
   readonly fleet?: FleetRegistry
   readonly transferReceipts?: TransferReceipts
+  readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
   close(): void | Promise<void>
 }
 
+export type WorkspaceWriter = {
+  readonly failed: boolean
+  write(snapshot: WorkspaceSnapshot): Promise<void>
+  close(): Promise<void>
+}
+
 export type WorkspaceStoreOptions = {
   legacySnapshots?: WorkspaceSnapshot[]
   manageDirectoryPermissions?: boolean
+  writerFactory?: (path: string) => WorkspaceWriter
 }
 
 function legacyFingerprint(snapshot: WorkspaceSnapshot): string {
@@ -90,6 +104,69 @@ function finalizeStoredWorkspace(
   return {
     snapshot: sanitized,
     repaired: repaired || JSON.stringify(sanitized) !== JSON.stringify(snapshot),
+  }
+}
+
+function openWorkspaceDatabase(path: string): DatabaseSync {
+  const database = new DatabaseSync(path)
+  try {
+    database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 5000;
+      CREATE TABLE IF NOT EXISTS workspace_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        snapshot TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `)
+  } catch (error) {
+    database.close()
+    throw error
+  }
+  return database
+}
+
+function quarantineStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-")
+}
+
+function quarantineDatabase(path: string): string {
+  const quarantined = `${path}.corrupt-${quarantineStamp()}`
+  renameSync(path, quarantined)
+  for (const suffix of ["-wal", "-shm"]) {
+    if (existsSync(`${path}${suffix}`)) renameSync(`${path}${suffix}`, `${quarantined}${suffix}`)
+  }
+  return quarantined
+}
+
+function quarantineSnapshot(path: string, snapshot: string): string {
+  const quarantined = `${path}.snapshot-corrupt-${quarantineStamp()}.json`
+  writeFileSync(quarantined, snapshot, { mode: 0o600 })
+  return quarantined
+}
+
+function describeFailure(error: unknown): string {
+  const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  return text.replace(/\s+/g, " ").trim().slice(0, 240)
+}
+
+function recoveredWorkspace(
+  initial: WorkspaceSnapshot,
+  recovery: WorkspaceStoreRecovery,
+): WorkspaceSnapshot {
+  const sessionId = initial.activeSessionId ?? initial.sessions[0]?.id
+  if (initial.project === null || sessionId === undefined) return initial
+  const subject = recovery.kind === "database" ? "state database" : "workspace snapshot"
+  return {
+    ...initial,
+    thread: [...initial.thread, {
+      id: `system-state-recovery-${randomUUID()}`,
+      sessionId,
+      kind: "system",
+      body: `Stored ${subject} could not be read and was moved aside`,
+      detail: `Domovoi started from its initial workspace. The unreadable ${subject} was kept at ${recovery.quarantinedPath}. ${recovery.reason}`,
+      createdAt: new Date().toISOString(),
+    }],
   }
 }
 
@@ -175,6 +252,10 @@ class AsyncWorkspaceWriter {
     })
   }
 
+  get failed(): boolean {
+    return this.#terminal !== undefined
+  }
+
   write(snapshot: WorkspaceSnapshot): Promise<void> {
     return this.#request({ snapshot, updatedAt: new Date().toISOString() })
   }
@@ -209,23 +290,33 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly devices: SqliteDeviceRegistry
   readonly fleet: SqliteFleetRegistry
   readonly transferReceipts: SqliteTransferReceipts
+  readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
-  #writer: AsyncWorkspaceWriter | undefined
+  #writer: WorkspaceWriter | undefined
+  #writerFactory: WorkspaceStoreOptions["writerFactory"]
+  #writerClosed = false
   #databaseClosed = false
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
-    if (path !== ":memory:") prepareStatePath(path, options.manageDirectoryPermissions === true)
-    this.#database = new DatabaseSync(path)
-    this.#database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA busy_timeout = 5000;
-      CREATE TABLE IF NOT EXISTS workspace_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        snapshot TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `)
+    const manageDirectoryPermissions = options.manageDirectoryPermissions === true
+    if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
+    let recovery: WorkspaceStoreRecovery | undefined
+    let database: DatabaseSync
+    try {
+      database = openWorkspaceDatabase(path)
+    } catch (error) {
+      if (path === ":memory:") throw error
+      recovery = {
+        kind: "database",
+        quarantinedPath: quarantineDatabase(path),
+        reason: describeFailure(error),
+      }
+      prepareStatePath(path, manageDirectoryPermissions)
+      database = openWorkspaceDatabase(path)
+    }
+    this.#database = database
+    this.#writerFactory = options.writerFactory
     this.auditLog = new SqliteAuditLog(this.#database)
     this.devices = new SqliteDeviceRegistry(this.#database)
     this.fleet = new SqliteFleetRegistry(this.#database)
@@ -234,9 +325,18 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
-    const migratedExisting = existing
-      ? migrateStoredWorkspace(JSON.parse(existing.snapshot))
-      : undefined
+    let migratedExisting: ReturnType<typeof migrateStoredWorkspace> | undefined
+    if (existing) {
+      try {
+        migratedExisting = migrateStoredWorkspace(JSON.parse(existing.snapshot))
+      } catch (error) {
+        recovery = {
+          kind: "snapshot",
+          quarantinedPath: quarantineSnapshot(path, existing.snapshot),
+          reason: describeFailure(error),
+        }
+      }
+    }
     const existingSnapshot = migratedExisting?.snapshot
     const isLegacySeed = existingSnapshot?.annotations.length === 0 &&
       options.legacySnapshots?.some(
@@ -244,7 +344,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           workspaceSnapshotSchema.parse(snapshot),
         ),
     )
-    if (!existing) this.save(initial)
+    this.recovery = recovery
+    if (recovery) this.save(recoveredWorkspace(initial, recovery))
+    else if (!existing) this.save(initial)
     else if (migratedExisting?.repaired) this.save(migratedExisting.snapshot)
     else if (isLegacySeed) this.save(initial)
     this.#restrictFilePermissions()
@@ -278,7 +380,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       this.#writeValidated(workspaceSnapshotSchema.parse(sanitized))
       return
     }
-    this.#writer ??= new AsyncWorkspaceWriter(this.path)
+    if (this.#writer?.failed && !this.#writerClosed) this.#writer = undefined
+    this.#writer ??= this.#writerFactory?.(this.path) ?? new AsyncWorkspaceWriter(this.path)
     await this.#writer.write(sanitized)
   }
 
@@ -300,6 +403,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       this.#closeDatabase()
       return
     }
+    this.#writerClosed = true
     // The worker can fail to shut down, and the main connection still has to be
     // released, so the failure is reported after the handle is closed.
     return this.#writer.close().finally(() => this.#closeDatabase())

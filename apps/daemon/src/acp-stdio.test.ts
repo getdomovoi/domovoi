@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
 import { mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
+import { classifyProviderFailure } from "./provider-failures.js"
 
 function fakeAcpProcess(response: (id: number) => object) {
   const child = Object.assign(new EventEmitter(), {
@@ -63,7 +64,7 @@ describe("ACP stdio mapping", () => {
     expect(response.mock.calls).toEqual([[1], [2], [3]])
   })
 
-  it("drains child stderr without exposing provider diagnostics", async () => {
+  it("drains child stderr while the child is running", async () => {
     const child = fakeAcpProcess((id) => ({
       jsonrpc: "2.0",
       id,
@@ -85,6 +86,44 @@ describe("ACP stdio mapping", () => {
     await peer.initialize()
     expect(child.stderr.readableFlowing).toBe(true)
     await peer.close()
+  })
+
+  it("carries the child's final stderr into the disconnect reason", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const { onDisconnect } = await initializePeer(child)
+
+    child.stderr.write("401 token expired\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("exit", 1, null)
+
+    expect(onDisconnect).toHaveBeenCalledOnce()
+    const reason = String(onDisconnect.mock.calls[0]?.[0])
+    expect(reason).toContain("cursor-agent exited with code 1")
+    expect(reason).toContain("401 token expired")
+    expect(classifyProviderFailure(new Error(reason)).kind).toBe("authentication-expired")
+  })
+
+  it("keeps only the last 16 KiB of stderr in the disconnect reason", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const { onDisconnect } = await initializePeer(child)
+
+    child.stderr.write(`${"x".repeat(20_000)}\n`)
+    child.stderr.write("401 token expired\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("exit", null, "SIGABRT")
+
+    const reason = String(onDisconnect.mock.calls[0]?.[0])
+    expect(reason).toContain("cursor-agent exited from signal SIGABRT")
+    expect(reason.endsWith("401 token expired")).toBe(true)
+    expect(reason.length).toBeLessThanOrEqual(16_384 + "cursor-agent exited from signal SIGABRT: ".length)
   })
 
   it("waits for the ACP child to exit gracefully", async () => {

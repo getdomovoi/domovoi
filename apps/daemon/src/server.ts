@@ -585,6 +585,7 @@ export type DaemonServerOptions = {
   authToken?: string
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
+  terminalReapGraceMs?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
@@ -630,6 +631,9 @@ type ActiveTerminal = {
   // Ownership is the connection that holds it. The owner's identity is
   // broadcast to every client, so a caller-supplied one authorizes nothing.
   ownerSocket: WebSocket
+  // A closed owner gets a grace window to reconnect and reclaim before the
+  // terminal is reaped, because a dropped tab must not strand the PTY forever.
+  reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
   disposeData: () => void
@@ -661,8 +665,10 @@ export class DomovoiDaemon {
     this.#reportError("Domovoi mutation failed", error)
   })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
+  #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #modelCacheTtlMs: number
+  #terminalReapGraceMs: number
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
   #deviceCredentials = new WeakMap<WebSocket, string>()
@@ -804,6 +810,7 @@ export class DomovoiDaemon {
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
     this.#authToken = options.authToken ?? randomBytes(32).toString("base64url")
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
+    this.#terminalReapGraceMs = options.terminalReapGraceMs ?? 30_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
@@ -938,7 +945,10 @@ export class DomovoiDaemon {
       maxPayload: maximumWebSocketPayloadBytes,
     })
     this.#websocket.on("connection", (socket, request) => {
-      socket.once("close", () => this.#rpcOutbound.forget(socket))
+      socket.once("close", () => {
+        this.#rpcOutbound.forget(socket)
+        this.#reapAbandonedTerminals(socket)
+      })
       socket.on("error", (error: Error & { code?: string }) => {
         if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
           this.#reportError("Domovoi WebSocket failed", error)
@@ -1024,7 +1034,16 @@ export class DomovoiDaemon {
     const failures: unknown[] = []
     try {
       await this.#providerRefresh
-      await this.#mutations.drain()
+      try {
+        await withTimeout(
+          this.#mutations.drain(),
+          this.#agentTimeoutMs,
+          "Domovoi shutdown drain timed out",
+        )
+      } catch (error) {
+        this.#mutations.cancelAll(error)
+        failures.push(error)
+      }
       if (this.#deltaFlush) await this.#saveAgentState(false)
     } catch (error) {
       failures.push(error)
@@ -1859,6 +1878,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
+          reapTimer: undefined,
           output,
           outputBackpressure,
           disposeData: () => {},
@@ -1950,6 +1970,10 @@ export class DomovoiDaemon {
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
         terminal.ownerSocket = socket
+        if (terminal.reapTimer !== undefined) {
+          clearTimeout(terminal.reapTimer)
+          terminal.reapTimer = undefined
+        }
         const ownership = rpcMethods[method].result.parse({
           terminalId: params.terminalId,
           owner: terminal.owner,
@@ -4921,11 +4945,25 @@ export class DomovoiDaemon {
     }
   }
 
+  #reapAbandonedTerminals(socket: WebSocket): void {
+    for (const [terminalId, terminal] of this.#terminals) {
+      if (terminal.ownerSocket !== socket) continue
+      if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
+      terminal.reapTimer = setTimeout(() => {
+        const active = this.#terminals.get(terminalId)
+        if (active !== terminal || active.ownerSocket !== socket) return
+        this.#closeTerminal(terminalId)
+      }, this.#terminalReapGraceMs)
+      terminal.reapTimer.unref?.()
+    }
+  }
+
   #closeTerminal(terminalId: string): boolean {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
     this.#terminals.delete(terminalId)
     if (terminal.redactorFlush !== undefined) clearTimeout(terminal.redactorFlush)
+    if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
     terminal.disposeData()
     terminal.disposeExit()
     const remainder = terminal.redactor.flush()
@@ -5066,9 +5104,33 @@ export class DomovoiDaemon {
   async #flushAgentState(broadcast = true): Promise<void> {
     try {
       await this.#saveAgentState(broadcast)
+      this.#consecutiveSaveFailures = 0
     } catch (error) {
       this.#reportError("Domovoi could not persist agent state", error)
+      this.#consecutiveSaveFailures += 1
+      if (this.#consecutiveSaveFailures === 1) this.#announceSaveFailure(error)
     }
+  }
+
+  // A failed save leaves the live snapshot diverged from disk, and clients
+  // still see a healthy workspace unless the failure is said out loud.
+  #announceSaveFailure(error: unknown): void {
+    const sessionId = this.#snapshot.activeSessionId ?? this.#snapshot.sessions[0]?.id
+    if (sessionId === undefined) return
+    this.#snapshot.thread.push({
+      id: `system-persistence-${randomUUID()}`,
+      sessionId,
+      kind: "system",
+      body: "Domovoi cannot save changes right now. New activity is being kept in memory only.",
+      detail: redactDurableText(
+        error instanceof Error ? error.message : String(error),
+      ).value,
+      createdAt: new Date().toISOString(),
+    })
+    this.#broadcastNotification(
+      "workspace.changed",
+      structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+    )
   }
 
   async #persistSnapshot(): Promise<void> {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
+import type { AgentEvent } from "./agents.js"
 import {
   ClaudeAgentSdkAdapter,
   claudePermissionFor,
@@ -12,6 +13,7 @@ import {
   type ClaudeSdkMessage,
   type ClaudeUserMessage,
 } from "./claude.js"
+import { providerTurnCompletion } from "./provider-failures.js"
 
 class MessageStream implements AsyncIterable<ClaudeSdkMessage> {
   #messages: ClaudeSdkMessage[] = []
@@ -192,6 +194,131 @@ describe("ClaudeAgentSdkAdapter", () => {
         turnId,
         turn: { id: turnId, status: "completed" },
       },
+    })
+    await adapter.close()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(event).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails the active turn and reopens the session when the Claude stream ends without a result", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    calls[0]!.query.closeStream()
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: "failed",
+          error: "Claude session connection closed before the turn completed",
+        },
+      },
+    }))
+    expect(events.map((event) => event.type)).toEqual(["turn-completed"])
+    const completed = events.find(
+      (event): event is Extract<AgentEvent, { type: "turn-completed" }> => event.type === "turn-completed",
+    )
+    expect(providerTurnCompletion(completed!.params)).toMatchObject({
+      failed: true,
+      failure: { kind: "transport", retryable: true },
+    })
+
+    await expect(adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Try again",
+      runtime: runtime("build"),
+    })).resolves.toBe("33333333-3333-4333-8333-333333333333")
+    expect(calls).toHaveLength(2)
+    expect(calls[1]!.options).toMatchObject({ cwd: "/worktree", resume: threadId })
+    const input = await calls[1]!.input[Symbol.asyncIterator]().next()
+    expect(input.value).toMatchObject({ message: { role: "user", content: "Try again" } })
+    await adapter.close()
+  })
+
+  it("does not fail a turn when Domovoi stops the Claude thread", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    await adapter.stopThread(threadId)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
+    expect(events).toEqual([])
+  })
+
+  it.each([
+    ["Error: 401 authentication expired, please run /login", "authentication-expired"],
+    ["Error: 429 rate limit exceeded", "rate-limit"],
+    ["Error: insufficient_quota", "quota-exhausted"],
+    ["Error: model claude-opus-9 not found", "model-unavailable"],
+  ])("forwards the Claude failure text %s so the daemon can classify it", async (text, kind) => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    calls[0]!.query.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      session_id: threadId,
+      is_error: true,
+      errors: [text],
+    })
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId,
+        turn: { id: turnId, status: "failed", error: `error_during_execution: ${text}` },
+      },
+    }))
+    const completed = events.find(
+      (event): event is Extract<AgentEvent, { type: "turn-completed" }> => event.type === "turn-completed",
+    )
+    expect(providerTurnCompletion(completed!.params)).toMatchObject({
+      failed: true,
+      failure: { kind },
     })
     await adapter.close()
   })

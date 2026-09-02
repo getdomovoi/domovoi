@@ -1,7 +1,7 @@
 import { StrictMode, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import { DaemonCredentialPrompt, WorkspaceShell } from "@getdomovoi/ui"
+import { DaemonCredentialPrompt, WorkspaceErrorBoundary, WorkspaceShell } from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
 
 import { clientKindForBrowser } from "./client-kind"
@@ -49,5 +49,5 @@ function DomovoiWeb() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><DomovoiWeb /></StrictMode>,
+  <StrictMode><WorkspaceErrorBoundary><DomovoiWeb /></WorkspaceErrorBoundary></StrictMode>,
 )

@@ -958,6 +958,170 @@ describe("terminal RPC", () => {
     intruder.socket.close()
   })
 
+  it("reaps a terminal whose owner disappears and nothing reclaims it", async () => {
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-reap"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+      terminalReapGraceMs: 150,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const open = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+        headers: { authorization: `Bearer ${daemon.authToken}` },
+      })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      let id = 0
+      const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+        const requestId = ++id
+        const response = new Promise<TestRpcResponse<M>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== requestId) return
+            socket.off("message", receive)
+            resolve(message as TestRpcResponse<M>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+        return response
+      }
+      return { socket, rpc }
+    }
+    const owner = await open()
+    const survivor = await open()
+    await owner.rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      clientId: "desktop-reap-owner",
+    })
+    await survivor.rpc("system.hello", {
+      client: "tablet",
+      clientVersion: "0.0.1",
+      clientId: "tablet-survivor",
+    })
+
+    await owner.rpc("terminal.create", {
+      terminalId: "terminal-reap",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-reap-owner",
+    })
+    owner.socket.close()
+    await new Promise((resolve) => setTimeout(resolve, 400))
+
+    expect(terminal.kill).toHaveBeenCalledOnce()
+    await expect(survivor.rpc("terminal.input", {
+      terminalId: "terminal-reap",
+      data: "still there\r",
+      client: "tablet",
+      clientId: "tablet-survivor",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal does not exist" },
+    })
+    survivor.socket.close()
+  })
+
+  it("keeps a terminal whose owner reconnects and reclaims it inside the grace window", async () => {
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-reclaim"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+      terminalReapGraceMs: 150,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const open = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+        headers: { authorization: `Bearer ${daemon.authToken}` },
+      })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      let id = 0
+      const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+        const requestId = ++id
+        const response = new Promise<TestRpcResponse<M>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== requestId) return
+            socket.off("message", receive)
+            resolve(message as TestRpcResponse<M>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+        return response
+      }
+      return { socket, rpc }
+    }
+    const owner = await open()
+    await owner.rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      clientId: "desktop-reclaim",
+    })
+
+    await owner.rpc("terminal.create", {
+      terminalId: "terminal-reclaim",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-reclaim",
+    })
+    owner.socket.close()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const reconnected = await open()
+    await reconnected.rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      clientId: "desktop-reclaim",
+    })
+    await reconnected.rpc("terminal.claim", {
+      terminalId: "terminal-reclaim",
+      client: "desktop",
+      clientId: "desktop-reclaim",
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+
+    expect(terminal.kill).not.toHaveBeenCalled()
+    await expect(reconnected.rpc("terminal.input", {
+      terminalId: "terminal-reclaim",
+      data: "reclaimed\r",
+      client: "desktop",
+      clientId: "desktop-reclaim",
+    })).resolves.toMatchObject({ result: { accepted: true } })
+    expect(terminal.write).toHaveBeenCalledWith("reclaimed\r")
+    reconnected.socket.close()
+  })
+
   it("owns terminal input, resize, output, and shutdown on the daemon", async () => {
     const dataListeners = new Set<(data: string) => void>()
     const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>()
