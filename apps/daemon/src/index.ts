@@ -256,17 +256,13 @@ async function main() {
   // A daemon inside a WSL distribution is found by its endpoint file, which is
   // why it is published only once the listener is actually up, and taken away
   // when it stops.
-  if (isLoopbackListener(address.host)) {
-    await publishEndpointFile({
-      home: homedir(),
-      host: address.host,
-      port: address.port,
-      token: authToken,
-    })
-  }
+  const published = isLoopbackListener(address.host)
+    ? { host: address.host, port: address.port, token: authToken }
+    : undefined
+  if (published) await publishEndpointFile({ home: homedir(), ...published })
 
   const shutdown = async () => {
-    await removeEndpointFile(homedir())
+    await removeEndpointFile(homedir(), published)
     await daemon.stop()
     process.exit(0)
   }
