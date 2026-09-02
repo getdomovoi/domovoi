@@ -213,7 +213,8 @@ fleet.
   6. outbound relay fallback after hosted services exist.
 - [x] Authenticate every connection even inside a tailnet
 - [x] Bootstrap `domovoid` through a version-pinned, checksummed install script
-- [ ] Install and supervise the daemon through systemd, launchd, and Windows Services
+- [x] Install and supervise the daemon for the user who asked, through a systemd user unit, a
+  launchd agent, and a Windows logon task
 - [x] Implement WSL discovery and a `domovoi open .` Windows interop shim
 - [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
 - [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
