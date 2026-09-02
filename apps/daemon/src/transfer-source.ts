@@ -5,6 +5,7 @@ import {
   transferPreflight,
   transferChunkResultSchema,
   transferFromRefResultSchema,
+  transferHaveResultSchema,
   transferBeginResultSchema,
   type ClientKind,
   type FleetMachine,
@@ -113,7 +114,11 @@ export async function sendSessionToMachine(input: {
   client: ClientKind
   call: (method: string, params: Record<string, unknown>) => Promise<unknown>
   checkpoint: (worktreePath: string, label: string) => Promise<Checkpoint>
-  bundleSession: (worktreePath: string, bundlePath: string) => Promise<SessionBundle>
+  bundleSession: (
+    worktreePath: string,
+    bundlePath: string,
+    sinceCommit?: string,
+  ) => Promise<SessionBundle>
   readBundle: (bundlePath: string) => Promise<Buffer>
   recordReceipt: (receipt: TransferReceipt) => void
   now: () => string
@@ -164,7 +169,17 @@ export async function sendSessionToMachine(input: {
   try {
     const checkpoint = await input.checkpoint(worktreePath, "before-transfer")
     checkpointCommit = checkpoint.commit
-    const bundle = await input.bundleSession(worktreePath, `${worktreePath}.bundle`)
+    // Asking first is what makes the move incremental: the target names a
+    // commit it already holds, and only what is missing travels.
+    const held = transferHaveResultSchema.parse(await input.call("transfer.have", {
+      sessionId: input.session.id,
+      client: input.client,
+    }))
+    const bundle = await input.bundleSession(
+      worktreePath,
+      `${worktreePath}.bundle`,
+      held.commit,
+    )
     const bytes = await input.readBundle(bundle.path)
     const digest = createHash("sha256").update(bytes).digest("hex")
 
@@ -175,6 +190,7 @@ export async function sendSessionToMachine(input: {
       digest,
       totalBytes: bytes.length,
       client: input.client,
+      ...(held.commit ? { sinceCommit: held.commit } : {}),
     }))
 
     let sequence = 0

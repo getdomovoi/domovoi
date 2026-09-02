@@ -21,10 +21,27 @@ export const transferBeginParamsSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   totalBytes: z.number().int().min(1).max(maximumTransferBytes),
   client: clientKindSchema,
+  // Named when the bundle starts from a commit the target reported holding, so
+  // a move carries what is missing rather than the whole history again.
+  sinceCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
 }).strict()
 
 export const transferBeginResultSchema = z.object({
   transferId: transferIdSchema,
+  // What the target already has for this session, if anything. A source can
+  // bundle from it instead of from the beginning.
+  haveCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+}).strict()
+
+// Asked before a bundle is built: what does the target already have for this
+// session? Nothing here identifies content, only a commit both sides can name.
+export const transferHaveParamsSchema = z.object({
+  sessionId: z.string().trim().min(1).max(128),
+  client: clientKindSchema,
+}).strict()
+
+export const transferHaveResultSchema = z.object({
+  commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
 }).strict()
 
 export const transferChunkParamsSchema = transferChunkSchema.extend({
@@ -49,5 +66,7 @@ export const transferChunkResultSchema = z.discriminatedUnion("state", [
 
 export type TransferBeginParams = z.infer<typeof transferBeginParamsSchema>
 export type TransferBeginResult = z.infer<typeof transferBeginResultSchema>
+export type TransferHaveParams = z.infer<typeof transferHaveParamsSchema>
+export type TransferHaveResult = z.infer<typeof transferHaveResultSchema>
 export type TransferChunkParams = z.infer<typeof transferChunkParamsSchema>
 export type TransferChunkResult = z.infer<typeof transferChunkResultSchema>

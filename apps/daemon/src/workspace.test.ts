@@ -795,3 +795,35 @@ describe("GitWorkspaceService session ref restore", () => {
     expect(durable.stdout.trim()).toBe(checkpoint.commit)
   })
 })
+
+describe("GitWorkspaceService session head", () => {
+  it("reports the commit it holds for a session it has", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-head-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
+    await writeFile(join(workspace.path, "README.md"), "moved\n")
+    const checkpoint = await service.checkpoint(workspace.path, "before-transfer")
+
+    await expect(service.sessionHeadCommit("session-1")).resolves.toBe(checkpoint.commit)
+  })
+
+  it("holds nothing for a session it has never seen", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-head-missing-"))
+    scratchDirectories.push(scratch)
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+
+    await expect(service.sessionHeadCommit("session-1")).resolves.toBeUndefined()
+    await expect(service.sessionHeadCommit("../escape")).resolves.toBeUndefined()
+  })
+})

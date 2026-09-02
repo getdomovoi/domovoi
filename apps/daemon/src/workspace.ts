@@ -108,6 +108,7 @@ export interface WorkspaceService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<SessionRef>
+  sessionHeadCommit?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>
   restoreSessionFromRef?(
     repositoryPath: string,
     remote: string,
@@ -572,6 +573,24 @@ export class GitWorkspaceService implements WorkspaceService {
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     return { commit, changedFiles }
+  }
+
+  // What this machine already holds for a session, so a source can send only
+  // what is missing. A session it has never seen is not an error.
+  async sessionHeadCommit(sessionId: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (!safeSessionId.test(sessionId)) return undefined
+    const path = join(this.worktreeRoot, sessionId)
+    try {
+      await realpath(path)
+    } catch {
+      return undefined
+    }
+    try {
+      return await git(path, ["rev-parse", "HEAD"], signal)
+    } catch {
+      signal?.throwIfAborted()
+      return undefined
+    }
   }
 
   // The opt-in path: pushing a session to a Git remote the caller names. It is
