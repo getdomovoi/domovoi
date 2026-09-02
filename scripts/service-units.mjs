@@ -4,6 +4,7 @@ const displayName = "Domovoi daemon"
 const description = "Domovoi execution daemon"
 const secretName = /TOKEN|SECRET|KEY|PASSWORD|PASSPHRASE|CREDENTIAL/i
 const forbidden = /["\u0000-\u001f]/
+const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function assertExecutable(execPath, platform) {
   if (typeof execPath !== "string" || execPath === "") {
@@ -17,8 +18,11 @@ function assertExecutable(execPath, platform) {
   return execPath
 }
 
-function assertNoSecrets(environment) {
+function assertNoSecrets(environment, { names = false } = {}) {
   for (const [key, value] of Object.entries(environment)) {
+    if (names && !environmentName.test(key)) {
+      throw new Error(`${JSON.stringify(key)} is not an environment name systemd would pass on`)
+    }
     if (secretName.test(key)) {
       throw new Error(`${key} looks like a secret, and a service file is not where a secret is kept`)
     }
@@ -29,13 +33,17 @@ function assertNoSecrets(environment) {
   return environment
 }
 
+function systemdArgument(value) {
+  return /\s/.test(value) ? `"${value}"` : value
+}
+
 function escapeXml(value) {
   return value.replace(/[<>&]/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[character])
 }
 
 export function systemdUnit({ execPath, environment = {} }) {
   assertExecutable(execPath, "linux")
-  assertNoSecrets(environment)
+  assertNoSecrets(environment, { names: true })
 
   const settings = Object.entries(environment).map(([key, value]) => `Environment="${key}=${value}"`)
   return [
@@ -45,7 +53,7 @@ export function systemdUnit({ execPath, environment = {} }) {
     "",
     "[Service]",
     "Type=simple",
-    `ExecStart=${execPath}`,
+    `ExecStart=${systemdArgument(execPath)}`,
     ...settings,
     "Restart=on-failure",
     "RestartSec=5",
@@ -83,7 +91,10 @@ export function launchdPlist({ execPath, environment = {} }) {
     "    <key>RunAtLoad</key>",
     "    <true/>",
     "    <key>KeepAlive</key>",
-    "    <true/>",
+    "    <dict>",
+    "      <key>SuccessfulExit</key>",
+    "      <false/>",
+    "    </dict>",
     "  </dict>",
     "</plist>",
     "",
