@@ -13,11 +13,13 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createEmptyWorkspace,
   demoWorkspace,
+  devicePairingLimitErrorCode,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
   maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
   projectSwitchConfirmationSchema,
+  protocolVersionMismatchErrorCode,
   workspaceSnapshotSchema,
   type ProviderModel,
   type RpcMethod,
@@ -52,6 +54,7 @@ import {
 } from "./rpc-outbound.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { maximumPairedDevices } from "./device-registry.js"
 import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import { WorkspaceEvidenceUnstableError, type WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
@@ -116,7 +119,26 @@ function identifyClient(
       jsonrpc: "2.0",
       id,
       method: "system.hello",
-      params: { client, clientId, clientVersion: "0.0.1" },
+      params: { client, clientId, clientVersion: "0.0.1", protocolVersion: "0.1.0" },
+    }))
+  })
+}
+
+function identifyMachine(socket: WebSocket, machineId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const id = "test-machine-identity"
+    const receive = (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as { id?: string }
+      if (message.id !== id) return
+      socket.off("message", receive)
+      resolve()
+    }
+    socket.on("message", receive)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "system.hello",
+      params: { client: "machine", machineId, clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
   })
 }
@@ -2530,7 +2552,7 @@ describe("DomovoiDaemon", () => {
 
     const hello = await rpc("system.hello", {
       client: "desktop",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "history-token",
     })
     expect((hello.result as { thread: unknown[] }).thread).toHaveLength(100)
@@ -2763,7 +2785,7 @@ describe("DomovoiDaemon", () => {
     }
     await rpc("system.hello", {
       client: "web",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "remote-daemon-token",
     })
     const accessResponse = await rpc("artifact.authorize", {
@@ -2839,7 +2861,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "system.hello",
-      params: { client: "web", clientVersion: "0.0.1" },
+      params: { client: "web", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
 
     await expect(response).resolves.toMatchObject({
@@ -2867,7 +2889,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "system.hello",
-      params: { client: "web", clientVersion: "0.0.1" },
+      params: { client: "web", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
 
     const hello = await response
@@ -2899,7 +2921,7 @@ describe("DomovoiDaemon", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "system.hello",
-        params: { client: "tablet", clientVersion: "0.0.1" },
+        params: { client: "tablet", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
       }))
       return response
     }
@@ -2955,7 +2977,7 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
-    await expect(send(1, "system.hello", { client: "tablet", clientVersion: "0.0.1" }))
+    await expect(send(1, "system.hello", { client: "tablet", clientVersion: "0.0.1", protocolVersion: "0.1.0" }))
       .resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
 
     invalidate(store, paired.device.id)
@@ -3030,7 +3052,7 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
-    await call(1, "system.hello", { client: "desktop", clientVersion: "0.0.1" })
+    await call(1, "system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" })
     return { socket, call }
   }
 
@@ -3219,7 +3241,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "system.hello",
-      params: { client: "desktop", clientVersion: "0.0.1" },
+      params: { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
 
     await expect(response).resolves.toMatchObject({
@@ -3489,6 +3511,48 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("answers empty-params methods when a JSON-RPC request omits params", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const call = (id: number, method: string) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method }))
+      return response
+    }
+
+    const fleet = await call(2, "fleet.list")
+    const devices = await call(3, "device.list")
+    const code = await call(4, "device.issueCode")
+
+    for (const answer of [fleet, devices, code]) {
+      expect(answer.error).toBeUndefined()
+      expect(answer.result).toBeDefined()
+    }
+    expect(code).toMatchObject({
+      result: {
+        code: expect.stringMatching(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/),
+        expiresAt: expect.any(String),
+      },
+    })
+    socket.close()
+  })
+
   it("refuses to issue a pairing code to a client holding only a device credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
@@ -3598,6 +3662,79 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("answers the paired device limit instead of rejecting the connection", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    for (let index = 0; index < maximumPairedDevices; index += 1) {
+      store.devices.pair({ label: `device-${index}` })
+    }
+    const issued = daemon.issuePairingCode()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    const claimed = await call(1, "device.claim", {
+      code: issued.code,
+      label: "one-too-many",
+    })
+
+    expect(claimed).toMatchObject({
+      error: { code: devicePairingLimitErrorCode, message: expect.any(String) },
+    })
+    expect(store.devices.list()).toHaveLength(maximumPairedDevices)
+    socket.close()
+  })
+
+  it("answers an internal error when credential verification itself fails", async () => {
+    const errors: string[] = []
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const originalDevices = Object.getOwnPropertyDescriptor(store, "devices")
+    let explodeDevices = false
+    Object.defineProperty(store, "devices", {
+      get() {
+        if (explodeDevices) throw new Error("device lookup exploded")
+        return originalDevices?.value
+      },
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      errorSink: (entry) => errors.push(entry.context),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const { socket } = await unauthenticatedSocket(daemon)
+    explodeDevices = true
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: unknown }
+        if (message.id !== null) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: {
+        client: "desktop",
+        clientVersion: "0.0.1",
+        protocolVersion: "0.1.0",
+        authToken: "not-the-daemon-token",
+      },
+    }))
+
+    const answer = await response
+    explodeDevices = false
+    expect(answer).toMatchObject({ error: { code: -32603, message: "Internal daemon error" } })
+    expect(errors).toContain("RPC dispatch failed")
+    socket.close()
+  })
+
   it("audits a pairing without recording the code or the credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
@@ -3671,14 +3808,14 @@ describe("DomovoiDaemon", () => {
     })
     await expect(rpc(2, "system.hello", {
       client: "web",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "wrong-token",
     })).resolves.toMatchObject({
       error: { code: -32001, message: "Daemon authentication failed" },
     })
     await expect(rpc(3, "system.hello", {
       client: "web",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "correct-horse-battery-staple",
     })).resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
     await expect(rpc(4, "workspace.get", {})).resolves.toMatchObject({
@@ -3712,7 +3849,7 @@ describe("DomovoiDaemon", () => {
       method: "system.hello",
       params: {
         client: "web",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.1", protocolVersion: "0.1.0",
         authToken: "correct-horse-battery-staple",
       },
     }))
@@ -3742,7 +3879,7 @@ describe("DomovoiDaemon", () => {
         jsonrpc: "2.0",
         id,
         method: "system.hello",
-        params: { client: "web", clientVersion: "0.0.1", authToken: "wrong-token" },
+        params: { client: "web", clientVersion: "0.0.1", protocolVersion: "0.1.0", authToken: "wrong-token" },
       }))
     }
     await expect(rejected).resolves.toEqual({ code: 1008, reason: "authentication failed" })
@@ -3920,7 +4057,7 @@ describe("DomovoiDaemon", () => {
           method: "system.hello",
           params: {
             client: "desktop",
-            clientVersion: "0.0.1",
+            clientVersion: "0.0.1", protocolVersion: "0.1.0",
             ...(authToken ? { authToken } : {}),
           },
         })))
@@ -4284,7 +4421,7 @@ describe("DomovoiDaemon", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "system.hello",
-            params: { client: "desktop", clientVersion: "0.0.1" },
+            params: { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
           }),
         )
       })
@@ -4556,7 +4693,7 @@ describe("DomovoiDaemon", () => {
       authToken: daemon.authToken,
       client: "desktop",
       clientId: "desktop-reviewer",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
     })
     const review = {
       id: currentSkill.id,
@@ -4897,7 +5034,7 @@ describe("DomovoiDaemon", () => {
       const hello = await request(1, "system.hello", {
         client: "web",
         clientId: "spoofed-device-id",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.1", protocolVersion: "0.1.0",
         authToken: daemon.authToken,
       })
       return { socket, request, hello }
@@ -4913,7 +5050,7 @@ describe("DomovoiDaemon", () => {
     await expect(first.request(2, "system.hello", {
       client: "desktop",
       clientId: "changed-device-id",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Connection client identity is already established" },
     })
@@ -4939,6 +5076,48 @@ describe("DomovoiDaemon", () => {
     })
     first.socket.close()
     second.socket.close()
+  })
+
+  it("refuses a client that speaks another protocol version", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
+      authToken: "correct-horse-battery-staple",
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: {
+        client: "web",
+        clientVersion: "0.0.1",
+        protocolVersion: "9.9.9",
+        authToken: daemon.authToken,
+      },
+    }))
+
+    const refusal = await response
+    expect(refusal).toMatchObject({
+      error: {
+        code: protocolVersionMismatchErrorCode,
+        message: expect.stringContaining("0.1.0"),
+      },
+    })
+    expect((refusal.error as { message: string }).message).toContain("9.9.9")
+    socket.close()
   })
 
   it("activates an existing session and rejects unknown sessions", async () => {
@@ -5831,7 +6010,7 @@ describe("DomovoiDaemon", () => {
           jsonrpc: "2.0",
           id: 2,
           method: "system.hello",
-          params: { client: "desktop", clientVersion: "0.0.1" },
+          params: { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
         }))
       })
       secondSocket.on("message", (data) => {
@@ -8261,7 +8440,7 @@ describe("DomovoiDaemon", () => {
     await expect(rpc("system.hello", {
       client: "web",
       clientId: "browser-audit-test",
-      clientVersion: "audit-test",
+      clientVersion: "audit-test", protocolVersion: "0.1.0",
       authToken: daemon.authToken,
     })).resolves.toHaveProperty("result")
 
@@ -8547,6 +8726,61 @@ describe("DomovoiDaemon transfers", () => {
     return Buffer.from("PACK a session worktree")
   }
 
+  it("accepts a transfer arrival only from a peer daemon", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: stubWorkspaceService(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const bytes = bundleBytes()
+    const arrival = {
+      sessionId: "session-1",
+      sourceMachineId: `machine-${"a".repeat(32)}`,
+      method: "git-bundle" as const,
+      digest: createHash("sha256").update(bytes).digest("hex"),
+      totalBytes: bytes.length,
+    }
+
+    const desktop = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      desktop.once("open", resolve)
+      desktop.once("error", reject)
+    })
+    await identifyClient(desktop)
+    const desktopCall = rpcCaller(desktop)
+    const refused = await desktopCall("transfer.begin", { ...arrival, client: "desktop" })
+    expect(refused).toMatchObject({
+      error: { message: "Accepting a session transfer requires a machine connection" },
+    })
+    desktop.close()
+
+    const peerMachineId = `machine-${"b".repeat(32)}`
+    const peer = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      peer.once("open", resolve)
+      peer.once("error", reject)
+    })
+    await identifyMachine(peer, peerMachineId)
+    const peerCall = rpcCaller(peer)
+    const begun = await peerCall("transfer.begin", { ...arrival, client: "desktop" })
+    expect(begun.result).toBeDefined()
+
+    const entries = store.auditLog!.query({ limit: 50 }).entries
+    const attributed = entries.find(
+      (entry) => entry.action === "transfer.begin" && entry.actor.kind === "machine",
+    )
+    expect(attributed?.actor).toEqual({ kind: "machine", machineId: peerMachineId })
+    const refusedEntry = entries.find(
+      (entry) => entry.action === "transfer.begin" && entry.actor.kind === "client",
+    )
+    expect(refusedEntry?.outcome).toBe("failed")
+    peer.close()
+  })
+
   it("restores a session streamed from another machine", async () => {
     const bytes = bundleBytes()
     const restored: { bundlePath: string; sessionId: string }[] = []
@@ -8573,7 +8807,7 @@ describe("DomovoiDaemon transfers", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    await identifyClient(socket)
+    await identifyMachine(socket, `machine-${"a".repeat(32)}`)
     const call = rpcCaller(socket)
 
     const begun = await call("transfer.begin", {
@@ -8621,7 +8855,7 @@ describe("DomovoiDaemon transfers", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    await identifyClient(socket)
+    await identifyMachine(socket, `machine-${"a".repeat(32)}`)
     const call = rpcCaller(socket)
 
     const begun = await call("transfer.begin", {
@@ -8661,7 +8895,7 @@ describe("DomovoiDaemon transfers", () => {
         socket.once("open", resolve)
         socket.once("error", reject)
       })
-      await identifyClient(socket)
+      await identifyMachine(socket, `machine-${"a".repeat(32)}`)
       const answer = await rpcCaller(socket)("transfer.begin", {
         sessionId: "session-1",
         sourceMachineId: `machine-${"a".repeat(32)}`,
