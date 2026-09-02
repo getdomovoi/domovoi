@@ -17,5 +17,6 @@ export {
   type DialedTransport,
 } from "./transport-dial"
 export { StartupError } from "./startup-error"
+export { WorkspaceErrorBoundary } from "./error-boundary"
 export { DaemonCredentialPrompt } from "./daemon-credential-prompt"
 export { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"

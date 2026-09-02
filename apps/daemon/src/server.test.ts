@@ -1910,6 +1910,135 @@ describe("DomovoiDaemon", () => {
     expect(store.close).toHaveBeenCalledOnce()
   })
 
+  it("stops with a drain timeout instead of hanging on a mutation that never settles", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-drain-hang"
+    session.activeTurnId = "turn-drain-hang"
+    const activateTurns = deferLiveTurns(snapshot)
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(),
+      saveAsync: vi.fn(() => new Promise<void>(() => {})),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "drain-timeout-token",
+      store,
+      agent,
+      agentTimeoutMs: 100,
+    })
+    await daemon.start()
+    activateTurns()
+    listener!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-drain-hang",
+        turnId: "turn-drain-hang",
+        turn: { id: "turn-drain-hang", status: "failed", error: "provider stalled" },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    await expect(daemon.stop()).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: "Domovoi shutdown drain timed out" })],
+    })
+    expect(agent.close).toHaveBeenCalledOnce()
+    expect(store.close).toHaveBeenCalledOnce()
+  })
+
+  it("tells clients when a save fails so a lost write is not silent", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-save-signal"
+    session.activeTurnId = "turn-save-signal"
+    const activateTurns = deferLiveTurns(snapshot)
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => { throw new Error("disk unavailable") }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "save-signal-token",
+      store,
+      agent,
+    })
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const changes: Record<string, unknown>[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>
+      if (message.method !== "workspace.changed") return
+      changes.push(message.params as Record<string, unknown>)
+    })
+
+    listener!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-save-signal",
+        turnId: "turn-save-signal",
+        turn: { id: "turn-save-signal", status: "failed", error: "provider stalled" },
+      },
+    })
+
+    await vi.waitFor(() => expect(changes).toHaveLength(1))
+    expect(changes[0]).toMatchObject({
+      thread: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "system",
+          body: "Domovoi cannot save changes right now. New activity is being kept in memory only.",
+          detail: "disk unavailable",
+        }),
+      ]),
+    })
+    socket.close()
+    await daemon.stop()
+  })
+
   it("bounds client snapshots without deleting durable session history", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!

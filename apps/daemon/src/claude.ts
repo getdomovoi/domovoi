@@ -50,6 +50,7 @@ export type ClaudeSdkMessage = {
   subtype?: string
   session_id?: string
   is_error?: boolean
+  errors?: unknown
   event?: unknown
   message?: unknown
   tool_use_result?: unknown
@@ -114,6 +115,7 @@ type Session = {
   runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string }>
   activeTurnId?: string
+  ended?: true
 }
 
 type PendingApproval = {
@@ -207,7 +209,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     visualContexts?: AgentVisualContext[]
   }): Promise<string> {
     let session = this.#requireSession(threadId)
-    if (isClaudeAsk(session.runtime) !== isClaudeAsk(runtime)) {
+    if (session.ended || isClaudeAsk(session.runtime) !== isClaudeAsk(runtime)) {
       session.input.close()
       session.query.close()
       this.#sessions.delete(threadId)
@@ -303,23 +305,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const query = this.#factory(input, options)
     const session: Session = { threadId, cwd, input, query, runtime, tools: new Map() }
     this.#sessions.set(threadId, session)
-    void this.#consume(session).catch((error: unknown) => {
-      const turnId = session.activeTurnId
-      if (!turnId) return
-      this.#emit({
-        type: "turn-completed",
-        params: {
-          threadId,
-          turnId,
-          turn: {
-            id: turnId,
-            status: "failed",
-            error: error instanceof Error ? error.message : "Claude session failed",
-          },
-        },
-      })
-      delete session.activeTurnId
-    })
+    void this.#consume(session).then(
+      () => this.#endSession(session, "Claude session connection closed before the turn completed"),
+      (error: unknown) => this.#endSession(
+        session,
+        error instanceof Error ? error.message : "Claude session failed",
+      ),
+    )
     try {
       await query.initializationResult()
     } catch (error) {
@@ -386,6 +378,22 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     for await (const message of session.query) this.#receive(session, message)
   }
 
+  #endSession(session: Session, reason: string): void {
+    if (this.#sessions.get(session.threadId) !== session) return
+    session.ended = true
+    const turnId = session.activeTurnId
+    if (!turnId) return
+    delete session.activeTurnId
+    this.#emit({
+      type: "turn-completed",
+      params: {
+        threadId: session.threadId,
+        turnId,
+        turn: { id: turnId, status: "failed", error: reason },
+      },
+    })
+  }
+
   #receive(session: Session, message: ClaudeSdkMessage): void {
     const turnId = session.activeTurnId
     if (!turnId) return
@@ -414,12 +422,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       const usage = normalizeProviderUsage(message)
       if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
       const failed = message.is_error === true || message.subtype !== "success"
+      const error = failed ? resultError(message) : undefined
       this.#emit({
         type: "turn-completed",
         params: {
           threadId: session.threadId,
           turnId,
-          turn: { id: turnId, status: failed ? "failed" : "completed" },
+          turn: {
+            id: turnId,
+            status: failed ? "failed" : "completed",
+            ...(error ? { error } : {}),
+          },
         },
       })
       delete session.activeTurnId
@@ -636,6 +649,14 @@ function requireClaudeModels(value: unknown): ClaudeModel[] {
         : {}),
     }
   })
+}
+
+function resultError(message: ClaudeSdkMessage): string {
+  const errors = Array.isArray(message.errors)
+    ? message.errors.filter((entry): entry is string => typeof entry === "string")
+    : []
+  const subtype = message.subtype && message.subtype !== "success" ? message.subtype : ""
+  return [subtype, errors.join("; ")].filter(Boolean).join(": ")
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
