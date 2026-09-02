@@ -45,6 +45,19 @@ as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
 The bearer token protects RPC access. Health checks remain public and preview documents use their
 own short-lived signed capabilities.
 
+## When state cannot reach disk
+
+The daemon writes the workspace snapshot after every change. A single failed write is retried on
+the next change. After three consecutive failures the daemon declares persistence unavailable and
+refuses mutating RPC methods with `daemonPersistenceUnavailableErrorCode` (`-32014`) instead of
+running on state nobody will get back. Every failure is still reported through the daemon error
+sink, and `system.emergencyStop` still reports a `persistence` failure in its bounded outcome.
+
+Read-only methods keep working, including `workspace.get`, so an operator can read the state that
+is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
+working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
+again as soon as one write succeeds, since each write stores the whole snapshot.
+
 ## Programmatic use
 
 ```ts

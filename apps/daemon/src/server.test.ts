@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   createEmptyWorkspace,
+  daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
@@ -33,6 +34,8 @@ import {
   frameAncestorsFor,
   DomovoiDaemon,
   hostAuthorityMatches,
+  persistenceFailureThreshold,
+  persistenceUnavailableContext,
   isTestCommandTitle,
   maximumAuthenticationPayloadBytes,
   maximumCachedSessionHistoryFilterEntries,
@@ -52,6 +55,7 @@ import {
 } from "./rpc-outbound.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { internalRpcErrorMessage } from "./rpc-errors.js"
 import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import { WorkspaceEvidenceUnstableError, type WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
@@ -9166,6 +9170,110 @@ describe("DomovoiDaemon session transfer requests", () => {
     })
 
     expect(answer).toMatchObject({ error: { message: "Session does not exist" } })
+    socket.close()
+  })
+})
+
+describe("DomovoiDaemon persistence refusal", () => {
+  function persistenceDaemon() {
+    const snapshot = structuredClone(demoWorkspace)
+    deferLiveTurns(snapshot)
+    snapshot.approvals = []
+    const persistence = { failing: true, writes: 0 }
+    const failure = () => new Error("state database is read-only")
+    const store = {
+      load: () => structuredClone(snapshot),
+      save: vi.fn(() => { if (persistence.failing) throw failure() }),
+      saveAsync: vi.fn(async () => {
+        if (persistence.failing) throw failure()
+        persistence.writes += 1
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const errorSink = vi.fn()
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: {}, errorSink })
+    running.push(daemon)
+    return { daemon, snapshot, persistence, errorSink }
+  }
+
+  async function connect(daemon: DomovoiDaemon) {
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = `persistence-${++id}`
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: string }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    return { socket, rpc }
+  }
+
+  it("refuses mutating requests once persistence keeps failing and still answers read-only ones", async () => {
+    const { daemon, snapshot, errorSink } = persistenceDaemon()
+    const { socket, rpc } = await connect(daemon)
+    const activate = () => rpc("session.activate", {
+      sessionId: snapshot.sessions[1]!.id,
+      client: "desktop",
+    })
+
+    for (let attempt = 1; attempt <= persistenceFailureThreshold; attempt += 1) {
+      await expect(activate()).resolves.toMatchObject({
+        error: { code: -32603, message: internalRpcErrorMessage },
+      })
+    }
+
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "RPC session.activate failed",
+      detail: expect.stringContaining("state database is read-only"),
+    }))
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: persistenceUnavailableContext,
+      detail: expect.stringContaining("state database is read-only"),
+    }))
+    await expect(activate()).resolves.toMatchObject({
+      error: { code: daemonPersistenceUnavailableErrorCode },
+    })
+    await expect(rpc("workspace.get", {})).resolves.toMatchObject({
+      result: { machine: { id: snapshot.machine.id } },
+    })
+    socket.close()
+  })
+
+  it("accepts mutations again after a recovery method persists successfully", async () => {
+    const { daemon, snapshot, persistence } = persistenceDaemon()
+    const { socket, rpc } = await connect(daemon)
+    const activate = () => rpc("session.activate", {
+      sessionId: snapshot.sessions[1]!.id,
+      client: "desktop",
+    })
+    for (let attempt = 1; attempt <= persistenceFailureThreshold; attempt += 1) await activate()
+    await expect(activate()).resolves.toMatchObject({
+      error: { code: daemonPersistenceUnavailableErrorCode },
+    })
+
+    persistence.failing = false
+    await expect(rpc("system.emergencyStop", { client: "desktop" })).resolves.toMatchObject({
+      result: { failures: [] },
+    })
+    expect(persistence.writes).toBeGreaterThan(0)
+
+    await expect(activate()).resolves.toMatchObject({
+      result: { activeSessionId: snapshot.sessions[1]!.id },
+    })
     socket.close()
   })
 })
