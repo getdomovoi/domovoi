@@ -209,6 +209,7 @@ async function main() {
       ...nodeServiceEffects(),
       platform: process.platform,
       execPath: process.argv[1] ?? process.execPath,
+      runtime: process.execPath,
       home: homedir(),
       uid,
       user: username,
