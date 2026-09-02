@@ -17,16 +17,39 @@ describe("TerminalOutputRedactor", () => {
     const output = drain(new TerminalOutputRedactor(), ["export API_KEY=sk-live-", "abcdef123456\r\n"])
     expect(output).not.toContain("sk-live-")
     expect(output).not.toContain("abcdef123456")
+    expect(output).toContain("export API_KEY=[REDACTED]")
   })
 
   it("redacts an assignment split exactly at the name and its value", () => {
     const output = drain(new TerminalOutputRedactor(), ["export API_KEY=", "hunter2\r\n"])
     expect(output).not.toContain("hunter2")
+    expect(output).toContain("export API_KEY=[REDACTED]")
   })
 
   it("redacts an assignment split across three reads", () => {
     const output = drain(new TerminalOutputRedactor(), ["export API_", "KEY=hun", "ter2\r\n"])
     expect(output).not.toContain("hunter2")
+    expect(output).toContain("export API_KEY=[REDACTED]")
+  })
+
+  it("redacts a value longer than the carry that arrives without its delimiter", () => {
+    const value = "a".repeat(400)
+    const redactor = new TerminalOutputRedactor()
+    const first = redactor.push(`export API_KEY=${value}`)
+    const second = redactor.push("\r\nls\r\n")
+    const output = `${first}${second}${redactor.flush()}`
+    expect(output).not.toContain("aaaa")
+    expect(output).toContain("export API_KEY=[REDACTED]")
+    expect(output).toContain("ls")
+  })
+
+  it("keeps dropping a long value across several reads until it ends", () => {
+    const redactor = new TerminalOutputRedactor()
+    const parts = [`TOKEN=${"b".repeat(300)}`, "b".repeat(300), "b".repeat(50), " done\r\n"]
+    const output = `${parts.map((part) => redactor.push(part)).join("")}${redactor.flush()}`
+    expect(output).not.toContain("bbbb")
+    expect(output).toContain("TOKEN=[REDACTED]")
+    expect(output).toContain(" done")
   })
 
   it("hands back ordinary output without holding it", () => {
@@ -50,10 +73,12 @@ describe("TerminalOutputRedactor", () => {
     expect(chunk.length - emitted.length).toBeLessThanOrEqual(terminalRedactionCarryCharacters)
   })
 
-  it("gives back what it was holding when the terminal ends", () => {
+  it("gives back what it was holding when the terminal ends, redacted", () => {
     const redactor = new TerminalOutputRedactor()
-    expect(redactor.push("export API_KEY=")).toBe("export ")
-    expect(redactor.flush()).toContain("API_KEY=")
+    expect(redactor.push("export API_KEY=sk-live-abcdef")).toBe("export ")
+    const flushed = redactor.flush()
+    expect(flushed).toContain("API_KEY=[REDACTED]")
+    expect(flushed).not.toContain("sk-live-abcdef")
     expect(redactor.flush()).toBe("")
   })
 
