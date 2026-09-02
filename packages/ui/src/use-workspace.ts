@@ -232,6 +232,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.restoreCheckpoint(sessionId, checkpointId))
   }, [updateSnapshotFrom])
 
+  const revertSessionFile = useCallback(async (sessionId: string, path: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshotFrom(client, await client.revertSessionFile(sessionId, path))
+  }, [updateSnapshotFrom])
+
   const pauseAll = useCallback(async () => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -562,6 +568,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     refreshProviders,
     reconnect,
     restoreCheckpoint,
+    revertSessionFile,
     restartProviderThread,
     resizeTerminal,
     replyToAnnotation,

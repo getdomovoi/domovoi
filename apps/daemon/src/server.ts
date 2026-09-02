@@ -69,8 +69,10 @@ import {
   type AgentEvent,
 } from "./agents.js"
 import {
+  FileRevertIncompleteError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
+  type FileRevert,
   type WorkspaceService,
 } from "./workspace.js"
 import {
@@ -159,6 +161,7 @@ const sessionResourceMethods = new Set([
   "session.fork",
   "session.history",
   "session.send",
+  "session.revertFile",
   "session.restartProviderThread",
   "session.setRuntime",
 ])
@@ -3887,6 +3890,114 @@ export class DomovoiDaemon {
           kind: "system",
           body: "Worktree restored",
           detail: `Restored ${restored.restoredCommit.slice(0, 8)} from ${params.client}. Recovery checkpoint ${restored.recoveryCommit.slice(0, 8)} preserved the previous state.`,
+          createdAt,
+        })
+        changed = true
+      }
+
+      // Reverting one file throws away uncommitted work, so it takes the same
+      // active-turn guard as a checkpoint, records the recovery checkpoint the
+      // workspace service took first, and leaves a receipt naming the client
+      // that asked for it.
+      if (method === "session.revertFile") {
+        const params = paramsResult.data as RpcParams<"session.revertFile">
+        const actor = this.#authenticatedActors.get(socket)
+        const connectionId = this.#connectionIds.get(socket)
+        if (!actor || actor.kind !== "client" || !connectionId) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Reverting a file requires an authenticated connection identity",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
+        if (!session?.workspacePath) {
+          this.#error(socket, request.id, invalidParams, "Session has no worktree")
+          return
+        }
+        if (session.activeTurnId) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Stop the active turn before reverting a file",
+          )
+          return
+        }
+        if (!this.#workspaceService.revertFile) {
+          this.#error(socket, request.id, invalidParams, "Reverting a file is unavailable")
+          return
+        }
+        let reverted: FileRevert
+        try {
+          reverted = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.revertFile!(
+              session.workspacePath!,
+              params.path,
+              signal,
+            ),
+            this.#agentTimeoutMs,
+            "File revert timed out",
+          )
+        } catch (error) {
+          // A revert that stopped after its recovery checkpoint left work in a
+          // commit the session cannot see yet, so the checkpoint is recorded
+          // before the failure is reported.
+          if (error instanceof FileRevertIncompleteError) {
+            this.#snapshot.thread.push({
+              id: `checkpoint-${randomUUID()}`,
+              sessionId: session.id,
+              kind: "checkpoint",
+              label: `${error.recoveryCommit.slice(0, 8)} · before revert ${params.path}`,
+              commit: error.recoveryCommit,
+              createdAt: new Date().toISOString(),
+            })
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+            throw new PublicRpcError(
+              internalError,
+              `${error.message}. The worktree was not fully reverted.`,
+            )
+          }
+          throw error
+        }
+        const currentSession = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!currentSession) {
+          this.#error(socket, request.id, invalidParams, "Session no longer exists")
+          return
+        }
+        const createdAt = new Date().toISOString()
+        currentSession.updatedAt = createdAt
+        this.#snapshot.thread.push({
+          id: `checkpoint-${randomUUID()}`,
+          sessionId: currentSession.id,
+          kind: "checkpoint",
+          label: `${reverted.recoveryCommit.slice(0, 8)} · before revert ${reverted.path}`,
+          commit: reverted.recoveryCommit,
+          createdAt,
+        })
+        this.#snapshot.thread.push({
+          id: `receipt-revert-${randomUUID()}`,
+          sessionId: currentSession.id,
+          kind: "receipt",
+          decision: "allow-once",
+          operation: `Revert ${reverted.path}`,
+          checkpoint: reverted.recoveryCommit,
+          client: actor.client,
+          connectionId,
+          explanation: reverted.outcome === "removed"
+            ? "Removed a file the worktree was not tracking"
+            : `Restored the file from ${reverted.baseCommit.slice(0, 8)}`,
           createdAt,
         })
         changed = true
