@@ -214,8 +214,8 @@ fleet.
 - [x] Authenticate every connection even inside a tailnet
 - [x] Bootstrap `domovoid` through a version-pinned, checksummed install script
 - [ ] Install and supervise the daemon through systemd, launchd, and Windows Services
-- [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
-- [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
+- [x] Implement WSL discovery and a `domovoi open .` Windows interop shim
+- [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
 - [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
 - [x] Add checkpointed machine transfer with live source and target preflight
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
