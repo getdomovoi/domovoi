@@ -2231,8 +2231,8 @@ export class DomovoiDaemon {
               connection.call(remoteMethod, remoteParams, transferSignal),
             checkpoint: (worktreePath, label) =>
               this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
-            bundleSession: (worktreePath, bundlePath) =>
-              bundleSession(worktreePath, bundlePath, undefined, transferSignal),
+            bundleSession: (worktreePath, bundlePath, sinceCommit) =>
+              bundleSession(worktreePath, bundlePath, sinceCommit, transferSignal),
             readBundle,
             recordReceipt: (receipt) => {
               // The receipt records what happened; it does not decide it. A

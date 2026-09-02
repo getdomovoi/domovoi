@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { transferBeginParamsSchema, transferBeginResultSchema } from "./index.js"
+import {
+  transferBeginParamsSchema,
+  transferBeginResultSchema,
+  transferHaveResultSchema,
+} from "./index.js"
 
 const begin = {
   sessionId: "session-1",
@@ -29,6 +33,18 @@ describe("incremental transfer", () => {
       transferId: `transfer-${"c".repeat(32)}`,
       haveCommit: "b".repeat(40),
     }).success).toBe(true)
+  })
+
+  it("reads a commit the target reports holding", () => {
+    expect(transferHaveResultSchema.safeParse({ commit: "b".repeat(40) }).success).toBe(true)
+  })
+
+  it("reads a target that reports holding nothing", () => {
+    expect(transferHaveResultSchema.safeParse({}).success).toBe(true)
+  })
+
+  it("refuses a held commit that is not a commit", () => {
+    expect(transferHaveResultSchema.safeParse({ commit: "HEAD" }).success).toBe(false)
   })
 
   it("lets a target say it holds nothing yet", () => {

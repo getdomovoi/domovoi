@@ -827,3 +827,45 @@ describe("GitWorkspaceService session head", () => {
     await expect(service.sessionHeadCommit("../escape")).resolves.toBeUndefined()
   })
 })
+
+describe("GitWorkspaceService incremental restore", () => {
+  it("applies a bundle onto a session it already holds", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-apply-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+
+    // The source moves the session once, so both machines share a base.
+    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
+    await writeFile(join(workspace.path, "README.md"), "first\n")
+    const first = await source.checkpoint(workspace.path, "first")
+    const full = await source.bundleSession(workspace.path, join(scratch, "full.bundle"))
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    const restored = await target.restoreSessionFromBundle(full.path, "session-1")
+    expect(restored.baseCommit).toBe(first.commit)
+
+    // More work, then only what the target is missing travels.
+    await writeFile(join(workspace.path, "README.md"), "second\n")
+    const second = await source.checkpoint(workspace.path, "second")
+    const incremental = await source.bundleSession(
+      workspace.path,
+      join(scratch, "incremental.bundle"),
+      first.commit,
+    )
+
+    const updated = await target.restoreSessionFromBundle(incremental.path, "session-1")
+
+    expect(updated.baseCommit).toBe(second.commit)
+    const contents = await readFile(join(updated.path, "README.md"), "utf8")
+    expect(contents.replace(/\r\n/g, "\n")).toBe("second\n")
+  })
+})
