@@ -816,6 +816,35 @@ describe("terminal RPC", () => {
     expect(JSON.stringify(attached)).not.toContain("abcdef123456")
     expect(attached).toMatchObject({ result: { buffer: expect.stringContaining("[REDACTED]") } })
 
+    // A short read followed straight away by an exit must still reach the
+    // client: redaction holding a tail is not a reason to lose output.
+    const closing = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { method?: string; params?: { data?: string } }
+        if (message.method !== "terminal.output" || !message.params?.data?.includes("bye")) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+    for (const listener of dataListeners) listener("bye")
+    await rpc("terminal.close", {
+      terminalId: "terminal-secret",
+      client: "desktop",
+      clientId: "desktop-secret",
+    })
+    expect(JSON.stringify(await closing)).toContain("bye")
+
+    await rpc("terminal.create", {
+      terminalId: "terminal-secret",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-secret",
+    })
+
+
     socket.close()
   })
 

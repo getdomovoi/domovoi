@@ -44,6 +44,13 @@ export function redactDurableCommand(value: unknown): RedactedText {
   return redact(value, maximumDurableCommandLength)
 }
 
+// A terminal read is shown, not stored, so it is redacted without the length
+// bound the durable records carry: truncating what a terminal printed would
+// lose output rather than protect anything.
+export function redactStreamText(value: string): string {
+  return redact(value, Number.MAX_SAFE_INTEGER).value
+}
+
 export function redactDurableOutput(value: unknown): RedactedText {
   return redact(value, maximumDurableOutputLength)
 }
@@ -273,34 +280,50 @@ function boundedText(value: unknown, maximumLength: number): { value: string; tr
 
 // A terminal is not command output: it has no reliable newlines, its lines can
 // be enormous, and what it shows has to keep up with typing. Redaction still
-// has to see across reads, so only a short tail of each chunk is held back and
-// prepended to the next one. A secret is caught unless it straddles more than
-// that tail, and nothing is withheld for long or replaced wholesale. A read
-// that already fills a whole output chunk is emitted with no tail held, so a
-// burst still reaches a client that is about to be dropped for slowness.
+// has to see across reads, so the whole of what has been carried plus the new
+// read is redacted together, and a tail is held back only while it could still
+// be the beginning of a secret. Ordinary output is never delayed, and nothing
+// is ever replaced wholesale.
 export const terminalRedactionCarryCharacters = 256
+
+// The start of an assignment this redactor would act on, left dangling at the
+// end of a read: a sensitive name, or one followed by its separator and a value
+// that may still be growing.
+const danglingSecret = new RegExp(
+  String.raw`(?:${sensitiveName}\b["']?\s*[:=]?\s*|(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)?|-D${sensitiveName}\s*=?)[^\s;&|\r\n]*$`,
+  "i",
+)
+
+// A sensitive name can itself be split, so a word still being typed at the end
+// of a read is held until the next one resolves it.
+const danglingWord = /[A-Za-z][A-Za-z0-9_-]*$/
 
 export class TerminalOutputRedactor {
   #carry = ""
 
-  push(chunk: string, holdTail = true): string {
+  // Everything held back plus the new read is redacted as one string, so an
+  // assignment split across two reads is seen whole.
+  push(chunk: string): string {
     const combined = `${this.#carry}${chunk}`
-    this.#carry = ""
-    if (!holdTail) return redactDurableOutput(combined).value
-    if (combined.length <= terminalRedactionCarryCharacters) {
-      this.#carry = combined
-      return ""
-    }
-
-    const emitted = combined.slice(0, combined.length - terminalRedactionCarryCharacters)
-    this.#carry = combined.slice(combined.length - terminalRedactionCarryCharacters)
-    return redactDurableOutput(emitted).value
+    const holdFrom = this.#suspiciousTailStart(combined)
+    this.#carry = combined.slice(holdFrom)
+    return redactStreamText(combined.slice(0, holdFrom))
   }
 
   flush(): string {
     if (this.#carry === "") return ""
     const remainder = this.#carry
     this.#carry = ""
-    return redactDurableOutput(remainder).value
+    return redactStreamText(remainder)
+  }
+
+  // Only a tail that could still become a secret is worth withholding, and
+  // never more than the carry bound, so a terminal that is simply busy is
+  // never held up.
+  #suspiciousTailStart(combined: string): number {
+    const window = combined.slice(-terminalRedactionCarryCharacters)
+    const match = danglingSecret.exec(window) ?? danglingWord.exec(window)
+    if (!match) return combined.length
+    return combined.length - window.length + match.index
   }
 }
