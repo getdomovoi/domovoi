@@ -87,10 +87,14 @@ surfaces collapse information rather than silently removing it.
 
 ## Design source revision
 
-`design/REVISIONS.json` records a SHA-256 and a byte count for every file in the handoff, so a
-local edit to a signed file and a genuinely new revision from Claude Design cannot be confused.
-`pnpm release:invariants` runs `node scripts/design-revision.mjs --check` and fails when the two
-disagree.
+`design/REVISIONS.json` records a SHA-256 and a byte count for every file in the handoff, so an
+unrecorded change to a signed file cannot pass unnoticed. `pnpm release:invariants` runs
+`node scripts/design-revision.mjs --check` and fails when the tree and the record disagree.
+
+This detects drift, not tampering. `pnpm design:revision` re-records whatever is on disk, so the
+check proves only that the tree matches what someone recorded on purpose, and a diff touching both
+`design/` and `REVISIONS.json` is what a reviewer should look at. Verifying the handoff against a
+signature from Claude Design would close that gap and is not something this record claims to do.
 
 Files under `design/` are never edited in this repository. When Claude Design publishes a new
 revision, replace the bundle from the project and run `pnpm design:revision` in the same change so
