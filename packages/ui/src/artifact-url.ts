@@ -6,7 +6,10 @@ export function artifactUrlFor(
   parentOrigin?: string,
 ): string {
   const url = new URL(rpcUrl)
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:"
+  // An artifact travels over the same protection the rpc connection has. Only a
+  // plaintext socket becomes plaintext http; anything already secure stays
+  // secure, including an rpc url that was given as https to begin with.
+  url.protocol = url.protocol === "ws:" || url.protocol === "http:" ? "http:" : "https:"
   url.pathname = `/artifacts/${encodeURIComponent(access.artifactId)}`
   url.search = new URLSearchParams({
     session: access.sessionId,
