@@ -212,7 +212,9 @@ fleet.
   5. SSH tunnel where explicitly configured;
   6. outbound relay fallback after hosted services exist.
 - [x] Authenticate every connection even inside a tailnet
-- [x] Bootstrap `domovoid` through a version-pinned, checksummed install script
+- [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
+  a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
+  tracked under signed GitHub Release artifacts
 - [x] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
 - [x] Implement WSL discovery and a `domovoi open .` Windows interop shim
