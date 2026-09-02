@@ -222,6 +222,15 @@ fleet.
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
 - [x] Record transfer receipts and retain the source recovery checkpoint
+- [x] Offer the move from the client: a transfer dialog that names the target machine, shows the
+  source and target preflight, chooses between the Git bundle and a named remote ref, and states
+  what travels with the session and what does not
+- [x] Record every attempted move in the thread as a receipt that names the reason the daemon
+  refused rather than a generic failure
+- [x] Add a Fleet surface listing machine platform, architecture, version, connection, health,
+  capabilities, session count for this machine, and the transport order the dialer would use
+- [x] Manage paired devices from the Fleet surface, with revocation behind a confirmation and
+  credential rotation that shows the new credential once
 
 Completion proof:
 
@@ -229,7 +238,10 @@ Completion proof:
 - Linux, macOS, Windows, and WSL daemons pass pairing and reconnect tests;
 - repository bytes never flow through a filesystem sync layer;
 - revoked devices lose access promptly;
-- interrupted transfers recover without losing either worktree.
+- interrupted transfers recover without losing either worktree;
+- a session can be moved to another paired machine from the client, and a refused move names the
+  reason the daemon gave;
+- paired devices can be revoked and rotated from the client without reaching for a terminal.
 
 ## Goal 3: ship hosted web, phone, and tablet control
 

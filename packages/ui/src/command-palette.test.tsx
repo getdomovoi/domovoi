@@ -66,6 +66,7 @@ describe("buildWorkspaceCommands", () => {
       "surface-workspace",
       "surface-providers",
       "surface-skills",
+      "surface-fleet",
       "surface-audit",
     ])
     expect(connected.find(({ id }) => id === "reconnect")).toBeUndefined()
@@ -97,8 +98,10 @@ describe("buildWorkspaceCommands", () => {
     })
     commands.find(({ id }) => id === "new-session")?.run()
     commands.find(({ id }) => id === "surface-skills")?.run()
+    commands.find(({ id }) => id === "surface-fleet")?.run()
     expect(callbacks.newSession).toHaveBeenCalledOnce()
     expect(callbacks.setSurface).toHaveBeenCalledWith("skills")
+    expect(callbacks.setSurface).toHaveBeenCalledWith("fleet")
   })
 
   it("adds desktop worktree actions only when an active path is available", () => {

@@ -168,3 +168,76 @@ it("describes a fleet holding only this machine", async () => {
 
   expect(screen.getByText("No other machines are paired")).toBeTruthy()
 })
+
+it("offers moving the active session to another machine", async () => {
+  const onTransferSession = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <MachineSwitcher
+      machines={[local, tailnet]}
+      currentMachineId={local.id}
+      currentSessionCount={1}
+      onTransferSession={onTransferSession}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /workshop/ }))
+
+  await user.click(screen.getByRole("menuitem", { name: /move this session to studio/i }))
+
+  expect(onTransferSession).toHaveBeenCalledWith(tailnet.id)
+})
+
+it("keeps attaching to a machine while it also offers the move", async () => {
+  const onSelectMachine = vi.fn()
+  const onTransferSession = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <MachineSwitcher
+      machines={[local, tailnet]}
+      currentMachineId={local.id}
+      currentSessionCount={1}
+      onSelectMachine={onSelectMachine}
+      onTransferSession={onTransferSession}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /workshop/ }))
+
+  await user.click(screen.getByRole("menuitem", { name: /^studio/ }))
+
+  expect(onSelectMachine).toHaveBeenCalledWith(tailnet.id)
+  expect(onTransferSession).not.toHaveBeenCalled()
+})
+
+it("refuses the move to an unreachable machine with the reason", async () => {
+  const onTransferSession = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <MachineSwitcher
+      machines={[local, offline]}
+      currentMachineId={local.id}
+      currentSessionCount={1}
+      onTransferSession={onTransferSession}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /workshop/ }))
+
+  const move = screen.getByRole("menuitem", { name: /move this session to hetzner/i })
+  expect(move.getAttribute("aria-disabled")).toBe("true")
+  expect(move.textContent).toContain("That machine cannot be reached")
+})
+
+it("omits the move section where no other machine is paired", async () => {
+  const onTransferSession = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <MachineSwitcher
+      machines={[local]}
+      currentMachineId={local.id}
+      currentSessionCount={1}
+      onTransferSession={onTransferSession}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /workshop/ }))
+
+  expect(screen.queryByText("Move this session to")).toBeNull()
+})
