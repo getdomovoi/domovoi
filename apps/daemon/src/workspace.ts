@@ -578,11 +578,14 @@ export class GitWorkspaceService implements WorkspaceService {
   // What this machine already holds for a session, so a source can send only
   // what is missing. A session it has never seen is not an error.
   async sessionHeadCommit(sessionId: string, signal?: AbortSignal): Promise<string | undefined> {
+    signal?.throwIfAborted()
     if (!safeSessionId.test(sessionId)) return undefined
     const path = join(this.worktreeRoot, sessionId)
     try {
       await realpath(path)
     } catch {
+      // A cancelled lookup is not the same as a session this machine lacks.
+      signal?.throwIfAborted()
       return undefined
     }
     try {
@@ -723,6 +726,28 @@ export class GitWorkspaceService implements WorkspaceService {
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
+
+    // A session this machine already holds takes the bundle as a fetch: an
+    // incremental bundle has no history to clone from, and the worktree that
+    // is already here is the thing being brought forward.
+    const held = await this.sessionHeadCommit(sessionId, signal)
+    if (held !== undefined) {
+      // Work that is here and not committed is not this transfer's to discard,
+      // so a session with changes in it is refused rather than brought forward.
+      const status = await git(path, ["status", "--porcelain"], signal)
+      if (status.length > 0) throw new SessionWorktreeExistsError()
+      try {
+        await git(path, ["fetch", "--quiet", "--", bundlePath, `+HEAD:refs/domovoi/incoming/${sessionId}`], signal)
+      } catch {
+        signal?.throwIfAborted()
+        throw new Error("Bundle could not be verified")
+      }
+      const arrived = await git(path, ["rev-parse", `refs/domovoi/incoming/${sessionId}`], signal)
+      await git(path, ["checkout", "--quiet", "-B", branch, arrived], signal)
+      await git(path, ["update-ref", `refs/domovoi/checkpoints/${arrived}`, arrived], signal)
+      await git(path, ["update-ref", "-d", `refs/domovoi/incoming/${sessionId}`], signal)
+      return { path, branch, baseCommit: arrived }
+    }
 
     // The clone happens somewhere this restore owns outright, so nothing it
     // cleans up can belong to another restore or to an existing session. The
