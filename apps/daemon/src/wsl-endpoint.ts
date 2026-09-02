@@ -88,7 +88,10 @@ export async function readDistroEndpoint(
   assertDistributionName(input.distribution)
   const run = input.run ?? readThroughWsl
 
-  const timeoutMs = input.timeoutMs ?? defaultTimeoutMs
+  // A timeout of zero or less would leave the child with no deadline at all,
+  // which is the opposite of what asking for one means.
+  const requested = input.timeoutMs ?? defaultTimeoutMs
+  const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : defaultTimeoutMs
   let contents: string
   try {
     contents = await withDeadline(
