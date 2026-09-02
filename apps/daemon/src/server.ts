@@ -17,7 +17,9 @@ import {
   machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
   demoWorkspace,
+  maximumTerminalOutputChunkCharacters,
   maximumTerminalReplayCharacters,
+  terminalOutputBatchDelayMilliseconds,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
@@ -126,6 +128,8 @@ import {
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
+  terminalRedactionCarryCharacters,
+  TerminalOutputRedactor,
 } from "./secret-redaction.js"
 
 const invalidRequest = -32600
@@ -618,6 +622,10 @@ type ActiveTerminal = {
   shell: string
   cwd: string
   buffer: string
+  // Redaction has to see across pty reads: a credential arrives split as often
+  // as it arrives whole.
+  redactor: TerminalOutputRedactor
+  redactorFlush: ReturnType<typeof setTimeout> | undefined
   owner: TerminalOwner
   // Ownership is the connection that holds it. The owner's identity is
   // broadcast to every client, so a caller-supplied one authorizes nothing.
@@ -1847,6 +1855,8 @@ export class DomovoiDaemon {
           shell: process.process,
           cwd: session.workspacePath,
           buffer: "",
+          redactor: new TerminalOutputRedactor(),
+          redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
           output,
@@ -1858,14 +1868,50 @@ export class DomovoiDaemon {
         const dataDisposable = process.onData((data) => {
           const active = this.#terminals.get(params.terminalId)
           if (active?.process === process) {
-            active.buffer = `${active.buffer}${data}`.slice(-maximumTerminalReplayCharacters)
-            active.output.push(params.terminalId, data)
+            // A terminal is where someone types a credential, and its output
+            // goes to every connected client and into the replay a later
+            // client is handed. Both are redacted before they leave here, and
+            // the redactor holds an unterminated line so a secret split across
+            // two reads is still caught.
+            const emit = (text: string) => {
+              if (!text) return
+              active.buffer = `${active.buffer}${text}`.slice(-maximumTerminalReplayCharacters)
+              active.output.push(params.terminalId, text)
+              // A read this large is a burst, and the tail redaction holds back
+              // would otherwise leave it under the batcher's threshold, so a
+              // client about to be dropped for slowness would never see it.
+              if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters) {
+                active.output.flush(params.terminalId)
+              }
+            }
+            emit(active.redactor.push(data))
+
+            // A prompt carries no newline, so what the redactor is still
+            // holding is released on the same beat the output is batched on.
+            // Anything split across that beat is not caught, which is the
+            // price of a terminal that shows a prompt.
+            if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
+            active.redactorFlush = setTimeout(() => {
+              const current = this.#terminals.get(params.terminalId)
+              if (current !== active) return
+              active.redactorFlush = undefined
+              emit(active.redactor.flush())
+            }, terminalOutputBatchDelayMilliseconds)
+            active.redactorFlush.unref?.()
           }
         })
         const exitDisposable = process.onExit(({ exitCode, signal }) => {
           const active = this.#terminals.get(params.terminalId)
           if (!active || active.process !== process) return
           this.#terminals.delete(params.terminalId)
+          // Whatever redaction was still holding is the tail of what this
+          // terminal printed, and losing it would lose output.
+          if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
+          const remainder = active.redactor.flush()
+          if (remainder) {
+            active.buffer = `${active.buffer}${remainder}`.slice(-maximumTerminalReplayCharacters)
+            active.output.push(params.terminalId, remainder)
+          }
           active.output.flush(params.terminalId)
           active.outputBackpressure.dispose()
           active.disposeData()
@@ -4879,8 +4925,14 @@ export class DomovoiDaemon {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
     this.#terminals.delete(terminalId)
+    if (terminal.redactorFlush !== undefined) clearTimeout(terminal.redactorFlush)
     terminal.disposeData()
     terminal.disposeExit()
+    const remainder = terminal.redactor.flush()
+    if (remainder) {
+      terminal.buffer = `${terminal.buffer}${remainder}`.slice(-maximumTerminalReplayCharacters)
+      terminal.output.push(terminalId, remainder)
+    }
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
