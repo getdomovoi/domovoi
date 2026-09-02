@@ -2231,8 +2231,8 @@ export class DomovoiDaemon {
               connection.call(remoteMethod, remoteParams, transferSignal),
             checkpoint: (worktreePath, label) =>
               this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
-            bundleSession: (worktreePath, bundlePath) =>
-              bundleSession(worktreePath, bundlePath, undefined, transferSignal),
+            bundleSession: (worktreePath, bundlePath, sinceCommit) =>
+              bundleSession(worktreePath, bundlePath, sinceCommit, transferSignal),
             readBundle,
             recordReceipt: (receipt) => {
               // The receipt records what happened; it does not decide it. A
@@ -2254,6 +2254,26 @@ export class DomovoiDaemon {
           clearTimeout(timeout)
           connection.close()
         }
+        return
+      }
+
+      if (method === "transfer.have") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires the daemon credential",
+          )
+          return
+        }
+        const held = await this.#workspaceService.sessionHeadCommit?.(params.sessionId, signal)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(held ? { commit: held } : {}),
+        })
         return
       }
 

@@ -5,6 +5,8 @@ import {
   transferBeginResultSchema,
   transferChunkParamsSchema,
   transferChunkResultSchema,
+  transferHaveParamsSchema,
+  transferHaveResultSchema,
 } from "./transfer-rpc.js"
 import {
   sessionTransferParamsSchema,
@@ -992,6 +994,10 @@ export const rpcMethods = {
   "transfer.fromRef": {
     params: transferFromRefParamsSchema,
     result: transferFromRefResultSchema,
+  },
+  "transfer.have": {
+    params: transferHaveParamsSchema,
+    result: transferHaveResultSchema,
   },
   "transfer.begin": {
     params: transferBeginParamsSchema,
