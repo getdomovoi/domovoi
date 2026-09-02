@@ -31,6 +31,13 @@ export type RestoreResult = {
   recoveryCommit: string
 }
 
+export type FileRevert = {
+  path: string
+  outcome: "restored" | "removed"
+  baseCommit: string
+  recoveryCommit: string
+}
+
 export type ChangedFileEvidence = {
   path: string
   previousPath?: string
@@ -62,6 +69,21 @@ export class SessionWorktreeExistsError extends Error {
   }
 }
 
+// The recovery checkpoint is taken before the worktree moves, so a revert that
+// stops afterwards still has somewhere to put the work back. The commit travels
+// with the failure rather than being lost with it.
+export class FileRevertIncompleteError extends Error {
+  readonly recoveryCommit: string
+  constructor(recoveryCommit: string, options?: { cause?: unknown }) {
+    super(
+      `File revert stopped after its recovery checkpoint ${recoveryCommit.slice(0, 8)}`,
+      options,
+    )
+    this.name = "FileRevertIncompleteError"
+    this.recoveryCommit = recoveryCommit
+  }
+}
+
 export class WorkspaceEvidenceUnstableError extends Error {
   constructor() {
     super("Workspace changed while evidence was collected")
@@ -90,6 +112,7 @@ export interface WorkspaceService {
   archiveSessionWorkspace?(worktreePath: string, signal?: AbortSignal): Promise<void>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
+  revertFile?(worktreePath: string, path: string, signal?: AbortSignal): Promise<FileRevert>
   evidence?(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence>
   bundleSession?(
     worktreePath: string,
@@ -134,6 +157,18 @@ async function restrictBundlePermissions(path: string): Promise<void> {
   // by the account that made it.
   if (process.platform === "win32") return
   await chmod(path, 0o600)
+}
+
+// The protocol refuses an unsafe path at the wire, and this refuses it again at
+// the boundary that actually runs git.
+function isWorktreeRelativePath(path: string): boolean {
+  if (path.length === 0 || path.length > 1024) return false
+  if (path.startsWith("-") || path.includes("\0")) return false
+  if (isAbsolute(path) || path.startsWith("/") || path.startsWith("\\")) return false
+  if (/^[a-zA-Z]:[\\/]/.test(path)) return false
+  return path
+    .split(/[\\/]/)
+    .every((segment) => segment.length > 0 && segment !== ".." && segment !== ".")
 }
 
 async function git(
@@ -804,6 +839,60 @@ export class GitWorkspaceService implements WorkspaceService {
     const recovery = await this.checkpoint(worktreePath, "before restore", signal)
     await git(worktreePath, ["reset", "--hard", checkpointCommit], signal)
     return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
+  }
+
+  // Reverting one file discards uncommitted work, so the recovery checkpoint is
+  // taken before anything in the worktree moves, and every step after it either
+  // completes or throws. The checkpoint commits the whole worktree, so HEAD is
+  // put back where it was afterwards and only the named file is changed.
+  async revertFile(
+    worktreePath: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<FileRevert> {
+    if (!isWorktreeRelativePath(path)) {
+      throw new Error("File path must stay inside the session worktree")
+    }
+    const pathspec = `:(literal)${path}`
+    const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    const status = await git(worktreePath, [
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      pathspec,
+    ], signal)
+    if (status.length === 0) throw new Error("File has no changes to revert")
+
+    let tracked = true
+    try {
+      await git(worktreePath, ["cat-file", "-e", `${baseCommit}:${path}`], signal)
+    } catch {
+      signal?.throwIfAborted()
+      tracked = false
+    }
+
+    const recovery = await this.checkpoint(worktreePath, `before revert ${path}`, signal)
+    // The checkpoint moved HEAD onto the work being reverted. Putting HEAD back
+    // keeps the session where it was, and leaves the recovery commit reachable
+    // only through its durable checkpoint ref.
+    try {
+      await git(worktreePath, ["reset", "--soft", baseCommit], signal)
+      if (tracked) {
+        await git(worktreePath, ["checkout", baseCommit, "--", pathspec], signal)
+      } else {
+        await git(worktreePath, ["rm", "--force", "--quiet", "--", pathspec], signal)
+      }
+    } catch (cause) {
+      throw new FileRevertIncompleteError(recovery.commit, { cause })
+    }
+    return {
+      path,
+      outcome: tracked ? "restored" : "removed",
+      baseCommit,
+      recoveryCommit: recovery.commit,
+    }
   }
 
   async removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {

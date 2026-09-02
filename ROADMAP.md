@@ -131,6 +131,10 @@ Every ledger entry is now merged.
 - [x] Add a complete session history with filters for messages, tools, approvals, handoffs,
   checkpoints, annotations, and tests
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
+- [x] Review the worktree diff as unified text or as two split columns, with added, modified, and
+  deleted counts beside the changed-file list
+- [x] Revert one changed file from the Changes dock behind a confirmation, after the daemon has
+  taken a recovery checkpoint and with a client-attributed receipt
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
 - [x] Require explicit confirmation before switching projects discards current sessions and worktrees

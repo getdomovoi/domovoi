@@ -869,3 +869,97 @@ describe("GitWorkspaceService incremental restore", () => {
     expect(contents.replace(/\r\n/g, "\n")).toBe("second\n")
   })
 })
+
+describe("GitWorkspaceService file revert", () => {
+  it("restores a tracked file after taking a recovery checkpoint", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-revert-tracked-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "kept.ts"), "original\n")
+    await writeFile(join(repositoryPath, "other.ts"), "other original\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-revert-tracked")
+    await writeFile(join(workspace.path, "kept.ts"), "agent edit\n")
+    await writeFile(join(workspace.path, "other.ts"), "other agent edit\n")
+
+    const reverted = await service.revertFile(workspace.path, "kept.ts")
+
+    expect(reverted).toMatchObject({ path: "kept.ts", outcome: "restored", baseCommit: workspace.baseCommit })
+    expect(reverted.recoveryCommit).toMatch(/^[a-f0-9]{40}$/)
+    expect(await readFile(join(workspace.path, "kept.ts"), "utf8")).toBe("original\n")
+    expect(await readFile(join(workspace.path, "other.ts"), "utf8")).toBe("other agent edit\n")
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(workspace.baseCommit)
+    expect((await execute("git", ["-C", workspace.path, "show", `${reverted.recoveryCommit}:kept.ts`])).stdout)
+      .toBe("agent edit\n")
+    expect((await execute("git", [
+      "-C",
+      workspace.path,
+      "rev-parse",
+      `refs/domovoi/checkpoints/${reverted.recoveryCommit}`,
+    ])).stdout.trim()).toBe(reverted.recoveryCommit)
+    expect((await execute("git", ["-C", workspace.path, "status", "--porcelain"])).stdout)
+      .not.toContain("kept.ts")
+  })
+
+  it("removes an untracked file and refuses paths it cannot revert", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-revert-untracked-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "source\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-revert-untracked")
+    await mkdir(join(workspace.path, "generated"), { recursive: true })
+    await writeFile(join(workspace.path, "generated", "added.ts"), "agent file\n")
+
+    const reverted = await service.revertFile(workspace.path, "generated/added.ts")
+
+    expect(reverted).toMatchObject({ path: "generated/added.ts", outcome: "removed" })
+    await expect(readFile(join(workspace.path, "generated", "added.ts"), "utf8")).rejects.toThrow()
+    expect((await execute("git", [
+      "-C",
+      workspace.path,
+      "show",
+      `${reverted.recoveryCommit}:generated/added.ts`,
+    ])).stdout).toBe("agent file\n")
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(workspace.baseCommit)
+
+    await expect(service.revertFile(workspace.path, "README.md")).rejects.toThrow(
+      "File has no changes to revert",
+    )
+    await expect(service.revertFile(workspace.path, "../escape.ts")).rejects.toThrow(
+      "File path must stay inside the session worktree",
+    )
+  })
+})

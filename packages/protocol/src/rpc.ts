@@ -865,6 +865,27 @@ export const sessionEvidenceParamsSchema = z.object({
   sessionId: streamedIdSchema,
 })
 
+// A revert names one file inside the session worktree, so anything that could
+// leave it, or that git would read as an option rather than a path, is refused
+// before the daemon touches the worktree.
+export const worktreeFilePathSchema = z.string().min(1).max(1024).refine(
+  (value) => {
+    if (value.startsWith("-") || value.includes("\0")) return false
+    if (value.startsWith("/") || value.startsWith("\\")) return false
+    if (/^[a-zA-Z]:[\\/]/.test(value)) return false
+    return value
+      .split(/[\\/]/)
+      .every((segment) => segment.length > 0 && segment !== ".." && segment !== ".")
+  },
+  { message: "File path must stay inside the session worktree" },
+)
+
+export const sessionRevertFileParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  path: worktreeFilePathSchema,
+  client: clientKindSchema,
+}).strict()
+
 export const sessionArchiveParamsSchema = z.object({
   sessionId: z.string().min(1),
   client: clientKindSchema,
@@ -1095,6 +1116,7 @@ export const rpcMethods = {
   "session.create": { params: sessionCreateParamsSchema, result: workspaceSnapshotSchema },
   "session.fork": { params: sessionForkParamsSchema, result: workspaceSnapshotSchema },
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
+  "session.revertFile": { params: sessionRevertFileParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {
     params: checkpointCreateParamsSchema,
     result: workspaceSnapshotSchema,
