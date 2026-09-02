@@ -29,6 +29,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "catalog:",
     "tsup": "^8.5.0",
     "typescript": "catalog:",
     "vitest": "catalog:"

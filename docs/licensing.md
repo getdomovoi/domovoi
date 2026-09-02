@@ -51,6 +51,15 @@ exception requires one of:
 Until one of those lands, the daemon's npm package carries a dependency whose terms are not
 Apache-2.0. Say so in release notes rather than implying the whole install is Apache-2.0.
 
+## Claude Agent SDK peer dependencies
+
+`@anthropic-ai/claude-agent-sdk` declares `@anthropic-ai/sdk`, `@modelcontextprotocol/sdk`, and
+`zod` as peer dependencies. The daemon names the first two in its own `dependencies` rather than
+leaving them to an installer's automatic peer resolution, so the requirement holds under yarn and
+under pnpm with `auto-install-peers=false`. Both are MIT and were already present in the audited
+production graph through the SDK, so the declaration adds no license and no new resolution: the
+lockfile gains two `importers` entries and no package version.
+
 ## Development dependencies
 
 Development dependencies are out of the audit's scope. They are not shipped, and holding build
