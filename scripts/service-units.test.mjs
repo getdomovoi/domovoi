@@ -21,7 +21,7 @@ test("never asks systemd to run the daemon as root", () => {
 test("keeps the daemon running under launchd", () => {
   const plist = launchdPlist({ execPath: "/opt/domovoi/bin/domovoid" })
   assert.match(plist, /<key>Label<\/key>\s*<string>sh\.domovoi\.domovoid<\/string>/)
-  assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/)
+  assert.match(plist, /<key>KeepAlive<\/key>\s*<dict>/)
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/)
   assert.match(plist, /<string>\/opt\/domovoi\/bin\/domovoid<\/string>/)
 })
@@ -85,4 +85,35 @@ test("escapes a value that would otherwise close the plist markup", () => {
     environment: { DOMOVOI_LABEL: "a<b&c" },
   })
   assert.match(plist, /<string>a&lt;b&amp;c<\/string>/)
+})
+
+test("quotes an exec path that systemd would otherwise split into command items", () => {
+  const unit = systemdUnit({ execPath: "/opt/Domovoi Suite/domovoid" })
+  assert.match(unit, /^ExecStart="\/opt\/Domovoi Suite\/domovoid"$/m)
+})
+
+test("leaves an exec path without spaces unquoted", () => {
+  assert.match(systemdUnit({ execPath: "/opt/domovoi/bin/domovoid" }), /^ExecStart=\/opt\/domovoi\/bin\/domovoid$/m)
+})
+
+test("keeps a spaced path as one launchd program argument", () => {
+  const plist = launchdPlist({ execPath: "/opt/Domovoi Suite/domovoid" })
+  assert.match(plist, /<string>\/opt\/Domovoi Suite\/domovoid<\/string>/)
+})
+
+for (const key of ["1PORT", "A-B", "", "DOMOVOI PORT"]) {
+  test(`refuses the environment name ${JSON.stringify(key)} that systemd would drop`, () => {
+    assert.throws(
+      () => systemdUnit({ execPath: "/opt/domovoi/bin/domovoid", environment: { [key]: "1" } }),
+      /environment name/,
+    )
+  })
+}
+
+test("restarts under launchd only when the daemon failed", () => {
+  const plist = launchdPlist({ execPath: "/opt/domovoi/bin/domovoid" })
+  assert.match(
+    plist,
+    /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>\s*<\/dict>/,
+  )
 })
