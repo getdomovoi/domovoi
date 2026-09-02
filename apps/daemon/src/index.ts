@@ -10,6 +10,7 @@ import { loadTlsMaterial } from "./tls-material.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runOpenCommand } from "./open-command.js"
+import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
@@ -66,6 +67,11 @@ async function requestPairingCode(
 }
 
 const projectOpenTimeoutMs = 15_000
+const loopbackListeners = new Set(["127.0.0.1", "::1", "localhost"])
+
+function isLoopbackListener(host: string): boolean {
+  return loopbackListeners.has(host)
+}
 
 async function requestProjectOpen(
   config: { host: string; port: number; tls?: unknown },
@@ -247,7 +253,20 @@ async function main() {
     process.stdout.write(`domovoid credential stored at ${config.credentialPath}\n`)
   }
 
+  // A daemon inside a WSL distribution is found by its endpoint file, which is
+  // why it is published only once the listener is actually up, and taken away
+  // when it stops.
+  if (isLoopbackListener(address.host)) {
+    await publishEndpointFile({
+      home: homedir(),
+      host: address.host,
+      port: address.port,
+      token: authToken,
+    })
+  }
+
   const shutdown = async () => {
+    await removeEndpointFile(homedir())
     await daemon.stop()
     process.exit(0)
   }
