@@ -14,6 +14,12 @@ import {
 const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl" }
 const darwin = { platform: "darwin", execPath: "/usr/local/bin/domovoid", home: "/Users/dl", uid: 501 }
 const windows = { platform: "win32", execPath: "C:\\Program Files\\Domovoi\\domovoid.exe", user: "dl" }
+const windowsScript = {
+  platform: "win32",
+  execPath: "C:\\Program Files\\Domovoi\\dist\\index.js",
+  runtime: "C:\\Program Files\\nodejs\\node.exe",
+  user: "dl",
+}
 
 function effects(overrides: Partial<{
   capture: (command: string, args: string[]) => Promise<CapturedRun>
@@ -74,7 +80,25 @@ describe("servicePlan", () => {
       command: "schtasks",
       args: expect.arrayContaining(["/create", "/ru", "dl", "/rl", "LIMITED", "/sc", "onlogon"]),
     })
-    expect(plan.commands[0]?.args).not.toContain("/rl HIGHEST")
+    expect(plan.commands[0]?.args).not.toContain("HIGHEST")
+  })
+
+  it("launches a script through Node rather than letting Windows pick an interpreter", () => {
+    const plan = servicePlan(windowsScript)
+    const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
+    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js"')
+  })
+
+  it("passes a real executable straight through", () => {
+    const plan = servicePlan(windows)
+    const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
+    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe"')
+  })
+
+  it("refuses a script with no runtime to run it", () => {
+    const { runtime: _runtime, ...withoutRuntime } = windowsScript
+    expect(() => servicePlan(withoutRuntime))
+      .toThrow("a Windows task that runs a script needs the Node executable that runs it")
   })
 
   it("refuses a platform with no service manager it knows", () => {

@@ -18,6 +18,10 @@ export type ServicePlan =
 export type ServiceTarget = {
   platform: string
   execPath: string
+  // The Windows task runs a command line, not a file: handing it a .js path
+  // lets the shell pick an interpreter, and on Windows that is the Script Host
+  // rather than Node. The runtime is named so the task launches what we mean.
+  runtime?: string
   home?: string
   uid?: number
   user?: string
@@ -86,12 +90,22 @@ function agentPath(home: string | undefined): string {
 // A service is installed for the user who asked for it: a systemd user unit, a
 // launchd agent in that user's own LaunchAgents, or a Windows logon task.
 // Nothing here writes to a system-wide location or asks for elevation.
+function windowsTaskCommand(execPath: string, runtime: string | undefined): string {
+  const target = assertExecutable(execPath)
+  if (!/\.[cm]?js$/i.test(target)) return `"${target}"`
+  if (runtime === undefined) {
+    throw new Error("a Windows task that runs a script needs the Node executable that runs it")
+  }
+  return `"${assertExecutable(runtime)}" "${target}"`
+}
+
 export function servicePlan({
   platform,
   execPath,
   home,
   uid,
   user,
+  runtime,
   environment = {},
 }: ServiceTarget): ServicePlan {
   if (platform === "linux") {
@@ -131,7 +145,7 @@ export function servicePlan({
             "/tn",
             displayName,
             "/tr",
-            `"${assertExecutable(execPath)}"`,
+            windowsTaskCommand(execPath, runtime),
             "/sc",
             "onlogon",
             "/ru",
@@ -281,6 +295,7 @@ const usage = `Usage: domovoid service install
 export type ServiceCommandDependencies = ServiceEffects & {
   platform: string
   execPath: string
+  runtime?: string
   home?: string
   uid?: number
   user?: string
@@ -306,6 +321,7 @@ export async function runServiceCommand(
   const target: ServiceTarget = {
     platform: dependencies.platform,
     execPath: dependencies.execPath,
+    ...(dependencies.runtime === undefined ? {} : { runtime: dependencies.runtime }),
     ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
     ...(dependencies.uid === undefined ? {} : { uid: dependencies.uid }),
     ...(dependencies.user === undefined ? {} : { user: dependencies.user }),
