@@ -116,9 +116,18 @@ Other design-system rules that supersede the tracked handoff: theme scoping is `
 `.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
 literal named scale with compound paddings rather than a 4px grid; motion is `dv-pop-in`,
 `dv-pulse`, `dv-sweep`, and `dv-blink` at 90, 140, 200, and 320ms, collapsing to 0.01ms under
-reduced motion; product type never exceeds 20px or falls below 10.5px; icons are Lucide at 1.5px
+reduced motion; product sans type never exceeds 20px (`--text-title`) or falls below 10.5px
+(`--text-micro`), while mono sits one notch below its sans sibling and bottoms out at 10px
+(`--text-mono-xs`) for machine metadata; icons are Lucide at 1.5px
 stroke, 16px in rows and toolbars, 20px in the rail, 24px in empty states; cards carry a one pixel
 border and no shadow, with shadows reserved for menu, popover, dialog, and window elevations.
+
+`design/REVISIONS.json` records a SHA-256 and a byte count for every file under `design/`, and
+`pnpm release:invariants` fails when the tree and the record disagree. That detects drift, not
+tampering: `pnpm design:revision` re-records whatever is on disk, so the check proves the tree
+matches what someone recorded on purpose. A diff touching both `design/` and `REVISIONS.json`
+is what a reviewer should look at. Verifying the handoff against a signature from Claude Design
+would close that gap and is not something this record claims to do.
 
 **The design system is vendored** at `design/design_system_domovoi/`: `styles.css` and the nine
 token files, pulled from the project on 2026-09-02. Those files are the token contract; this
@@ -135,7 +144,9 @@ section covers what they do not state.
   accent.
 - Production matches the design system on the other 39 dark tokens, counting the ten it expresses
   as `var()` aliases.
-- The live desktop surface restyles the terminal pane. See "Design source revision" for the detail.
+- The live desktop surface restyles the terminal pane: command rows take a two pixel primary
+  left edge over an eight percent primary wash, failure rows sit in a ten percent destructive
+  band, and the header and footer bars use the sidebar token.
 - Production still implements the tracked handoff geometry rather than the numbers above. Aligning
   the shell is tracked in `ROADMAP.md`, not done.
 
@@ -162,15 +173,20 @@ Desktop body text is 12.5–13px with a 1.6–1.72 line height. Window and secti
 
 ## Layout
 
-Implement the surface shells, panes, collapse order, resizing behavior, and platform-specific
-adaptations exactly as documented in the handoff. Desktop uses custom window decoration and its
-specified resizable workspace. Browser promotes preview work. Tablet promotes side-by-side
-artifact review. Phone promotes approvals while retaining preview, annotation, fleet, session,
-and terminal workflows.
+Shell geometry comes from `design/design_system_domovoi/tokens/spacing.css` and the table in
+"Design authority" above: a 62px rail that never collapses, a 240px sidebar, a 760px thread lane,
+a 280px inspector, and the fixed chrome heights. Those values supersede the resizable sidebar and
+620px thread column the tracked handoff README describes.
 
-Spacing follows a 4px base. Desktop rows are 28px, browser rows 30px, tablet targets at least
-44px, and phone targets at least 44pt on iOS or 48dp on Android. Container-responsive controls
-use measured container width where resizable panes make viewport media queries insufficient.
+Everything the tokens do not fix still comes from the handoff: pane collapse order, resizing
+behavior, and the platform adaptations. Browser promotes preview work, tablet promotes
+side-by-side artifact review, and phone promotes approvals while retaining preview, annotation,
+fleet, session, and terminal workflows.
+
+Spacing is the literal named scale in `tokens/spacing.css`, not a 4px grid: if a value is 5px it
+stays 5px. The compound paddings that recur are named there too. Touch targets stay at the
+platform floor, 44pt on iOS and 48dp on Android. Container-responsive controls use measured
+container width where resizable panes make viewport media queries insufficient.
 
 ## Elevation & Depth
 
@@ -181,10 +197,11 @@ semantically aligned.
 
 ## Shapes
 
-All standard controls derive from the 0.65rem base radius. Cards, panels, and popovers use the
-base radius; tracks, inputs, chips, tabs, and buttons subtract two to four pixels. Pills, dots,
-and avatars use fully rounded geometry. Device frames follow the exact platform values in the
-handoff and are reference framing rather than application components.
+Radii come from `design/design_system_domovoi/tokens/radii.css`. All standard controls derive from
+the 0.65rem base: cards and popovers use the base radius, and the steps below it subtract two to
+six pixels. Panels use `--radius-xl` at 14px, which is also the window frame. Pills, dots, and
+avatars use `--radius-pill`. Device frames follow the exact platform values in the handoff and are
+reference framing rather than application components.
 
 ## Components
 
