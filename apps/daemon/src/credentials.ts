@@ -3,14 +3,15 @@ import { chmod, mkdir, open, readFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
-const generatedTokenPattern = /^[A-Za-z0-9_-]{43}$/
+import { credentialSchema } from "@getdomovoi/protocol"
+
 const credentialReadAttempts = 20
 const credentialReadDelayMs = 5
 
 async function readDaemonToken(path: string): Promise<string> {
   for (let attempt = 0; attempt < credentialReadAttempts; attempt += 1) {
     const token = (await readFile(path, "utf8")).trim()
-    if (generatedTokenPattern.test(token)) return token
+    if (credentialSchema.safeParse(token).success) return token
     if (token) throw new Error("Daemon credential is malformed")
     await delay(credentialReadDelayMs)
   }

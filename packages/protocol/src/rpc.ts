@@ -47,6 +47,16 @@ import {
   pairedDeviceSchema,
 } from "./devices.js"
 import { fleetSnapshotSchema } from "./fleet.js"
+import {
+  annotationStatusSchema,
+  canonicalBase64DecodedByteLength,
+  commitShaSchema,
+  credentialSchema,
+  forkRequestIdSchema,
+  machineIdSchema,
+  toolKindSchema,
+  toolStatusSchema,
+} from "./identifiers.js"
 import { previewBridgeChannelSchema } from "./preview-bridge.js"
 import {
   skillCapabilityManifestSchema,
@@ -65,6 +75,8 @@ export const daemonAuthenticationErrorCode = -32001 as const
 export const daemonShuttingDownErrorCode = -32002 as const
 export const machineCredentialMissingErrorCode = -32011 as const
 export const projectSwitchConfirmationErrorCode = -32010 as const
+export const protocolVersionMismatchErrorCode = -32012 as const
+export const devicePairingLimitErrorCode = -32013 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -237,8 +249,8 @@ const historyEntryBase = {
 }
 
 const historyToolFields = {
-  tool: z.enum(["command", "file-change"]),
-  status: z.enum(["running", "completed", "failed", "declined"]),
+  tool: toolKindSchema,
+  status: toolStatusSchema,
   title: z.string(),
   output: z.string().optional(),
 }
@@ -277,7 +289,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     ...historyEntryBase,
     category: z.literal("checkpoints"),
     label: z.string(),
-    commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+    commit: commitShaSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,
@@ -287,7 +299,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     body: z.string(),
     origin: clientKindSchema,
     artifactId: streamedIdSchema.optional(),
-    status: z.enum(["open", "resolved"]).optional(),
+    status: annotationStatusSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,
@@ -383,6 +395,10 @@ export const auditActorSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("daemon"),
     component: auditActorReferenceSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("machine"),
+    machineId: machineIdSchema,
   }).strict(),
 ])
 export const auditEntrySchema = z.object({
@@ -552,7 +568,7 @@ export const changedFileEvidenceSchema = z.object({
 })
 
 export const workspaceEvidenceSchema = z.object({
-  baseCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  baseCommit: commitShaSchema,
   diff: z.string().max(maximumSessionEvidenceDiffLength),
   diffTruncated: z.boolean(),
   totalChangedFiles: z.number().int().nonnegative(),
@@ -655,12 +671,28 @@ export const sessionEvidenceSchema = z.object({
   tests: testEvidenceSchema,
 }).strict()
 
-export const helloParamsSchema = z.object({
+const protocolVersionPatternSchema = z.string().regex(/^\d+\.\d+\.\d+$/, "Protocol version must be a three-part semver")
+
+const clientHelloParamsSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema.optional(),
-  clientVersion: z.string().min(1),
+  clientVersion: z.string().min(1).max(64),
+  protocolVersion: protocolVersionPatternSchema,
   authToken: z.string().min(1).optional(),
-})
+}).strict()
+
+const machineHelloParamsSchema = z.object({
+  client: z.literal("machine"),
+  machineId: machineIdSchema,
+  clientVersion: z.string().min(1).max(64),
+  protocolVersion: protocolVersionPatternSchema,
+  authToken: z.string().min(1).optional(),
+}).strict()
+
+export const helloParamsSchema = z.discriminatedUnion("client", [
+  clientHelloParamsSchema,
+  machineHelloParamsSchema,
+])
 
 export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
   connectionId: connectionIdSchema.optional(),
@@ -688,16 +720,15 @@ export const artifactAuthorizeResultSchema = z.object({
   purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
   expiresAt: z.number().int().positive(),
-  signature: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  signature: credentialSchema,
 }).strict()
 
 const terminalIdSchema = z.string().min(1).max(128)
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
-const terminalClientIdSchema = z.string().min(8).max(128)
 
 export const terminalOwnerSchema = z.object({
   client: clientKindSchema,
-  clientId: terminalClientIdSchema,
+  clientId: clientIdentityIdSchema,
 })
 
 const terminalClientIdentitySchema = terminalOwnerSchema
@@ -798,11 +829,13 @@ export const systemEmergencyStopResultSchema = z.object({
 
 export const systemEmergencyStoppedNotificationSchema = systemEmergencyStopResultSchema
 
+export const maximumSessionPromptCharacters = 262_144
+
 export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
     decision: approvalDecisionSchema,
-    explanation: z.string().trim().min(1).optional(),
+    explanation: z.string().trim().min(1).max(4_096).optional(),
   })
   .superRefine((params, context) => {
     if (params.decision === "deny-explain" && !params.explanation) {
@@ -827,18 +860,18 @@ export const sessionRestartProviderThreadParamsSchema = z.object({
 }).strict()
 
 export const runtimeModelsParamsSchema = z.object({
-  provider: z.string().trim().min(1),
+  provider: z.string().trim().min(1).max(64),
   client: clientKindSchema,
 })
 
 export const projectOpenParamsSchema = z.object({
-  path: z.string().min(1),
+  path: z.string().min(1).max(4_096),
   client: clientKindSchema,
   confirmation: projectSwitchConfirmationSchema.optional(),
 }).strict()
 
 export const sessionCreateParamsSchema = z.object({
-  title: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(512),
   runtime: runtimeSchema,
   client: clientKindSchema,
 })
@@ -846,7 +879,7 @@ export const sessionCreateParamsSchema = z.object({
 export const sessionForkParamsSchema = z.object({
   sessionId: z.string().min(1),
   checkpointId: z.string().min(1),
-  requestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
+  requestId: forkRequestIdSchema,
   runtime: runtimeSchema,
   client: clientKindSchema,
 })
@@ -872,13 +905,13 @@ export const sessionArchiveParamsSchema = z.object({
 
 export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
-  prompt: z.string().trim().min(1),
+  prompt: z.string().trim().min(1).max(maximumSessionPromptCharacters),
   client: clientKindSchema,
 })
 
 export const checkpointCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
-  label: z.string().trim().min(1).optional(),
+  label: z.string().trim().min(1).max(512).optional(),
   client: clientKindSchema,
 })
 
@@ -888,26 +921,14 @@ export const checkpointRestoreParamsSchema = z.object({
   client: clientKindSchema,
 })
 
-const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
-const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-export function canonicalBase64DecodedByteLength(value: string): number | undefined {
-  if (value.length === 0 || value.length % 4 !== 0 || !canonicalBase64Pattern.test(value)) return undefined
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
-  const significantIndex = value.length - padding - 1
-  const trailingValue = base64Alphabet.indexOf(value[significantIndex] ?? "")
-  if (trailingValue < 0 || (padding === 2 && (trailingValue & 0x0f) !== 0) || (padding === 1 && (trailingValue & 0x03) !== 0)) {
-    return undefined
-  }
-  return (value.length / 4) * 3 - padding
-}
+export { canonicalBase64DecodedByteLength } from "./identifiers.js"
 
 export const annotationCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
   artifactId: z.string().min(1),
   variantId: z.string().min(1).optional(),
   anchor: annotationAnchorSchema,
-  body: z.string().trim().min(1),
+  body: z.string().trim().min(1).max(8_192),
   visualContextUpload: z.object({
     artifactRevision: z.number().int().positive(),
     mimeType: z.literal("image/png"),
@@ -926,13 +947,13 @@ export const annotationCreateParamsSchema = z.object({
 
 export const annotationReplyParamsSchema = z.object({
   annotationId: z.string().min(1),
-  body: z.string().trim().min(1),
+  body: z.string().trim().min(1).max(8_192),
   client: clientKindSchema,
 })
 
 export const annotationSetStatusParamsSchema = z.object({
   annotationId: z.string().min(1),
-  status: z.enum(["open", "resolved"]),
+  status: annotationStatusSchema,
   client: clientKindSchema,
 })
 
@@ -1028,12 +1049,12 @@ export const rpcMethods = {
     params: systemEmergencyStopParamsSchema,
     result: systemEmergencyStopResultSchema,
   },
-  "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  "workspace.get": { params: z.object({}).strict(), result: workspaceSnapshotSchema },
   "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
-  "skill.list": { params: z.object({}), result: skillSummariesSchema },
+  "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
   "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
@@ -1057,7 +1078,7 @@ export const rpcMethods = {
     result: workspaceSnapshotSchema,
   },
   "provider.secret.list": {
-    params: z.object({}),
+    params: z.object({}).strict(),
     result: providerSecretStatusesSchema,
   },
   "session.usage": {
