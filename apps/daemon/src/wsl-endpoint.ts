@@ -29,7 +29,9 @@ const defaultTimeoutMs = 10_000
 // Only one failure means there is no daemon in the distribution: the file is
 // not there. An unreachable distribution, a denied read, or a wsl.exe that is
 // not installed are all reported, because none of them is an answer.
-const missingFile = /No such file or directory/i
+function isMissingEndpointStderr(stderr: string): boolean {
+  return stderr.includes(endpointFile) && /No such file or directory/i.test(stderr)
+}
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
 
 async function readThroughWsl(
@@ -54,7 +56,7 @@ function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
 
 function isMissingEndpointFile(error: unknown): boolean {
   const stderr = (error as { stderr?: unknown }).stderr
-  return typeof stderr === "string" && missingFile.test(stderr)
+  return typeof stderr === "string" && isMissingEndpointStderr(stderr)
 }
 
 // The endpoint file carries the distro daemon's credential, so nothing read out

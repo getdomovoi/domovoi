@@ -73,11 +73,26 @@ describe("readDistroEndpoint", () => {
   })
 
   it("gives up on a wsl.exe that never answers", async () => {
-    const run = vi.fn(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      return "{}"
+    vi.useFakeTimers()
+    try {
+      const run = vi.fn<NonNullable<DistroEndpointInput["run"]>>(() => new Promise<string>(() => {}))
+      const reading = readDistroEndpoint({ distribution, run, timeoutMs: 1_000 })
+      const settled = expect(reading).rejects.toThrow(/in time/)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await settled
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not treat an unrelated missing file as a missing endpoint", async () => {
+    const run = reader(() => {
+      throw Object.assign(new Error("/bin/wslpath: No such file or directory"), {
+        code: 1,
+        stderr: "/bin/wslpath: No such file or directory\n",
+      })
     })
-    await expect(readDistroEndpoint({ distribution, run, timeoutMs: 1 })).rejects.toThrow(/in time/)
+    await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/wslpath/)
   })
 
   it("gives the child a real deadline even when asked for none", async () => {
