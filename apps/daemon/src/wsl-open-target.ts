@@ -1,3 +1,5 @@
+import { distributionPathOffWindowsDrives } from "./wsl-git.js"
+
 export type OpenTarget =
   | { kind: "wsl"; distribution: string; path: string }
   | { kind: "windows"; path: string }
@@ -29,5 +31,11 @@ export function resolveOpenTarget(input: OpenTargetInput): OpenTarget {
   )
   if (!known) throw new Error(`this machine has no WSL distribution called ${distribution}`)
 
-  return { kind: "wsl", distribution: known.name, path: `/${rest.join("/")}` }
+  // The share can name a Windows drive the distribution has mounted, which is
+  // the boundary this exists to hold, reached from the other side.
+  return {
+    kind: "wsl",
+    distribution: known.name,
+    path: distributionPathOffWindowsDrives(`/${rest.join("/")}`),
+  }
 }

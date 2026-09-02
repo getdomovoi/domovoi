@@ -52,6 +52,35 @@ describe("resolveOpenTarget", () => {
     expect(target).toMatchObject({ path: expect.not.stringContaining("wsl$") })
   })
 
+  it("refuses a Windows drive mounted into the distribution", () => {
+    for (const path of [
+      "\\\\wsl$\\debian\\mnt\\c\\repo",
+      "\\\\wsl$\\debian\\mnt\\c",
+      "//wsl$/debian/mnt/d/work",
+    ]) {
+      expect(() => resolveOpenTarget({ path, distributions: known })).toThrow(/Windows drive/)
+    }
+  })
+
+  it("refuses a path that climbs into a Windows drive", () => {
+    expect(() => resolveOpenTarget({
+      path: "\\\\wsl$\\debian\\home\\me\\..\\..\\mnt\\c\\repo",
+      distributions: known,
+    })).toThrow(/Windows drive/)
+  })
+
+  it("normalizes a path that merely spelled itself oddly", () => {
+    expect(resolveOpenTarget({
+      path: "\\\\wsl$\\debian\\home\\.\\me\\..\\mnt\\c",
+      distributions: known,
+    })).toEqual({ kind: "wsl", distribution: "debian", path: "/home/mnt/c" })
+  })
+
+  it("keeps a directory that merely starts with the same letters as a mount", () => {
+    expect(resolveOpenTarget({ path: "\\\\wsl$\\debian\\mntx\\repo", distributions: known }))
+      .toEqual({ kind: "wsl", distribution: "debian", path: "/mntx/repo" })
+  })
+
   it("refuses a distribution this machine does not have", () => {
     expect(() => resolveOpenTarget({ path: "\\\\wsl$\\arch\\home\\me", distributions: known }))
       .toThrow(/arch/)
