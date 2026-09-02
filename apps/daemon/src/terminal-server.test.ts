@@ -804,6 +804,17 @@ describe("terminal RPC", () => {
     })
     expect(terminal.write).not.toHaveBeenCalled()
 
+    await expect(intruder.rpc("terminal.resize", {
+      terminalId: "terminal-owned",
+      cols: 200,
+      rows: 60,
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal is owned by another client" },
+    })
+    expect(terminal.resize).not.toHaveBeenCalled()
+
     await expect(intruder.rpc("terminal.close", {
       terminalId: "terminal-owned",
       client: "desktop",
