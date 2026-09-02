@@ -595,6 +595,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("skill.setEnabled", params)
   }
 
+  reviewSkill(params: RpcParams<"skill.review">): Promise<SkillSummary> {
+    return this.request("skill.review", params)
+  }
+
   queryAudit(
     params: AuditQueryParams,
     options?: DomovoiRequestOptions,

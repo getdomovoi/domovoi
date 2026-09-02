@@ -121,6 +121,7 @@ describe("skill browser source requests", () => {
       projectId: "project-acme-api",
       enablements: [],
       onSetSkillEnabled: vi.fn(),
+      onReviewSkill: vi.fn(),
       onRetry: vi.fn(),
     }
     const renderBrowser = () => {

@@ -178,6 +178,8 @@ Every ledger entry is now merged.
 - [x] Discover and deduplicate local skills
 - [x] Show provenance, scope, exact path, metadata, and source
 - [x] Define capability manifests, content digests, signature state, and trust state
+- [x] Add a manual-review trust path that binds trust to the reviewed content digest and records
+  the reviewing client in the audit log
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
@@ -354,7 +356,11 @@ dependent work starts.
    and the warning difference between switch and fork.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
    custody model. Current `.sig` declarations are content-digest-bound but are not
-   cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
+   cryptographically verified, so a signature alone never grants trust. Manual review is the
+   interim trust path: a person reviews an exact content digest on one machine, the daemon records
+   that decision with the reviewing client, and the skill becomes trusted only while its content
+   digest still matches. Any content change drops it back to untrusted. Cryptographic verification
+   is still blocked on this decision, and an invalid signature stays blocked regardless of review.
 3. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
 4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the

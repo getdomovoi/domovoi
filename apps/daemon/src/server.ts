@@ -91,6 +91,7 @@ import {
   type TerminalService,
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
+import type { SkillReviews } from "./skill-reviews.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import {
@@ -590,6 +591,7 @@ export type DaemonServerOptions = {
   providerSecrets?: Pick<ProviderSecretManager, "status">
   usageLedger?: Pick<UsageLedger, "record" | "session" | "close">
   skillCatalog?: SkillCatalog
+  skillReviews?: SkillReviews
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
@@ -681,6 +683,7 @@ export class DomovoiDaemon {
   #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
+  #skillReviews: SkillReviews | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
@@ -808,6 +811,7 @@ export class DomovoiDaemon {
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
+    this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -1092,6 +1096,11 @@ export class DomovoiDaemon {
     })
   }
 
+  #catalog(projectPath?: string): SkillCatalog {
+    return this.#skillCatalog
+      ?? new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews)
+  }
+
   #registerAudit(
     socket: WebSocket,
     id: string | number | null,
@@ -1106,7 +1115,8 @@ export class DomovoiDaemon {
     const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
-      ?? (method === "skill.setEnabled" && typeof values.id === "string" ? values.id : undefined)
+      ?? ((method === "skill.setEnabled" || method === "skill.review")
+        && typeof values.id === "string" ? values.id : undefined)
     const pending = this.#pendingAudits.get(socket) ?? new Map<string, AuditAppendInput>()
     const key = JSON.stringify(id)
     if (pending.has(key)) return false
@@ -1119,6 +1129,9 @@ export class DomovoiDaemon {
       ...(target ? { target } : {}),
       ...(method === "skill.setEnabled"
         ? { detail: `enabled=${values.enabled === true} digest=${String(values.contentDigest ?? "")}` }
+        : {}),
+      ...(method === "skill.review"
+        ? { detail: `decision=${String(values.decision ?? "")} digest=${String(values.contentDigest ?? "")}` }
         : {}),
     })
     this.#pendingAudits.set(socket, pending)
@@ -2108,9 +2121,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.list") {
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#catalog()
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -2577,9 +2588,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#catalog()
         const machine = this.#snapshot.machine
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -2600,9 +2609,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.read") {
         const params = paramsResult.data as RpcParams<"skill.read">
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#catalog()
         try {
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -2628,9 +2635,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
           return
         }
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), project.path),
-        )
+        const catalog = this.#catalog(project.path)
         let current
         try {
           current = (await catalog.read(params.id)).skill
@@ -2668,6 +2673,55 @@ export class DomovoiDaemon {
         )
         this.#snapshot.skillEnablements.push(review)
         changed = true
+      }
+
+      if (method === "skill.review") {
+        const params = paramsResult.data as RpcParams<"skill.review">
+        const reviews = this.#skillReviews
+        if (!reviews) {
+          this.#error(socket, request.id, invalidParams, "Manual skill review is unavailable")
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (!actor || actor.kind !== "client") {
+          this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
+          return
+        }
+        const catalog = this.#catalog(this.#snapshot.project?.path)
+        let current
+        try {
+          current = (await catalog.read(params.id)).skill
+        } catch (error) {
+          if (!(error instanceof SkillNotFoundError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        if (current.contentDigest !== params.contentDigest) {
+          this.#error(socket, request.id, invalidParams, "Skill content changed; review it again")
+          return
+        }
+        if (params.decision === "trust" && current.signature.state === "invalid") {
+          this.#error(socket, request.id, invalidParams, "Blocked skills cannot be trusted")
+          return
+        }
+        if (params.decision === "trust") {
+          reviews.record({
+            skillId: current.id,
+            contentDigest: current.contentDigest,
+            reviewedBy: {
+              client: actor.client,
+              ...(actor.clientId ? { clientId: actor.clientId } : {}),
+            },
+          })
+        } else {
+          reviews.revoke(current.id)
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse((await catalog.read(params.id)).skill),
+        })
+        return
       }
 
       if (method === "session.history") {
@@ -3661,9 +3715,7 @@ export class DomovoiDaemon {
           this.#annotationVisualContext,
         )
         const prompt = await agentPromptWithSkills(
-          this.#skillCatalog ?? new FileSkillCatalog(
-            skillRoots(homedir(), this.#snapshot.project?.path),
-          ),
+          this.#catalog(),
           this.#snapshot,
           preparedTurn.prompt,
           {
