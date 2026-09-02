@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import { posix } from "node:path"
 
-import { launchdPlist, systemdUnit, windowsServiceCommand } from "./service-units.mjs"
+import { launchdPlist, systemdUnit } from "./service-units.mjs"
 
 const serviceName = "domovoid"
 const unitFile = `${serviceName}.service`
@@ -14,6 +14,22 @@ function assertHome(home) {
   return home
 }
 
+const displayName = "Domovoi daemon"
+
+function assertUser(user) {
+  if (typeof user !== "string" || user === "" || /["\u0000-\u001f]/.test(user)) {
+    throw new Error("the logon task needs the user it runs as")
+  }
+  return user
+}
+
+function assertExecutable(execPath) {
+  if (typeof execPath !== "string" || !/^[A-Za-z]:\\/.test(execPath) || /["\u0000-\u001f]/.test(execPath)) {
+    throw new Error(`${execPath} is not an absolute path to domovoid`)
+  }
+  return execPath
+}
+
 function assertUid(uid) {
   if (!Number.isInteger(uid) || uid < 0) {
     throw new Error("launchd needs the user the agent is installed for")
@@ -24,7 +40,7 @@ function assertUid(uid) {
 // A service is installed for the user who asked for it: a systemd user unit, a
 // launchd agent in that user's own LaunchAgents, or a Windows service. Nothing
 // here writes to a system-wide location or asks for elevation.
-export function servicePlan({ platform, execPath, home, uid, environment = {} }) {
+export function servicePlan({ platform, execPath, home, uid, user, environment = {} }) {
   if (platform === "linux") {
     return {
       path: posix.join(assertHome(home), ".config", "systemd", "user", unitFile),
@@ -46,10 +62,30 @@ export function servicePlan({ platform, execPath, home, uid, environment = {} })
   }
 
   if (platform === "win32") {
+    // A Windows service created with sc.exe runs as LocalSystem and belongs to
+    // the machine, which is neither what the systemd user unit nor the launchd
+    // agent does. A logon task runs as the user who asked, with their own
+    // privileges, and needs no elevation to install.
     return {
       commands: [
-        windowsServiceCommand({ execPath }),
-        { command: "sc.exe", args: ["start", serviceName] },
+        {
+          command: "schtasks",
+          args: [
+            "/create",
+            "/tn",
+            displayName,
+            "/tr",
+            `"${assertExecutable(execPath)}"`,
+            "/sc",
+            "onlogon",
+            "/ru",
+            assertUser(user),
+            "/rl",
+            "LIMITED",
+            "/f",
+          ],
+        },
+        { command: "schtasks", args: ["/run", "/tn", displayName] },
       ],
     }
   }
@@ -72,11 +108,12 @@ export async function installService({
   execPath,
   home,
   uid,
+  user,
   environment = {},
   write = writeUnit,
   run,
 }) {
-  const plan = servicePlan({ platform, execPath, home, uid, environment })
+  const plan = servicePlan({ platform, execPath, home, uid, user, environment })
   if (plan.path) await write(plan.path, plan.contents)
   for (const { command, args } of plan.commands) await run(command, args)
   return plan
@@ -101,6 +138,7 @@ export async function runServiceCommand(args, dependencies) {
       execPath: dependencies.execPath,
       home: dependencies.home,
       uid: dependencies.uid,
+      user: dependencies.user,
       ...(dependencies.environment ? { environment: dependencies.environment } : {}),
       write: dependencies.write,
       run: dependencies.run,

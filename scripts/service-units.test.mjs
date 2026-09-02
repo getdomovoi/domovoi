@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { launchdPlist, systemdUnit, windowsServiceCommand } from "./service-units.mjs"
+import { launchdPlist, systemdUnit } from "./service-units.mjs"
 
 test("supervises the daemon as a user service under systemd", () => {
   const unit = systemdUnit({ execPath: "/opt/domovoi/bin/domovoid" })
@@ -26,31 +26,11 @@ test("keeps the daemon running under launchd", () => {
   assert.match(plist, /<string>\/opt\/domovoi\/bin\/domovoid<\/string>/)
 })
 
-test("registers the daemon with the Windows service manager", () => {
-  assert.deepEqual(windowsServiceCommand({ execPath: "C:\\Program Files\\Domovoi\\domovoid.exe" }), {
-    command: "sc.exe",
-    args: [
-      "create",
-      "domovoid",
-      "binPath=",
-      "\"C:\\Program Files\\Domovoi\\domovoid.exe\"",
-      "start=",
-      "auto",
-      "DisplayName=",
-      "Domovoi daemon",
-    ],
-  })
-})
-
 for (const execPath of ["domovoid", "./domovoid", "", undefined]) {
   test(`refuses the unpinned systemd exec path ${JSON.stringify(execPath)}`, () => {
     assert.throws(() => systemdUnit({ execPath }), /absolute/)
   })
 }
-
-test("refuses a Windows exec path that is not absolute", () => {
-  assert.throws(() => windowsServiceCommand({ execPath: "domovoid.exe" }), /absolute/)
-})
 
 for (const execPath of ["/opt/domovoi\nExecStart=/bin/sh", "/opt/domovoi\"x", "/opt/domovoi\u0000x"]) {
   test(`refuses an exec path that would break out of the unit: ${JSON.stringify(execPath)}`, () => {

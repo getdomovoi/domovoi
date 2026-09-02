@@ -28,30 +28,55 @@ test("installs a launchd agent for the user who asked for it", () => {
   ])
 })
 
-test("registers a Windows service without writing a file", () => {
+test("starts the daemon at logon for the user who asked, without writing a file", () => {
   const plan = servicePlan({
     platform: "win32",
     execPath: "C:\\Program Files\\Domovoi\\domovoid.exe",
     home: "C:\\Users\\me",
+    user: "me",
   })
   assert.equal(plan.path, undefined)
   assert.equal(plan.contents, undefined)
   assert.deepEqual(plan.commands, [
     {
-      command: "sc.exe",
+      command: "schtasks",
       args: [
-        "create",
-        "domovoid",
-        "binPath=",
-        "\"C:\\Program Files\\Domovoi\\domovoid.exe\"",
-        "start=",
-        "auto",
-        "DisplayName=",
+        "/create",
+        "/tn",
         "Domovoi daemon",
+        "/tr",
+        "\"C:\\Program Files\\Domovoi\\domovoid.exe\"",
+        "/sc",
+        "onlogon",
+        "/ru",
+        "me",
+        "/rl",
+        "LIMITED",
+        "/f",
       ],
     },
-    { command: "sc.exe", args: ["start", "domovoid"] },
+    { command: "schtasks", args: ["/run", "/tn", "Domovoi daemon"] },
   ])
+})
+
+test("never installs a Windows service that would run as the machine", () => {
+  const plan = servicePlan({
+    platform: "win32",
+    execPath: "C:\\Domovoi\\domovoid.exe",
+    home: "C:\\Users\\me",
+    user: "me",
+  })
+  const flattened = plan.commands.map((entry) => `${entry.command} ${entry.args.join(" ")}`).join("\n")
+  assert.doesNotMatch(flattened, /sc\.exe/)
+  assert.doesNotMatch(flattened, /LocalSystem/i)
+  assert.match(flattened, /\/rl LIMITED/)
+})
+
+test("refuses a Windows install with no user to run it as", () => {
+  assert.throws(
+    () => servicePlan({ platform: "win32", execPath: "C:\\Domovoi\\domovoid.exe", home: "C:\\Users\\me" }),
+    /user/,
+  )
 })
 
 test("names a posix path whatever machine planned the install", () => {
@@ -82,38 +107,37 @@ test("carries a refused secret out of the generator rather than writing it", () 
 })
 
 test("writes the unit before it asks the service manager to load it", async () => {
-  const written = []
-  const ran = []
+  const events = []
   await installService({
     platform: "linux",
     execPath,
     home,
     uid: 1000,
-    write: async (path, contents) => void written.push({ path, contents }),
-    run: async (command, args) => void ran.push(`${command} ${args.join(" ")}`),
+    write: async (path) => void events.push(`write ${path}`),
+    run: async (command, args) => void events.push(`run ${command} ${args.join(" ")}`),
   })
 
-  assert.equal(written.length, 1)
-  assert.equal(written[0].path, "/home/me/.config/systemd/user/domovoid.service")
-  assert.deepEqual(ran, [
-    "systemctl --user daemon-reload",
-    "systemctl --user enable --now domovoid.service",
+  assert.deepEqual(events, [
+    "write /home/me/.config/systemd/user/domovoid.service",
+    "run systemctl --user daemon-reload",
+    "run systemctl --user enable --now domovoid.service",
   ])
 })
 
-test("asks the Windows service manager without writing anything", async () => {
+test("asks the Windows scheduler without writing anything", async () => {
   const written = []
   const ran = []
   await installService({
     platform: "win32",
     execPath: "C:\\Domovoi\\domovoid.exe",
     home: "C:\\Users\\me",
+    user: "me",
     write: async (path, contents) => void written.push({ path, contents }),
     run: async (command, args) => void ran.push(`${command} ${args[0]}`),
   })
 
   assert.deepEqual(written, [])
-  assert.deepEqual(ran, ["sc.exe create", "sc.exe start"])
+  assert.deepEqual(ran, ["schtasks /create", "schtasks /run"])
 })
 
 test("does not ask the service manager for anything if the unit could not be written", async () => {
