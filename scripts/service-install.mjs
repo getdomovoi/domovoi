@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { posix } from "node:path"
 
 import { launchdPlist, systemdUnit, windowsServiceCommand } from "./service-units.mjs"
 
@@ -27,7 +27,7 @@ function assertUid(uid) {
 export function servicePlan({ platform, execPath, home, uid, environment = {} }) {
   if (platform === "linux") {
     return {
-      path: join(assertHome(home), ".config", "systemd", "user", unitFile),
+      path: posix.join(assertHome(home), ".config", "systemd", "user", unitFile),
       contents: systemdUnit({ execPath, environment }),
       commands: [
         { command: "systemctl", args: ["--user", "daemon-reload"] },
@@ -37,7 +37,7 @@ export function servicePlan({ platform, execPath, home, uid, environment = {} })
   }
 
   if (platform === "darwin") {
-    const path = join(assertHome(home), "Library", "LaunchAgents", agentFile)
+    const path = posix.join(assertHome(home), "Library", "LaunchAgents", agentFile)
     return {
       path,
       contents: launchdPlist({ execPath, environment }),
@@ -58,7 +58,9 @@ export function servicePlan({ platform, execPath, home, uid, environment = {} })
 }
 
 async function writeUnit(path, contents) {
-  await mkdir(dirname(path), { recursive: true })
+  // Every path a plan names is a posix one, because the only platforms that
+  // get a file are the ones that use them.
+  await mkdir(posix.dirname(path), { recursive: true })
   await writeFile(path, contents, { mode: 0o600 })
 }
 
