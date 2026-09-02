@@ -110,12 +110,64 @@ describe("removeEndpointFile", () => {
       token: "daemon-token",
     })
 
-    await removeEndpointFile(directory)
+    await removeEndpointFile(directory, { host: "127.0.0.1", port: 47831, token: "daemon-token" })
     await expect(stat(path)).rejects.toThrow()
   })
 
   it("is content when there is no endpoint to take away", async () => {
     await expect(removeEndpointFile(await home())).resolves.toBeUndefined()
+  })
+
+  it("leaves an endpoint this daemon did not publish alone", async () => {
+    const directory = await home()
+    const path = await publishEndpointFile({
+      home: directory,
+      host: "127.0.0.1",
+      port: 47831,
+      token: "daemon-token",
+    })
+    await writeFile(path, JSON.stringify({ host: "127.0.0.1", port: 47999, token: "another" }))
+
+    await removeEndpointFile(directory, { host: "127.0.0.1", port: 47831, token: "daemon-token" })
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ port: 47999 })
+  })
+
+  it("removes nothing when this daemon published nothing", async () => {
+    const directory = await home()
+    const path = await publishEndpointFile({
+      home: directory,
+      host: "127.0.0.1",
+      port: 47831,
+      token: "daemon-token",
+    })
+
+    await removeEndpointFile(directory)
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ port: 47831 })
+  })
+
+  it("leaves no half-written endpoint for a reader to find", async () => {
+    const directory = await home()
+    const path = await publishEndpointFile({
+      home: directory,
+      host: "127.0.0.1",
+      port: 47831,
+      token: "daemon-token",
+    })
+
+    const reads: string[] = []
+    await Promise.all([
+      publishEndpointFile({ home: directory, host: "127.0.0.1", port: 47900, token: "second" }),
+      ...Array.from({ length: 40 }, async () => {
+        try {
+          reads.push(await readFile(path, "utf8"))
+        } catch {
+          // A rename is atomic, so a reader either sees the old file or the new
+          // one. Missing the file entirely is not what this is checking.
+        }
+      }),
+    ])
+
+    for (const contents of reads) expect(() => JSON.parse(contents) as unknown).not.toThrow()
   })
 
   it("leaves a file it did not write alone", async () => {
@@ -128,7 +180,7 @@ describe("removeEndpointFile", () => {
     })
     await writeFile(path, "not an endpoint this daemon wrote")
 
-    await removeEndpointFile(directory)
+    await removeEndpointFile(directory, { host: "127.0.0.1", port: 47831, token: "daemon-token" })
     expect(await readFile(path, "utf8")).toBe("not an endpoint this daemon wrote")
   })
 })
