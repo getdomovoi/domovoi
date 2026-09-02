@@ -19,7 +19,9 @@ describe("listWslDistributions", () => {
     expect(await listWslDistributions({ run, platform: "win32" })).toEqual([
       { name: "Ubuntu-24.04", default: true },
     ])
-    expect(run).toHaveBeenCalledWith("wsl.exe", ["--list", "--verbose"])
+    expect(run).toHaveBeenCalledWith("wsl.exe", ["--list", "--verbose"], {
+      timeoutMs: expect.any(Number),
+    })
   })
 
   it("reports no distribution where there is no WSL at all", async () => {
@@ -40,5 +42,21 @@ describe("listWslDistributions", () => {
       throw Object.assign(new Error("no distributions"), { code: 1 })
     })
     expect(await listWslDistributions({ run, platform: "win32" })).toEqual([])
+  })
+})
+
+describe("listWslDistributions when wsl.exe does not answer", () => {
+  it("gives up rather than waiting on a wsl.exe that never returns", async () => {
+    const run = vi.fn(async (_command: string, _args: readonly string[]) => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      return wslOutput(listing)
+    })
+    expect(await listWslDistributions({ run, platform: "win32", timeoutMs: 1 })).toEqual([])
+  })
+
+  it("tells the runner how long it is allowed to take", async () => {
+    const run = vi.fn(async () => wslOutput(listing))
+    await listWslDistributions({ run, platform: "win32", timeoutMs: 2_000 })
+    expect(run).toHaveBeenCalledWith("wsl.exe", ["--list", "--verbose"], { timeoutMs: 2_000 })
   })
 })
