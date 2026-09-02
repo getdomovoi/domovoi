@@ -76,3 +76,49 @@ describe("distroGitCommand with an unusual distribution name", () => {
     expect(args[1]).toBe("Ubuntu 24.04 LTS")
   })
 })
+
+describe("distroGitCommand keeps the work inside the distribution", () => {
+  it("refuses a repository on a Windows drive mounted into the distribution", () => {
+    for (const path of ["/mnt/c/repo", "/mnt/d/work/project", "/mnt/c"]) {
+      expect(() => distroGitCommand({ distribution, repositoryPath: path, args: ["status"] }))
+        .toThrow(/inside the distribution/)
+    }
+  })
+
+  it("refuses a path that climbs out of the distribution filesystem", () => {
+    for (const path of ["/home/me/../../mnt/c/repo", "/home/me/../.."]) {
+      expect(() => distroGitCommand({ distribution, repositoryPath: path, args: ["status"] }))
+        .toThrow(/inside the distribution/)
+    }
+  })
+
+  it("keeps a directory inside the distribution that a .. merely spelled oddly", () => {
+    const { args } = distroGitCommand({
+      distribution,
+      repositoryPath: "/home/./me/../mnt/c",
+      args: ["status"],
+    })
+    expect(args).toContain("/home/mnt/c")
+  })
+
+  it("keeps a directory that merely starts with the same letters as a mount", () => {
+    const { args } = distroGitCommand({ distribution, repositoryPath: "/mntx/repo", args: ["status"] })
+    expect(args).toContain("/mntx/repo")
+  })
+
+  it("refuses a git option that would choose a different repository", () => {
+    for (const option of ["-C", "--git-dir=/mnt/c/other", "--work-tree=/tmp", "--exec-path=/tmp"]) {
+      expect(() => distroGitCommand({ distribution, repositoryPath, args: [option, "status"] }))
+        .toThrow(/repository/)
+    }
+  })
+
+  it("still allows an option that belongs to the subcommand", () => {
+    const { args } = distroGitCommand({
+      distribution,
+      repositoryPath,
+      args: ["log", "--oneline", "-n", "5"],
+    })
+    expect(args.slice(-4)).toEqual(["log", "--oneline", "-n", "5"])
+  })
+})
