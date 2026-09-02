@@ -1858,8 +1858,12 @@ export class DomovoiDaemon {
         const dataDisposable = process.onData((data) => {
           const active = this.#terminals.get(params.terminalId)
           if (active?.process === process) {
-            active.buffer = `${active.buffer}${data}`.slice(-maximumTerminalReplayCharacters)
-            active.output.push(params.terminalId, data)
+            // A terminal is where someone types a credential, and its output
+            // goes to every connected client and into the replay a later
+            // client is handed. Both are redacted before they leave here.
+            const safe = redactDurableOutput(data).value
+            active.buffer = `${active.buffer}${safe}`.slice(-maximumTerminalReplayCharacters)
+            active.output.push(params.terminalId, safe)
           }
         })
         const exitDisposable = process.onExit(({ exitCode, signal }) => {
