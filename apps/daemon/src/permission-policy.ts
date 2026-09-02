@@ -58,10 +58,20 @@ function shellPayloadFor(value: string): string | undefined {
   return withoutOuterQuotes(option?.[1] ?? remainder)
 }
 
-export function isSkillInstallCommand(command: string): boolean {
-  let candidate = command.trim()
+// A command line is as many commands as it has separators, and an install
+// hidden after one of them is still an install. Each piece is judged on its
+// own, and an installer is recognised wherever it sits in the piece, since a
+// wrapper such as xargs or env in front of it changes nothing about what runs.
+const commandSeparators = /\s*(?:&&|\|\||;|\|)\s*/
+const skillCliInstallAnywhere = skillCliInstallPatterns.map(
+  (pattern) => new RegExp(pattern.source.replace(/^\^/, String.raw`(?:^|\s)`), pattern.flags),
+)
+
+function isSkillInstallSegment(segment: string): boolean {
+  let candidate = segment.trim()
   for (let depth = 0; depth < 4; depth += 1) {
     if (skillCliInstallPatterns.some((pattern) => pattern.test(candidate))) return true
+    if (skillCliInstallAnywhere.some((pattern) => pattern.test(candidate))) return true
     if (
       /\bskills?\b/i.test(candidate)
       && /\b(?:install|bootstrap)\b/i.test(candidate)
@@ -71,8 +81,17 @@ export function isSkillInstallCommand(command: string): boolean {
     if (!shellPayload) return false
     candidate = shellPayload
     if (skillBootstrapScript.test(candidate)) return true
+    if (candidate.split(commandSeparators).some((inner) => inner !== candidate && isSkillInstallSegment(inner))) {
+      return true
+    }
   }
   return false
+}
+
+export function isSkillInstallCommand(command: string): boolean {
+  const trimmed = command.trim()
+  if (isSkillInstallSegment(trimmed)) return true
+  return trimmed.split(commandSeparators).some((segment) => segment !== trimmed && isSkillInstallSegment(segment))
 }
 
 export function permissionDecisionFor(input: {
