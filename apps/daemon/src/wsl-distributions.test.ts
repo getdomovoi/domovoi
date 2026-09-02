@@ -34,6 +34,13 @@ describe("parseWslDistributions", () => {
     ])
   })
 
+  it("keeps a distribution name exactly as it was registered", () => {
+    const doubled = ["  NAME  STATE  VERSION", "* Ubuntu  24.04    Running   2"].join("\r\n")
+    expect(parseWslDistributions(utf16(doubled))).toEqual([
+      { name: "Ubuntu  24.04", state: "Running", version: 2, default: true },
+    ])
+  })
+
   it("reports nothing when wsl.exe lists no distribution", () => {
     expect(parseWslDistributions(utf16(""))).toEqual([])
   })
