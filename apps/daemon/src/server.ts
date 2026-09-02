@@ -3283,13 +3283,21 @@ export class DomovoiDaemon {
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
           }
+          const orphaned = this.#snapshot.sessions
+            .map((session) => session.workspacePath)
+            .filter((path): path is string => path !== undefined)
           try {
             await this.#cleanupSessions()
-          } catch {
-            // Every terminal, provider thread, and stream is already torn down
-            // and every cleanup failure is reported through the error sink, so
-            // the switch must still leave the snapshot describing the project
-            // that is now open rather than sessions that no longer exist.
+          } catch (error) {
+            // Every terminal, provider thread, and stream is already torn down,
+            // so the switch must still leave the snapshot describing the project
+            // that is now open rather than sessions that no longer exist. The
+            // snapshot is about to lose every workspacePath, so name them here:
+            // a worktree left on disk is only recoverable if something said where.
+            this.#reportError(
+              `Domovoi could not remove every session worktree while switching projects. Remove these by hand: ${orphaned.join(", ")}`,
+              error,
+            )
           }
           this.#commandOutputRedactors.clear()
           this.#snapshot.project = {
