@@ -201,10 +201,13 @@ describe("DomovoiDaemon", () => {
       socket.once("error", reject)
     })
     const messages: Array<{ method?: string; id?: number; params?: { data?: string } }> = []
+    let sawOutput: (() => void) | undefined
+    const streamed = new Promise<void>((resolve) => { sawOutput = resolve })
     const outcome = new Promise<"response" | { code: number; reason: string }>((resolve) => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString())
         messages.push(message)
+        if (message.method === "terminal.output") sawOutput?.()
         if (message.id === 1) resolve("response")
       })
       socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))
@@ -224,10 +227,16 @@ describe("DomovoiDaemon", () => {
       },
     }))
 
+    await Promise.race([
+      streamed,
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ])
     await expect(outcome).resolves.toEqual({
       code: retryableSlowClientCloseCode,
       reason: retryableSlowClientCloseReason,
     })
+    // A read this size fills a whole output chunk, so redaction holds nothing
+    // back and the burst still reaches a client about to be dropped.
     expect(messages).toEqual([expect.objectContaining({
       method: "terminal.output",
       params: { terminalId: "terminal-backpressure", data: output },
