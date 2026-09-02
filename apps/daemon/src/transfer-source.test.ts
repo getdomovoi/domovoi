@@ -44,6 +44,7 @@ type TransferCall = (method: string, params: Record<string, unknown>) => Promise
 function transferIo(overrides: { call?: TransferCall } = {}) {
   const recorded: TransferReceipt[] = []
   const call = vi.fn<TransferCall>(overrides.call ?? (async (method: string) => {
+    if (method === "transfer.have") return {}
     if (method === "transfer.begin") return { transferId: `transfer-${"c".repeat(32)}` }
     return { state: "restored", workspacePath: "/worktrees/session-1", checkpointCommit: "d".repeat(40) }
   }))
@@ -51,7 +52,11 @@ function transferIo(overrides: { call?: TransferCall } = {}) {
     call,
     recorded,
     checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
-    bundleSession: vi.fn(async () => ({ path: "/tmp/session.bundle", commit: "d".repeat(40), incremental: false })),
+    bundleSession: vi.fn(async (
+      _worktree: string,
+      bundlePath: string,
+      _sinceCommit?: string,
+    ) => ({ path: bundlePath, commit: "d".repeat(40), incremental: false })),
     readBundle: vi.fn(async () => bundle),
     recordReceipt: vi.fn((receipt: TransferReceipt) => { recorded.push(receipt) }),
     now: () => "2026-09-01T09:00:00.000Z",
@@ -132,6 +137,7 @@ describe("sendSessionToMachine", () => {
 
   it("records a refusal when the target will not take the bundle", async () => {
     const call = vi.fn(async (method: string) => {
+      if (method === "transfer.have") return {}
       if (method === "transfer.begin") return { transferId: `transfer-${"c".repeat(32)}` }
       return { state: "refused", reason: "digest-mismatch" }
     })
@@ -158,6 +164,7 @@ describe("sendSessionToMachine", () => {
     // A target claiming the session arrived while bytes remain has not taken
     // the whole worktree, whatever it says.
     const call = vi.fn<TransferCall>(async (method: string) => {
+      if (method === "transfer.have") return {}
       if (method === "transfer.begin") return { transferId: `transfer-${"c".repeat(32)}` }
       return { state: "restored", workspacePath: "/worktrees/session-1", checkpointCommit: "d".repeat(40) }
     })
@@ -193,5 +200,44 @@ describe("sendSessionToMachine", () => {
     // The session is still here, and the receipt says so.
     expect(outcome).toMatchObject({ outcome: "failed" })
     expect(recorded).toEqual([expect.objectContaining({ recoveryCheckpointRetained: true })])
+  })
+})
+
+describe("sendSessionToMachine incremental", () => {
+  it("bundles only what the target says it is missing", async () => {
+    const held = "e".repeat(40)
+    const bundled: (string | undefined)[] = []
+    const call = vi.fn<TransferCall>(async (method: string) => {
+      if (method === "transfer.have") return { commit: held }
+      if (method === "transfer.begin") return { transferId: `transfer-${"c".repeat(32)}` }
+      return { state: "restored", workspacePath: "/worktrees/session-1", checkpointCommit: "d".repeat(40) }
+    })
+    const { recorded: _recorded, ...io } = transferIo({ call })
+    io.bundleSession = vi.fn(async (_worktree: string, bundlePath: string, sinceCommit?: string) => {
+      bundled.push(sinceCommit)
+      return { path: bundlePath, commit: "d".repeat(40), incremental: sinceCommit !== undefined }
+    })
+
+    await sendSessionToMachine({ session, sourceMachineId, target, client: "desktop", ...io })
+
+    expect(bundled).toEqual([held])
+  })
+
+  it("sends everything when the target holds nothing for that session", async () => {
+    const bundled: (string | undefined)[] = []
+    const call = vi.fn<TransferCall>(async (method: string) => {
+      if (method === "transfer.have") return {}
+      if (method === "transfer.begin") return { transferId: `transfer-${"c".repeat(32)}` }
+      return { state: "restored", workspacePath: "/worktrees/session-1", checkpointCommit: "d".repeat(40) }
+    })
+    const { recorded: _recorded, ...io } = transferIo({ call })
+    io.bundleSession = vi.fn(async (_worktree: string, bundlePath: string, sinceCommit?: string) => {
+      bundled.push(sinceCommit)
+      return { path: bundlePath, commit: "d".repeat(40), incremental: false }
+    })
+
+    await sendSessionToMachine({ session, sourceMachineId, target, client: "desktop", ...io })
+
+    expect(bundled).toEqual([undefined])
   })
 })
