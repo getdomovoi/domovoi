@@ -298,32 +298,61 @@ const danglingSecret = new RegExp(
 // of a read is held until the next one resolves it.
 const danglingWord = /[A-Za-z][A-Za-z0-9_-]*$/
 
+// Where a value ends, once the redactor has decided it is inside one.
+const valueDelimiter = /[\s;&|\r\n]/
+
 export class TerminalOutputRedactor {
   #carry = ""
+  // Set once an assignment's value has outgrown what can be carried. From then
+  // on the value's bytes are dropped rather than held, until its delimiter, so
+  // a token of any length is redacted without anything being buffered for it.
+  #droppingValue = false
 
   // Everything held back plus the new read is redacted as one string, so an
   // assignment split across two reads is seen whole.
   push(chunk: string): string {
-    const combined = `${this.#carry}${chunk}`
+    let input = chunk
+    if (this.#droppingValue) {
+      const delimiter = valueDelimiter.exec(input)
+      if (!delimiter) return ""
+      input = input.slice(delimiter.index)
+      this.#droppingValue = false
+    }
+
+    const combined = `${this.#carry}${input}`
     const holdFrom = this.#suspiciousTailStart(combined)
+    const held = combined.length - holdFrom
+    if (held > terminalRedactionCarryCharacters) {
+      // The tail is an assignment whose value has already run past the carry.
+      // Redact what there is, which turns the value seen so far into the
+      // replacement, and drop the rest of it as it arrives.
+      this.#carry = ""
+      this.#droppingValue = true
+      return redactStreamText(combined)
+    }
+
     this.#carry = combined.slice(holdFrom)
     return redactStreamText(combined.slice(0, holdFrom))
   }
 
   flush(): string {
+    this.#droppingValue = false
     if (this.#carry === "") return ""
     const remainder = this.#carry
     this.#carry = ""
     return redactStreamText(remainder)
   }
 
-  // Only a tail that could still become a secret is worth withholding, and
-  // never more than the carry bound, so a terminal that is simply busy is
-  // never held up.
+  // Only a tail that could still become a secret is worth withholding, so a
+  // terminal that is simply busy is never held up. A dangling word is checked
+  // within the carry bound; a dangling assignment is checked in full, since the
+  // point is to notice one that has outgrown the bound.
   #suspiciousTailStart(combined: string): number {
+    const assignment = danglingSecret.exec(combined)
+    if (assignment) return assignment.index
     const window = combined.slice(-terminalRedactionCarryCharacters)
-    const match = danglingSecret.exec(window) ?? danglingWord.exec(window)
-    if (!match) return combined.length
-    return combined.length - window.length + match.index
+    const word = danglingWord.exec(window)
+    if (!word) return combined.length
+    return combined.length - window.length + word.index
   }
 }
