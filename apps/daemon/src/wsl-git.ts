@@ -58,7 +58,7 @@ function assertInsideDistribution(repositoryPath: string): string {
   return normalized
 }
 
-function assertDistribution(distribution: string): string {
+export function assertDistributionName(distribution: string): string {
   if (distribution === "" || hasUnsafeCharacter(distribution) || distribution.startsWith("-")) {
     throw new Error(`${JSON.stringify(distribution)} is not a distribution wsl.exe can be asked for`)
   }
@@ -91,7 +91,7 @@ export function distroGitCommand(input: DistroGitInput): DistroCommand {
     command: "wsl.exe",
     args: [
       "-d",
-      assertDistribution(input.distribution),
+      assertDistributionName(input.distribution),
       "--cd",
       assertInsideDistribution(input.repositoryPath),
       "--",
