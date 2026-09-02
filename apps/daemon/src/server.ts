@@ -18,7 +18,6 @@ import {
   daemonShuttingDownErrorCode,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
-  maximumTerminalReplayCharacters,
   terminalOutputBatchDelayMilliseconds,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
@@ -116,6 +115,7 @@ import {
 import { testEvidence } from "./test-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
+import { TerminalReplayBuffer } from "./terminal-replay.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -621,7 +621,7 @@ type ActiveTerminal = {
   rows: number
   shell: string
   cwd: string
-  buffer: string
+  replay: TerminalReplayBuffer
   // Redaction has to see across pty reads: a credential arrives split as often
   // as it arrives whole.
   redactor: TerminalOutputRedactor
@@ -681,6 +681,7 @@ export class DomovoiDaemon {
   #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
+  #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
@@ -1395,6 +1396,17 @@ export class DomovoiDaemon {
     }
   }
 
+  #skillCatalogFor(projectPath: string | undefined): SkillCatalog {
+    if (this.#skillCatalog) return this.#skillCatalog
+    if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
+      this.#fileSkillCatalog = {
+        projectPath,
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath)),
+      }
+    }
+    return this.#fileSkillCatalog.catalog
+  }
+
   async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
     const agent = this.#agents.require(provider)
     if (this.#connectedAgents.has(provider)) return agent
@@ -1825,7 +1837,7 @@ export class DomovoiDaemon {
               rows: existing.rows,
               shell: existing.shell,
               cwd: existing.cwd,
-              buffer: existing.buffer,
+              buffer: existing.replay.read(),
               owner: existing.owner,
             }),
           })
@@ -1854,7 +1866,7 @@ export class DomovoiDaemon {
           rows: params.rows,
           shell: process.process,
           cwd: session.workspacePath,
-          buffer: "",
+          replay: new TerminalReplayBuffer(),
           redactor: new TerminalOutputRedactor(),
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
@@ -1875,7 +1887,7 @@ export class DomovoiDaemon {
             // two reads is still caught.
             const emit = (text: string) => {
               if (!text) return
-              active.buffer = `${active.buffer}${text}`.slice(-maximumTerminalReplayCharacters)
+              active.replay.push(text)
               active.output.push(params.terminalId, text)
               // A read this large is a burst, and the tail redaction holds back
               // would otherwise leave it under the batcher's threshold, so a
@@ -1909,7 +1921,7 @@ export class DomovoiDaemon {
           if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
           const remainder = active.redactor.flush()
           if (remainder) {
-            active.buffer = `${active.buffer}${remainder}`.slice(-maximumTerminalReplayCharacters)
+            active.replay.push(remainder)
             active.output.push(params.terminalId, remainder)
           }
           active.output.flush(params.terminalId)
@@ -1934,7 +1946,7 @@ export class DomovoiDaemon {
             rows: params.rows,
             shell: process.process,
             cwd: session.workspacePath,
-            buffer: activeTerminal.buffer,
+            buffer: activeTerminal.replay.read(),
             owner: activeTerminal.owner,
           }),
         })
@@ -2108,9 +2120,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.list") {
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -2577,9 +2587,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         const machine = this.#snapshot.machine
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -2600,9 +2608,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.read") {
         const params = paramsResult.data as RpcParams<"skill.read">
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         try {
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -2628,9 +2634,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
           return
         }
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), project.path),
-        )
+        const catalog = this.#skillCatalogFor(project.path)
         let current
         try {
           current = (await catalog.read(params.id)).skill
@@ -2667,6 +2671,7 @@ export class DomovoiDaemon {
           (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
         )
         this.#snapshot.skillEnablements.push(review)
+        this.#fileSkillCatalog?.catalog.invalidate()
         changed = true
       }
 
@@ -3661,9 +3666,7 @@ export class DomovoiDaemon {
           this.#annotationVisualContext,
         )
         const prompt = await agentPromptWithSkills(
-          this.#skillCatalog ?? new FileSkillCatalog(
-            skillRoots(homedir(), this.#snapshot.project?.path),
-          ),
+          this.#skillCatalogFor(this.#snapshot.project?.path),
           this.#snapshot,
           preparedTurn.prompt,
           {
@@ -4930,7 +4933,7 @@ export class DomovoiDaemon {
     terminal.disposeExit()
     const remainder = terminal.redactor.flush()
     if (remainder) {
-      terminal.buffer = `${terminal.buffer}${remainder}`.slice(-maximumTerminalReplayCharacters)
+      terminal.replay.push(remainder)
       terminal.output.push(terminalId, remainder)
     }
     terminal.output.flush(terminalId)
