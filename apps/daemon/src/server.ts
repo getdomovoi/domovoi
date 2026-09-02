@@ -11,11 +11,13 @@ import {
   type MachineCapability,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
+  daemonPersistenceUnavailableErrorCode,
   sourcePreflight,
   transferPreflight,
   type TransferReceipt,
   machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
+  isRefusedWithoutPersistence,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
   maximumTerminalReplayCharacters,
@@ -149,6 +151,13 @@ const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
 export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
 export const maximumAuthenticationPayloadBytes = 4 * 1_024
+// One failed write is a transient disk or lock problem worth retrying. This many
+// consecutive failures means the daemon is running on state nobody will get back,
+// so it stops accepting work that would deepen the gap.
+export const persistenceFailureThreshold = 3
+export const persistenceUnavailableContext = "Domovoi can no longer persist state"
+export const persistenceUnavailableMessage =
+  "Daemon cannot persist state, so changes are refused"
 const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
@@ -644,6 +653,8 @@ export class DomovoiDaemon {
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
   #store: WorkspaceStore
+  #persistenceFailures = 0
+  #persistenceUnavailable = false
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -1724,6 +1735,16 @@ export class DomovoiDaemon {
         id: request.id,
         error: { code: invalidRequest, message: "Request id is already in flight" },
       })
+      return
+    }
+
+    if (this.#persistenceUnavailable && isRefusedWithoutPersistence(method)) {
+      this.#error(
+        socket,
+        request.id,
+        daemonPersistenceUnavailableErrorCode,
+        persistenceUnavailableMessage,
+      )
       return
     }
 
@@ -3213,7 +3234,13 @@ export class DomovoiDaemon {
             createdAt,
           })
           workspaceSnapshotSchema.parse(candidate)
-          this.#store.save(candidate)
+          try {
+            this.#store.save(candidate)
+          } catch (error) {
+            this.#persistenceFailed(error)
+            throw error
+          }
+          this.#persistenceSucceeded()
           this.#snapshot = candidate
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
@@ -3604,7 +3631,9 @@ export class DomovoiDaemon {
         try {
           if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
           else this.#store.save(candidate)
+          this.#persistenceSucceeded()
         } catch (error) {
+          this.#persistenceFailed(error)
           try {
             await withTimeout(
               agent.stopThread(providerThreadId),
@@ -5073,8 +5102,30 @@ export class DomovoiDaemon {
 
   async #persistSnapshot(): Promise<void> {
     this.#sessionHistory.invalidate()
-    if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
-    else this.#store.save(this.#snapshot)
+    try {
+      if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
+      else this.#store.save(this.#snapshot)
+    } catch (error) {
+      this.#persistenceFailed(error)
+      throw error
+    }
+    this.#persistenceSucceeded()
+  }
+
+  #persistenceFailed(error: unknown): void {
+    this.#persistenceFailures += 1
+    if (this.#persistenceUnavailable) return
+    if (this.#persistenceFailures < persistenceFailureThreshold) return
+    this.#persistenceUnavailable = true
+    this.#reportError(persistenceUnavailableContext, error)
+  }
+
+  // A snapshot is written whole rather than as a diff, so one later write that
+  // lands carries everything the failed ones did not. Recovery is therefore
+  // safe, and the daemon accepts changes again as soon as state reaches disk.
+  #persistenceSucceeded(): void {
+    this.#persistenceFailures = 0
+    this.#persistenceUnavailable = false
   }
 
   async #saveAgentState(broadcast = true): Promise<void> {
