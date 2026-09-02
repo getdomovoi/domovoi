@@ -9,6 +9,9 @@ import { loadOrCreateMachineIdentity } from "./machine-identity.js"
 import { loadTlsMaterial } from "./tls-material.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runOpenCommand } from "./open-command.js"
+import type { OpenTarget } from "./wsl-open-target.js"
+import { listWslDistributions } from "./wsl-list.js"
 import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
@@ -60,8 +63,82 @@ async function requestPairingCode(
   }
 }
 
+const projectOpenTimeoutMs = 15_000
+
+async function requestProjectOpen(
+  config: { host: string; port: number; tls?: unknown },
+  token: string,
+  path: string,
+): Promise<void> {
+  const { WebSocket } = await import("ws")
+  const scheme = config.tls ? "wss" : "ws"
+  const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  const requestId = 1
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await new Promise<void>((resolve, reject) => {
+      // A daemon that accepts the socket and then says nothing would otherwise
+      // hold this open forever, so the wait is bounded and every listener is
+      // removed before the socket is closed in the finally block.
+      const timer = setTimeout(() => {
+        settle(() => reject(new Error("Daemon did not answer in time")))
+      }, projectOpenTimeoutMs)
+      const settle = (finish: () => void) => {
+        clearTimeout(timer)
+        socket.off("message", receive)
+        socket.off("close", closed)
+        socket.off("error", failed)
+        finish()
+      }
+      const receive = (data: { toString(): string }) => {
+        const message = JSON.parse(data.toString()) as {
+          id?: number
+          result?: unknown
+          error?: { message?: string }
+        }
+        if (message.id !== requestId) return
+        settle(() => {
+          if (message.error) reject(new Error(message.error.message ?? "Daemon refused to open the project"))
+          else resolve()
+        })
+      }
+      const closed = () => settle(() => reject(new Error("Daemon connection closed")))
+      const failed = (error: Error) => settle(() => reject(error))
+      socket.on("message", receive)
+      socket.once("close", closed)
+      socket.once("error", failed)
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: requestId,
+        method: "project.open",
+        params: { path, client: "desktop" },
+      }))
+    })
+  } finally {
+    socket.close()
+  }
+}
+
+async function openWorkspace(target: OpenTarget): Promise<void> {
+  if (target.kind === "wsl") {
+    // The work belongs to a daemon running inside the distribution. Reaching
+    // that daemon is a separate piece of work, and opening the path here would
+    // mean this daemon touching the distribution's files across the share.
+    throw new Error(`no daemon is reachable in ${target.distribution} yet`)
+  }
+  const config = parseDaemonEnvironment(process.env, homedir())
+  const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
+  await requestProjectOpen(config, token, target.path)
+}
+
 const help = `Usage: domovoid [options]
        domovoid pair
+       domovoid open [path]
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
@@ -100,6 +177,18 @@ async function main() {
     process.exitCode = await runProviderSecretCommand(args, {
       manager: new ProviderSecretManager(),
       readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "open") {
+    // The configuration is read and a credential is created only once a target
+    // has been resolved, so a refused path never creates one.
+    process.exitCode = await runOpenCommand(args, {
+      cwd: () => process.cwd(),
+      distributions: () => listWslDistributions(),
+      open: (target) => openWorkspace(target),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
