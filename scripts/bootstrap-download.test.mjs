@@ -97,3 +97,18 @@ test("reports a release the server refuses to serve", async () => {
   const { fetchImpl } = responder({ [start]: () => new Response("gone", { status: 404 }) })
   await assert.rejects(downloadOverHttps(start, { maximumBytes: 1024, fetch: fetchImpl }), /404/)
 })
+
+for (const url of ["http://releases.test/archive.tgz", "file:///tmp/archive.tgz", "not a url"]) {
+  test(`refuses to start a download at ${JSON.stringify(url)}`, async () => {
+    const requested = []
+    const fetchImpl = async (target) => {
+      requested.push(target)
+      return new Response("bytes", { status: 200 })
+    }
+    await assert.rejects(
+      downloadOverHttps(url, { maximumBytes: 1024, fetch: fetchImpl }),
+      /https/,
+    )
+    assert.deepEqual(requested, [])
+  })
+}

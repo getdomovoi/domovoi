@@ -10,6 +10,17 @@ const defaultMaximumBytes = 256 * 1024 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 const defaultMaximumRedirects = 5
 
+function httpsUrl(url, base) {
+  let parsed
+  try {
+    parsed = base === undefined ? new URL(url) : new URL(url, base)
+  } catch {
+    throw new Error(`${JSON.stringify(url)} is not a url that downloads over https`)
+  }
+  if (parsed.protocol !== "https:") throw new Error(`${parsed.href} is not https`)
+  return parsed
+}
+
 async function readBounded(response, url, maximumBytes) {
   const declared = Number(response.headers.get("content-length"))
   if (Number.isFinite(declared) && declared > maximumBytes) {
@@ -40,7 +51,7 @@ export async function downloadOverHttps(url, {
   fetch: fetchImpl = fetch,
   maximumRedirects = defaultMaximumRedirects,
 }) {
-  let current = url
+  let current = httpsUrl(url).href
   for (let hop = 0; hop <= maximumRedirects; hop += 1) {
     const response = await fetchImpl(current, { redirect: "manual" })
     if (!redirectStatuses.has(response.status)) {
@@ -50,8 +61,12 @@ export async function downloadOverHttps(url, {
 
     const location = response.headers.get("location")
     if (!location) throw new Error(`${current} redirected with no destination`)
-    const next = new URL(location, current)
-    if (next.protocol !== "https:") throw new Error(`${current} redirected to ${next.href}, which is not https`)
+    let next
+    try {
+      next = httpsUrl(location, current)
+    } catch {
+      throw new Error(`${current} redirected to ${location}, which is not https`)
+    }
     current = next.href
   }
   throw new Error(`${url} redirected more than ${maximumRedirects} times`)
