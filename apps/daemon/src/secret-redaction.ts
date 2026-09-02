@@ -270,3 +270,37 @@ function boundedText(value: unknown, maximumLength: number): { value: string; tr
     return { value: "[Unprintable text]", truncated: false }
   }
 }
+
+// A terminal is not command output: it has no reliable newlines, its lines can
+// be enormous, and what it shows has to keep up with typing. Redaction still
+// has to see across reads, so only a short tail of each chunk is held back and
+// prepended to the next one. A secret is caught unless it straddles more than
+// that tail, and nothing is withheld for long or replaced wholesale. A read
+// that already fills a whole output chunk is emitted with no tail held, so a
+// burst still reaches a client that is about to be dropped for slowness.
+export const terminalRedactionCarryCharacters = 256
+
+export class TerminalOutputRedactor {
+  #carry = ""
+
+  push(chunk: string, holdTail = true): string {
+    const combined = `${this.#carry}${chunk}`
+    this.#carry = ""
+    if (!holdTail) return redactDurableOutput(combined).value
+    if (combined.length <= terminalRedactionCarryCharacters) {
+      this.#carry = combined
+      return ""
+    }
+
+    const emitted = combined.slice(0, combined.length - terminalRedactionCarryCharacters)
+    this.#carry = combined.slice(combined.length - terminalRedactionCarryCharacters)
+    return redactDurableOutput(emitted).value
+  }
+
+  flush(): string {
+    if (this.#carry === "") return ""
+    const remainder = this.#carry
+    this.#carry = ""
+    return redactDurableOutput(remainder).value
+  }
+}

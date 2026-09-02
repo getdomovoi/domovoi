@@ -796,8 +796,14 @@ describe("terminal RPC", () => {
     for (const listener of dataListeners) listener("abcdef123456\r\n")
 
     const output = await streamed
-    expect(JSON.stringify(output)).not.toContain("sk-live-abcdef123456")
+    expect(JSON.stringify(output)).not.toContain("sk-live-")
+    expect(JSON.stringify(output)).not.toContain("abcdef123456")
     expect(JSON.stringify(output)).toContain("[REDACTED]")
+
+    // A prompt carries no newline, and a terminal that withholds it looks dead.
+    const prompted = collect()
+    for (const listener of dataListeners) listener("me@host:~$ ")
+    expect(JSON.stringify(await prompted)).toContain("me@host:~$ ")
 
     const attached = await rpc("terminal.create", {
       terminalId: "terminal-secret",
@@ -807,7 +813,7 @@ describe("terminal RPC", () => {
       client: "desktop",
       clientId: "desktop-secret",
     })
-    expect(JSON.stringify(attached)).not.toContain("sk-live-abcdef123456")
+    expect(JSON.stringify(attached)).not.toContain("abcdef123456")
     expect(attached).toMatchObject({ result: { buffer: expect.stringContaining("[REDACTED]") } })
 
     socket.close()

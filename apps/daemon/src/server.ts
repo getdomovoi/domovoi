@@ -17,7 +17,9 @@ import {
   machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
   demoWorkspace,
+  maximumTerminalOutputChunkCharacters,
   maximumTerminalReplayCharacters,
+  terminalOutputBatchDelayMilliseconds,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
@@ -126,6 +128,7 @@ import {
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
+  TerminalOutputRedactor,
 } from "./secret-redaction.js"
 
 const invalidRequest = -32600
@@ -618,6 +621,10 @@ type ActiveTerminal = {
   shell: string
   cwd: string
   buffer: string
+  // Redaction has to see across pty reads: a credential arrives split as often
+  // as it arrives whole.
+  redactor: TerminalOutputRedactor
+  redactorFlush: ReturnType<typeof setTimeout> | undefined
   owner: TerminalOwner
   // Ownership is the connection that holds it. The owner's identity is
   // broadcast to every client, so a caller-supplied one authorizes nothing.
@@ -1847,6 +1854,8 @@ export class DomovoiDaemon {
           shell: process.process,
           cwd: session.workspacePath,
           buffer: "",
+          redactor: new TerminalOutputRedactor(),
+          redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
           output,
@@ -1860,10 +1869,28 @@ export class DomovoiDaemon {
           if (active?.process === process) {
             // A terminal is where someone types a credential, and its output
             // goes to every connected client and into the replay a later
-            // client is handed. Both are redacted before they leave here.
-            const safe = redactDurableOutput(data).value
-            active.buffer = `${active.buffer}${safe}`.slice(-maximumTerminalReplayCharacters)
-            active.output.push(params.terminalId, safe)
+            // client is handed. Both are redacted before they leave here, and
+            // the redactor holds an unterminated line so a secret split across
+            // two reads is still caught.
+            const emit = (text: string) => {
+              if (!text) return
+              active.buffer = `${active.buffer}${text}`.slice(-maximumTerminalReplayCharacters)
+              active.output.push(params.terminalId, text)
+            }
+            emit(active.redactor.push(data, data.length < maximumTerminalOutputChunkCharacters))
+
+            // A prompt carries no newline, so what the redactor is still
+            // holding is released on the same beat the output is batched on.
+            // Anything split across that beat is not caught, which is the
+            // price of a terminal that shows a prompt.
+            if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
+            active.redactorFlush = setTimeout(() => {
+              const current = this.#terminals.get(params.terminalId)
+              if (current !== active) return
+              active.redactorFlush = undefined
+              emit(active.redactor.flush())
+            }, terminalOutputBatchDelayMilliseconds)
+            active.redactorFlush.unref?.()
           }
         })
         const exitDisposable = process.onExit(({ exitCode, signal }) => {
@@ -1872,6 +1899,7 @@ export class DomovoiDaemon {
           this.#terminals.delete(params.terminalId)
           active.output.flush(params.terminalId)
           active.outputBackpressure.dispose()
+          if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
           active.disposeData()
           active.disposeExit()
           this.#broadcastNotification("terminal.closed", {
@@ -4883,6 +4911,7 @@ export class DomovoiDaemon {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
     this.#terminals.delete(terminalId)
+    if (terminal.redactorFlush !== undefined) clearTimeout(terminal.redactorFlush)
     terminal.disposeData()
     terminal.disposeExit()
     terminal.output.flush(terminalId)
