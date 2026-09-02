@@ -27,9 +27,12 @@ const contracts = [
       "LICENSE",
       "package.json",
       "dist/index.js",
+      "dist/public.js",
+      "dist/public.d.ts",
       "dist/server.js",
       "dist/server.d.ts",
     ],
+    exports: [".", "./internal"],
   },
 ]
 
@@ -41,6 +44,14 @@ for (const contract of contracts) {
   assert.equal(manifest.publishConfig?.access, "public")
   assert.equal(manifest.homepage, "https://domovoi.sh")
   assert.equal(manifest.engines?.node, ">=22")
+
+  if (contract.exports) {
+    assert.deepEqual(
+      Object.keys(manifest.exports ?? {}),
+      contract.exports,
+      `${contract.selector} must publish exactly these entry points`,
+    )
+  }
 
   for (const requiredFile of contract.requiredFiles) {
     assert.ok(files.has(requiredFile), `${contract.selector} must pack ${requiredFile}`)

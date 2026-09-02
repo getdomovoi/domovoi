@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite"
 import { createEmptyWorkspace, demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { SqliteWorkspaceStore } from "./store.js"
+import { resolveWorkspaceRedactionModule, SqliteWorkspaceStore } from "./store.js"
 
 const scratchDirectories: string[] = []
 
@@ -94,6 +94,67 @@ describe("SqliteWorkspaceStore", () => {
       /persisted-command-secret|persisted-reason-secret|persisted-rule-secret|persisted-title-secret|persisted-output-secret/,
     )
     store.close()
+  })
+
+  it("emits the redaction module as a file the persistence worker can import", () => {
+    const moduleUrl = resolveWorkspaceRedactionModule()
+    expect(moduleUrl).toBeDefined()
+    expect(moduleUrl).toMatch(/\/workspace-redaction\.js$/)
+  })
+
+  it("redacts every durable copy on the asynchronous write path too", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-async-redaction-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const changed = structuredClone(demoWorkspace)
+    changed.approvals[0]!.risk = "normal"
+    changed.approvals[0]!.command = "pnpm test --token async-command-secret"
+    changed.approvals[0]!.operation = "Authorization: Bearer async-reason-secret"
+    changed.approvalRules.push({
+      id: "async-rule-secret",
+      projectId: changed.project!.id,
+      operation: "Deploy with secret",
+      command: "deploy --api-key async-rule-secret",
+      createdBy: "desktop",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+    changed.thread.push({
+      id: "async-tool-secret",
+      sessionId: changed.sessions[0]!.id,
+      kind: "tool",
+      tool: "command",
+      status: "completed",
+      title: "pnpm test --password async-title-secret",
+      output: "token=async-output-secret",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    })
+
+    await store.saveAsync(changed)
+
+    const loaded = store.load()
+    expect(loaded.approvals[0]).toMatchObject({
+      risk: "hard-gate",
+      command: "pnpm test --token [REDACTED]",
+      operation: "Authorization: [REDACTED]",
+    })
+    expect(loaded.approvalRules).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "async-rule-secret" }),
+    ]))
+    expect(loaded.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "async-tool-secret",
+        title: "pnpm test --password [REDACTED]",
+        output: "token=[REDACTED]",
+      }),
+    ]))
+    const database = new DatabaseSync(databasePath)
+    const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+    database.close()
+    expect(JSON.stringify(raw)).not.toMatch(
+      /async-command-secret|async-reason-secret|async-rule-secret|async-title-secret|async-output-secret/,
+    )
+    await store.close()
   })
 
   it("repairs a pre-existing raw snapshot before returning it after restart", async () => {
