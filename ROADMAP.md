@@ -218,7 +218,7 @@ fleet.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
 - [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
 - [x] Add checkpointed machine transfer with live source and target preflight
-- [ ] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
+- [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
 - [x] Record transfer receipts and retain the source recovery checkpoint
 
