@@ -11,6 +11,8 @@ import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runOpenCommand } from "./open-command.js"
 import type { OpenTarget } from "./wsl-open-target.js"
+import { connectionForTarget } from "./open-connection.js"
+import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
 import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
@@ -125,15 +127,22 @@ async function requestProjectOpen(
 }
 
 async function openWorkspace(target: OpenTarget): Promise<void> {
-  if (target.kind === "wsl") {
-    // The work belongs to a daemon running inside the distribution. Reaching
-    // that daemon is a separate piece of work, and opening the path here would
-    // mean this daemon touching the distribution's files across the share.
-    throw new Error(`no daemon is reachable in ${target.distribution} yet`)
-  }
-  const config = parseDaemonEnvironment(process.env, homedir())
-  const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
-  await requestProjectOpen(config, token, target.path)
+  // Work inside a distribution is opened by the daemon running there, using
+  // that daemon's own credential, so nothing is read across the share and this
+  // machine's credential never travels into a distribution.
+  const connection = await connectionForTarget(target, {
+    local: async () => {
+      const config = parseDaemonEnvironment(process.env, homedir())
+      return {
+        host: config.host,
+        port: config.port,
+        token: config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath),
+        ...(config.tls ? { tls: true } : {}),
+      }
+    },
+    endpoint: (distribution) => readDistroEndpoint({ distribution }),
+  })
+  await requestProjectOpen(connection, connection.token, target.path)
 }
 
 const help = `Usage: domovoid [options]
