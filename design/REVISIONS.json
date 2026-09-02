@@ -1,0 +1,130 @@
+{
+  "source": {
+    "tool": "Claude Design",
+    "project": "Relay multi-device platform",
+    "projectId": "a3b4404e-4d0c-451e-8dd2-203116a76c06"
+  },
+  "recordedOn": "2026-09-02",
+  "files": {
+    "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
+      "bytes": 103,
+      "sha256": "5a00d61e3a1b9fb0a4a90ca7555d8a309428ea801fc4d6aafae1775e53d23898"
+    },
+    "design/design_handoff_domovoi/OPEN-QUESTIONS.md": {
+      "bytes": 6345,
+      "sha256": "c7e26806e28001b5df38c1f9855b0340eb40b98445b1cd705851a743d681363c"
+    },
+    "design/design_handoff_domovoi/README.md": {
+      "bytes": 27975,
+      "sha256": "7c6791815ae0d415594c1358f441336093b6ffb48db193c4d5f0027a6b7fa469"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Desktop.dc.html": {
+      "bytes": 179610,
+      "sha256": "e5e9e075f1e068602e2abaae8b851158f2cf384a5253bc87cbf853e1d6699ae3"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Foundations.dc.html": {
+      "bytes": 39197,
+      "sha256": "05af6b67ca595e408a1628e1f2dd4422f0af44abeb1fb42e4d929bbf4995467b"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Mobile.dc.html": {
+      "bytes": 45426,
+      "sha256": "7516b057a1ac4d2a338cb1d37733770a5325829289583c12f6f811553e0c39e8"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Site.dc.html": {
+      "bytes": 35042,
+      "sha256": "b8d0720ab6f3d27d6e17f5bc908ab288f1e9d95b31bd0b1866dd52d084b72dd5"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Tablet.dc.html": {
+      "bytes": 67792,
+      "sha256": "e72fce01fac25faf021567db6e14118d428c8f60e4f942e5aef6e42384fd7207"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Web.dc.html": {
+      "bytes": 55189,
+      "sha256": "fe0e8be4f8af3e63dc048f664d8381fd8021608389cc21cf63c59915b2b739ff"
+    },
+    "design/design_handoff_domovoi/designs/support.js": {
+      "bytes": 69150,
+      "sha256": "8fe7df74405f3c55f49b7249c74ea1397e65d07dea2b1bd3b4a489bec2e28cbe"
+    },
+    "design/design_handoff_domovoi/screenshots/01-desktop-workspace.png": {
+      "bytes": 38090,
+      "sha256": "57e0dec38dffc65ccf92035d23bca972b3578aed796cff4bd270ac9d4dd335f2"
+    },
+    "design/design_handoff_domovoi/screenshots/02-public-site.png": {
+      "bytes": 34292,
+      "sha256": "1cfb7b65481652715af4818bfef3d37ad77a6b56de39caf10bc37967747a8d2c"
+    },
+    "design/design_handoff_domovoi/screenshots/03-web-client.png": {
+      "bytes": 30184,
+      "sha256": "34da6338c8eb6d22fffcd35c9f868bd175803e99ab657eeb25e3498b27450f76"
+    },
+    "design/design_handoff_domovoi/screenshots/04-tablet.png": {
+      "bytes": 32875,
+      "sha256": "fc421233218e50ae970d0deba869c23b04021e4a6bbdd6caf8210552734248be"
+    },
+    "design/design_handoff_domovoi/screenshots/05-phone.png": {
+      "bytes": 31062,
+      "sha256": "67a7a7f7382efd215d5610ca05d472b2f4ac234103791939d8dbe587167c12fd"
+    },
+    "design/design_handoff_domovoi/screenshots/06-foundations.png": {
+      "bytes": 27090,
+      "sha256": "37d0989243632304c4dd4fce4caa9029665de7d52cb97faedca405601fea363f"
+    },
+    "design/design_handoff_domovoi_brand/README.md": {
+      "bytes": 9698,
+      "sha256": "45bf4d896ff81deba27e4f2d7128baf8dfde12487117411123b2b58a01aa9dc5"
+    },
+    "design/design_handoff_domovoi_brand/designs/Domovoi Brand.dc.html": {
+      "bytes": 40615,
+      "sha256": "c7bb47d46e721b0229a2d6512364f0aece81c1cbd53eba47c53b1be99842b71c"
+    },
+    "design/design_handoff_domovoi_brand/designs/support.js": {
+      "bytes": 69150,
+      "sha256": "8fe7df74405f3c55f49b7249c74ea1397e65d07dea2b1bd3b4a489bec2e28cbe"
+    },
+    "design/design_handoff_domovoi_brand/screenshots/01-brand-directions.png": {
+      "bytes": 23998,
+      "sha256": "9e88ce23aea1cb8b552a7b07de66763a56d3028b0d03a9dde08d1e1a9cdac4ec"
+    },
+    "design/design_system_domovoi/styles.css": {
+      "bytes": 286,
+      "sha256": "39e0f6511b7dbd77a48ce7e9f0cbbe4b72cfd6b9d6971593cb701944ca54b9c5"
+    },
+    "design/design_system_domovoi/tokens/base.css": {
+      "bytes": 804,
+      "sha256": "4bb77c10679d5374506ae37a889c0ddd50a4e72732a33ab583ce27e99edbe01c"
+    },
+    "design/design_system_domovoi/tokens/colors.css": {
+      "bytes": 4701,
+      "sha256": "49f0e772b9887148bc7b5995a7151fbfdbae1b06d7820dcf093b18f76b7903db"
+    },
+    "design/design_system_domovoi/tokens/elevation.css": {
+      "bytes": 587,
+      "sha256": "0007c34b47578a9022464e6fab851a8702cca54cc2d3fa05251dabd286df680b"
+    },
+    "design/design_system_domovoi/tokens/fonts.css": {
+      "bytes": 321,
+      "sha256": "cc7acf85fb63f624c3e253ab44022ffd87c04f7f66e1d8a33b3f1c19848926cb"
+    },
+    "design/design_system_domovoi/tokens/motion.css": {
+      "bytes": 1425,
+      "sha256": "2b7ffff48dae4d92d34c8879c87761b034b4f3e608b86f3f9113f15229dd01b4"
+    },
+    "design/design_system_domovoi/tokens/radii.css": {
+      "bytes": 608,
+      "sha256": "651ff128f481b798eab0f65f0147f5ca365ba64d9d70f5ba258c030ee5dddf56"
+    },
+    "design/design_system_domovoi/tokens/scrollbar.css": {
+      "bytes": 1236,
+      "sha256": "bc844485b9ee9c002a396de2e83e49e54b382596eb87d3a9eec6c77b85adc5f6"
+    },
+    "design/design_system_domovoi/tokens/spacing.css": {
+      "bytes": 1135,
+      "sha256": "79e477b4796ca6b0fd76d5c99751f8289586217999ebcd2b0e1cc7c75f02304c"
+    },
+    "design/design_system_domovoi/tokens/typography.css": {
+      "bytes": 1270,
+      "sha256": "89aa63a1ef0423af683a1db51dc0e170f84861b33056256e91d3314919e87d1c"
+    }
+  }
+}

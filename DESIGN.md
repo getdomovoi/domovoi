@@ -74,16 +74,70 @@ components:
 
 ## Overview
 
-The normative product-design source is the Claude Design handoff under
-[`design/design_handoff_domovoi/`](design/design_handoff_domovoi/README.md). The companion
-[`design/design_handoff_domovoi_brand/`](design/design_handoff_domovoi_brand/README.md) governs
-the mark, wordmark, state family, and voice. Product tokens remain the color authority. Recreate
-both handoffs in the production stack; do not port prototype markup or `support.js`.
+The normative product-design source is the Claude Design system in the project "Relay multi-device
+platform". The tracked bundles under
+[`design/design_handoff_domovoi/`](design/design_handoff_domovoi/README.md) and
+[`design/design_handoff_domovoi_brand/`](design/design_handoff_domovoi_brand/README.md) are the
+signed snapshot taken from that project on 2026-08-26; the brand bundle still governs the mark,
+wordmark, state family, and voice. Recreate the design in the production stack; do not port
+prototype markup or `support.js`.
+
+Where the tracked handoff and the newer design system disagree, the design system wins. See
+"Design authority" below for what that changes and what is still to be synced.
 
 The system presents the same daemon-owned objects across desktop, browser, tablet, and phone:
 machine, project, session, turn, artifact, and annotation. State remains consistent across
 clients, consequential decisions are attributed to their originating client, and smaller
 surfaces collapse information rather than silently removing it.
+
+## Design authority
+
+Recorded 2026-09-02, resolving the two conflicts the repository audit raised.
+
+**The Claude Design system governs.** Its readme, tokens, and specimen cards are the contract. The
+signed `.dc.html` surfaces decide anything the design system does not state, including dock tabs,
+sidebar groups, and approval labels. The tracked handoff README is the oldest of the three and
+loses to both where they disagree.
+
+**Shell geometry follows the design system, not the tracked handoff README.**
+
+| Region | Design system | Tracked handoff README |
+| --- | --- | --- |
+| Rail | 62px, never collapses | not present |
+| Sidebar | 240px | 200 to 420px, collapsing to a 46px icon rail |
+| Thread lane | 760px centred | 620px centred |
+| Inspector | 280px | resizable dock |
+| Titlebar | 38px | unstated |
+| Header | 62px | unstated |
+| Control height | 34px | unstated |
+| Touch target | 44px minimum | 44pt iOS, 48dp Android |
+
+Other design-system rules that supersede the tracked handoff: theme scoping is `.theme-dark` and
+`.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
+literal named scale with compound paddings rather than a 4px grid; motion is `dv-pop-in`,
+`dv-pulse`, `dv-sweep`, and `dv-blink` at 90, 140, 200, and 320ms, collapsing to 0.01ms under
+reduced motion; product type never exceeds 20px or falls below 10.5px; icons are Lucide at 1.5px
+stroke, 16px in rows and toolbars, 20px in the rail, 24px in empty states; cards carry a one pixel
+border and no shadow, with shadows reserved for menu, popover, dialog, and window elevations.
+
+**The design system is vendored** at `design/design_system_domovoi/`: `styles.css` and the nine
+token files, pulled from the project on 2026-09-02. Those files are the token contract; this
+section covers what they do not state.
+
+**Still to sync.** Measured against the vendored tokens on 2026-09-02:
+
+- `--faint` has drifted. The design system sets `oklch(0.53 0.01 285)` for dark; production ships
+  `oklch(0.59 0.01 285)` in `packages/ui/src/styles.css`. Machine metadata reads lighter than
+  intended.
+- Seven tokens are absent from production: `--desk`, `--overlay`, `--danger-on`, and the whole
+  `--info-bg`, `--info-border`, `--info-fg`, `--info-dim` ramp. The info ramp is what a handoff
+  receipt should fill with, which is why those surfaces currently approximate with a translucent
+  accent.
+- Production matches the design system on the other 39 dark tokens, counting the ten it expresses
+  as `var()` aliases.
+- The live desktop surface restyles the terminal pane. See "Design source revision" for the detail.
+- Production still implements the tracked handoff geometry rather than the numbers above. Aligning
+  the shell is tracked in `ROADMAP.md`, not done.
 
 ## Colors
 

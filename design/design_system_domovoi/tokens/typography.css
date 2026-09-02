@@ -1,0 +1,46 @@
+/* Two families, no third. Sans carries the product; mono carries anything a
+   machine produced (paths, commands, shas, model ids, durations, counts).
+   Sizes are literal px because the surfaces are fixed-canvas designs. */
+
+:root {
+  --font-sans: "Instrument Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* display — marketing only */
+  --text-display: 52px;
+  --text-display-lh: 1.06;
+  --text-display-ls: -0.022em;
+  --text-h1: 38px;
+  --text-h1-lh: 1.12;
+  --text-h1-ls: -0.018em;
+  --text-h2: 27px;
+  --text-h2-lh: 1.2;
+  --text-h2-ls: -0.012em;
+
+  /* product — the app never goes above 20px */
+  --text-title: 20px;
+  --text-title-lh: 1.3;
+  --text-lead: 15.5px;
+  --text-lead-lh: 1.65;
+  --text-body: 13.5px;
+  --text-body-lh: 1.6;
+  --text-ui: 12.5px;
+  --text-ui-lh: 1.5;
+  --text-meta: 11.5px;
+  --text-meta-lh: 1.5;
+  --text-micro: 10.5px;
+  --text-micro-lh: 1.45;
+
+  /* mono steps, one notch below their sans sibling so x-heights match */
+  --text-mono: 12px;
+  --text-mono-sm: 11px;
+  --text-mono-xs: 10px;
+
+  /* eyebrow / section label */
+  --text-eyebrow: 9.5px;
+  --text-eyebrow-ls: 0.12em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+}
