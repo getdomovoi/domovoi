@@ -726,6 +726,128 @@ describe("terminal RPC", () => {
     reopened.close()
   })
 
+  it("redacts a secret out of terminal output and out of the replay it hands a client", async () => {
+    const dataListeners = new Set<(data: string) => void>()
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn((listener: (data: string) => void) => {
+        dataListeners.add(listener)
+        return { dispose: () => dataListeners.delete(listener) }
+      }),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-redaction"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("terminal.create", {
+      terminalId: "terminal-secret",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-secret",
+    })
+
+    const collect = (): Promise<Record<string, unknown>> => new Promise((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { method?: string }
+        if (message.method !== "terminal.output") return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+
+    // The secret arrives split across two reads, which is how a pty delivers
+    // anything long enough to matter.
+    const streamed = collect()
+    for (const listener of dataListeners) listener("export API_KEY=sk-live-")
+    for (const listener of dataListeners) listener("abcdef123456\r\n")
+
+    const output = await streamed
+    expect(JSON.stringify(output)).not.toContain("sk-live-")
+    expect(JSON.stringify(output)).not.toContain("abcdef123456")
+    expect(JSON.stringify(output)).toContain("[REDACTED]")
+
+    // A prompt carries no newline, and a terminal that withholds it looks dead.
+    const prompted = collect()
+    for (const listener of dataListeners) listener("me@host:~$ ")
+    expect(JSON.stringify(await prompted)).toContain("me@host:~$ ")
+
+    const attached = await rpc("terminal.create", {
+      terminalId: "terminal-secret",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-secret",
+    })
+    expect(JSON.stringify(attached)).not.toContain("abcdef123456")
+    expect(attached).toMatchObject({ result: { buffer: expect.stringContaining("[REDACTED]") } })
+
+    // A short read followed straight away by an exit must still reach the
+    // client: redaction holding a tail is not a reason to lose output.
+    const closing = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { method?: string; params?: { data?: string } }
+        if (message.method !== "terminal.output" || !message.params?.data?.includes("bye")) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+    for (const listener of dataListeners) listener("bye")
+    await rpc("terminal.close", {
+      terminalId: "terminal-secret",
+      client: "desktop",
+      clientId: "desktop-secret",
+    })
+    expect(JSON.stringify(await closing)).toContain("bye")
+
+    await rpc("terminal.create", {
+      terminalId: "terminal-secret",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-secret",
+    })
+
+
+    socket.close()
+  })
+
   it("refuses terminal input from a connection that only claims the owner's identity", async () => {
     const terminal = {
       process: "bash",
