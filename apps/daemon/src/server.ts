@@ -98,7 +98,8 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
-import { permissionDecisionFor } from "./permission-policy.js"
+import { isFileToolCommand, permissionDecisionFor } from "./permission-policy.js"
+import { readPackageScripts } from "./package-scripts.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
@@ -1544,7 +1545,15 @@ export class DomovoiDaemon {
       const signature = requestUrl.searchParams.get("signature")
       authorized = Boolean(sessionId && revision && artifactAccessMatches(
         this.#artifactSigningSecret,
-        { sessionId, artifactId, revision, purpose, ...(bridgeChannel ? { bridgeChannel } : {}), expiresAt },
+        {
+          sessionId,
+          artifactId,
+          revision,
+          purpose,
+          ...(bridgeChannel ? { bridgeChannel } : {}),
+          ...(parentOrigin ? { parentOrigin } : {}),
+          expiresAt,
+        },
         signature,
       ))
     } catch {
@@ -1552,7 +1561,7 @@ export class DomovoiDaemon {
       response.end(JSON.stringify({ error: "not_found" }))
       return
     }
-    if (!canServeArtifacts(this.host, authorized) || (purpose !== "preview" && !authorized)) {
+    if (!authorized) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -1571,7 +1580,8 @@ export class DomovoiDaemon {
       !artifact
       || artifact.mimeType !== "text/html"
       || !path
-      || (authorized && (artifact.sessionId !== sessionId || artifact.revision !== revision))
+      || artifact.sessionId !== sessionId
+      || artifact.revision !== revision
     ) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
@@ -2043,6 +2053,7 @@ export class DomovoiDaemon {
             revision: params.revision,
             purpose: params.purpose,
             ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+            ...(params.parentOrigin ? { parentOrigin: params.parentOrigin } : {}),
             expiresAt,
             signature: signArtifactAccess(
               this.#artifactSigningSecret,
@@ -2052,6 +2063,7 @@ export class DomovoiDaemon {
                 revision: params.revision,
                 purpose: params.purpose,
                 ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+                ...(params.parentOrigin ? { parentOrigin: params.parentOrigin } : {}),
                 expiresAt,
               },
             ),
@@ -4072,10 +4084,15 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
+      const buildAuto = session.runtime.permissionMode === "build" && session.runtime.auto
+      const packageScripts = buildAuto && event.command
+        ? readPackageScripts(event.cwd ?? session.workspacePath ?? project.path)
+        : undefined
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(event.command ? { command: event.command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
+        ...(packageScripts ? { packageScripts } : {}),
       })
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
@@ -4084,7 +4101,12 @@ export class DomovoiDaemon {
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret
           && rule.projectId === project.id
-          && rule.command === event.command,
+          && rule.command === event.command
+          && (!isFileToolCommand(event.command ?? "")
+            || (event.path !== undefined
+              && !event.blockedPath
+              && session.workspacePath !== undefined
+              && resolveInside(session.workspacePath, event.path) !== undefined)),
       )
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
@@ -5204,10 +5226,6 @@ function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost"
 }
 
-export function canServeArtifacts(host: string, authorized = false): boolean {
-  return isLoopbackHost(host) || authorized
-}
-
 export function frameAncestorsFor(origins: Iterable<string>): string {
   const sources: string[] = []
   for (const origin of origins) {
@@ -5230,6 +5248,7 @@ export type ArtifactAccessScope = {
   revision: number
   purpose: ArtifactAccessPurpose
   bridgeChannel?: string
+  parentOrigin?: string
   expiresAt: number
 }
 
@@ -5240,6 +5259,7 @@ function artifactAccessPayload(scope: ArtifactAccessScope): string {
     scope.revision,
     scope.purpose,
     scope.bridgeChannel ?? null,
+    scope.parentOrigin ?? null,
     scope.expiresAt,
   ])
 }
@@ -5267,6 +5287,7 @@ export function artifactAccessMatches(
     || !Number.isSafeInteger(scope.expiresAt)
     || scope.expiresAt < now
     || (scope.bridgeChannel && scope.purpose !== "preview")
+    || (scope.parentOrigin && !scope.bridgeChannel)
     || typeof suppliedSignature !== "string"
   ) {
     return false

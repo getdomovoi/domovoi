@@ -42,8 +42,10 @@ reuses a high-entropy credential at `~/.domovoi/daemon.token` with user-only per
 listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. Use an encrypted outer transport such
 as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
 
-The bearer token protects RPC access. Health checks remain public and preview documents use their
-own short-lived signed capabilities.
+The bearer token protects RPC access. Health checks remain public. Preview documents require their
+own short-lived signed capabilities on every listener, loopback included; each capability is scoped
+to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
+retargeted request returns 404.
 
 ## Programmatic use
 

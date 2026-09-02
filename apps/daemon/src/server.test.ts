@@ -29,7 +29,6 @@ import {
   maximumIncomingTransfers,
   appendPlanDelta,
   artifactAccessMatches,
-  canServeArtifacts,
   frameAncestorsFor,
   DomovoiDaemon,
   hostAuthorityMatches,
@@ -2631,16 +2630,8 @@ describe("DomovoiDaemon", () => {
     expect(annotations[0]!.artifactId).toBe("plan-session-a")
   })
 
-  it("requires signed access for preview documents outside loopback", () => {
-    expect(canServeArtifacts("127.0.0.1")).toBe(true)
-    expect(canServeArtifacts("::1")).toBe(true)
-    expect(canServeArtifacts("100.64.0.10")).toBe(false)
-    expect(canServeArtifacts("100.64.0.10", true)).toBe(true)
-    expect(canServeArtifacts("0.0.0.0")).toBe(false)
-  })
-
-  it("scopes artifact access to id, bridge channel, and expiry", () => {
-    const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", expiresAt: 1_800_000_000 }
+  it("scopes artifact access to id, bridge channel, parent origin, and expiry", () => {
+    const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", parentOrigin: "https://app.domovoi.sh", expiresAt: 1_800_000_000 }
     const signature = signArtifactAccess("artifact-secret", scope)
     expect(signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(artifactAccessMatches(
@@ -2659,6 +2650,32 @@ describe("DomovoiDaemon", () => {
       "artifact-secret",
       { ...scope, bridgeChannel: "preview_channel_changed" },
       signature,
+      1_799_999_999,
+    )).toBe(false)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      { ...scope, parentOrigin: "https://attacker.example" },
+      signature,
+      1_799_999_999,
+    )).toBe(false)
+    const { parentOrigin: _unsignedParentOrigin, ...withoutParentOrigin } = scope
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      withoutParentOrigin,
+      signature,
+      1_799_999_999,
+    )).toBe(false)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      scope,
+      signArtifactAccess("artifact-secret", withoutParentOrigin),
+      1_799_999_999,
+    )).toBe(false)
+    const { bridgeChannel: _unbridged, ...withoutBridge } = scope
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      withoutBridge,
+      signArtifactAccess("artifact-secret", withoutBridge),
       1_799_999_999,
     )).toBe(false)
     expect(artifactAccessMatches(
@@ -7208,12 +7225,25 @@ describe("DomovoiDaemon", () => {
     expect(artifact).toMatchObject({ sessionId, type: "preview", path: "preview.html" })
     expect((snapshot.result as { artifacts: unknown[] }).artifacts).toHaveLength(2)
 
+    const unsignedPreview = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}`,
+    )
+    expect(unsignedPreview.status).toBe(404)
+    await expect(unsignedPreview.json()).resolves.toEqual({ error: "not_found" })
+
+    const unsignedBridgedPreview = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178`,
+    )
+    expect(unsignedBridgedPreview.status).toBe(404)
+    await expect(unsignedBridgedPreview.json()).resolves.toEqual({ error: "not_found" })
+
     const accessResponse = await rpc("artifact.authorize", {
       sessionId,
       artifactId: artifact!.id,
       revision: artifact!.revision,
       purpose: "preview",
       bridgeChannel: "preview_channel_123456",
+      parentOrigin: "http://127.0.0.1:5178",
       client: "desktop",
     })
     const access = accessResponse.result as {
@@ -7222,15 +7252,26 @@ describe("DomovoiDaemon", () => {
       revision: number
       purpose: string
       bridgeChannel: string
+      parentOrigin: string
       expiresAt: number
       signature: string
     }
     expect(access).toMatchObject({
       artifactId: artifact!.id,
       bridgeChannel: "preview_channel_123456",
+      parentOrigin: "http://127.0.0.1:5178",
     })
     expect(access.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1_000))
     expect(access.signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
+
+    await expect(rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "preview",
+      parentOrigin: "http://127.0.0.1:5178",
+      client: "desktop",
+    })).resolves.toMatchObject({ error: { code: -32602 } })
 
     await expect(rpc("artifact.authorize", {
       sessionId,
@@ -7242,26 +7283,47 @@ describe("DomovoiDaemon", () => {
       error: { code: -32602, message: "Preview artifact does not exist" },
     })
 
-    const preview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}`,
-    )
-    expect(preview.status).toBe(200)
-    expect(preview.headers.get("content-security-policy")).toContain("default-src 'none'")
-    await expect(preview.text()).resolves.toBe("<h1>Domovoi preview</h1>")
-
-    const bridgedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178`,
-    )
-    const bridgedContent = await bridgedPreview.text()
-    expect(bridgedContent).toContain("domovoi.preview.selection")
-    expect(bridgedContent).toContain("preview_channel_123456")
-    expect(bridgedContent).toContain(artifact!.id)
-
-    const signedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
-    )
+    const signedParentOrigin = encodeURIComponent(access.parentOrigin)
+    const signedPreviewUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=${signedParentOrigin}&expires=${access.expiresAt}&signature=${access.signature}`
+    const signedPreview = await fetch(signedPreviewUrl)
     expect(signedPreview.status).toBe(200)
-    expect(await signedPreview.text()).toContain("domovoi.preview.selection")
+    expect(signedPreview.headers.get("content-security-policy")).toContain("default-src 'none'")
+    const signedContent = await signedPreview.text()
+    expect(signedContent).toContain("domovoi.preview.selection")
+    expect(signedContent).toContain("preview_channel_123456")
+    expect(signedContent).toContain(artifact!.id)
+    expect(signedContent).toContain('const parentOrigin="http://127.0.0.1:5178"')
+
+    const retargetedPreview = await fetch(
+      signedPreviewUrl.replace(`parentOrigin=${signedParentOrigin}`, `parentOrigin=${encodeURIComponent("http://attacker.example")}`),
+    )
+    expect(retargetedPreview.status).toBe(404)
+    const opaqueParentPreview = await fetch(
+      signedPreviewUrl.replace(`parentOrigin=${signedParentOrigin}`, "parentOrigin=null"),
+    )
+    expect(opaqueParentPreview.status).toBe(404)
+    const droppedParentPreview = await fetch(
+      signedPreviewUrl.replace(`&parentOrigin=${signedParentOrigin}`, ""),
+    )
+    expect(droppedParentPreview.status).toBe(404)
+
+    const plainResponse = await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "preview",
+      client: "desktop",
+    })
+    const plainAccess = plainResponse.result as typeof access
+    expect(plainAccess).not.toHaveProperty("parentOrigin")
+    const plainPreviewUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(plainAccess.artifactId)}?session=${plainAccess.sessionId}&revision=${plainAccess.revision}&purpose=preview&expires=${plainAccess.expiresAt}&signature=${plainAccess.signature}`
+    const plainPreview = await fetch(plainPreviewUrl)
+    expect(plainPreview.status).toBe(200)
+    await expect(plainPreview.text()).resolves.toBe("<h1>Domovoi preview</h1>")
+    const unsignedBridge = await fetch(`${plainPreviewUrl}&bridge=preview_channel_123456&parentOrigin=${signedParentOrigin}`)
+    expect(unsignedBridge.status).toBe(404)
+    const unsignedParentOrigin = await fetch(`${plainPreviewUrl}&parentOrigin=${signedParentOrigin}`)
+    expect(unsignedParentOrigin.status).toBe(404)
 
     const printResponse = await rpc("artifact.authorize", {
       sessionId,
@@ -7308,9 +7370,8 @@ describe("DomovoiDaemon", () => {
     }).artifacts.find((candidate) => candidate.id === artifact!.id)
     await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: currentArtifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
-    const invalidBridge = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,
-    )
+    const invalidBridge = await fetch(`${plainPreviewUrl}&bridge=short`)
+    expect(invalidBridge.status).toBe(200)
     await expect(invalidBridge.text()).resolves.toBe("<h1>Domovoi preview</h1>")
 
     const rebindingStatus = await new Promise<number | undefined>((resolve, reject) => {
@@ -7329,13 +7390,22 @@ describe("DomovoiDaemon", () => {
     expect(rebindingStatus).toBe(404)
 
     const linkedArtifact = (snapshot.result as {
-      artifacts: Array<{ id: string; title: string }>
+      artifacts: Array<{ id: string; title: string; revision: number }>
     }).artifacts.find((candidate) => candidate.title === "linked.html")!
+    const linkedAccess = (await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: linkedArtifact.id,
+      revision: linkedArtifact.revision,
+      purpose: "preview",
+      client: "desktop",
+    })).result as typeof access
+    const linkedUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(linkedAccess.artifactId)}?session=${linkedAccess.sessionId}&revision=${linkedAccess.revision}&purpose=preview&expires=${linkedAccess.expiresAt}&signature=${linkedAccess.signature}`
+    const linkedPreview = await fetch(linkedUrl)
+    expect(linkedPreview.status).toBe(200)
+    await expect(linkedPreview.text()).resolves.toBe("<h1>Safe preview</h1>")
     await unlink(join(worktree, "linked.html"))
     await symlink(join(scratch, "outside.html"), join(worktree, "linked.html"))
-    const symlinkEscape = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(linkedArtifact.id)}`,
-    )
+    const symlinkEscape = await fetch(linkedUrl)
     expect(symlinkEscape.status).toBe(404)
 
     const escaped = await fetch(
@@ -7623,6 +7693,116 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("resolves a Build-auto script through the manifest beside it", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-build-auto-"))
+    scratchDirectories.push(workspacePath)
+    await writeFile(join(workspacePath, "package.json"), JSON.stringify({
+      scripts: { test: "vitest run", leak: "cat .env && vitest run" },
+    }))
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: true,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-script-resolution"
+    delete session.activeTurnId
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-script-resolution"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Run the suite",
+      client: "desktop",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 31,
+      threadId: session.providerThreadId,
+      turnId: "turn-script-resolution",
+      reason: "Run project tests",
+      command: "pnpm test",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 32,
+      threadId: session.providerThreadId,
+      turnId: "turn-script-resolution",
+      reason: "Run project tests",
+      command: "pnpm run leak",
+    })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).toHaveBeenCalledWith(31, "allow-once")
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(32, expect.anything())
+    expect(current).toMatchObject({
+      result: {
+        approvals: expect.arrayContaining([
+          expect.objectContaining({
+            providerRequestId: 32,
+            command: "pnpm run leak",
+            risk: "hard-gate",
+          }),
+        ]),
+      },
+    })
+    socket.close()
+  })
+
   it("auto-allows bounded work but keeps hard gates explicit", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -7708,7 +7888,7 @@ describe("DomovoiDaemon", () => {
       requestId: 11,
       threadId: session.providerThreadId,
       turnId: "turn-build-auto",
-      command: "pnpm test",
+      command: "git status --porcelain",
     })
     listener!({
       type: "approval-requested",
@@ -7718,17 +7898,33 @@ describe("DomovoiDaemon", () => {
       reason: "Install skill",
       command: skillInstallCommand,
     })
+    listener!({
+      type: "approval-requested",
+      requestId: 13,
+      threadId: session.providerThreadId,
+      turnId: "turn-build-auto",
+      reason: "Run project tests",
+      command: "pnpm test",
+    })
     const current = await rpc("workspace.get", {})
 
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "allow-once")
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(13, expect.anything())
     expect(current).toMatchObject({
       result: {
-        approvals: expect.arrayContaining([expect.objectContaining({
-          providerRequestId: 12,
-          command: skillInstallCommand,
-          risk: "hard-gate",
-        })]),
+        approvals: expect.arrayContaining([
+          expect.objectContaining({
+            providerRequestId: 12,
+            command: skillInstallCommand,
+            risk: "hard-gate",
+          }),
+          expect.objectContaining({
+            providerRequestId: 13,
+            command: "pnpm test",
+            risk: "normal",
+          }),
+        ]),
       },
     })
     const approvalId = (current.result as {
@@ -7764,6 +7960,132 @@ describe("DomovoiDaemon", () => {
     })
     expect((approved.result as { approvals: Array<{ providerRequestId?: number }> }).approvals)
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ providerRequestId: 12 })]))
+    socket.close()
+  })
+
+  it("scopes a standing file-tool rule to the session worktree", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = "/worktrees/rule-scope"
+    session.providerThreadId = "thread-rule-scope"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules.push({
+      id: "rule-edit",
+      projectId: snapshot.project!.id,
+      operation: "Edit a file",
+      command: "Edit",
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    })
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-rule-scope"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Edit the config",
+      client: "desktop",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 21,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: "/worktrees/rule-scope/src/index.ts",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 22,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: "/outside-worktree/package.json",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 23,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: "/worktrees/rule-scope/src/index.ts",
+      blockedPath: "/worktrees/rule-scope/src/index.ts",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 24,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+    })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(agent.resolveApproval).toHaveBeenCalledWith(21, "always-project")
+    expect((current.result as {
+      approvals: Array<{ providerRequestId?: number }>
+    }).approvals.map((approval) => approval.providerRequestId)).toEqual([22, 23, 24])
     socket.close()
   })
 

@@ -5,6 +5,27 @@ export type PermissionDecision = {
   risk: ApprovalRisk
 }
 
+const secretPathStart = String.raw`(?:^|[\s:=/\\'"])`
+const secretPathEnd = String.raw`(?![\w.-])`
+const secretFileNames = [
+  String.raw`[\w.-]*\.env(?:rc|\.[\w.-]+)?`,
+  String.raw`\.ssh`,
+  String.raw`\.aws[/\\]credentials`,
+  String.raw`\.kube[/\\]config`,
+  String.raw`\.docker[/\\]config\.json`,
+  String.raw`gh[/\\]hosts\.yml`,
+  String.raw`daemon\.token`,
+  String.raw`credentials\.json`,
+  String.raw`\.netrc`,
+  String.raw`\.npmrc`,
+  String.raw`\.pypirc`,
+  String.raw`[\w.-]+\.(?:pem|key|p12|pfx)`,
+] as const
+const secretFilePattern = new RegExp(
+  `${secretPathStart}(?:${secretFileNames.join("|")})${secretPathEnd}`,
+  "i",
+)
+
 const hardGatePatterns = [
   /\b(?:sudo|doas|pkexec)\b/i,
   /\b(?:rm|rmdir|shred|mkfs|chmod|chown)\b/i,
@@ -14,15 +35,27 @@ const hardGatePatterns = [
   /\b(?:kubectl\s+(?:apply|delete|patch)|helm\s+(?:upgrade|uninstall))\b/i,
   /\b(?:drop|truncate)\s+(?:database|schema|table)\b/i,
   /\b(?:migrate|migration)\b/i,
-  /(?:^|[/\\:])["']?\.env["']?(?:$|\s)|(?:^|[/\\:])["']?\.ssh(?:[/\\]|["']?(?:$|\s))|\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
+  secretFilePattern,
+  /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
   /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
   /\b(?:curl|wget|ssh|scp|sftp)\b/i,
   /\bexternal[_ -]?directory\b/i,
 ] as const
 
+const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
+
+export function isFileToolCommand(command: string): boolean {
+  return fileToolCommands.has(command)
+}
+
+const gitSummaryFlag = String.raw`--(?:stat|shortstat|numstat|name-only|name-status)`
 const safeBuildAutoPatterns = [
-  /^(?:pnpm|npm|bun|yarn)\s+(?:run\s+)?(?:test|lint|typecheck|check|build)(?:\s[^;&|]*)?$/i,
-  /^git\s+(?:status|diff|log|show)(?:\s[^;&|]*)?$/i,
+  /^git\s+status(?:\s+(?:--(?:porcelain(?:=v[12])?|short|branch|long|untracked-files(?:=(?:no|normal|all))?)|-[sb]+|-u(?:no|normal|all)?))*$/i,
+  new RegExp(String.raw`^git\s+diff(?:\s+(?:${gitSummaryFlag}|--(?:check|cached|staged)))*$`, "i"),
+  new RegExp(
+    String.raw`^git\s+log(?:\s+(?:${gitSummaryFlag}|--(?:oneline|graph|decorate|all|abbrev-commit|no-merges|first-parent)|--max-count=\d+|-n\s*\d+|-\d+))*$`,
+    "i",
+  ),
   /^pwd$/i,
 ] as const
 
@@ -94,10 +127,65 @@ export function isSkillInstallCommand(command: string): boolean {
   return trimmed.split(commandSeparators).some((segment) => segment !== trimmed && isSkillInstallSegment(segment))
 }
 
+const packageManagers = new Set(["pnpm", "npm", "yarn", "bun"])
+const packageSubcommands = new Set([
+  "exec", "dlx", "x", "install", "i", "add", "remove", "rm", "up", "update",
+  "audit", "publish", "pack", "create", "init", "link", "why", "dedupe", "store", "patch",
+])
+const scriptName = /^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/i
+
+type PackageScriptRun = { script: string; rest: string }
+
+function packageScriptRun(command: string): PackageScriptRun | undefined {
+  const tokens = command.trim().split(/\s+/)
+  const manager = tokens[0]?.toLowerCase()
+  if (!manager || !packageManagers.has(manager)) return undefined
+  const explicitRun = tokens[1]?.toLowerCase() === "run"
+  const index = explicitRun ? 2 : 1
+  const script = tokens[index]
+  if (!script || !scriptName.test(script)) return undefined
+  if (!explicitRun && packageSubcommands.has(script.toLowerCase())) return undefined
+  return { script, rest: tokens.slice(index + 1).join(" ") }
+}
+
+type BodyDecision = "allow" | "review" | "hard-gate"
+
+// A script name authorizes nothing on its own: what runs is the body the
+// manifest defines today, and an agent that can edit the manifest can change
+// it. Judge the resolved body, and every body it delegates to, by the same
+// rules as a typed command.
+function resolvedScriptDecision(
+  body: string,
+  scripts: Readonly<Record<string, string>>,
+  seen: ReadonlySet<string>,
+): BodyDecision {
+  if (seen.size > 4) return "review"
+  if (hardGatePatterns.some((pattern) => pattern.test(body))) return "hard-gate"
+  if (ambiguousShellSyntax.test(body)) return "review"
+  for (const segment of body.split(commandSeparators)) {
+    const candidate = segment.trim()
+    if (!candidate) continue
+    if (hardGatePatterns.some((pattern) => pattern.test(candidate))) return "hard-gate"
+    const nested = packageScriptRun(candidate)
+    if (!nested) continue
+    if (seen.has(nested.script)) return "review"
+    const nestedBody = scripts[nested.script]
+    if (nestedBody === undefined) return "review"
+    const decision = resolvedScriptDecision(
+      `${nestedBody} ${nested.rest}`.trim(),
+      scripts,
+      new Set([...seen, nested.script]),
+    )
+    if (decision !== "allow") return decision
+  }
+  return "allow"
+}
+
 export function permissionDecisionFor(input: {
   runtime: Runtime
   command?: string
   reason?: string
+  packageScripts?: Readonly<Record<string, string>>
 }): PermissionDecision {
   const command = input.command?.trim()
   const operation = `${command ?? ""}\n${input.reason ?? ""}`.trim()
@@ -108,13 +196,22 @@ export function permissionDecisionFor(input: {
     return { action: "review", risk: "hard-gate" }
   }
   const isBuildAuto = input.runtime.permissionMode === "build" && input.runtime.auto
-  if (
-    isBuildAuto
-    && command !== undefined
-    && !ambiguousShellSyntax.test(command)
-    && safeBuildAutoPatterns.some((pattern) => pattern.test(command))
-  ) {
-    return { action: "allow", risk: "normal" }
+  if (isBuildAuto && command !== undefined && !ambiguousShellSyntax.test(command)) {
+    if (safeBuildAutoPatterns.some((pattern) => pattern.test(command))) {
+      return { action: "allow", risk: "normal" }
+    }
+    const invocation = packageScriptRun(command)
+    const scripts = input.packageScripts
+    const body = invocation && scripts ? scripts[invocation.script] : undefined
+    if (invocation && scripts && body !== undefined) {
+      const decision = resolvedScriptDecision(
+        `${body} ${invocation.rest}`.trim(),
+        scripts,
+        new Set([invocation.script]),
+      )
+      if (decision === "allow") return { action: "allow", risk: "normal" }
+      if (decision === "hard-gate") return { action: "review", risk: "hard-gate" }
+    }
   }
   return { action: "review", risk: "normal" }
 }

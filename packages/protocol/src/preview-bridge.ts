@@ -4,6 +4,16 @@ import { annotationAnchorSchema } from "./schema.js"
 
 export const previewBridgeChannelSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/)
 
+export const previewParentOriginSchema = z.string().refine((value) => {
+  if (value === "null") return true
+  try {
+    const url = new URL(value)
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value
+  } catch {
+    return false
+  }
+}, { message: "A preview parent origin must be a serialized http(s) origin or null" })
+
 export const previewBridgePickerMessageSchema = z.object({
   type: z.literal("domovoi.preview.picker"),
   channel: previewBridgeChannelSchema,
