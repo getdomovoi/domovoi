@@ -40,6 +40,18 @@ function normalizePosix(path: string): string {
   return `/${segments.join("/")}`
 }
 
+// A path may be spelled with . and .. and still name a Windows drive, so it is
+// normalized before that is decided. This is the one rule both the router and
+// the git runner apply, so a path the router hands over is one the runner
+// would accept.
+export function distributionPathOffWindowsDrives(path: string): string {
+  const normalized = normalizePosix(path)
+  if (normalized === windowsMountRoot || normalized.startsWith(`${windowsMountRoot}/`)) {
+    throw new Error(`${path} is a Windows drive, not a path inside the distribution`)
+  }
+  return normalized
+}
+
 // The repository has to be named the way the distribution names it. A share
 // path, a drive path, or a relative path all mean the work would be reached
 // from Windows instead of inside the distribution.
@@ -48,10 +60,7 @@ function assertInsideDistribution(repositoryPath: string): string {
     throw new Error(`${repositoryPath} is not a path inside the distribution`)
   }
 
-  const normalized = normalizePosix(repositoryPath)
-  if (normalized === windowsMountRoot || normalized.startsWith(`${windowsMountRoot}/`)) {
-    throw new Error(`${repositoryPath} is a Windows drive, not a path inside the distribution`)
-  }
+  const normalized = distributionPathOffWindowsDrives(repositoryPath)
   if (normalized === "/") {
     throw new Error(`${repositoryPath} is not a path inside the distribution`)
   }
