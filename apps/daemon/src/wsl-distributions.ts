@@ -22,22 +22,27 @@ function decode(output: string | Buffer): string {
   return text.startsWith(byteOrderMark) ? text.slice(byteOrderMark.length) : text
 }
 
-// A distribution name may contain spaces, so the state and version are read
-// from the end of the line and everything before them is the name.
+// A distribution name may contain spaces, and repeated ones, so the state and
+// version are matched at the end of the line and the name is whatever precedes
+// them, left exactly as it was registered.
+const row = /^(?<name>.*?)\s+(?<state>\S+)\s+(?<version>\d+)\s*$/
+
 function readDistribution(line: string): WslDistribution | undefined {
   const isDefault = line.trimStart().startsWith("*")
-  const columns = line.replace(/^\s*\*/, "").trim().split(/\s+/)
-  if (columns.length < 3) return undefined
+  const columns = row.exec(line.replace(/^\s*\*?\s*/, ""))
+  const groups = columns?.groups
+  if (!groups) return undefined
 
-  const version = Number(columns.at(-1))
-  const state = columns.at(-2)
-  const name = columns.slice(0, -2).join(" ")
-  if (!Number.isInteger(version) || state === undefined || !states.has(state as WslDistributionState)) {
-    return undefined
+  const name = groups["name"] ?? ""
+  const state = groups["state"] ?? ""
+  if (name === "" || !states.has(state as WslDistributionState)) return undefined
+
+  return {
+    name,
+    state: state as WslDistributionState,
+    version: Number(groups["version"]),
+    default: isDefault,
   }
-  if (name === "") return undefined
-
-  return { name, state: state as WslDistributionState, version, default: isDefault }
 }
 
 export function parseWslDistributions(output: string | Buffer): WslDistribution[] {
