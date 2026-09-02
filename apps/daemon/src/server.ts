@@ -161,6 +161,8 @@ const sessionResourceMethods = new Set([
   "session.send",
   "session.restartProviderThread",
   "session.setRuntime",
+  "session.transfer",
+  "transfer.fromRef",
 ])
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
@@ -629,7 +631,8 @@ type ActiveTerminal = {
   owner: TerminalOwner
   // Ownership is the connection that holds it. The owner's identity is
   // broadcast to every client, so a caller-supplied one authorizes nothing.
-  ownerSocket: WebSocket
+  // A released ownership waits for the next connection to re-claim it.
+  ownerSocket: WebSocket | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
   disposeData: () => void
@@ -686,6 +689,7 @@ export class DomovoiDaemon {
   #failedEmergencyThreads = new Set<string>()
   #inFlightProviderThreads = new Map<string, string>()
   #emergencyStopTail: Promise<unknown> = Promise.resolve()
+  #emergencyStopInProgress = false
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -939,6 +943,7 @@ export class DomovoiDaemon {
     })
     this.#websocket.on("connection", (socket, request) => {
       socket.once("close", () => this.#rpcOutbound.forget(socket))
+      socket.once("close", () => this.#releaseTerminalOwnership(socket))
       socket.on("error", (error: Error & { code?: string }) => {
         if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
           this.#reportError("Domovoi WebSocket failed", error)
@@ -1218,9 +1223,8 @@ export class DomovoiDaemon {
     }))
     await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
-      const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
       await this.#persistSnapshot()
-      this.#broadcastNotification("workspace.changed", clientSnapshot)
+      this.#broadcastSnapshot()
     })
   }
 
@@ -1334,6 +1338,7 @@ export class DomovoiDaemon {
           approvalId?: unknown
           sessionId?: unknown
           terminalId?: unknown
+          transferId?: unknown
         }
       }
       if (typeof request.method !== "string") return undefined
@@ -1359,6 +1364,10 @@ export class DomovoiDaemon {
           (candidate) => candidate.id === request.params!.approvalId,
         )
         if (approval) return `session:${approval.sessionId}`
+      }
+      if (request.method === "transfer.chunk" && typeof request.params?.transferId === "string") {
+        const incoming = this.#incomingTransfers.get(request.params.transferId)
+        if (incoming) return `session:${incoming.sessionId}`
       }
       return undefined
     } catch {
@@ -1814,6 +1823,13 @@ export class DomovoiDaemon {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
+          } else if (existing.ownerSocket === undefined) {
+            existing.owner = { client: params.client, clientId: params.clientId }
+            existing.ownerSocket = socket
+            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+              terminalId: params.terminalId,
+              owner: existing.owner,
+            }))
           }
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -3680,6 +3696,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Provider thread requires recovery after emergency stop")
           return
         }
+        if (this.#emergencyStopInProgress) {
+          this.#error(socket, request.id, invalidParams, "Emergency stop is in progress")
+          return
+        }
         this.#emergencyBlockedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
         let agent: AgentAdapter
@@ -3892,12 +3912,12 @@ export class DomovoiDaemon {
         changed = true
       }
 
-      const clientSnapshot = changed
-        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
-        : workspaceSnapshotForClient(this.#snapshot)
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
+      const clientSnapshot = changed
+        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        : workspaceSnapshotForClient(this.#snapshot)
       const helloConnectionId = this.#connectionIds.get(socket)
       const result = method === "system.hello"
         ? {
@@ -4328,6 +4348,15 @@ export class DomovoiDaemon {
   }
 
   async #performEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+    this.#emergencyStopInProgress = true
+    try {
+      return await this.#runEmergencyStop(client)
+    } finally {
+      this.#emergencyStopInProgress = false
+    }
+  }
+
+  async #runEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
     const requestedAt = new Date().toISOString()
     const stopId = `stop-${randomUUID()}`
     const failures: SystemEmergencyStopResult["failures"] = []
@@ -4940,6 +4969,12 @@ export class DomovoiDaemon {
     return true
   }
 
+  #releaseTerminalOwnership(socket: WebSocket): void {
+    for (const terminal of this.#terminals.values()) {
+      if (terminal.ownerSocket === socket) terminal.ownerSocket = undefined
+    }
+  }
+
   #syncArtifactWatchers(): void {
     const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
       session.workspacePath && !sessionIsArchiveReadOnly(session)
@@ -5082,11 +5117,8 @@ export class DomovoiDaemon {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
     }
-    const clientSnapshot = broadcast
-      ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
-      : undefined
     await this.#persistSnapshot()
-    if (clientSnapshot) this.#broadcastNotification("workspace.changed", clientSnapshot)
+    if (broadcast) this.#broadcastSnapshot()
   }
 
   async #quarantineProviderThread(
@@ -5116,9 +5148,8 @@ export class DomovoiDaemon {
       createdAt: session.updatedAt,
     })
     try {
-      const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
       await this.#persistSnapshot()
-      this.#broadcastNotification("workspace.changed", clientSnapshot)
+      this.#broadcastSnapshot()
     } finally {
       try {
         await withTimeout(
