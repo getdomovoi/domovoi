@@ -7,18 +7,54 @@ import { bootstrapPlan, verifyDownload } from "./bootstrap-plan.mjs"
 
 const defaultMaximumBytes = 256 * 1024 * 1024
 
-async function downloadOverHttps(url, { maximumBytes }) {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`)
-  if (!response.url.startsWith("https://")) {
-    throw new Error(`${url} redirected to ${response.url}, which is not https`)
-  }
+const redirectStatuses = new Set([301, 302, 303, 307, 308])
+const defaultMaximumRedirects = 5
 
+async function readBounded(response, url, maximumBytes) {
   const declared = Number(response.headers.get("content-length"))
   if (Number.isFinite(declared) && declared > maximumBytes) {
     throw new Error(`${url} is larger than ${maximumBytes} bytes`)
   }
-  return Buffer.from(await response.arrayBuffer())
+  if (!response.body) return Buffer.alloc(0)
+
+  const reader = response.body.getReader()
+  const chunks = []
+  let read = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      read += value.byteLength
+      if (read > maximumBytes) throw new Error(`${url} is larger than ${maximumBytes} bytes`)
+      chunks.push(value)
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {})
+    throw error
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
+}
+
+export async function downloadOverHttps(url, {
+  maximumBytes,
+  fetch: fetchImpl = fetch,
+  maximumRedirects = defaultMaximumRedirects,
+}) {
+  let current = url
+  for (let hop = 0; hop <= maximumRedirects; hop += 1) {
+    const response = await fetchImpl(current, { redirect: "manual" })
+    if (!redirectStatuses.has(response.status)) {
+      if (!response.ok) throw new Error(`${current} answered ${response.status}`)
+      return await readBounded(response, current, maximumBytes)
+    }
+
+    const location = response.headers.get("location")
+    if (!location) throw new Error(`${current} redirected with no destination`)
+    const next = new URL(location, current)
+    if (next.protocol !== "https:") throw new Error(`${current} redirected to ${next.href}, which is not https`)
+    current = next.href
+  }
+  throw new Error(`${url} redirected more than ${maximumRedirects} times`)
 }
 
 export async function bootstrapDaemon({
