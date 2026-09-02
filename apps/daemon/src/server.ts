@@ -619,6 +619,9 @@ type ActiveTerminal = {
   cwd: string
   buffer: string
   owner: TerminalOwner
+  // Ownership is the connection that holds it. The owner's identity is
+  // broadcast to every client, so a caller-supplied one authorizes nothing.
+  ownerSocket: WebSocket
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
   disposeData: () => void
@@ -1799,7 +1802,7 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (existing.owner.clientId === params.clientId) {
+          if (existing.ownerSocket === socket) {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
@@ -1845,6 +1848,7 @@ export class DomovoiDaemon {
           cwd: session.workspacePath,
           buffer: "",
           owner: { client: params.client, clientId: params.clientId },
+          ownerSocket: socket,
           output,
           outputBackpressure,
           disposeData: () => {},
@@ -1899,6 +1903,7 @@ export class DomovoiDaemon {
           return
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
+        terminal.ownerSocket = socket
         const ownership = rpcMethods[method].result.parse({
           terminalId: params.terminalId,
           owner: terminal.owner,
@@ -1915,7 +1920,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.owner.clientId !== params.clientId) {
+        if (terminal.ownerSocket !== socket) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -1935,7 +1940,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.owner.clientId !== params.clientId) {
+        if (terminal.ownerSocket !== socket) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -1957,7 +1962,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.owner.clientId !== params.clientId) {
+        if (terminal.ownerSocket !== socket) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
