@@ -1,5 +1,6 @@
 import { access, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
@@ -235,11 +236,15 @@ describe("DomovoiDaemon", () => {
       code: retryableSlowClientCloseCode,
       reason: retryableSlowClientCloseReason,
     })
-    // A read this size fills a whole output chunk, so redaction holds nothing
-    // back and the burst still reaches a client about to be dropped.
+    // Redaction holds a short tail back so it can see a secret split across
+    // two reads; the rest of the burst still reaches a client about to be
+    // dropped for slowness.
     expect(messages).toEqual([expect.objectContaining({
       method: "terminal.output",
-      params: { terminalId: "terminal-backpressure", data: output },
+      params: {
+        terminalId: "terminal-backpressure",
+        data: output.slice(0, output.length - terminalRedactionCarryCharacters),
+      },
     })])
   })
 
