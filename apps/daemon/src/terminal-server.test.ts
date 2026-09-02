@@ -726,6 +726,116 @@ describe("terminal RPC", () => {
     reopened.close()
   })
 
+  it("refuses terminal input from a connection that only claims the owner's identity", async () => {
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-ownership"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+
+    const open = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+        headers: { authorization: `Bearer ${daemon.authToken}` },
+      })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      let id = 0
+      const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+        const requestId = ++id
+        const response = new Promise<TestRpcResponse<M>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== requestId) return
+            socket.off("message", receive)
+            resolve(message as TestRpcResponse<M>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+        return response
+      }
+      return { socket, rpc }
+    }
+
+    const owner = await open()
+    const intruder = await open()
+    await owner.rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      clientId: "desktop-owner",
+    })
+    await intruder.rpc("system.hello", {
+      client: "tablet",
+      clientVersion: "0.0.1",
+      clientId: "tablet-intruder",
+    })
+
+    await expect(owner.rpc("terminal.create", {
+      terminalId: "terminal-owned",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({ result: { terminalId: "terminal-owned" } })
+
+    // The owner's clientId is broadcast to every client, so a connection that
+    // repeats it must still be refused.
+    await expect(intruder.rpc("terminal.input", {
+      terminalId: "terminal-owned",
+      data: "rm -rf /\r",
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal is owned by another client" },
+    })
+    expect(terminal.write).not.toHaveBeenCalled()
+
+    await expect(intruder.rpc("terminal.resize", {
+      terminalId: "terminal-owned",
+      cols: 200,
+      rows: 60,
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal is owned by another client" },
+    })
+    expect(terminal.resize).not.toHaveBeenCalled()
+
+    await expect(intruder.rpc("terminal.close", {
+      terminalId: "terminal-owned",
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Terminal is owned by another client" },
+    })
+    expect(terminal.kill).not.toHaveBeenCalled()
+
+    await expect(owner.rpc("terminal.input", {
+      terminalId: "terminal-owned",
+      data: "pnpm test\r",
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({ result: { accepted: true } })
+    expect(terminal.write).toHaveBeenCalledWith("pnpm test\r")
+
+    owner.socket.close()
+    intruder.socket.close()
+  })
+
   it("owns terminal input, resize, output, and shutdown on the daemon", async () => {
     const dataListeners = new Set<(data: string) => void>()
     const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>()
@@ -801,6 +911,30 @@ describe("terminal RPC", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
+
+    const tabletSocket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      tabletSocket.once("open", resolve)
+      tabletSocket.once("error", reject)
+    })
+    let tabletRequestId = 0
+    const tabletRpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++tabletRequestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          tabletSocket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        tabletSocket.on("message", receive)
+      })
+      tabletSocket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
 
     const created = await rpc("terminal.create", {
       terminalId: "terminal-1",
@@ -894,7 +1028,7 @@ describe("terminal RPC", () => {
       params: { terminalId: "terminal-1", data: "ready\r\n" },
     })
 
-    await expect(rpc("terminal.create", {
+    await expect(tabletRpc("terminal.create", {
       terminalId: "terminal-1",
       sessionId: "session-billing",
       cols: 100,
@@ -913,7 +1047,7 @@ describe("terminal RPC", () => {
     expect(terminalService.spawn).toHaveBeenCalledTimes(2)
     expect(terminal.resize).not.toHaveBeenCalled()
 
-    await expect(rpc("terminal.input", {
+    await expect(tabletRpc("terminal.input", {
       terminalId: "terminal-1",
       data: "pnpm test\r",
       client: "tablet",
@@ -926,7 +1060,7 @@ describe("terminal RPC", () => {
     const ownership = new Promise<Record<string, unknown>>((resolve) => {
       socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
     })
-    const claiming = rpc("terminal.claim", {
+    const claiming = tabletRpc("terminal.claim", {
       terminalId: "terminal-1",
       client: "tablet",
       clientId: "tablet-client-1",
@@ -954,14 +1088,14 @@ describe("terminal RPC", () => {
     })
     expect(terminal.kill).not.toHaveBeenCalled()
 
-    await expect(rpc("terminal.input", {
+    await expect(tabletRpc("terminal.input", {
       terminalId: "terminal-1",
       data: "pnpm test\r",
       client: "tablet",
       clientId: "tablet-client-1",
     })).resolves.toMatchObject({ result: { accepted: true } })
     expect(terminal.write).toHaveBeenCalledWith("pnpm test\r")
-    await rpc("terminal.resize", {
+    await tabletRpc("terminal.resize", {
       terminalId: "terminal-1",
       cols: 80,
       rows: 24,
@@ -969,7 +1103,7 @@ describe("terminal RPC", () => {
       clientId: "tablet-client-1",
     })
     expect(terminal.resize).toHaveBeenCalledWith(80, 24)
-    await rpc("terminal.close", {
+    await tabletRpc("terminal.close", {
       terminalId: "terminal-1",
       client: "tablet",
       clientId: "tablet-client-1",
