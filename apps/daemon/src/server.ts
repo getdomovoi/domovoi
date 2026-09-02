@@ -2257,6 +2257,26 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "transfer.have") {
+        const params = rpcMethods[method].params.parse(request.params)
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires the daemon credential",
+          )
+          return
+        }
+        const held = await this.#workspaceService.sessionHeadCommit?.(params.sessionId, signal)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(held ? { commit: held } : {}),
+        })
+        return
+      }
+
       if (method === "transfer.fromRef") {
         const params = rpcMethods[method].params.parse(request.params)
         // Taking a session writes a worktree here, which is machine management.
