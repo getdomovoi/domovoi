@@ -3283,7 +3283,14 @@ export class DomovoiDaemon {
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
           }
-          await this.#cleanupSessions()
+          try {
+            await this.#cleanupSessions()
+          } catch {
+            // Every terminal, provider thread, and stream is already torn down
+            // and every cleanup failure is reported through the error sink, so
+            // the switch must still leave the snapshot describing the project
+            // that is now open rather than sessions that no longer exist.
+          }
           this.#commandOutputRedactors.clear()
           this.#snapshot.project = {
             id: projectId,

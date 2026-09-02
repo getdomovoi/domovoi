@@ -265,6 +265,9 @@ td { color: var(--ink2); }
 </li>
 <li>Repair permissive existing files on startup.
 </li>
+<li>On Windows, state lives under <code>.domovoi</code> in the user profile directory; no ACL restriction
+equivalent exists yet.
+</li>
 </ul>
 </li>
 <li>[x] Make RPC timeouts cancel or quarantine underlying work
@@ -454,7 +457,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Define safe behavior for unsigned skills in Build auto
 </li>
-<li>[x] Compare skill availability across machines without silently distributing executables
+<li>[ ] Compare skill availability across machines without silently distributing executables (the comparator is implemented and unit-tested, but the shell only ever supplies this machine's inventory; no fleet machine is queried yet)
 </li>
 </ul>
 <h3 id="desktop-quality">Desktop quality</h3>

@@ -1,9 +1,11 @@
 import { useState } from "react"
-import { render, screen } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ProjectSwitchConfirmationDialog } from "./workspace-shell"
+
+afterEach(cleanup)
 
 const confirmation = {
   kind: "project-switch-confirmation" as const,

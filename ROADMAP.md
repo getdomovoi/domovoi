@@ -51,6 +51,8 @@ access.
 - [x] Restrict persisted state permissions
   - Create the Domovoi state directory as `0700` and database plus sidecars as `0600` on POSIX.
   - Repair permissive existing files on startup.
+  - On Windows, state lives under `.domovoi` in the user profile directory; no ACL restriction
+    equivalent exists yet.
 - [x] Make RPC timeouts cancel or quarantine underlying work
   - A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the
     serialized request has failed.
@@ -182,7 +184,7 @@ Every ledger entry is now merged.
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
 - [x] Define safe behavior for unsigned skills in Build auto
-- [x] Compare skill availability across machines without silently distributing executables
+- [ ] Compare skill availability across machines without silently distributing executables (the comparator is implemented and unit-tested, but the shell only ever supplies this machine's inventory; no fleet machine is queried yet)
 
 ### Desktop quality
 

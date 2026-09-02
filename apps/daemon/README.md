@@ -38,7 +38,10 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
-reuses a high-entropy credential at `~/.domovoi/daemon.token` with user-only permissions. Remote
+reuses a high-entropy credential at `~/.domovoi/daemon.token`. On POSIX, private state files are
+`0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
+state lives under `.domovoi` in the user profile directory and no additional ACL restriction is
+applied yet. Remote
 listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. Use an encrypted outer transport such
 as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
 

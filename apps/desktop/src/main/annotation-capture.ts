@@ -7,7 +7,7 @@ type CapturedImage = {
   toPNG(): Uint8Array
 }
 
-type CaptureTarget = {
+export type CaptureTarget = {
   capturePage(rect: { x: number; y: number; width: number; height: number }): Promise<CapturedImage>
 }
 

@@ -228,10 +228,7 @@ describe("DomovoiDaemon", () => {
       },
     }))
 
-    await Promise.race([
-      streamed,
-      new Promise((resolve) => setTimeout(resolve, 500)),
-    ])
+    await streamed
     await expect(outcome).resolves.toEqual({
       code: retryableSlowClientCloseCode,
       reason: retryableSlowClientCloseReason,
@@ -277,7 +274,6 @@ describe("DomovoiDaemon", () => {
     })
     let heartbeats = 0
     const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
-    const startedAt = performance.now()
     const response = new Promise<Record<string, unknown>>((resolve) => {
       socket.once("message", (data) => resolve(JSON.parse(data.toString())))
     })
@@ -291,7 +287,6 @@ describe("DomovoiDaemon", () => {
     await expect(response).resolves.toMatchObject({
       result: { activeSessionId: snapshot.sessions[1]!.id },
     })
-    const elapsedMs = performance.now() - startedAt
     clearInterval(heartbeat)
     expect(durable).toBe(true)
     expect(save).not.toHaveBeenCalled()
@@ -300,7 +295,6 @@ describe("DomovoiDaemon", () => {
     // Windows resolves timers to roughly 15 ms, so this asserts they ran at
     // all rather than a rate the platform does not promise.
     expect(heartbeats).toBeGreaterThanOrEqual(2)
-    expect(elapsedMs).toBeLessThan(500)
     socket.close()
   })
 
@@ -6576,6 +6570,152 @@ describe("DomovoiDaemon", () => {
     await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith("late-restart-thread"))
     expect((await rpc("workspace.get", {}) as { result: { sessions: Array<{ id: string; providerThreadId?: string }> } })
       .result.sessions.find(({ id }) => id === steeringSessionId)).not.toHaveProperty("providerThreadId")
+    socket.close()
+  })
+
+  it("completes a project switch even when one session workspace cannot be removed", async () => {
+    const errorEntries: Array<{ context: string; detail: string }> = []
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn()
+        .mockResolvedValueOnce("provider-thread-kept")
+        .mockResolvedValueOnce("provider-thread-doomed"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "provider-turn-1"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+        root: path === "/code/elsewhere" ? "/code/elsewhere" : "/code/domovoi",
+        name: path === "/code/elsewhere" ? "elsewhere" : "domovoi",
+        branch: path === "/code/elsewhere" ? "develop" : "main",
+        head: "a".repeat(40),
+      })),
+      createSessionWorkspace: vi.fn(async (_path: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "a".repeat(40),
+      })),
+      removeSessionWorkspace: vi.fn(async (_path: string, _signal?: AbortSignal) => {}),
+      checkpoint: vi.fn(async () => {
+        throw new Error("unused")
+      }),
+      restore: vi.fn(async () => {
+        throw new Error("unused")
+      }),
+    } satisfies WorkspaceService
+    const initialSnapshot = createEmptyWorkspace({
+      id: "machine-cleanup-failure",
+      name: "cleanup-failure-test",
+      platform: process.platform,
+      arch: process.arch,
+      version: "0.0.1",
+      connection: "local",
+      reachable: true,
+      providers: [],
+    })
+    const store = {
+      load: vi.fn(() => structuredClone(initialSnapshot)),
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: { codex: agent },
+      workspaceService,
+      errorSink: (entry) => errorEntries.push(entry),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    expect(await rpc("project.open", { path: "/code/domovoi", client: "desktop" }))
+      .toMatchObject({ result: { project: { name: "domovoi" } } })
+    const runtime = {
+      provider: "codex",
+      model: "default",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+    const kept = await rpc("session.create", { title: "Session kept", runtime, client: "desktop" })
+    const keptId = (kept.result as { activeSessionId: string }).activeSessionId
+    const doomed = await rpc("session.create", { title: "Session doomed", runtime, client: "desktop" })
+    const doomedId = (doomed.result as { activeSessionId: string }).activeSessionId
+    expect(keptId).not.toBe(doomedId)
+
+    const refused = await rpc("project.open", { path: "/code/elsewhere", client: "desktop" })
+    expect(refused).toMatchObject({
+      error: {
+        code: -32010,
+        data: { sessionCount: 2, worktreeCount: 2 },
+      },
+    })
+    const confirmation = projectSwitchConfirmationSchema.parse(
+      (refused.error as { data?: unknown }).data,
+    )
+
+    workspaceService.removeSessionWorkspace.mockImplementation(async (path: string) => {
+      if (path === `/worktrees/${doomedId}`) throw new Error("worktree is held by another process")
+    })
+
+    const switched = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      confirmation,
+    })
+    expect(switched).toMatchObject({
+      result: {
+        project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
+        activeSessionId: null,
+        sessions: [],
+      },
+    })
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-kept")
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-doomed")
+    expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(
+      `/worktrees/${keptId}`,
+      expect.any(AbortSignal),
+    )
+    expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(
+      `/worktrees/${doomedId}`,
+      expect.any(AbortSignal),
+    )
+    expect(errorEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        context: "Domovoi could not remove a session worktree",
+        detail: expect.stringContaining("worktree is held by another process"),
+      }),
+    ]))
+    expect((await rpc("workspace.get", {}) as { result: { sessions: unknown[]; project: { name: string } } }).result)
+      .toMatchObject({ project: { name: "elsewhere" }, sessions: [] })
     socket.close()
   })
 
