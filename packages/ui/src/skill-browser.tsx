@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
 
-import type { SkillDocument, SkillEnablementReview, SkillInventorySource, SkillSummary } from "@getdomovoi/protocol"
+import type {
+  SkillDocument,
+  SkillEnablementReview,
+  SkillInventorySource,
+  SkillReviewDecision,
+  SkillSummary,
+} from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -129,6 +135,7 @@ export function SkillBrowser({
   projectId,
   enablements,
   onSetSkillEnabled,
+  onReviewSkill,
   onRetry,
 }: {
   skills: readonly SkillSummary[]
@@ -146,6 +153,11 @@ export function SkillBrowser({
     contentDigest: string
     manifest: SkillSummary["manifest"]
   }) => Promise<unknown>
+  onReviewSkill: (input: {
+    id: string
+    contentDigest: string
+    decision: SkillReviewDecision
+  }) => Promise<unknown>
   onRetry: () => void
 }) {
   const [query, setQuery] = useState("")
@@ -158,6 +170,8 @@ export function SkillBrowser({
   const [reviewEnabled, setReviewEnabled] = useState<boolean>()
   const [reviewPending, setReviewPending] = useState(false)
   const [reviewError, setReviewError] = useState("")
+  const [machineReviewPending, setMachineReviewPending] = useState(false)
+  const [machineReviewError, setMachineReviewError] = useState("")
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
@@ -178,6 +192,8 @@ export function SkillBrowser({
       ))
     : undefined
   const selectedSecurity = selected ? skillSecurityCopy(selected) : undefined
+  const machineReviewed = selected?.trust.state === "trusted"
+    && selected.trust.reason === "manual-review"
 
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
@@ -216,6 +232,19 @@ export function SkillBrowser({
       () => setReviewEnabled(undefined),
       (cause: unknown) => setReviewError(cause instanceof Error ? cause.message : "Skill review failed"),
     ).finally(() => setReviewPending(false))
+  }
+
+  const submitMachineReview = (decision: SkillReviewDecision) => {
+    if (!selected) return
+    setMachineReviewPending(true)
+    setMachineReviewError("")
+    void onReviewSkill({
+      id: selected.id,
+      contentDigest: selected.contentDigest,
+      decision,
+    }).catch((cause: unknown) => {
+      setMachineReviewError(cause instanceof Error ? cause.message : "Machine review failed")
+    }).finally(() => setMachineReviewPending(false))
   }
 
   return (
@@ -350,6 +379,27 @@ export function SkillBrowser({
                         ? selected.manifest.capabilities.map((capability) => <Badge key={capability} variant="outline">{capability}</Badge>)
                         : <span className="text-muted-foreground">No declared capabilities</span>}
                     </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-muted-foreground">
+                        {machineReviewed
+                          ? "Reviewed on this machine for this exact digest"
+                          : "Not reviewed on this machine"}
+                      </span>
+                      {selected.trust.state === "blocked" ? null : (
+                        <Button
+                          variant={machineReviewed ? "outline" : "default"}
+                          size="sm"
+                          disabled={machineReviewPending}
+                          onClick={() => submitMachineReview(machineReviewed ? "revoke" : "trust")}
+                        >
+                          {machineReviewed ? "Revoke machine review" : "Mark reviewed on this machine"}
+                        </Button>
+                      )}
+                    </div>
+                    <p className="m-0 text-muted-foreground">
+                      A machine review is the interim trust path. It is bound to this digest, so any content change drops the skill back to untrusted. It is not a cryptographic signature check.
+                    </p>
+                    {machineReviewError ? <span className="text-destructive">{machineReviewError}</span> : null}
                   </CardContent>
                 </Card>
               </div>

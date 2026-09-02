@@ -54,7 +54,9 @@ import {
   skillDocumentSchema,
   skillIdSchema,
   skillInventorySchema,
+  skillReviewDecisionSchema,
   skillSummariesSchema,
+  skillSummarySchema,
 } from "./skills.js"
 
 export const requestIdSchema = z.union([
@@ -1047,6 +1049,14 @@ export const rpcMethods = {
       manifest: skillCapabilityManifestSchema,
     }).strict(),
     result: workspaceSnapshotSchema,
+  },
+  "skill.review": {
+    params: z.object({
+      id: skillIdSchema,
+      contentDigest: skillContentDigestSchema,
+      decision: skillReviewDecisionSchema,
+    }).strict(),
+    result: skillSummarySchema,
   },
   "runtime.models": {
     params: runtimeModelsParamsSchema,

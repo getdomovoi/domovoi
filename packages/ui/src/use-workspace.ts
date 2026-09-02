@@ -350,6 +350,14 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return next
   }, [updateSnapshotFrom])
 
+  const reviewSkill = useCallback(async (
+    params: RpcParams<"skill.review">,
+  ): Promise<SkillSummary> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.reviewSkill(params)
+  }, [])
+
   const queryAudit = useCallback(async (
     params: AuditQueryParams,
     options?: DomovoiRequestOptions,
@@ -568,6 +576,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     resolveApproval,
     sendMessage,
     setSkillEnabled,
+    reviewSkill,
     setAnnotationStatus,
     setRuntime,
     snapshot,
