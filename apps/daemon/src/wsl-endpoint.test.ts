@@ -30,14 +30,58 @@ describe("readDistroEndpoint", () => {
       "--",
       "cat",
       ".domovoi/endpoint.json",
-    ])
+    ], { timeoutMs: expect.any(Number) })
   })
 
   it("reports nothing when the distribution has no daemon endpoint", async () => {
     const run = reader(() => {
-      throw Object.assign(new Error("cat: .domovoi/endpoint.json: No such file"), { code: 1 })
+      throw Object.assign(new Error("cat: .domovoi/endpoint.json: No such file or directory"), {
+        code: 1,
+        stderr: "cat: .domovoi/endpoint.json: No such file or directory\n",
+      })
     })
     expect(await readDistroEndpoint({ distribution, run })).toBeUndefined()
+  })
+
+  it("does not call a distribution it cannot reach a missing endpoint", async () => {
+    const run = reader(() => {
+      throw Object.assign(new Error("There is no distribution with the supplied name."), {
+        code: 1,
+        stderr: "There is no distribution with the supplied name.\n",
+      })
+    })
+    await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/no distribution/)
+  })
+
+  it("does not call a denied read a missing endpoint", async () => {
+    const run = reader(() => {
+      throw Object.assign(new Error("cat: .domovoi/endpoint.json: Permission denied"), {
+        code: 1,
+        stderr: "cat: .domovoi/endpoint.json: Permission denied\n",
+      })
+    })
+    await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/Permission denied/)
+  })
+
+  it("does not call a missing wsl.exe a missing endpoint", async () => {
+    const run = reader(() => {
+      throw Object.assign(new Error("spawn wsl.exe ENOENT"), { code: "ENOENT" })
+    })
+    await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/ENOENT/)
+  })
+
+  it("gives up on a wsl.exe that never answers", async () => {
+    const run = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      return "{}"
+    })
+    await expect(readDistroEndpoint({ distribution, run, timeoutMs: 1 })).rejects.toThrow(/in time/)
+  })
+
+  it("tells the runner how long it is allowed to take", async () => {
+    const run = reader(JSON.stringify({ host: "127.0.0.1", port: 47831, token }))
+    await readDistroEndpoint({ distribution, run, timeoutMs: 3_000 })
+    expect(run).toHaveBeenCalledWith("wsl.exe", expect.any(Array), { timeoutMs: 3_000 })
   })
 
   it("reports nothing when the file is not something it can read", async () => {
