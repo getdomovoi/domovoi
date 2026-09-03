@@ -4,7 +4,10 @@ export {
   type DesktopExternalEditor,
   type DesktopOpenExternalRequest,
   type DesktopWindowBridge,
+  type WorkspaceWindowDecoration,
 } from "./desktop-platform"
+export { applyStoredAppearanceTheme } from "./workspace-persistence"
+export { isWorkspaceTheme, type WorkspaceTheme } from "./appearance"
 export { claimMachine, MachineClaimError, type ClaimConnection } from "./claim-machine"
 export { PairMachineDialog } from "./pair-machine-dialog"
 export { pairMachine, MachinePairingError, type PairedMachine, type PairMachineRequest } from "./pair-machine"
@@ -19,4 +22,4 @@ export {
 export { StartupError } from "./startup-error"
 export { WorkspaceErrorBoundary } from "./error-boundary"
 export { DaemonCredentialPrompt } from "./daemon-credential-prompt"
-export { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
+export { AppearanceSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings"

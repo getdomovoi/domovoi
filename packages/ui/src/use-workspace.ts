@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, DevicePairResult, DevicesResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionTransferParams, SessionTransferResult, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferResult } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { openClaimConnection } from "./claim-socket"
@@ -363,6 +363,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.listProviderSecrets()
   }, [])
 
+  const sessionUsage = useCallback(async (sessionId: string): Promise<SessionUsage> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.sessionUsage(sessionId)
+  }, [])
+
   const readSkill = useCallback(async (id: string): Promise<SkillDocument> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -647,6 +653,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     replyToAnnotation,
     resolveApproval,
     sendMessage,
+    sessionUsage,
     setSkillEnabled,
     reviewSkill,
     setAnnotationStatus,

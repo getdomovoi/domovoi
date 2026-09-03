@@ -162,7 +162,11 @@ Every ledger entry is now merged.
 - [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
   - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
 - [x] Token and cost telemetry normalized per turn, session, provider, and model
-  - Daemon-side only: `session.usage` exists, but no client requests or renders usage yet.
+- [x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown
+  and an explicit count of turns the provider reported no cost for
+- [ ] Usage totals across sessions over a time window, such as a today total in the app bar
+  - The daemon usage ledger records no turn timestamp, so a windowed sum needs a schema change
+    before any client can show one honestly.
 - [ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
   - A failure classifier exists, but the Claude adapter drops the failure reason and provider
@@ -222,6 +226,9 @@ Every ledger entry is now merged.
 ### Desktop quality
 
 - [x] Shared Claude-handoff workspace and custom window decoration
+- [x] Appearance settings with System, Dark, and Light themes that follow the operating system live
+- [x] Window decoration choice between the Domovoi title bar and the operating system frame,
+  applied when Domovoi next starts
 - [x] Persist layout, selected surface, project, and session safely across restarts
 - [x] Keyboard command palette for navigation and common session actions
   - Sessions, paired machines, and discovered skills are addressable from it, so a session is
