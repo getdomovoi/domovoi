@@ -303,6 +303,172 @@ export const artifactSchema = z.object({
   variant: artifactVariantSchema.optional(),
 })
 
+export const maximumWorkingPlanSteps = 128
+export const maximumWorkingPlanStepTextLength = 4_096
+export const maximumWorkingPlanTextLength = 65_536
+
+const workingPlanReferenceSchema = z.string().trim().min(1).max(256)
+// This is a persistence bound, not a sanitizer. The daemon must durably redact
+// provider and client text before constructing a WorkingPlan.
+const workingPlanStepTextSchema = z.string().trim().min(1).max(
+  maximumWorkingPlanStepTextLength,
+)
+
+export const workingPlanBlockerSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("approval"),
+    approvalId: workingPlanReferenceSchema,
+  }).strict(),
+])
+
+export const workingPlanStepStatusSchema = z.enum([
+  "pending",
+  "in-progress",
+  "completed",
+])
+
+export const workingPlanStructureStepSchema = z.object({
+  id: workingPlanReferenceSchema,
+  text: workingPlanStepTextSchema,
+}).strict()
+
+// Providers do not report a declared file scope for plan steps. Paths inferred
+// from later tool calls would be post-hoc evidence presented as plan intent, so
+// the wire shape deliberately has no files field until a provider supplies one.
+export const workingPlanStepSchema = z.object({
+  id: workingPlanReferenceSchema,
+  text: workingPlanStepTextSchema,
+  status: workingPlanStepStatusSchema,
+  blocker: workingPlanBlockerSchema.optional(),
+}).strict().superRefine((step, context) => {
+  if (step.status === "completed" && step.blocker !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["blocker"],
+      message: "A completed plan step cannot remain blocked",
+    })
+  }
+})
+
+function validateWorkingPlanStepList(
+  steps: ReadonlyArray<{ id: string, text: string }>,
+  context: z.RefinementCtx,
+): void {
+  const ids = new Set<string>()
+  let textLength = 0
+  steps.forEach((step, index) => {
+    if (ids.has(step.id)) {
+      context.addIssue({
+        code: "custom",
+        path: [index, "id"],
+        message: "Working plan step IDs must be unique within a list",
+      })
+    }
+    ids.add(step.id)
+    textLength += step.text.length
+  })
+  if (textLength > maximumWorkingPlanTextLength) {
+    context.addIssue({
+      code: "custom",
+      message: "Working plan text exceeds the aggregate limit",
+    })
+  }
+}
+
+export const workingPlanStructureSchema = z.array(workingPlanStructureStepSchema)
+  .max(maximumWorkingPlanSteps)
+  .superRefine(validateWorkingPlanStepList)
+
+export const workingPlanStepsSchema = z.array(workingPlanStepSchema)
+  .max(maximumWorkingPlanSteps)
+  .superRefine(validateWorkingPlanStepList)
+
+export const workingPlanClientAttributionSchema = z.object({
+  client: clientKindSchema,
+  connectionId: connectionIdSchema,
+  clientId: clientIdentityIdSchema.optional(),
+}).strict()
+
+export const pendingWorkingPlanEditSchema = z.object({
+  id: workingPlanReferenceSchema,
+  basedOnStructureRevision: z.number().int().positive(),
+  baseSteps: workingPlanStructureSchema,
+  draftSteps: workingPlanStructureSchema,
+  status: z.enum(["queued", "conflicted"]),
+  submittedAt: z.string().datetime(),
+  submittedBy: workingPlanClientAttributionSchema,
+}).strict()
+
+export const workingPlanProviderSyncSchema = z.object({
+  provider: z.string().trim().min(1).max(64),
+  model: z.string().trim().min(1).max(256),
+  providerThreadId: workingPlanReferenceSchema,
+  structureRevision: z.number().int().positive(),
+  deliveredAt: z.string().datetime(),
+}).strict()
+
+function sameWorkingPlanStructure(
+  left: ReadonlyArray<{ id: string, text: string }>,
+  right: ReadonlyArray<{ id: string, text: string }>,
+): boolean {
+  return left.length === right.length && left.every((step, index) => {
+    const candidate = right[index]
+    return candidate?.id === step.id && candidate.text === step.text
+  })
+}
+
+export const workingPlanSchema = z.object({
+  sessionId: workingPlanReferenceSchema,
+  revision: z.number().int().positive(),
+  structureRevision: z.number().int().positive(),
+  steps: workingPlanStepsSchema,
+  providerSync: workingPlanProviderSyncSchema.optional(),
+  pendingEdit: pendingWorkingPlanEditSchema.optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict().superRefine((plan, context) => {
+  if (plan.revision < plan.structureRevision) {
+    context.addIssue({
+      code: "custom",
+      path: ["revision"],
+      message: "Working plan revision cannot precede its structure revision",
+    })
+  }
+  if (
+    plan.providerSync !== undefined
+    && plan.providerSync.structureRevision > plan.structureRevision
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerSync", "structureRevision"],
+      message: "Provider sync cannot be ahead of the working plan structure",
+    })
+  }
+  if (!plan.pendingEdit) return
+  if (plan.pendingEdit.status === "queued") {
+    if (plan.pendingEdit.basedOnStructureRevision !== plan.structureRevision) {
+      context.addIssue({
+        code: "custom",
+        path: ["pendingEdit", "basedOnStructureRevision"],
+        message: "A queued edit must target the current plan structure",
+      })
+    }
+    if (!sameWorkingPlanStructure(plan.pendingEdit.baseSteps, plan.steps)) {
+      context.addIssue({
+        code: "custom",
+        path: ["pendingEdit", "baseSteps"],
+        message: "A queued edit base must match the current plan structure",
+      })
+    }
+  } else if (plan.pendingEdit.basedOnStructureRevision >= plan.structureRevision) {
+    context.addIssue({
+      code: "custom",
+      path: ["pendingEdit", "basedOnStructureRevision"],
+      message: "A conflicted edit must describe an older plan structure",
+    })
+  }
+})
+
 export const annotationAnchorSchema = z.object({
   cssSelector: z.string().min(1).max(1_000).optional(),
   textQuote: z.string().min(1).max(2_000).optional(),
@@ -374,6 +540,7 @@ export const workspaceSnapshotSchema = z.object({
   approvalRules: z.array(approvalRuleSchema),
   thread: z.array(threadItemSchema),
   artifacts: z.array(artifactSchema),
+  workingPlans: z.array(workingPlanSchema).default([]),
   annotations: z.array(annotationSchema).default([]),
   skillEnablements: skillEnablementReviewsSchema.default([]),
   historyTruncated: z.boolean().optional(),
@@ -434,6 +601,7 @@ export const workspaceSnapshotSchema = z.object({
       snapshot.approvalRules,
       snapshot.thread,
       snapshot.artifacts,
+      snapshot.workingPlans,
       snapshot.annotations,
     ]
     if (snapshot.activeSessionId !== null || populatedFields.some((field) => field.length > 0)) {
@@ -510,6 +678,7 @@ export const workspaceSnapshotSchema = z.object({
     })
   }
   const approvalRulesById = new Map(snapshot.approvalRules.map((rule) => [rule.id, rule]))
+  const approvalsById = new Map(snapshot.approvals.map((approval) => [approval.id, approval]))
   snapshot.approvals.forEach((approval, index) => {
     if (!sessionIds.has(approval.sessionId)) {
       context.addIssue({
@@ -557,6 +726,35 @@ export const workspaceSnapshotSchema = z.object({
       })
     }
   })
+  const workingPlanSessionIds = new Set<string>()
+  snapshot.workingPlans.forEach((plan, planIndex) => {
+    if (!sessionIds.has(plan.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "Working plan must reference an existing session",
+        path: ["workingPlans", planIndex, "sessionId"],
+      })
+    }
+    if (workingPlanSessionIds.has(plan.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "A session can have only one working plan",
+        path: ["workingPlans", planIndex, "sessionId"],
+      })
+    }
+    workingPlanSessionIds.add(plan.sessionId)
+    plan.steps.forEach((step, stepIndex) => {
+      if (!step.blocker) return
+      const approval = approvalsById.get(step.blocker.approvalId)
+      if (!approval || approval.sessionId !== plan.sessionId) {
+        context.addIssue({
+          code: "custom",
+          message: "A plan blocker must reference an approval in the same session",
+          path: ["workingPlans", planIndex, "steps", stepIndex, "blocker", "approvalId"],
+        })
+      }
+    })
+  })
   const artifactsById = new Map<string, Artifact>()
   snapshot.artifacts.forEach((artifact, index) => {
     if (!artifactsById.has(artifact.id)) artifactsById.set(artifact.id, artifact)
@@ -600,6 +798,14 @@ export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>
 export type ThreadItem = z.infer<typeof threadItemSchema>
 export type Artifact = z.infer<typeof artifactSchema>
+export type WorkingPlanBlocker = z.infer<typeof workingPlanBlockerSchema>
+export type WorkingPlanStepStatus = z.infer<typeof workingPlanStepStatusSchema>
+export type WorkingPlanStructureStep = z.infer<typeof workingPlanStructureStepSchema>
+export type WorkingPlanStep = z.infer<typeof workingPlanStepSchema>
+export type WorkingPlanClientAttribution = z.infer<typeof workingPlanClientAttributionSchema>
+export type PendingWorkingPlanEdit = z.infer<typeof pendingWorkingPlanEditSchema>
+export type WorkingPlanProviderSync = z.infer<typeof workingPlanProviderSyncSchema>
+export type WorkingPlan = z.infer<typeof workingPlanSchema>
 export type Annotation = z.infer<typeof annotationSchema>
 export type ProviderModel = z.infer<typeof providerModelSchema>
 export type ProviderFailure = z.infer<typeof providerFailureSchema>
