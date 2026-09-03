@@ -16,6 +16,7 @@ import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 const claudeAskTools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const
+const claudeContextUsageTimeoutMs = 250
 const claudeAskDisallowedTools = [
   "Bash",
   "Edit",
@@ -660,14 +661,22 @@ function resultError(message: ClaudeSdkMessage): string {
 async function claudeContextOccupancy(
   query: ClaudeQuery,
 ): Promise<{ contextTokens?: unknown; contextWindowTokens?: unknown }> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
   try {
-    const report = asRecord(await query.getContextUsage())
+    const report = asRecord(await Promise.race([
+      query.getContextUsage(),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), claudeContextUsageTimeoutMs)
+      }),
+    ]))
     return {
       contextTokens: report?.totalTokens,
       contextWindowTokens: report?.rawMaxTokens,
     }
   } catch {
     return {}
+  } finally {
+    if (timeout) clearTimeout(timeout)
   }
 }
 
