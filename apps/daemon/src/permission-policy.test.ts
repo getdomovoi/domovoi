@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 
-import type { Runtime } from "@getdomovoi/protocol"
+import type { ExecutionResolution, Runtime } from "@getdomovoi/protocol"
 
+import { resolveCommandExecution } from "./execution-resolution.js"
 import { isSkillInstallCommand, permissionDecisionFor } from "./permission-policy.js"
 
 const runtime = (auto: boolean): Runtime => ({
@@ -23,7 +24,48 @@ const runtimeMode = (
   auto,
 })
 
+const resolvedScript = (argv: string[]): ExecutionResolution => ({
+  state: "resolved",
+  digest: `sha256:${"a".repeat(64)}`,
+  record: {
+    version: 1,
+    coverage: "command-and-script-text",
+    cwd: ".",
+    kind: "shell",
+    entries: [{
+      id: 0,
+      source: { kind: "request" },
+      parts: [{ operator: null, argv: ["pnpm", "run", "test"], expandsTo: [1] }],
+    }, {
+      id: 1,
+      source: {
+        kind: "package-script",
+        manager: "pnpm",
+        manifest: "package.json",
+        name: "test",
+        phase: "main",
+        arguments: [],
+        sourceDigest: `sha256:${"b".repeat(64)}`,
+      },
+      parts: [{ operator: null, argv, expandsTo: [] }],
+    }],
+  },
+})
+
 describe("permissionDecisionFor", () => {
+  it("uses the shared resolved execution when judging Build auto", () => {
+    expect(permissionDecisionFor({
+      runtime: runtime(true),
+      command: "pnpm test",
+      execution: resolvedScript(["make", "release"]),
+    })).toEqual({ action: "review", risk: "hard-gate" })
+    expect(permissionDecisionFor({
+      runtime: runtime(true),
+      command: "pnpm test",
+      execution: resolvedScript(["vitest", "run"]),
+    })).toEqual({ action: "allow", risk: "normal" })
+  })
+
   it.each([
     "pnpm publish",
     "git push --force origin main",
@@ -156,7 +198,7 @@ describe("permissionDecisionFor", () => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
-        packageScripts,
+        execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "allow", risk: "normal" })
     },
   )
@@ -172,7 +214,7 @@ describe("permissionDecisionFor", () => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
-        packageScripts,
+        execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "review", risk: "hard-gate" })
     },
   )
@@ -188,7 +230,7 @@ describe("permissionDecisionFor", () => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
-        packageScripts,
+        execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "review", risk: "normal" })
     },
   )
@@ -205,7 +247,7 @@ describe("permissionDecisionFor", () => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
-        packageScripts,
+        execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "review", risk: "normal" })
     },
   )
@@ -221,7 +263,7 @@ describe("permissionDecisionFor", () => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
-        packageScripts,
+        execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "review", risk: "normal" })
     },
   )
@@ -235,7 +277,7 @@ describe("permissionDecisionFor", () => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
-        packageScripts,
+        execution: resolveCommandExecution({ command, packageScripts }),
       })).toEqual({ action: "allow", risk: "normal" })
     },
   )
@@ -244,7 +286,10 @@ describe("permissionDecisionFor", () => {
     expect(permissionDecisionFor({
       runtime: runtime(true),
       command: "pnpm build",
-      packageScripts: { build: "make release" },
+      execution: resolveCommandExecution({
+        command: "pnpm build",
+        packageScripts: { build: "make release" },
+      }),
     })).toEqual({ action: "review", risk: "hard-gate" })
   })
 
@@ -252,7 +297,10 @@ describe("permissionDecisionFor", () => {
     expect(permissionDecisionFor({
       runtime: runtimeMode("build", false),
       command: "pnpm test",
-      packageScripts: { test: "vitest run" },
+      execution: resolveCommandExecution({
+        command: "pnpm test",
+        packageScripts: { test: "vitest run" },
+      }),
     })).toEqual({ action: "review", risk: "normal" })
   })
 

@@ -50,7 +50,7 @@ const packageSubcommands = new Set([
 ])
 const npmScriptShortcuts = new Set(["start", "stop", "test"])
 const scriptName = /^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/iu
-const unsupportedUnquoted = new Set(["$", "`", "<", ">", "(", ")", "{", "}", "[", "]", "*", "?", "~", "#"])
+const unsupportedUnquoted = new Set(["$", "`", "<", ">", "(", ")", "{", "}", "[", "]", "*", "?", "#"])
 const statefulShellCommands = new Set([
   ".", "alias", "cd", "eval", "exec", "export", "popd", "pushd", "set", "source", "unalias", "unset",
 ])
@@ -381,6 +381,19 @@ function resolveShell(
     kind: "shell",
     entries,
   })
+}
+
+export function resolveCommandExecution(input: {
+  command?: string
+  cwd?: string
+  packageScripts?: PackageScripts
+  manifest?: string
+}): ExecutionResolution {
+  const command = input.command?.trim()
+  if (!command) return unresolved("command-missing")
+  return resolveShell(command, input.cwd ?? ".", input.packageScripts
+    ? { path: input.manifest ?? "package.json", scripts: input.packageScripts }
+    : undefined)
 }
 
 export async function resolveExecution(input: ExecutionInput): Promise<ExecutionResolution> {
