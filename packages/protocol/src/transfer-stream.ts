@@ -1,20 +1,19 @@
 import { z } from "zod"
 
+import { canonicalBase64DecodedByteLength } from "./identifiers.js"
+
 export const maximumTransferChunkBytes = 1_048_576
 export const maximumTransferBytes = 2_147_483_648
-
-// Base64 carries three bytes in four characters, so the byte count a chunk
-// claims is read from the encoded form rather than trusted.
-export function encodedByteLength(encoded: string): number {
-  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0
-  return Math.max(0, (encoded.length / 4) * 3 - padding)
-}
+export const maximumTransferChunkEncodedCharacters = Math.ceil(maximumTransferChunkBytes / 3) * 4
 
 export const transferChunkSchema = z.object({
   sequence: z.number().int().min(0),
-  bytes: z.string().refine(
-    (encoded) => encodedByteLength(encoded) <= maximumTransferChunkBytes,
-    "Transfer chunk is too large",
+  bytes: z.string().max(maximumTransferChunkEncodedCharacters).refine(
+    (encoded) => {
+      const decoded = canonicalBase64DecodedByteLength(encoded)
+      return decoded !== undefined && decoded <= maximumTransferChunkBytes
+    },
+    "Transfer chunk bytes must be canonical Base64 within the chunk ceiling",
   ),
   final: z.boolean(),
 }).strict()

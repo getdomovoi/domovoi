@@ -1,5 +1,5 @@
-import type { ComponentPropsWithoutRef } from "react"
-import ReactMarkdown from "react-markdown"
+import { memo, useMemo, type ComponentPropsWithoutRef } from "react"
+import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { performanceBudgets } from "@getdomovoi/protocol"
 
@@ -34,7 +34,14 @@ function SafeLink({ href, children }: ComponentPropsWithoutRef<"a">) {
     : <span>{children}</span>
 }
 
-export function MarkdownQuickView({
+const remarkPlugins = [remarkGfm]
+const markdownComponents: Components = {
+  a: SafeLink,
+  img: () => null,
+  code: ({ className, children }) => <code className={cn(className, "font-machine text-[0.92em]")}>{children}</code>,
+}
+
+export const MarkdownQuickView = memo(function MarkdownQuickView({
   source,
   canonicalAvailable = false,
   onOpenCanonical,
@@ -43,18 +50,14 @@ export function MarkdownQuickView({
   canonicalAvailable?: boolean
   onOpenCanonical?: () => void
 }) {
-  const bounded = boundedMarkdownSource(source)
+  const bounded = useMemo(() => boundedMarkdownSource(source), [source])
   return (
     <div className="flex min-w-0 flex-col gap-2 text-[13px] leading-relaxed [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h1]:text-[17px] [&_h1]:font-semibold [&_h2]:text-[15px] [&_h2]:font-semibold [&_h3]:text-[13px] [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_p]:m-0 [&_pre]:max-h-72 [&_pre]:overflow-auto [&_pre]:rounded-md [&_pre]:bg-code [&_pre]:p-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:p-2 [&_th]:border [&_th]:p-2 [&_ul]:list-disc">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={remarkPlugins}
         skipHtml
         urlTransform={safeMarkdownUrl}
-        components={{
-          a: SafeLink,
-          img: () => null,
-          code: ({ className, children }) => <code className={cn(className, "font-machine text-[0.92em]")}>{children}</code>,
-        }}
+        components={markdownComponents}
       >
         {bounded.source}
       </ReactMarkdown>
@@ -66,4 +69,4 @@ export function MarkdownQuickView({
       ) : null}
     </div>
   )
-}
+})

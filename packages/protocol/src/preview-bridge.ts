@@ -4,6 +4,16 @@ import { annotationAnchorSchema } from "./schema.js"
 
 export const previewBridgeChannelSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/)
 
+export const previewParentOriginSchema = z.string().refine((value) => {
+  if (value === "null") return true
+  try {
+    const url = new URL(value)
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value
+  } catch {
+    return false
+  }
+}, { message: "A preview parent origin must be a serialized http(s) origin or null" })
+
 export const previewBridgePickerMessageSchema = z.object({
   type: z.literal("domovoi.preview.picker"),
   channel: previewBridgeChannelSchema,
@@ -18,23 +28,9 @@ export const previewBridgeSelectionMessageSchema = z.object({
   label: z.string().trim().min(1).max(240),
 })
 
-const previewBridgeAnnotationAnchorValueSchema = z.object({
-  cssSelector: z.string().min(1).max(1_000).optional(),
-  textQuote: z.string().min(1).max(2_000).optional(),
-  bbox: z.object({
-    x: z.number().finite().nonnegative(),
-    y: z.number().finite().nonnegative(),
-    width: z.number().finite().positive(),
-    height: z.number().finite().positive(),
-  }).strict().optional(),
-}).strict().refine(
-  (anchor) => Boolean(anchor.cssSelector || anchor.textQuote || anchor.bbox),
-  { message: "A preview annotation anchor requires a selector, quote, or bounding box" },
-)
-
 const previewBridgeAnnotationAnchorSchema = z.object({
   annotationId: z.string().trim().min(1).max(256),
-  anchor: previewBridgeAnnotationAnchorValueSchema,
+  anchor: annotationAnchorSchema,
 }).strict()
 
 export const previewBridgeResolveAnchorsMessageSchema = z.object({

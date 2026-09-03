@@ -191,6 +191,7 @@ describe("DomovoiClient", () => {
       params: {
         client: "web",
         clientId: client.clientId,
+        protocolVersion: "0.1.0",
         authToken: "secret-token",
       },
     })
@@ -284,7 +285,7 @@ describe("DomovoiClient", () => {
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
 
-    const authorizing = client.authorizeArtifact({ sessionId: "session-a", artifactId: "artifact-preview", revision: 2, purpose: "preview", bridgeChannel: "preview_channel_123456" })
+    const authorizing = client.authorizeArtifact({ sessionId: "session-a", artifactId: "artifact-preview", revision: 2, purpose: "preview", bridgeChannel: "preview_channel_123456", parentOrigin: "https://app.domovoi.sh" })
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
       method: "artifact.authorize",
       params: {
@@ -293,6 +294,7 @@ describe("DomovoiClient", () => {
         revision: 2,
         purpose: "preview",
         bridgeChannel: "preview_channel_123456",
+        parentOrigin: "https://app.domovoi.sh",
         client: "tablet",
       },
     })
@@ -305,12 +307,13 @@ describe("DomovoiClient", () => {
         revision: 2,
         purpose: "preview",
         bridgeChannel: "preview_channel_123456",
+        parentOrigin: "https://app.domovoi.sh",
         expiresAt: 1_800_000_000,
         signature: "a".repeat(43),
       },
     })
 
-    await expect(authorizing).resolves.toMatchObject({ artifactId: "artifact-preview" })
+    await expect(authorizing).resolves.toMatchObject({ artifactId: "artifact-preview", parentOrigin: "https://app.domovoi.sh" })
     client.disconnect()
   })
 

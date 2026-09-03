@@ -39,13 +39,19 @@ export type ArtifactWatcherHandle = {
 
 export type SessionArtifactWatcherFactory = (options: ArtifactWatcherOptions) => ArtifactWatcherHandle
 
-type ArtifactFile = ArtifactFileChange & { fingerprint: string }
+type ArtifactFile = Omit<ArtifactFileChange, "content"> & {
+  fingerprint: string
+  readContent?: () => Promise<string>
+}
 type ArtifactScan = { files: ArtifactFile[]; truncated: boolean }
 
 export const maximumArtifactFileBytes = maximumPreviewSourceBytes
 const artifactName = /(?:^|[-_.])(plan|preview|design|wireframe|mockup|variant|prototype|roadmap)(?:[-_.]|$)/i
 const artifactDirectories = new Set(["artifacts", "previews", "designs", "plans", "plan-preview", "design-studio"])
-const ignoredDirectories = new Set([".git", "node_modules", ".pnpm", "coverage"])
+const ignoredDirectories = new Set([
+  ".git", "node_modules", ".pnpm", "coverage",
+  "dist", "build", "out", "target", ".next", ".venv", "venv", "__pycache__", ".turbo", ".cache",
+])
 
 const defaultWatchFactory: ArtifactWatchFactory = (root, onEvent, onError) => {
   const watcher = watch(root, { recursive: true }, (_event, path) => {
@@ -119,9 +125,10 @@ export class ArtifactWatcher {
       const next = new Map(scan.files.map((file) => [file.path, file.fingerprint]))
       for (const file of scan.files) {
         if (this.#known.get(file.path) === file.fingerprint) continue
-        const { fingerprint, ...change } = file
+        const { fingerprint, readContent, ...rest } = file
         void fingerprint
-        this.#onChange(change)
+        const content = readContent === undefined ? undefined : await readContent()
+        this.#onChange({ ...rest, ...(content === undefined ? {} : { content }) })
       }
       this.#known = next
     })
@@ -251,12 +258,11 @@ async function inspectArtifactFile(
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > BigInt(maximumFileBytes)) return undefined
     const candidateFromRoot = normalizeRelativePath(relative(realRoot, realCandidate))
     if (!candidateFromRoot || candidateFromRoot.startsWith("../") || isAbsolute(candidateFromRoot)) return undefined
-    const content = descriptor.type === "plan" ? await readFile(realCandidate, "utf8") : undefined
     return {
       path: pathFromRoot,
       title: basename(pathFromRoot),
       ...descriptor,
-      ...(content === undefined ? {} : { content }),
+      ...(descriptor.type === "plan" ? { readContent: () => readFile(realCandidate, "utf8") } : {}),
       fingerprint: `${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`,
     }
   } catch {

@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  auditActorSchema,
   auditEntrySchema,
   auditExportResultSchema,
   auditQueryPageSchema,
   auditQueryParamsSchema,
+  daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
   helloParamsSchema,
+  isMutatingRpcMethod,
+  isRefusedWithoutPersistence,
   maximumJsonValueDepth,
+  persistenceRecoveryRpcMethods,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
+  rpcMethodMutations,
+  protocolVersionMismatchErrorCode,
   rpcMethods,
   rpcNotificationSchema,
   rpcRequestSchema,
@@ -20,6 +27,7 @@ import {
   sessionHistoryCategorySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
+  workspaceSnapshotSchema,
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
@@ -242,23 +250,97 @@ describe("provider thread restart RPC contracts", () => {
   })
 })
 
+describe("empty-params RPC contracts", () => {
+  it("applies one strictness to every method that takes no params", () => {
+    for (const method of [
+      "workspace.get",
+      "skill.list",
+      "skill.inventory",
+      "provider.secret.list",
+      "fleet.list",
+      "device.list",
+      "device.issueCode",
+    ] as const) {
+      expect(rpcMethods[method].params.safeParse({}).success).toBe(true)
+      expect(rpcMethods[method].params.safeParse({ surprise: true }).success).toBe(false)
+    }
+  })
+})
+
 describe("authenticated client identity", () => {
   it("bounds optional hello client ids", () => {
     expect(helloParamsSchema.parse({
       client: "web",
       clientId: "browser-session-1",
       clientVersion: "1.0.0",
+      protocolVersion: "0.1.0",
     })).toMatchObject({ client: "web", clientId: "browser-session-1" })
     expect(helloParamsSchema.safeParse({
       client: "web",
       clientId: "x".repeat(129),
       clientVersion: "1.0.0",
+      protocolVersion: "0.1.0",
     }).success).toBe(false)
     expect(rpcMethods["system.hello"].result.parse({
       ...demoWorkspace,
       connectionId: "11111111-1111-4111-8111-111111111111",
     }).connectionId).toBe("11111111-1111-4111-8111-111111111111")
     expect(rpcMethods["system.hello"].result.parse(demoWorkspace).connectionId).toBeUndefined()
+  })
+
+  it("carries the protocol version in the handshake", () => {
+    // A hello with no version is a client from before the field existed and is
+    // accepted; the daemon treats it as speaking this protocol version.
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientVersion: "1.0.0",
+    }).success).toBe(true)
+    expect(helloParamsSchema.parse({
+      client: "web",
+      clientVersion: "1.0.0",
+      protocolVersion: "0.1.0",
+    }).protocolVersion).toBe("0.1.0")
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientVersion: "1.0.0",
+      protocolVersion: "0.1",
+    }).success).toBe(false)
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientVersion: "x".repeat(65),
+      protocolVersion: "0.1.0",
+    }).success).toBe(false)
+    expect(helloParamsSchema.safeParse({
+      client: "web",
+      clientVersion: "1.0.0",
+      protocolVersion: "0.1.0",
+      unknown: true,
+    }).success).toBe(false)
+  })
+
+  it("identifies a peer daemon as a machine actor", () => {
+    const machineId = `machine-${"a".repeat(32)}`
+    expect(helloParamsSchema.parse({
+      client: "machine",
+      machineId,
+      clientVersion: "0.0.1",
+      protocolVersion: "0.1.0",
+    })).toMatchObject({ client: "machine", machineId })
+    expect(helloParamsSchema.safeParse({
+      client: "machine",
+      clientVersion: "0.0.1",
+      protocolVersion: "0.1.0",
+    }).success).toBe(false)
+    expect(helloParamsSchema.safeParse({
+      client: "desktop",
+      machineId,
+      clientVersion: "0.0.1",
+      protocolVersion: "0.1.0",
+    }).success).toBe(false)
+    expect(auditActorSchema.parse({ kind: "machine", machineId }))
+      .toEqual({ kind: "machine", machineId })
+    expect(auditActorSchema.safeParse({ kind: "machine" }).success).toBe(false)
+    expect(protocolVersionMismatchErrorCode).toBe(-32012)
   })
 })
 
@@ -747,5 +829,59 @@ describe("JSON value depth bounds", () => {
       id: "req-1",
       result: params,
     }).success).toBe(true)
+  })
+})
+
+describe("RPC method persistence classification", () => {
+  it("classifies every method exactly once as mutating or read-only", () => {
+    expect(Object.keys(rpcMethodMutations).sort()).toEqual(Object.keys(rpcMethods).sort())
+    for (const mutation of Object.values(rpcMethodMutations)) {
+      expect(["mutating", "read-only"]).toContain(mutation)
+    }
+  })
+
+  it("keeps workspace.get as a read-only snapshot and diagnostic method", () => {
+    expect(rpcMethods["workspace.get"].params.parse({})).toEqual({})
+    expect(rpcMethods["workspace.get"].result).toBe(workspaceSnapshotSchema)
+    expect(rpcMethods["workspace.get"].result.parse(demoWorkspace)).toMatchObject({
+      machine: { id: demoWorkspace.machine.id },
+    })
+    expect(rpcMethodMutations["workspace.get"]).toBe("read-only")
+    expect(isMutatingRpcMethod("workspace.get")).toBe(false)
+    expect(isRefusedWithoutPersistence("workspace.get")).toBe(false)
+  })
+
+  it("refuses mutating methods without persistence and keeps recovery methods reachable", () => {
+    expect(daemonPersistenceUnavailableErrorCode).toBe(-32014)
+    expect(isMutatingRpcMethod("session.send")).toBe(true)
+    expect(isRefusedWithoutPersistence("session.send")).toBe(true)
+    expect(isRefusedWithoutPersistence("system.hello")).toBe(false)
+    for (const method of persistenceRecoveryRpcMethods) {
+      expect(isMutatingRpcMethod(method)).toBe(true)
+      expect(isRefusedWithoutPersistence(method)).toBe(false)
+    }
+  })
+})
+
+describe("hello version compatibility", () => {
+  it("accepts a hello from a client built before the version field existed", () => {
+    const legacy = {
+      client: "desktop" as const,
+      clientId: "client-1",
+      clientVersion: "0.0.1",
+      authToken: "token",
+    }
+    expect(helloParamsSchema.safeParse(legacy).success).toBe(true)
+  })
+
+  it("still rejects a version that is not three-part semver", () => {
+    const bad = {
+      client: "desktop" as const,
+      clientId: "client-1",
+      clientVersion: "0.0.1",
+      protocolVersion: "one",
+      authToken: "token",
+    }
+    expect(helloParamsSchema.safeParse(bad).success).toBe(false)
   })
 })

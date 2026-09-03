@@ -4,7 +4,11 @@ import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { Worker } from "node:worker_threads"
 
-import { workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import {
+  protocolVersion,
+  workspaceSnapshotSchema,
+  type WorkspaceSnapshot,
+} from "@getdomovoi/protocol"
 
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
 import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
@@ -16,12 +20,45 @@ type StoredWorkspace = {
   snapshot: string
 }
 
+type StoredProjectWorkspace = {
+  state: string
+}
+
+export type ProjectWorkspaceState = {
+  project: NonNullable<WorkspaceSnapshot["project"]>
+  sessions: WorkspaceSnapshot["sessions"]
+  activeSessionId: WorkspaceSnapshot["activeSessionId"]
+  approvals: WorkspaceSnapshot["approvals"]
+  approvalRules: WorkspaceSnapshot["approvalRules"]
+  thread: WorkspaceSnapshot["thread"]
+  artifacts: WorkspaceSnapshot["artifacts"]
+  annotations: WorkspaceSnapshot["annotations"]
+}
+
+export function projectWorkspaceState(
+  snapshot: WorkspaceSnapshot,
+): ProjectWorkspaceState | undefined {
+  const project = snapshot.project
+  if (!project) return undefined
+  return {
+    project,
+    sessions: snapshot.sessions,
+    activeSessionId: snapshot.activeSessionId,
+    approvals: snapshot.approvals,
+    approvalRules: snapshot.approvalRules,
+    thread: snapshot.thread,
+    artifacts: snapshot.artifacts,
+    annotations: snapshot.annotations,
+  }
+}
+
 export interface WorkspaceStore {
   readonly auditLog?: AuditLog
   readonly devices?: DeviceRegistry
   readonly fleet?: FleetRegistry
   readonly transferReceipts?: TransferReceipts
   load(): WorkspaceSnapshot
+  loadProject?(projectId: string): ProjectWorkspaceState | undefined
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
   close(): void | Promise<void>
@@ -108,9 +145,14 @@ async function start() {
   const database = new DatabaseSync(workerData.path)
   database.exec("PRAGMA journal_mode = WAL;")
   database.exec("PRAGMA busy_timeout = 5000;")
+  database.exec("PRAGMA synchronous = NORMAL;")
   const save = database.prepare(
     "INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, ?, ?) " +
     "ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at",
+  )
+  const saveProject = database.prepare(
+    "INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?) " +
+    "ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
   )
   parentPort.on("message", (message) => {
     try {
@@ -121,6 +163,22 @@ async function start() {
       }
       const validated = workspaceSnapshotSchema.parse(message.snapshot)
       save.run(JSON.stringify(validated), message.updatedAt)
+      if (validated.project) {
+        saveProject.run(
+          validated.project.id,
+          JSON.stringify({
+            project: validated.project,
+            sessions: validated.sessions,
+            activeSessionId: validated.activeSessionId,
+            approvals: validated.approvals,
+            approvalRules: validated.approvalRules,
+            thread: validated.thread,
+            artifacts: validated.artifacts,
+            annotations: validated.annotations,
+          }),
+          message.updatedAt,
+        )
+      }
       if (process.platform !== "win32") {
         for (const path of [workerData.path, workerData.path + "-wal", workerData.path + "-shm"]) {
           if (existsSync(path)) chmodSync(path, 0o600)
@@ -220,9 +278,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
+      PRAGMA synchronous = NORMAL;
       CREATE TABLE IF NOT EXISTS workspace_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         snapshot TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS workspace_projects (
+        project_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
     `)
@@ -247,6 +311,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     if (!existing) this.save(initial)
     else if (migratedExisting?.repaired) this.save(migratedExisting.snapshot)
     else if (isLegacySeed) this.save(initial)
+    else if (existingSnapshot) this.#seedProjectRow(existingSnapshot)
     this.#restrictFilePermissions()
   }
 
@@ -282,7 +347,37 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     await this.#writer.write(sanitized)
   }
 
+  loadProject(projectId: string): ProjectWorkspaceState | undefined {
+    const row = this.#database
+      .prepare("SELECT state FROM workspace_projects WHERE project_id = ?")
+      .get(projectId) as StoredProjectWorkspace | undefined
+    if (!row) return undefined
+    const stored = JSON.parse(row.state) as Record<string, unknown>
+    const candidate = {
+      ...stored,
+      protocolVersion,
+      machine: this.load().machine,
+      skillEnablements: [],
+    } as unknown as WorkspaceSnapshot
+    return projectWorkspaceState(
+      workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate)),
+    )
+  }
+
+  #seedProjectRow(snapshot: WorkspaceSnapshot): void {
+    const state = projectWorkspaceState(snapshot)
+    if (!state) return
+    this.#database
+      .prepare(`
+        INSERT INTO workspace_projects (project_id, state, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(project_id) DO NOTHING
+      `)
+      .run(state.project.id, JSON.stringify(state), new Date().toISOString())
+  }
+
   #writeValidated(snapshot: WorkspaceSnapshot): void {
+    const updatedAt = new Date().toISOString()
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)
@@ -291,7 +386,19 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           snapshot = excluded.snapshot,
           updated_at = excluded.updated_at
       `)
-      .run(JSON.stringify(snapshot), new Date().toISOString())
+      .run(JSON.stringify(snapshot), updatedAt)
+    const state = projectWorkspaceState(snapshot)
+    if (state) {
+      this.#database
+        .prepare(`
+          INSERT INTO workspace_projects (project_id, state, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(project_id) DO UPDATE SET
+            state = excluded.state,
+            updated_at = excluded.updated_at
+        `)
+        .run(state.project.id, JSON.stringify(state), updatedAt)
+    }
     this.#restrictFilePermissions()
   }
 

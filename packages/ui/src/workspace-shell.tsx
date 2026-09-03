@@ -243,9 +243,9 @@ export function ProjectSwitchConfirmationDialog({
     <AlertDialog open onOpenChange={(open) => { if (!open && !pending) onCancel() }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Remove current sessions and switch projects?</AlertDialogTitle>
+          <AlertDialogTitle>Stop running work and switch projects?</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes {confirmation.sessionCount} sessions and their saved history, including {confirmation.worktreeCount} isolated {confirmation.worktreeCount === 1 ? "worktree" : "worktrees"}. Archive anything you want to preserve first.
+            Domovoi keeps {confirmation.sessionCount} sessions and their saved history, including {confirmation.worktreeCount} isolated {confirmation.worktreeCount === 1 ? "worktree" : "worktrees"}, and restores them when you reopen this project. Switching now stops any turn, provider thread, and terminal that is still running.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ScrollArea className="max-h-44 rounded-md border">
@@ -262,11 +262,10 @@ export function ProjectSwitchConfirmationDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>Keep current project</AlertDialogCancel>
           <Button
-            variant="destructive"
             disabled={pending}
             onClick={() => onConfirm(confirmation.requestedPath)}
           >
-            {pending ? "Switching…" : "Remove sessions and switch"}
+            {pending ? "Switching…" : "Stop work and switch"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -541,8 +540,16 @@ export function SessionRow({
   )
 }
 
+function machineInitials(name: string): string {
+  const words = name.split(/[^a-z0-9]+/i).filter((word) => word.length > 0)
+  const first = words[0]?.[0] ?? name[0] ?? ""
+  const last = words.length > 1 ? (words[words.length - 1]?.[0] ?? "") : (words[0]?.[1] ?? "")
+  return `${first}${last}`.toUpperCase()
+}
+
 export function SessionsSidebar({
   snapshot,
+  fleet,
   onCollapse,
   onActivate,
   onNewSession,
@@ -550,6 +557,7 @@ export function SessionsSidebar({
   collapseButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
+  fleet?: FleetMachine[] | null
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
@@ -612,8 +620,8 @@ export function SessionsSidebar({
       </ScrollArea>
       <Separator />
       <div className="flex h-12 items-center gap-2 px-3">
-        <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">DF</span>
-        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">phetzy</span><span className="block font-machine text-[9px] text-faint">1 machine · local</span></span>
+        <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">{machineInitials(snapshot.machine.name)}</span>
+        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">{snapshot.machine.name}</span><span className="block font-machine text-[9px] text-faint">{outcomeCount(fleet?.length ?? 1, "machine", "machines")} · {snapshot.machine.connection}</span></span>
         <LaptopIcon className="size-3.5 text-muted-foreground" />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -1134,6 +1142,7 @@ export function ArchiveSessionAction({
 export function Thread({
   snapshot,
   connected,
+  emergencyStopPending = false,
   fleet,
   currentMachineId,
   onResolve,
@@ -1154,6 +1163,7 @@ export function Thread({
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
+  emergencyStopPending?: boolean | undefined
   fleet?: FleetMachine[] | undefined
   currentMachineId?: string | undefined
   onResolve: (
@@ -1227,7 +1237,7 @@ export function Thread({
 
   const submitPrompt = async () => {
     const nextPrompt = prompt.trim()
-    if (!nextPrompt || pending || providerRestartRequired) return
+    if (!nextPrompt || pending || providerRestartRequired || emergencyStopPending) return
     setPending(true)
     setSendError("")
     try {
@@ -1489,14 +1499,14 @@ export function Thread({
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
         <PromptEditorDialog
           open={promptEditorOpen}
           draft={prompt}
           pending={pending}
-          sendDisabled={!prompt.trim() || providerRestartRequired}
+          sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
           onOpenChange={setPromptEditorOpen}
           onDraftChange={setPrompt}
           onSend={() => {
@@ -2010,6 +2020,7 @@ export function ArtifactDock({
     revision: number
     purpose: ArtifactAccess["purpose"]
     bridgeChannel?: string
+    parentOrigin?: string
   }) => Promise<ArtifactAccess>
   connected: boolean
   terminalControls: TerminalControls
@@ -2121,9 +2132,9 @@ export function ArtifactDock({
     setPreviewError("")
     const [target] = artifactAuthorizationTargets(previewAuthorizationKey)
     if (!target || !connected) return () => { active = false }
-    void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel }).then(
+    void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
       (access) => {
-        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
+        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access))
       },
       (cause: unknown) => {
         if (!active) return
@@ -2151,7 +2162,7 @@ export function ArtifactDock({
             revision: target.revision,
             purpose: "preview",
           })
-          entries.push([target.id, artifactUrlFor(rpcUrl, access, window.location.origin)])
+          entries.push([target.id, artifactUrlFor(rpcUrl, access)])
         } catch {
           // Keep failed comparison stages sandboxed and blank.
         }
@@ -3419,8 +3430,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}

@@ -2,6 +2,7 @@ import {
   daemonAuthenticationErrorCode,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
+  protocolVersion,
   rpcNotificationSchema,
   rpcMethods,
   rpcResponseSchema,
@@ -225,6 +226,7 @@ export class DomovoiClient extends EventTarget {
             client: this.kind,
             clientId: this.clientId,
             clientVersion: "0.0.1",
+            protocolVersion,
             ...(this.#authToken ? { authToken: this.#authToken } : {}),
           }).then(
             (snapshot) => {
@@ -476,6 +478,7 @@ export class DomovoiClient extends EventTarget {
     revision: number
     purpose: ArtifactAccess["purpose"]
     bridgeChannel?: string
+    parentOrigin?: string
   }): Promise<ArtifactAccess> {
     return this.request(
       "artifact.authorize",

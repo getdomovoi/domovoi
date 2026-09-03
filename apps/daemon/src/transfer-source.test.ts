@@ -9,7 +9,8 @@ import {
   type TransferReceipt,
 } from "@getdomovoi/protocol"
 
-import { sendSessionToMachine, maximumTransferChunkBytes } from "./transfer-source.js"
+import { maximumTransferChunkBytes } from "@getdomovoi/protocol"
+import { sendSessionToMachine, transferSenderChunkBytes } from "./transfer-source.js"
 
 const bundle = Buffer.from("PACK".repeat(400))
 const digest = createHash("sha256").update(bundle).digest("hex")
@@ -169,7 +170,7 @@ describe("sendSessionToMachine", () => {
       return { state: "restored", workspacePath: "/worktrees/session-1", checkpointCommit: "d".repeat(40) }
     })
     const { recorded, ...io } = transferIo({ call })
-    const large = Buffer.alloc(maximumTransferChunkBytes * 2, 7)
+    const large = Buffer.alloc(transferSenderChunkBytes * 2, 7)
     io.readBundle = vi.fn(async () => large)
 
     const outcome = await sendSessionToMachine({
