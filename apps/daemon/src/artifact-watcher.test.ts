@@ -7,6 +7,19 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ArtifactWatcher, type ArtifactFileChange, type ArtifactWatchFactory } from "./artifact-watcher.js"
 
+const { readFileCalls } = vi.hoisted(() => ({ readFileCalls: [] as string[] }))
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return {
+    ...actual,
+    readFile: ((path: string | URL | number, options?: unknown) => {
+      readFileCalls.push(String(path))
+      return actual.readFile(path as never, options as never)
+    }) as unknown as typeof actual.readFile,
+  }
+})
+
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
@@ -164,6 +177,57 @@ describe("ArtifactWatcher", () => {
       },
     })
     await expect(broken.start()).rejects.toThrow("broken")
+  })
+
+  it("reads plan content only when a fingerprint changes", async () => {
+    readFileCalls.length = 0
+    const root = await scratch("domovoi-artifact-lazy-read")
+    await writeFile(join(root, "plan-notes.md"), "# Original")
+    const changes: ArtifactFileChange[] = []
+    const watcher = new ArtifactWatcher({
+      root,
+      onChange: (change) => changes.push(change),
+      watchFactory: () => ({ close: vi.fn() }),
+    })
+
+    await watcher.start()
+    expect(readFileCalls).toEqual([])
+    await watcher.rescan()
+    expect(readFileCalls).toEqual([])
+    expect(changes).toEqual([])
+
+    await writeFile(join(root, "plan-notes.md"), "# Changed")
+    await watcher.rescan()
+    expect(readFileCalls).toHaveLength(1)
+    expect(readFileCalls[0]).toContain("plan-notes.md")
+    expect(changes).toEqual([{
+      path: "plan-notes.md",
+      title: "plan-notes.md",
+      type: "plan",
+      mimeType: "text/markdown",
+      content: "# Changed",
+    }])
+  })
+
+  it("does not walk build output directories", async () => {
+    const root = await scratch("domovoi-artifact-build-ignored")
+    for (const name of ["dist", "build", "out", "target", ".next", ".venv", "venv", "__pycache__", ".turbo", ".cache"]) {
+      await mkdir(join(root, name))
+      await writeFile(join(root, name, "plan-ignored.md"), "# Ignored")
+    }
+    await writeFile(join(root, "plan-root.md"), "# Root")
+    const changes: ArtifactFileChange[] = []
+    const watcher = new ArtifactWatcher({
+      root,
+      maximumEntries: 20,
+      onChange: (change) => changes.push(change),
+      watchFactory: () => ({ close: vi.fn() }),
+    })
+
+    await expect(watcher.start()).resolves.toBeUndefined()
+    await writeFile(join(root, "plan-late.md"), "# Late")
+    await watcher.rescan()
+    expect(changes.map((change) => change.path)).toEqual(["plan-late.md"])
   })
 
   it("does not install a subscription after stop during baseline", async () => {

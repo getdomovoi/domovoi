@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest"
+import { performanceBudgets } from "@getdomovoi/protocol"
 
-import { PreviewThumbnailLifecycle, previewThumbnailRect } from "./preview-thumbnails"
+import {
+  PreviewThumbnailLifecycle,
+  previewThumbnailObjectUrl,
+  previewThumbnailRect,
+} from "./preview-thumbnails"
+
+function capturedPng(bytes: number): string {
+  const payload = Buffer.alloc(bytes, 0)
+  payload.set([137, 80, 78, 71, 13, 10, 26, 10])
+  return payload.toString("base64")
+}
 
 describe("preview thumbnails", () => {
   it("unifies pending and ready entries under one bounded lifecycle", () => {
@@ -31,5 +42,42 @@ describe("preview thumbnails", () => {
   it("bounds captures to a small visible preview", () => {
     expect(previewThumbnailRect({ left: 20.2, top: 30.7, width: 1200, height: 900 }, { width: 1440, height: 1000 }))
       .toEqual({ x: 21, y: 31, width: 320, height: 180 })
+  })
+
+  it("decodes a PNG capture into an object URL", () => {
+    const url = previewThumbnailObjectUrl({
+      mimeType: "image/png",
+      width: 320,
+      height: 180,
+      data: capturedPng(64),
+    })
+    expect(url).toMatch(/^blob:/)
+  })
+
+  it("refuses captures that are not PNG streams or exceed the decoded budget", () => {
+    expect(previewThumbnailObjectUrl({
+      mimeType: "image/png",
+      width: 320,
+      height: 180,
+      data: Buffer.from("not a png stream", "utf8").toString("base64"),
+    })).toBeUndefined()
+    expect(previewThumbnailObjectUrl({
+      mimeType: "image/png",
+      width: 320,
+      height: 180,
+      data: capturedPng(64),
+    })).not.toBeUndefined()
+    expect(previewThumbnailObjectUrl({
+      mimeType: "image/png",
+      width: 320,
+      height: 180,
+      data: capturedPng(performanceBudgets.largePreviews.thumbnailDecodedBytes + 1),
+    })).toBeUndefined()
+    expect(previewThumbnailObjectUrl({
+      mimeType: "image/png",
+      width: 321,
+      height: 180,
+      data: capturedPng(64),
+    })).toBeUndefined()
   })
 })

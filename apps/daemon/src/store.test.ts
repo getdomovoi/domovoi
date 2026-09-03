@@ -156,6 +156,30 @@ describe("SqliteWorkspaceStore", () => {
     reopened.close()
   })
 
+  it("opens its main connection in WAL mode with synchronous NORMAL", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-pragma-"))
+    scratchDirectories.push(scratch)
+    const connections = new Set<DatabaseSync>()
+    const exec = DatabaseSync.prototype.exec
+    const observed = vi.spyOn(DatabaseSync.prototype, "exec")
+      .mockImplementation(function (this: DatabaseSync, sql) {
+        connections.add(this)
+        return exec.call(this, sql)
+      })
+    let store: SqliteWorkspaceStore
+    try {
+      store = new SqliteWorkspaceStore(join(scratch, "state.sqlite"), demoWorkspace)
+    } finally {
+      observed.mockRestore()
+    }
+
+    expect(connections.size).toBe(1)
+    const [connection] = connections
+    expect(connection!.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "wal" })
+    expect(connection!.prepare("PRAGMA synchronous").get()).toMatchObject({ synchronous: 1 })
+    store.close()
+  })
+
   it("keeps paired device credentials across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
