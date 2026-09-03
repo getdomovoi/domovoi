@@ -4115,27 +4115,36 @@ export class DomovoiDaemon {
           && rule.projectId === project.id
           && rule.command === event.command,
       )
+      // The outcome has to describe what actually happened: during a
+      // persistence lockout nothing is approved, so recording success would put
+      // a decision in the audit log that was never made.
+      const autoResolved = !this.#persistenceUnavailable
+        && !containsSecret
+        && (decision.action === "allow" || (decision.risk === "normal" && matchingRule))
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.approval-requested",
-        outcome: !containsSecret
-          && (decision.action === "allow" || (decision.risk === "normal" && matchingRule))
-          ? "succeeded"
-          : "started",
+        outcome: this.#persistenceUnavailable ? "denied" : autoResolved ? "succeeded" : "started",
         sessionId: session.id,
         projectId: project.id,
         ...(event.itemId ? { target: event.itemId } : {}),
       })
-      // An automatic approval is a decision the daemon cannot record once state
-      // stops reaching disk, so it stops deciding and asks the user instead.
-      // Refusing new RPCs is not enough: a turn already running keeps asking.
-      // An automatic approval is a decision the daemon cannot record once state
-      // stops reaching disk, so it stops deciding and asks the user instead.
-      // Refusing new RPCs is not enough: a turn already running keeps asking.
-      const mayDecide = !this.#persistenceUnavailable
-      if (mayDecide && !containsSecret && decision.action === "allow") {
+      // Once state stops reaching disk the daemon can neither record an
+      // automatic approval nor accept a human one, because approval.resolve is
+      // itself refused. A card would be a question nobody can answer and the
+      // turn would hang, so the request is denied: nothing is approved that
+      // cannot be recorded, and the turn ends instead of stalling.
+      if (this.#persistenceUnavailable) {
+        this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+        this.#reportError(
+          persistenceUnavailableContext,
+          new Error(`Denied ${reasonCopy.value} because state cannot reach disk`),
+        )
+        return
+      }
+      if (!containsSecret && decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
-      } else if (mayDecide && decision.risk === "normal" && matchingRule) {
+      } else if (decision.risk === "normal" && matchingRule) {
         this.#agents.require(provider).resolveApproval(event.requestId, "always-project")
       } else {
         this.#snapshot.approvals.push({

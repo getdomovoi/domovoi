@@ -9175,10 +9175,16 @@ describe("DomovoiDaemon session transfer requests", () => {
 })
 
 describe("DomovoiDaemon persistence refusal", () => {
-  function persistenceDaemon(agents: Record<string, AgentAdapter> = {}) {
+  function persistenceDaemon(
+    agents: Record<string, AgentAdapter> = {},
+    prepare: (snapshot: typeof demoWorkspace) => void = () => {},
+  ) {
     const snapshot = structuredClone(demoWorkspace)
     deferLiveTurns(snapshot)
     snapshot.approvals = []
+    // The daemon loads its snapshot when it is constructed, so anything a test
+    // needs in that snapshot has to be set before this point.
+    prepare(snapshot)
     const persistence = { failing: true, writes: 0 }
     const failure = () => new Error("state database is read-only")
     const store = {
@@ -9221,6 +9227,68 @@ describe("DomovoiDaemon persistence refusal", () => {
     }
     return { socket, rpc }
   }
+
+  it("denies a running turn's approval once state cannot reach disk", async () => {
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{ ...codexModels()[0]!, provider: "claude-code", id: "sonnet" }]),
+      startThread: vi.fn(async () => "thread-persistence"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-persistence"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const { daemon, snapshot, persistence } = persistenceDaemon({ "claude-code": agent }, (draft) => {
+      const target = draft.sessions[0]!
+      target.runtime = {
+        provider: "claude-code",
+        model: "sonnet",
+        reasoning: "high",
+        permissionMode: "build",
+        auto: true,
+      }
+      target.state = "idle"
+      target.workspacePath = "/worktrees/persistence"
+      target.providerThreadId = "thread-persistence"
+      delete target.activeTurnId
+    })
+    const session = snapshot.sessions[0]!
+
+    persistence.failing = false
+    const { socket, rpc } = await connect(daemon)
+    await rpc("session.send", { sessionId: session.id, prompt: "Check the tree", client: "desktop" })
+    expect(listener).toBeDefined()
+
+    // A command Build auto would normally allow outright, asked by a turn that
+    // was already running when persistence died.
+    persistence.failing = true
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await rpc("session.activate", { sessionId: session.id, client: "desktop" })
+    }
+    listener!({
+      type: "approval-requested",
+      requestId: 91,
+      threadId: "thread-persistence",
+      turnId: "turn-persistence",
+      command: "git status --porcelain",
+    })
+
+    // Denied rather than allowed, and denied rather than left as a card that
+    // approval.resolve would itself refuse. Agent events are queued, so the
+    // decision lands on a later tick.
+    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(91, "allow-once")
+    socket.close()
+  })
 
   it("refuses mutating requests once persistence keeps failing and still answers read-only ones", async () => {
     const { daemon, snapshot, errorSink } = persistenceDaemon()
