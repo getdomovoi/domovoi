@@ -35,7 +35,6 @@ describe("audit log view", () => {
       <AuditLogView
         connected
         initialPage={page}
-        onBack={vi.fn()}
         onOpenSkills={vi.fn()}
         onQuery={vi.fn(async () => page)}
         onExport={vi.fn()}

@@ -14,7 +14,6 @@ function settingsProps() {
     approvalRules: [],
     notifications: defaultNotificationPreferences(),
     onNotificationsChange: vi.fn(),
-    onBack: vi.fn(),
     onOpenFleet: vi.fn(),
     onOpenSkills: vi.fn(),
     onOpenAudit: vi.fn(),
