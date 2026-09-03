@@ -250,6 +250,8 @@ const historyEntryBase = {
 }
 
 const historyToolFields = {
+  // Matches threadItemSchema: a retired value still has to survive the trip from
+  // a stored snapshot into a history page.
   tool: toolKindSchema,
   status: toolStatusSchema,
   title: z.string(),
@@ -822,7 +824,6 @@ export const emergencyStopFailureSchema = z.object({
     "terminal",
     "approval",
     "provider",
-    "mutation",
     "persistence",
   ]),
   targetId: z.string().trim().min(1).max(512).optional(),
