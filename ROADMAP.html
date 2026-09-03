@@ -420,6 +420,12 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Per-project standing approval rules
 </li>
+<li>[ ] Key standing rules on a fingerprint of the resolved command rather than its text
+<ul>
+<li>A rule matches on <code>projectId</code> and the literal command, so it keeps approving a script whose body has since changed. The fingerprint should cover the normalized command, the project-relative directory, recursively expanded script bodies, lifecycle scripts such as <code>pretest</code>, and the validated runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the approval and rule schemas.
+</li>
+</ul>
+</li>
 <li>[ ] Enforce hard gates that Build auto cannot bypass
 <ul>
 <li>Build auto still auto-allows secret reads through Git: <code>git show HEAD:.env</code>, <code>git diff -- .env</code>, <code>git log -p -- .env</code>, <code>git diff --no-index</code>, and <code>.env.*</code> variants.
@@ -789,6 +795,8 @@ td { color: var(--ink2); }
 <li><strong>Provider handoff disclosure:</strong> required pre-switch loss disclosure, safe-boundary behavior, and the warning difference between switch and fork.
 </li>
 <li><strong>Skill signature authority:</strong> choose the trusted signer registry, revocation source, and key custody model. Current <code>.sig</code> declarations are content-digest-bound but are not cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
+</li>
+<li><strong>Build auto execution boundary:</strong> whether Build auto authorizes repository-controlled code to run unattended inside a containment boundary. An allowlisted runner executes files the repository owns, so a standing rule for <code>pnpm test</code> whose body stays <code>vitest run</code> still permits a changed <code>vitest.config.ts</code>, setup file, plugin, or test file to run with the daemon user's permissions, and no command pattern can see that. If the answer is yes, bounded has to mean bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no, every package manager command is a hard gate and Build auto is narrower than this roadmap describes.
 </li>
 <li><strong>Guest hard gates:</strong> whether guest clients may approve migrations, deploys, or secret reads and whether each decision requires a second factor.
 </li>

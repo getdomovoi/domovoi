@@ -159,6 +159,13 @@ Every ledger entry is now merged.
 - [x] Ask, Plan, Build manual, and Build auto controls
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
+- [ ] Key standing rules on a fingerprint of the resolved command rather than its text
+  - A rule matches on `projectId` and the literal command, so it keeps approving a script whose
+    body has since changed. The fingerprint should cover the normalized command, the
+    project-relative directory, recursively expanded script bodies, lifecycle scripts such as
+    `pretest`, and the validated runner arguments. A command whose resolution is ambiguous stays
+    reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the
+    approval and rule schemas.
 - [ ] Enforce hard gates that Build auto cannot bypass
   - Build auto still auto-allows secret reads through Git: `git show HEAD:.env`, `git diff -- .env`,
     `git log -p -- .env`, `git diff --no-index`, and `.env.*` variants.
@@ -400,14 +407,22 @@ dependent work starts.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
    custody model. Current `.sig` declarations are content-digest-bound but are not
    cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
-3. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
+3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
+   run unattended inside a containment boundary. An allowlisted runner executes files the
+   repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits
+   a changed `vitest.config.ts`, setup file, plugin, or test file to run with the daemon user's
+   permissions, and no command pattern can see that. If the answer is yes, bounded has to mean
+   bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
+   every package manager command is a hard gate and Build auto is narrower than this roadmap
+   describes.
+4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
-4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
+5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
    hosted service exists.
-5. **Public site direction:** architecture-led or folklore-led narrative after real product
+6. **Public site direction:** architecture-led or folklore-led narrative after real product
    screenshots are available.
-6. **Packaging formats:** final Linux package set and Windows package-manager targets.
-7. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
+7. **Packaging formats:** final Linux package set and Windows package-manager targets.
+8. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
    and security backport duration.
 
 ## Resolved architecture decisions
