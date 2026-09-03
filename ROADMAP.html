@@ -587,9 +587,11 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Editable working plan with per-step state in the Plan tab
+<li>[x] Editable working plan with per-step state in the Plan tab
 <ul>
-<li>Protocol and client ship: <code>workingPlans</code> on the snapshot, <code>plan.edit</code> and <code>plan.discardEdit</code>, and a Plan tab that renders steps, marks a blocked step as waiting, shows queued and conflicted edits with their draft, and edits, reorders, and discards. No adapter or daemon handler populates a plan yet, so the card does not appear in a running session.
+<li>Protocol, daemon, and client all ship. Codex, Claude, and ACP report plan structure and progress; the daemon owns canonical state, binds a blocked step to its approval, delivers the plan at a turn boundary under prepare-then-commit, and keeps a queued or conflicted edit through handoff, restart, and archive. The client renders steps, edits, reorders, and discards, and pins an edit to the revision it opened against.
+</li>
+<li>A person's unaccepted draft never reaches a provider: only canonical steps are delivered.
 </li>
 </ul>
 </li>

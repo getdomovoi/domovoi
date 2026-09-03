@@ -291,11 +291,13 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol
     has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
     code before the trust model exists is the wrong order.
-- [ ] Editable working plan with per-step state in the Plan tab
-  - Protocol and client ship: `workingPlans` on the snapshot, `plan.edit` and `plan.discardEdit`,
-    and a Plan tab that renders steps, marks a blocked step as waiting, shows queued and conflicted
-    edits with their draft, and edits, reorders, and discards. No adapter or daemon handler
-    populates a plan yet, so the card does not appear in a running session.
+- [x] Editable working plan with per-step state in the Plan tab
+  - Protocol, daemon, and client all ship. Codex, Claude, and ACP report plan structure and
+    progress; the daemon owns canonical state, binds a blocked step to its approval, delivers the
+    plan at a turn boundary under prepare-then-commit, and keeps a queued or conflicted edit
+    through handoff, restart, and archive. The client renders steps, edits, reorders, and discards,
+    and pins an edit to the revision it opened against.
+  - A person's unaccepted draft never reaches a provider: only canonical steps are delivered.
 - [x] Per-file diff review with revert in the Changes tab
 - [ ] Composer skill chip
 - [x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
