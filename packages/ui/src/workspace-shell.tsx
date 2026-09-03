@@ -444,7 +444,7 @@ export function AppBar({
       ? emergencyStopAnnouncement(emergencyStopOutcome)
       : null
   return (
-    <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
+    <header className="electron-drag flex h-[var(--shell-header)] shrink-0 items-center border-b bg-sidebar px-3">
       {ownsDecoration && bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />
@@ -1560,7 +1560,7 @@ export function Thread({
       </ScrollArea>
       {archiveReadOnly ? (
         <div className="px-5 py-3">
-          <Alert className="mx-auto max-w-[620px]">
+          <Alert className="mx-auto max-w-[var(--shell-thread)]">
             <ArchiveIcon />
             <AlertTitle>{active.state === "archived" ? "Archived" : "Archiving session"}</AlertTitle>
             <AlertDescription>
@@ -1571,10 +1571,10 @@ export function Thread({
           </Alert>
         </div>
       ) : <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
-        {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
-        {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
-        {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[620px]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
-        <div className="mx-auto flex max-w-[620px] flex-col gap-2 rounded-xl border bg-card p-3">
+        {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
+        {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
+        {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
+        <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
           <Textarea
             aria-label="Message"
             rows={2}
@@ -2930,7 +2930,7 @@ function SidebarRail({
   expandButtonRef?: RefObject<HTMLButtonElement | null>
 }) {
   return (
-    <aside aria-label="Collapsed sessions" data-workspace-panel="sessions-rail" className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
+    <aside aria-label="Collapsed sessions" data-workspace-panel="sessions-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
       <Separator />
       {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={`${session.title}. Status: ${session.state}`} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span aria-hidden="true" data-status-dot="" className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title} · {session.state}</TooltipContent></Tooltip>)}
@@ -2943,7 +2943,7 @@ function SidebarRail({
 function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
   const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
   return (
-    <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[46px] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
+    <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
       <Separator />
       {items.map((Icon, index) => <Button key={index} variant="ghost" size="icon-sm" aria-label="Artifact dock item" onClick={onExpand}><Icon /></Button>)}
