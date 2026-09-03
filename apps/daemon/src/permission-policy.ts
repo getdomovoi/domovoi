@@ -161,24 +161,36 @@ type BodyDecision = "allow" | "review" | "hard-gate"
 const boundedScriptRunners = new Set([
   "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
   "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
-  "next", "astro", "rimraf", "changeset", "attw", "publint", "knip", "madge",
+  "next", "astro", "changeset", "attw", "publint", "knip", "madge",
 ])
 
+// Only these flags may appear before the runner. Anything else can change what
+// actually executes: `npx --package=@attacker/payload vitest` runs the attacker's
+// binary under a name on this list, so an unknown flag ends the match.
+const harmlessRunnerFlags = new Set(["-y", "--yes", "--silent", "-s"])
+
 function boundedLeafCommand(candidate: string): boolean {
-  const tokens = candidate.split(/\s+/)
+  const tokens = candidate.split(/\s+/).filter(Boolean)
   const executable = tokens[0]?.toLowerCase()
   if (executable === undefined) return false
   if (boundedScriptRunners.has(executable)) return true
   // `npx vitest run` and `pnpm exec tsc` are the same leaf wearing a runner.
-  if (["npx", "pnpm", "npm", "yarn", "bun"].includes(executable)) {
-    const rest = tokens.slice(1).filter((token) => !token.startsWith("-"))
-    const next = rest[0]?.toLowerCase()
-    if (next === "exec" || next === "dlx" || next === "run" || next === "x") {
-      return boundedScriptRunners.has(rest[1]?.toLowerCase() ?? "")
-    }
-    return boundedScriptRunners.has(next ?? "")
+  if (!["npx", "pnpm", "npm", "yarn", "bun"].includes(executable)) return false
+  let index = 1
+  while (index < tokens.length && tokens[index]!.startsWith("-")) {
+    if (!harmlessRunnerFlags.has(tokens[index]!.toLowerCase())) return false
+    index += 1
   }
-  return false
+  const next = tokens[index]?.toLowerCase()
+  if (next === "exec" || next === "dlx" || next === "run" || next === "x") {
+    index += 1
+    while (index < tokens.length && tokens[index]!.startsWith("-")) {
+      if (!harmlessRunnerFlags.has(tokens[index]!.toLowerCase())) return false
+      index += 1
+    }
+    return boundedScriptRunners.has(tokens[index]?.toLowerCase() ?? "")
+  }
+  return boundedScriptRunners.has(next ?? "")
 }
 
 function resolvedScriptDecision(
