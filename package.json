@@ -12,6 +12,7 @@
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "pnpm --parallel --filter @getdomovoi/daemon --filter @getdomovoi/web dev",
     "dev:desktop": "pnpm --filter @getdomovoi/desktop dev",
+    "design:revision": "node scripts/design-revision.mjs",
     "license:audit": "node scripts/dependency-licenses.mjs",
     "lint": "eslint \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\" --max-warnings 0",
     "performance:budget": "node scripts/performance-budgets.mjs",
@@ -19,6 +20,7 @@
     "release:artifacts": "node scripts/release-artifacts.mjs",
     "release:invariants": "node scripts/version-lockstep.mjs && node scripts/workflow-pins.mjs && node scripts/design-revision.mjs --check && node scripts/roadmap-html.mjs --check",
     "release:status": "changeset status",
+    "roadmap:html": "node scripts/roadmap-html.mjs",
     "release:version": "changeset version",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "pretest:packages": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
@@ -26,9 +28,7 @@
     "pretest:install": "pnpm --filter @getdomovoi/protocol build",
     "test:install": "node scripts/test-package-install.mjs",
     "test:packages": "node --test scripts/bootstrap-daemon.test.mjs scripts/service-install.test.mjs scripts/bootstrap-download.test.mjs scripts/bootstrap-plan.test.mjs scripts/service-units.test.mjs scripts/package-artifact-command.test.mjs scripts/performance-budgets.test.mjs scripts/dependency-licenses.test.mjs scripts/package-install-plan.test.mjs scripts/release-artifacts.test.mjs scripts/version-lockstep.test.mjs scripts/workflow-pins.test.mjs scripts/design-revision.test.mjs scripts/roadmap-html.test.mjs && node scripts/test-package-artifacts.mjs",
-    "typecheck": "pnpm -r --if-present typecheck",
-    "design:revision": "node scripts/design-revision.mjs",
-    "roadmap:html": "node scripts/roadmap-html.mjs"
+    "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.1",
