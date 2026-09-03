@@ -460,11 +460,13 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Enforce hard gates that Build auto cannot bypass
+<li>[x] Enforce hard gates that Build auto cannot bypass
 <ul>
-<li>The recorded defect is fixed. <code>f137506</code> gates secret reads through Git, and <code>apps/daemon/src/permission-policy.ts</code> checks hard-gate patterns and skill installs before any Build-auto allowance. Do not redo that work.
+<li><code>f137506</code> gates secret reads through Git, and <code>apps/daemon/src/permission-policy.ts</code> checks hard-gate patterns and skill installs before any Build-auto allowance.
 </li>
-<li>This line stays open for the general claim, not the recorded example. Coverage today is a pattern list plus the skill-install check, and the tests at <code>apps/daemon/src/permission-policy.test.ts</code> and <code>apps/daemon/src/server.test.ts</code> cover examples rather than the invariant. Closing it needs a test asserting that no Build-auto path returns <code>allow</code> while a hard-gate pattern matches, including recursively resolved commands.
+<li>The general claim is now tested rather than sampled. <code>apps/daemon/src/permission-policy.test.ts</code> asserts that a hard gate found anywhere in a resolved script graph is refused, across direct commands, <code>pre</code> and <code>post</code> lifecycle scripts, chained commands, and recursively expanded scripts, and that Build auto refuses every unresolved execution reason.
+</li>
+<li>Writing that test found a real hole: a safe-looking raw command could override an unresolved execution record under Build auto. The resolver's verdict is now authoritative, so Build auto asks whenever the resolver cannot prove what a command expands to.
 </li>
 </ul>
 </li>

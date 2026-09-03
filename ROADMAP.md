@@ -206,15 +206,16 @@ Every ledger entry is now merged.
     auditable as inactive rules and need explicit reapproval. They are never deleted and never keep
     approving anything silently. A rule going inactive has to be legible to the person who granted
     it, so that a returning approval prompt reads as a deliberate revocation rather than a bug.
-- [ ] Enforce hard gates that Build auto cannot bypass
-  - The recorded defect is fixed. `f137506` gates secret reads through Git, and
-    `apps/daemon/src/permission-policy.ts` checks hard-gate patterns and skill installs before any
-    Build-auto allowance. Do not redo that work.
-  - This line stays open for the general claim, not the recorded example. Coverage today is a
-    pattern list plus the skill-install check, and the tests at
-    `apps/daemon/src/permission-policy.test.ts` and `apps/daemon/src/server.test.ts` cover examples
-    rather than the invariant. Closing it needs a test asserting that no Build-auto path returns
-    `allow` while a hard-gate pattern matches, including recursively resolved commands.
+- [x] Enforce hard gates that Build auto cannot bypass
+  - `f137506` gates secret reads through Git, and `apps/daemon/src/permission-policy.ts` checks
+    hard-gate patterns and skill installs before any Build-auto allowance.
+  - The general claim is now tested rather than sampled. `apps/daemon/src/permission-policy.test.ts`
+    asserts that a hard gate found anywhere in a resolved script graph is refused, across direct
+    commands, `pre` and `post` lifecycle scripts, chained commands, and recursively expanded
+    scripts, and that Build auto refuses every unresolved execution reason.
+  - Writing that test found a real hole: a safe-looking raw command could override an unresolved
+    execution record under Build auto. The resolver's verdict is now authoritative, so Build auto
+    asks whenever the resolver cannot prove what a command expands to.
 - [x] Add a searchable audit log with redaction and export
 - [x] Add command-level secret redaction before persistence or display
 - [x] Add a global emergency stop that cancels all active tools and providers, not only UI state
