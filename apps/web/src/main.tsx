@@ -1,7 +1,12 @@
 import { StrictMode, useState } from "react"
 import { createRoot } from "react-dom/client"
 
-import { applyStoredAppearanceTheme, DaemonCredentialPrompt, WorkspaceShell } from "@getdomovoi/ui"
+import {
+  applyStoredAppearanceTheme,
+  DaemonCredentialPrompt,
+  WorkspaceErrorBoundary,
+  WorkspaceShell,
+} from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
 
 applyStoredAppearanceTheme()
@@ -51,5 +56,5 @@ function DomovoiWeb() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><DomovoiWeb /></StrictMode>,
+  <StrictMode><WorkspaceErrorBoundary><DomovoiWeb /></WorkspaceErrorBoundary></StrictMode>,
 )

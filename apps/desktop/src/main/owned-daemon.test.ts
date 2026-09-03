@@ -134,4 +134,19 @@ describe("OwnedDaemonLifecycle", () => {
     expect(quit).toHaveBeenCalledOnce()
     expect(reentrantEvent.preventDefault).not.toHaveBeenCalled()
   })
+
+  it("stops waiting for a daemon whose stop never settles", async () => {
+    const daemon = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(() => new Promise<void>(() => {})),
+    }
+    const lifecycle = new OwnedDaemonLifecycle(() => {}, 25)
+    const quit = vi.fn()
+
+    await lifecycle.start(daemon)
+    lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
+
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
+    expect(daemon.stop).toHaveBeenCalledOnce()
+  })
 })

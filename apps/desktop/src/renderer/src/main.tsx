@@ -1,7 +1,12 @@
 import { StrictMode, useEffect } from "react"
 import { createRoot } from "react-dom/client"
 
-import { applyStoredAppearanceTheme, StartupError, WorkspaceShell } from "@getdomovoi/ui"
+import {
+  applyStoredAppearanceTheme,
+  StartupError,
+  WorkspaceErrorBoundary,
+  WorkspaceShell,
+} from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
 
 applyStoredAppearanceTheme()
@@ -24,12 +29,14 @@ async function renderDesktop(): Promise<void> {
     }
     root.render(
       <StrictMode>
-        <WorkspaceShell
-          clientKind="desktop"
-          rpcUrl="ws://127.0.0.1:47831/rpc"
-          rpcToken={rpcToken}
-          windowBridge={window.domovoiDesktop}
-        />
+        <WorkspaceErrorBoundary>
+          <WorkspaceShell
+            clientKind="desktop"
+            rpcUrl="ws://127.0.0.1:47831/rpc"
+            rpcToken={rpcToken}
+            windowBridge={window.domovoiDesktop}
+          />
+        </WorkspaceErrorBoundary>
       </StrictMode>,
     )
   } catch (error) {

@@ -20,6 +20,7 @@ import {
   PanelRightCloseIcon,
   PrinterIcon,
   SearchIcon,
+  Maximize2Icon,
   SendIcon,
   SettingsIcon,
   SquareIcon,
@@ -72,6 +73,7 @@ import {
 } from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
+import { WorkspaceConnectionStatus } from "./connection-status"
 import {
   Card,
   CardAction,
@@ -116,6 +118,8 @@ import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { connectMachineClient } from "./machine-client.js"
+import { collectFleetInventories } from "./fleet-inventories.js"
+import { openMachine } from "./open-machine.js"
 import { resolveMachineTarget } from "./machine-target.js"
 import {
   attachedMachineSwitch,
@@ -206,6 +210,7 @@ import {
   type CommandPalettePlatform,
 } from "./command-palette"
 import { useAppearanceTheme, type WorkspaceTheme } from "./appearance"
+import { PromptEditorDialog } from "./prompt-editor"
 import { WorkspaceNotificationTracker } from "./desktop-notifications"
 import {
   copyDesktopText,
@@ -1263,6 +1268,7 @@ export function Thread({
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
+  const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
@@ -1571,9 +1577,23 @@ export function Thread({
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
+        <PromptEditorDialog
+          open={promptEditorOpen}
+          draft={prompt}
+          pending={pending}
+          sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
+          onOpenChange={setPromptEditorOpen}
+          onDraftChange={setPrompt}
+          onSend={() => {
+            setPromptEditorOpen(false)
+            void submitPrompt()
+          }}
+          projectLabel={snapshot.project?.name ?? "No project"}
+          {...(active.workspacePath ? { worktreeLabel: active.workspacePath.split(/[\\/]/u).at(-1) } : {})}
+        />
       </div>}
     </main>
   )
@@ -2065,6 +2085,7 @@ export function ArtifactDock({
   onCreateAnnotation,
   onLoadSessionHistory,
   onLoadSessionEvidence,
+  onRevertSessionFile,
   captureAnnotation,
 }: {
   snapshot: WorkspaceSnapshot
@@ -2105,6 +2126,7 @@ export function ArtifactDock({
     requestOptions?: { signal?: AbortSignal },
   ) => Promise<SessionHistoryPage>
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
+  onRevertSessionFile: (sessionId: string, path: string) => Promise<void>
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
@@ -2545,8 +2567,10 @@ export function ArtifactDock({
         <TabsContent value="changes" className="min-h-0">
           <SessionEvidencePanel
             connected={connected}
+            readOnly={archiveReadOnly}
             sessionId={snapshot.activeSessionId}
             onLoad={onLoadSessionEvidence}
+            onRevertFile={onRevertSessionFile}
           />
         </TabsContent>
         <TabsContent value="comments" className="min-h-0">
@@ -2885,6 +2909,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     refreshProviders,
     reconnect,
     restoreCheckpoint,
+    revertSessionFile,
     restartProviderThread,
     resizeTerminal,
     resolveApproval,
@@ -2898,6 +2923,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribeTerminal,
     terminalClientId,
     writeTerminal,
+    authenticationRequired,
+    protocolError,
+    reconnecting,
   } = useWorkspace(activeRpcUrl, clientKind, activeRpcToken)
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,
@@ -2970,6 +2998,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [workspaceUi, setWorkspaceUi] = useState(() =>
@@ -3226,6 +3255,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     pauseAll: pauseActiveTurns,
     reconnect: reconnectDaemon,
     setSurface,
+    sessions: snapshot?.sessions ?? [],
+    machines: fleet,
+    skills,
+    activateSession: (sessionId) => {
+      setSurface("workspace")
+      activateVisibleSession(sessionId)
+    },
+    selectMachine: switchMachine,
+    openSkill: (skillId) => {
+      setRequestedSkillId(skillId)
+      setSurface("skills")
+    },
   })
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
@@ -3394,11 +3435,31 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setSkillsLoading(true)
     setSkillsError("")
     void Promise.all([listSkills(), getSkillInventory()]).then(
-      ([discovered, inventory]) => {
-        if (active) {
-          setSkills(discovered)
-          setSkillInventories([{ state: "available", inventory }])
-        }
+      async ([discovered, inventory]) => {
+        if (!active) return
+        setSkills(discovered)
+        // This machine answers first so the card is never empty while the
+        // fleet is still being asked.
+        setSkillInventories([{ state: "available", inventory }])
+        const sources = await collectFleetInventories({
+          local: inventory,
+          fleet,
+          open: async (machine) => {
+            const opened = await openMachine({
+              machine,
+              readCredential: async (id) => (await machineCredential({ machineId: id })).credential,
+              connect: ({ candidates, credential }) =>
+                connectMachineClient({ candidates, credential, kind: clientKind }),
+              wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+              attempts: 1,
+            })
+            return {
+              inventory: () => opened.client.getSkillInventory(),
+              close: () => opened.client.disconnect(),
+            }
+          },
+        })
+        if (active) setSkillInventories(sources)
       },
       (cause: unknown) => {
         if (active) {
@@ -3413,7 +3474,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       if (active) setSkillsLoading(false)
     })
     return () => { active = false }
-  }, [connected, getSkillInventory, listSkills, skillMachine, skillsRefresh, surface])
+  }, [
+    clientKind,
+    connected,
+    fleet,
+    getSkillInventory,
+    listSkills,
+    machineCredential,
+    skillMachine,
+    skillsRefresh,
+    surface,
+  ])
 
   useEffect(() => {
     const shell = shellRef.current
@@ -3431,15 +3502,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
-        {!connected ? (
-          <div role="status" aria-live="polite" aria-atomic="true" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
-            <span aria-hidden="true" data-status-dot="" className="size-2 shrink-0 rounded-full bg-destructive" />
-            <span className="min-w-0 flex-1 break-words">{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
-            <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
-            {onChangeCredential ? <Button variant="outline" size="sm" onClick={onChangeCredential}>Change credential</Button> : null}
-            <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
-          </div>
-        ) : null}
+        <WorkspaceConnectionStatus
+          connected={connected}
+          reconnecting={reconnecting}
+          authenticationRequired={authenticationRequired}
+          protocolError={protocolError}
+          connectionError={connectionError}
+          machineName={snapshot?.machine.name}
+          onChangeCredential={onChangeCredential}
+          onReconnect={reconnectDaemon}
+        />
         {snapshot && surface === "providers" ? (
           <ProviderSettings
             providers={snapshot.machine.providers}
@@ -3473,6 +3545,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
+            requestedSkillId={requestedSkillId}
             projectId={snapshot.project?.id}
             enablements={snapshot.skillEnablements}
             onSetSkillEnabled={setSkillEnabled}
@@ -3504,7 +3577,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>

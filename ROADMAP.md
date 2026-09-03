@@ -115,8 +115,8 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-01 (America/Boise):
   `MERGED`: closes audit concerns I1–I5 and adds the workspace lint gate. Before it, `pnpm lint`
   matched no package script and passed without linting anything.
 - [#101](https://github.com/getdomovoi/domovoi/pull/101) — `perf: bound desktop alpha hot paths` —
-  `MERGED`: offloads snapshot persistence to a worker that waits for a busy database and refuses
-  work once it is gone, bounds RPC output, debounces history search, and backs off reconnects
+  `MERGED`: offloads snapshot persistence to a worker that waits for a busy database and is
+  replaced once it is gone, bounds RPC output, debounces history search, and backs off reconnects
   without retrying a device a machine has revoked.
 
 Every ledger entry is now merged.
@@ -133,6 +133,10 @@ Every ledger entry is now merged.
 - [x] Add a complete session history with filters for messages, tools, approvals, handoffs,
   checkpoints, annotations, and tests
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
+- [x] Review the worktree diff as unified text or as two split columns, with added, modified, and
+  deleted counts beside the changed-file list
+- [x] Revert one changed file from the Changes dock behind a confirmation, after the daemon has
+  taken a recovery checkpoint and with a client-attributed receipt
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
 - [x] Require explicit confirmation before switching projects stops the current project's running work

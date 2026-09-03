@@ -55,7 +55,10 @@ Every daemon requires authentication. Standalone `domovoid` creates a user-priva
 `~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require
 `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and `DOMOVOI_TLS_KEY_PATH`; the
 daemon terminates TLS itself and refuses a plaintext non-loopback listener. Set
-`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Preview documents
+`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. The browser client
+dials `ws://127.0.0.1:47831/rpc` by default; set the build-time Vite variable
+`VITE_DOMOVOI_RPC_URL`, read by `apps/web/src/main.tsx`, to point it at another daemon WebSocket
+URL. Preview documents
 on every listener, loopback included, require short-lived signed capabilities scoped to one
 artifact revision, purpose, annotation bridge channel, and parent origin.
 
