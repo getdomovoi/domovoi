@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { fleetHealthSchema } from "./fleet-health.js"
+import { machineIdSchema } from "./identifiers.js"
 import { transportCandidateSchema } from "./transport.js"
 import { connectionKindSchema } from "./schema.js"
 
@@ -8,7 +9,7 @@ export const maximumFleetMachines = 128
 export const staleHeartbeatMs = 30_000
 export const offlineHeartbeatMs = 120_000
 
-export const machineIdSchema = z.string().regex(/^machine-[0-9a-f]{32}$/)
+export { machineIdSchema }
 
 export const machineCapabilitySchema = z.enum([
   "sessions",

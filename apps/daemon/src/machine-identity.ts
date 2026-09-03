@@ -3,6 +3,8 @@ import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises
 import { dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
+import { machineIdSchema } from "@getdomovoi/protocol"
+
 export type MachineIdentity = {
   id: string
   label: string
@@ -10,7 +12,6 @@ export type MachineIdentity = {
 
 export const defaultMachineLabel = "domovoi-machine"
 
-const machineIdPattern = /^machine-[0-9a-f]{32}$/
 const maximumLabelLength = 128
 const identityPollDelayMs = 5
 export const defaultLockStalenessMs = 5_000
@@ -31,7 +32,7 @@ function parseMachineIdentity(contents: string): MachineIdentity {
     throw new Error("Machine identity is malformed")
   }
   const { id, label } = value as { id?: unknown; label?: unknown }
-  if (typeof id !== "string" || !machineIdPattern.test(id)) {
+  if (typeof id !== "string" || !machineIdSchema.safeParse(id).success) {
     throw new Error("Machine identity is malformed")
   }
   if (
