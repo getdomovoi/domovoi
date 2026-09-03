@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
-  ArrowLeftIcon,
   CircleStopIcon,
   DownloadIcon,
   SearchIcon,
@@ -154,14 +153,12 @@ function AuditEntryRow({ entry }: { entry: AuditEntry }) {
 export function AuditLogView({
   connected,
   initialPage,
-  onBack,
   onOpenSkills,
   onQuery,
   onExport,
 }: {
   connected: boolean
   initialPage?: AuditQueryPage
-  onBack: () => void
   onOpenSkills: () => void
   onQuery: (params: AuditQueryParams, options?: DomovoiRequestOptions) => Promise<AuditQueryPage>
   onExport: (params: AuditExportParams, options?: DomovoiRequestOptions) => Promise<AuditExportResult>
@@ -277,10 +274,6 @@ export function AuditLogView({
   return (
     <div className="flex min-h-0 flex-1">
       <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <Button variant="ghost" className="mb-2 justify-start" onClick={onBack}>
-          <ArrowLeftIcon data-icon="inline-start" />
-          Workspace
-        </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
         <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
         <Button variant="secondary" className="justify-start">Audit log</Button>
@@ -289,10 +282,6 @@ export function AuditLogView({
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto flex w-full max-w-[900px] flex-col px-4 py-5 sm:px-8 sm:py-7">
           <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 self-start sm:hidden">
-            <Button variant="ghost" className="min-h-11" onClick={onBack}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              Workspace
-            </Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
           </nav>
           <div className="flex flex-wrap items-start justify-between gap-3">

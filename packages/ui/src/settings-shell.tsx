@@ -1,5 +1,4 @@
 import type { ApprovalRule, ProviderRuntime } from "@getdomovoi/protocol"
-import { ArrowLeftIcon } from "lucide-react"
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -27,7 +26,6 @@ export type SettingsShellProps = {
   approvalRules: readonly ApprovalRule[]
   notifications: NotificationPreferences
   onNotificationsChange: (preferences: NotificationPreferences) => void
-  onBack: () => void
   onOpenFleet: () => void
   onOpenSkills: () => void
   onOpenAudit: () => void
@@ -60,7 +58,6 @@ export function SettingsShell({
   activeWindowDecoration,
   theme,
   onNotificationsChange,
-  onBack,
   onOpenFleet,
   onOpenSkills,
   onOpenAudit,
@@ -85,10 +82,6 @@ export function SettingsShell({
 
   const destinations = (
     <>
-      <Button variant="ghost" className="justify-start" onClick={onBack}>
-        <ArrowLeftIcon data-icon="inline-start" />
-        Workspace
-      </Button>
       <Button variant="ghost" className="justify-start" onClick={onOpenFleet}>Fleet &amp; machines</Button>
       <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
       {panes.map((entry) => (

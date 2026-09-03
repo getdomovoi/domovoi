@@ -37,6 +37,18 @@ function styleGeometry(): Record<string, string> {
   return sizes
 }
 
+function panelDefault(id: string): string | undefined {
+  const shell = readFileSync(join(import.meta.dirname, "workspace-shell.tsx"), "utf8")
+  return new RegExp(`<ResizablePanel id="${id}"[^>]*?defaultSize=\\{(\\d+)\\}`, "u").exec(shell)?.[1]
+}
+
+it("opens the sidebar and inspector at their design-system widths", () => {
+  const design = designGeometry()
+
+  expect(`${panelDefault("sessions")}px`).toBe(design["--shell-sidebar"])
+  expect(`${panelDefault("dock")}px`).toBe(design["--shell-inspector"])
+})
+
 it("keeps the shell geometry tokens equal to the design system", () => {
   const design = designGeometry()
 

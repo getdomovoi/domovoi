@@ -57,7 +57,6 @@ describe("skill browser source requests", () => {
         skills={skills}
         loading={false}
         error=""
-        onBack={vi.fn()}
         onOpenAudit={vi.fn()}
         onReadSkill={onReadSkill}
         projectId="project-acme-api"
