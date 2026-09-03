@@ -4,7 +4,7 @@ import type { Readable } from "node:stream"
 
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
@@ -421,6 +421,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
       this.#emit({ type: "text-delta", ...common, delta: params.delta })
     } else if (message.method === "item/plan/delta" && typeof params.delta === "string") {
       this.#emit({ type: "plan-delta", ...common, delta: params.delta })
+    } else if (message.method === "turn/plan/updated" && typeof params.threadId === "string") {
+      const steps = codexPlanSteps(params.plan)
+      if (steps) this.#emit({ type: "plan-updated", ...common, threadId: params.threadId, steps })
     } else if (
       message.method === "item/commandExecution/outputDelta" &&
       typeof params.delta === "string"
@@ -580,6 +583,21 @@ function parseReasoningEfforts(value: unknown): string[] | undefined {
     if (typeof option.reasoningEffort === "string") efforts.push(option.reasoningEffort)
   }
   return efforts
+}
+
+function codexPlanSteps(value: unknown): AgentWorkingPlanStep[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const steps: AgentWorkingPlanStep[] = []
+  for (const candidate of value) {
+    const entry = asRecord(candidate)
+    if (!entry || typeof entry.step !== "string") return undefined
+    const status = entry.status === "inProgress" ? "in-progress" : entry.status
+    if (status !== "pending" && status !== "in-progress" && status !== "completed") {
+      return undefined
+    }
+    steps.push({ text: entry.step, status })
+  }
+  return steps
 }
 
 function nestedId(value: unknown, key: "thread" | "turn"): string | undefined {

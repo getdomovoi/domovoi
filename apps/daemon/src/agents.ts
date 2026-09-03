@@ -1,12 +1,23 @@
-import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
+import type {
+  ApprovalDecision,
+  ProviderModel,
+  Runtime,
+  WorkingPlanStepStatus,
+} from "@getdomovoi/protocol"
 import type { NormalizedUsage } from "./usage.js"
 
 export type ProviderApprovalDecision = Exclude<ApprovalDecision, "always-project">
+
+export type AgentWorkingPlanStep = {
+  text: string
+  status: WorkingPlanStepStatus
+}
 
 export type AgentEvent =
   | { type: "provider-disconnected"; reason: string }
   | { type: "text-delta"; threadId?: string; turnId?: string; delta: string }
   | { type: "plan-delta"; threadId?: string; turnId?: string; delta: string }
+  | { type: "plan-updated"; threadId: string; turnId?: string; steps: AgentWorkingPlanStep[] }
   | { type: "command-output"; threadId?: string; turnId?: string; itemId?: string; delta: string }
   | { type: "diff-updated"; threadId?: string; turnId?: string; diff: string }
   | {

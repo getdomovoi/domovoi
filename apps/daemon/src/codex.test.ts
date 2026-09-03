@@ -759,6 +759,42 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  it("emits full structured plans from Codex plan updates", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        explanation: "I will verify before changing code.",
+        plan: [
+          { step: "Inspect the failing test", status: "completed" },
+          { step: "Implement the fix", status: "inProgress" },
+          { step: "Run verification", status: "pending" },
+        ],
+      },
+    })
+
+    expect(event).toHaveBeenCalledWith({
+      type: "plan-updated",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      steps: [
+        { text: "Inspect the failing test", status: "completed" },
+        { text: "Implement the fix", status: "in-progress" },
+        { text: "Run verification", status: "pending" },
+      ],
+    })
+    await adapter.close()
+  })
+
   it("emits current context from Codex token-usage notifications", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()
