@@ -848,6 +848,38 @@ describe("JSON value depth bounds", () => {
   })
 })
 
+describe("session.revertFile parameters", () => {
+  const accept = (path: string) => rpcMethods["session.revertFile"].params.safeParse({
+    sessionId: "session-1",
+    path,
+    client: "desktop",
+  }).success
+
+  it("accepts a worktree-relative file path", () => {
+    expect(accept("src/app.ts")).toBe(true)
+    expect(accept("docs/notes with spaces.md")).toBe(true)
+  })
+
+  it("rejects paths that could reach outside the session worktree", () => {
+    expect(accept("/etc/passwd")).toBe(false)
+    expect(accept("../secrets.env")).toBe(false)
+    expect(accept("src/../../secrets.env")).toBe(false)
+    expect(accept("C:\\Windows\\system.ini")).toBe(false)
+    expect(accept("--upload-pack=evil")).toBe(false)
+    expect(accept("")).toBe(false)
+  })
+
+  it("rejects unknown keys and returns a snapshot", () => {
+    expect(rpcMethods["session.revertFile"].params.safeParse({
+      sessionId: "session-1",
+      path: "src/app.ts",
+      client: "desktop",
+      force: true,
+    }).success).toBe(false)
+    expect(rpcMethods["session.revertFile"].result.safeParse(demoWorkspace).success).toBe(true)
+  })
+})
+
 describe("RPC method persistence classification", () => {
   it("classifies every method exactly once as mutating or read-only", () => {
     expect(Object.keys(rpcMethodMutations).sort()).toEqual(Object.keys(rpcMethods).sort())
