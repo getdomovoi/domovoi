@@ -38,6 +38,13 @@ export function bootstrapPlan({ version, baseUrl }) {
   }
 }
 
+export function pinnedSha256(digest) {
+  if (typeof digest !== "string" || !sha256.test(digest)) {
+    throw new Error(`${JSON.stringify(digest ?? null)} is not a sha256 to pin the archive to`)
+  }
+  return digest
+}
+
 export function expectedChecksum(manifest, file) {
   let found
   for (const line of manifest.split(/\r?\n/)) {

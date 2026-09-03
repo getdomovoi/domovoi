@@ -14,10 +14,9 @@ import {
   type RendererTarget,
 } from "./renderer-security.js"
 import { DesktopStartupMetrics } from "./startup-metrics.js"
-import { captureAnnotationPng } from "./annotation-capture.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
+import { registerDesktopIpc, type DesktopIpcEvent } from "./desktop-ipc.js"
 import {
-  chooseDirectory,
   ExternalTargetController,
   SafeClipboard,
   type DesktopPlatform,
@@ -117,7 +116,7 @@ function acceptDeepLink(link: DesktopDeepLink): void {
   deepLinks.enqueue(link)
 }
 
-function authorizedDesktopSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+function authorizedDesktopSender(event: DesktopIpcEvent): boolean {
   return Boolean(
     mainWindow
     && !mainWindow.isDestroyed()
@@ -188,17 +187,6 @@ function createWindow(): void {
   }
 }
 
-ipcMain.on("window:minimize", (event) => {
-  if (authorizedDesktopSender(event)) mainWindow?.minimize()
-})
-ipcMain.on("window:maximize", (event) => {
-  if (!authorizedDesktopSender(event)) return
-  if (mainWindow?.isMaximized()) mainWindow.unmaximize()
-  else mainWindow?.maximize()
-})
-ipcMain.on("window:close", (event) => {
-  if (authorizedDesktopSender(event)) mainWindow?.close()
-})
 ipcMain.handle("domovoi:window-decoration-get", (event) => {
   if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
   return activeWindowDecoration
@@ -208,89 +196,42 @@ ipcMain.handle("domovoi:window-decoration-set", (event, decoration: unknown) => 
   if (!isWindowDecoration(decoration)) throw new Error("Window decoration is invalid")
   return persistWindowDecoration(decoration)
 })
-ipcMain.handle("domovoi:rpc-token", (event) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  return rpcToken
-})
-ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
-  if (!authorizedDesktopSender(event) || !mainWindow) {
-    throw new Error("Annotation capture sender is not authorized")
-  }
-  return captureAnnotationPng(mainWindow.webContents, rect)
-})
-ipcMain.handle("domovoi:notify", (event, request: unknown) => {
-  if (!authorizedDesktopSender(event)) return false
-  return desktopNotifications.notify(request, (sessionId) => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    focusMainWindow()
-    mainWindow.webContents.send("domovoi:notification-activate", sessionId)
-  })
-})
 
-ipcMain.handle("domovoi:open-directory", async (event) => {
-  if (!authorizedDesktopSender(event) || !mainWindow) throw new Error("Desktop request is not authorized")
-  const result = await chooseDirectory({
+registerDesktopIpc(ipcMain, {
+  authorized: authorizedDesktopSender,
+  mainWindow: () => mainWindow,
+  focusMainWindow,
+  rpcToken,
+  platform: desktopPlatform,
+  fileSystem: desktopFileSystem,
+  openDirectoryDialog: {
     showOpenDirectory: () => dialog.showOpenDialog(mainWindow!, {
       title: "Open a project",
       buttonLabel: "Open project",
       properties: ["openDirectory"],
     }),
-  }, desktopFileSystem, desktopPlatform)
-  if (result.status === "selected") externalTargets.allowRoot(result.path)
-  return result
-})
-
-ipcMain.handle("domovoi:clipboard-read", (event) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  return safeClipboard.readText()
-})
-
-ipcMain.handle("domovoi:clipboard-write", (event, value: unknown) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  return safeClipboard.writeText(value)
-})
-
-ipcMain.handle("domovoi:open-external", (event, request: unknown) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  return externalTargets.open(request)
-})
-
-ipcMain.on("domovoi:deep-link-ready", (event) => {
-  if (!authorizedDesktopSender(event)) return
-  if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
-  const sink = (link: DesktopDeepLink) => {
-    if (!authorizedDesktopSender(event)) {
-      deepLinks.pause(sink)
-      if (rendererDeepLinkSink === sink) rendererDeepLinkSink = undefined
-      deepLinks.enqueue(link)
-      return
-    }
-    event.sender.send("domovoi:deep-link", link.sessionId)
-  }
-  rendererDeepLinkSink = sink
-  deepLinks.ready(sink)
-})
-
-ipcMain.on("domovoi:deep-link-paused", (event) => {
-  if (!authorizedDesktopSender(event) || !rendererDeepLinkSink) return
-  deepLinks.pause(rendererDeepLinkSink)
-  rendererDeepLinkSink = undefined
-})
-
-ipcMain.on("domovoi:launch-smoke-preload-ready", (event) => {
-  if (launchSmoke && event.sender === mainWindow?.webContents) launchSmokeStage = "preload"
-})
-
-ipcMain.on("domovoi:launch-smoke-ready", (event) => {
-  if (!launchSmoke) return
-  if (!authorizedDesktopSender(event)) {
-    console.error("Domovoi desktop launch smoke renderer sender was not authorized")
-    app.exit(1)
-    return
-  }
-  if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
-  console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
-  app.exit(0)
+  },
+  clipboard: safeClipboard,
+  externalTargets,
+  notifications: desktopNotifications,
+  deepLinks,
+  rendererDeepLinkSink: {
+    get: () => rendererDeepLinkSink,
+    set: (sink) => { rendererDeepLinkSink = sink },
+  },
+  launchSmoke: {
+    enabled: launchSmoke,
+    preloadReady: () => { launchSmokeStage = "preload" },
+    ready: () => {
+      if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
+      console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
+      app.exit(0)
+    },
+    unauthorized: () => {
+      console.error("Domovoi desktop launch smoke renderer sender was not authorized")
+      app.exit(1)
+    },
+  },
 })
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
