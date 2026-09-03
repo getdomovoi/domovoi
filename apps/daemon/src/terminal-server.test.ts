@@ -767,7 +767,12 @@ describe("terminal RPC", () => {
     })).resolves.toMatchObject({
       result: {
         entries: [expect.objectContaining({
-          actor: { kind: "client", client: "desktop", clientId: "desktop-emergency" },
+          actor: expect.objectContaining({
+            kind: "client",
+            client: "desktop",
+            clientId: "desktop-emergency",
+            connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          }),
           action: "system.emergencyStop",
           outcome: "succeeded",
         })],

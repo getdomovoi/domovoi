@@ -5148,7 +5148,12 @@ describe("DomovoiDaemon", () => {
       }),
     ])))
     expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
-      actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "desktop-reviewer",
+        connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      },
       action: "skill.setEnabled",
       projectId: demoWorkspace.project!.id,
       target: currentSkill.id,
@@ -5245,7 +5250,12 @@ describe("DomovoiDaemon", () => {
     expect(reviews.find(discovered.id, discovered.contentDigest)).toBeUndefined()
 
     expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
-      actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "desktop-reviewer",
+        connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      },
       action: "skill.review",
       target: discovered.id,
       detail: `decision=trust digest=${discovered.contentDigest}`,
@@ -9959,7 +9969,12 @@ describe("DomovoiDaemon", () => {
       entries: [
         expect.objectContaining({ outcome: "failed" }),
         expect.objectContaining({
-          actor: { kind: "client", client: "web", clientId: "browser-audit-test" },
+          actor: expect.objectContaining({
+            kind: "client",
+            client: "web",
+            clientId: "browser-audit-test",
+            connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          }),
           action: "annotation.create",
           outcome: "succeeded",
           sessionId: session.id,
