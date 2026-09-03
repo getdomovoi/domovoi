@@ -437,6 +437,131 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
+  it.each([
+    [
+      "authentication_failed",
+      "Authentication failed: token=provider-secret",
+      "Authentication failed: token=[REDACTED]",
+      { kind: "authentication-expired", action: "sign-in", message: "Provider authentication expired", retryable: false },
+    ],
+    [
+      "rate_limit",
+      "You've hit your usage limit; token=provider-secret",
+      "You've hit your usage limit; token=[REDACTED]",
+      { kind: "rate-limit", action: "retry", message: "Provider rate limit reached", retryable: true },
+    ],
+    [
+      "billing_error",
+      "Your org is out of usage · add funds to continue; token=provider-secret",
+      "Your org is out of usage · add funds to continue; token=[REDACTED]",
+      { kind: "quota-exhausted", action: "check-quota", message: "Provider quota is exhausted", retryable: false },
+    ],
+    [
+      "model_not_found",
+      "Your account does not have access to model claude-opus-9; token=provider-secret",
+      "Your account does not have access to model claude-opus-9; token=[REDACTED]",
+      { kind: "model-unavailable", action: "change-model", message: "Selected model is unavailable", retryable: false },
+    ],
+  ] as const)("classifies Claude assistant error %s with its redacted stderr report", async (
+    error,
+    stderr,
+    safeStderr,
+    failure,
+  ) => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    calls[0]!.options.stderr?.(`${stderr}\n`)
+    calls[0]!.query.emit({
+      type: "assistant",
+      session_id: threadId,
+      error,
+      message: { content: [] },
+    })
+    calls[0]!.query.emit({
+      type: "result",
+      subtype: "success",
+      session_id: threadId,
+      is_error: true,
+      result: stderr,
+    })
+
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+    })))
+    const completed = events.find(
+      (event): event is Extract<AgentEvent, { type: "turn-completed" }> => event.type === "turn-completed",
+    )
+    expect(completed).toMatchObject({
+      params: {
+        threadId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: "failed",
+          error: expect.stringContaining(error),
+        },
+      },
+    })
+    expect((completed!.params.turn as { error: string }).error).toContain(safeStderr)
+    expect(JSON.stringify(completed)).not.toContain("provider-secret")
+    expect(providerTurnCompletion(completed!.params)).toEqual({ failed: true, failure })
+    await adapter.close()
+  })
+
+  it("uses bounded, streaming-redacted Claude stderr when the stream closes", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    calls[0]!.options.stderr?.(`${Array.from({ length: 4_000 }, () => "provider diagnostic").join("\n")}\n`)
+    calls[0]!.options.stderr?.("Authorization: Bearer ")
+    calls[0]!.options.stderr?.("super-secret-bearer-token\n429 rate limit exceeded\n")
+    calls[0]!.query.closeStream()
+
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+    })))
+    const completed = events.find(
+      (event): event is Extract<AgentEvent, { type: "turn-completed" }> => event.type === "turn-completed",
+    )!
+    const detail = (completed.params.turn as { error: string }).error
+    expect(detail).toContain("Authorization: [REDACTED]")
+    expect(detail).toContain("429 rate limit exceeded")
+    expect(detail).not.toContain("super-secret-bearer-token")
+    expect(Buffer.byteLength(detail)).toBeLessThanOrEqual(16_500)
+    expect(providerTurnCompletion(completed.params)).toMatchObject({
+      failed: true,
+      failure: { kind: "rate-limit", action: "retry", retryable: true },
+    })
+    await adapter.close()
+  })
+
   it("sends declared visual context as bounded image content", async () => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")

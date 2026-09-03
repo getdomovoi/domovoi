@@ -28,9 +28,13 @@ describe("provider failure classification", () => {
 
   it.each([
     ["401 token expired", "authentication-expired", "sign-in"],
+    ["authentication_failed", "authentication-expired", "sign-in"],
     ["429 rate limit exceeded", "rate-limit", "retry"],
+    ["You've hit your weekly limit", "rate-limit", "retry"],
     ["insufficient_quota", "quota-exhausted", "check-quota"],
+    ["Your org is out of usage · add funds to continue", "quota-exhausted", "check-quota"],
     ["model gpt-future not found", "model-unavailable", "change-model"],
+    ["Your account does not have access to model claude-opus-9", "model-unavailable", "change-model"],
     ["ECONNRESET", "transport", "retry"],
   ] as const)("classifies %s", (detail, kind, action) => {
     expect(classifyProviderFailure(new Error(detail))).toMatchObject({ kind, action })

@@ -12,9 +12,11 @@ import {
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentVisualContext } from "./agents.js"
+import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
+const maximumClaudeStderrBytes = 16_384
 const claudeAskTools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const
 const claudeContextUsageTimeoutMs = 250
 const claudeAskDisallowedTools = [
@@ -52,9 +54,11 @@ export type ClaudeSdkMessage = {
   subtype?: string
   session_id?: string
   is_error?: boolean
+  error?: unknown
   errors?: unknown
   event?: unknown
   message?: unknown
+  result?: unknown
   tool_use_result?: unknown
   usage?: unknown
   total_cost_usd?: unknown
@@ -87,6 +91,7 @@ export type ClaudeQueryOptions = {
   tools?: string[]
   disallowedTools?: string[]
   systemPrompt?: { type: "preset"; preset: "claude_code" }
+  stderr?: (data: string) => void
   canUseTool?: (
     toolName: string,
     input: Record<string, unknown>,
@@ -117,7 +122,9 @@ type Session = {
   query: ClaudeQuery
   runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string }>
+  stderr: ClaudeStderrTail
   activeTurnId?: string
+  assistantError?: string
   ended?: true
 }
 
@@ -161,7 +168,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
 
   async listModels(): Promise<ProviderModel[]> {
     const input = new PushStream<ClaudeUserMessage>()
-    const runtime = this.#factory(input, { ...baseOptions(), settingSources: [] })
+    const stderr = new ClaudeStderrTail()
+    const runtime = this.#factory(input, {
+      ...baseOptions(),
+      settingSources: [],
+      stderr: (data) => stderr.push(data),
+    })
     try {
       await runtime.initializationResult()
       const models = requireClaudeModels(await runtime.supportedModels())
@@ -182,6 +194,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
           isDefault: index === 0,
         }
       })
+    } catch (error) {
+      throw claudeFailureError(error, stderr.take())
     } finally {
       input.close()
       runtime.close()
@@ -219,6 +233,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       session = this.#requireSession(threadId)
     }
     const turnId = this.#id()
+    session.stderr.clear()
+    delete session.assistantError
     await this.#applyRuntime(session, runtime)
     session.activeTurnId = turnId
     session.input.push(userMessage(threadId, turnId, prompt, visualContexts))
@@ -285,6 +301,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     resume: boolean,
   ): Promise<void> {
     const input = new PushStream<ClaudeUserMessage>()
+    const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
@@ -297,9 +314,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       allowDangerouslySkipPermissions: permission.allowDangerouslySkipPermissions,
       canUseTool: (toolName, toolInput, context) =>
         this.#requestApproval(threadId, cwd, toolName, toolInput, context),
+      stderr: (data) => stderr.push(data),
     }
     const query = this.#factory(input, options)
-    const session: Session = { threadId, cwd, input, query, runtime, tools: new Map() }
+    const session: Session = { threadId, cwd, input, query, runtime, tools: new Map(), stderr }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
       () => this.#endSession(session, "Claude session connection closed before the turn completed"),
@@ -314,7 +332,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       input.close()
       query.close()
       this.#sessions.delete(threadId)
-      throw error
+      throw claudeFailureError(error, stderr.take())
     }
   }
 
@@ -382,12 +400,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const turnId = session.activeTurnId
     if (!turnId) return
     delete session.activeTurnId
+    const error = claudeFailureDetail([session.assistantError, reason, session.stderr.take()])
+    delete session.assistantError
     this.#emit({
       type: "turn-completed",
       params: {
         threadId: session.threadId,
         turnId,
-        turn: { id: turnId, status: "failed", error: reason },
+        turn: { id: turnId, status: "failed", error },
       },
     })
   }
@@ -395,6 +415,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   async #receive(session: Session, message: ClaudeSdkMessage): Promise<void> {
     const turnId = session.activeTurnId
     if (!turnId) return
+    if (typeof message.error === "string") session.assistantError = message.error
     if (message.type === "stream_event") {
       const event = asRecord(message.event)
       const delta = asRecord(event?.delta)
@@ -421,7 +442,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       const context = failed ? {} : await claudeContextOccupancy(session.query)
       const usage = normalizeProviderUsage({ ...message, ...context })
       if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
-      const error = failed ? resultError(message) : undefined
+      const stderr = session.stderr.take()
+      const error = failed ? resultError(message, session.assistantError, stderr) : undefined
+      delete session.assistantError
       this.#emit({
         type: "turn-completed",
         params: {
@@ -558,6 +581,35 @@ class PushStream<T> implements AsyncIterable<T> {
   }
 }
 
+class ClaudeStderrTail {
+  #tail = Buffer.alloc(0)
+  #redactor = new DurableOutputRedactor()
+
+  push(data: string): void {
+    this.#append(this.#redactor.push(data))
+  }
+
+  #append(data: string): void {
+    if (!data) return
+    this.#tail = Buffer.concat([this.#tail, Buffer.from(data)])
+    if (this.#tail.length > maximumClaudeStderrBytes) {
+      this.#tail = this.#tail.subarray(this.#tail.length - maximumClaudeStderrBytes)
+    }
+  }
+
+  clear(): void {
+    this.#tail = Buffer.alloc(0)
+    this.#redactor = new DurableOutputRedactor()
+  }
+
+  take(): string {
+    this.#append(this.#redactor.flush())
+    const value = this.#tail.toString("utf8").trim()
+    this.clear()
+    return value
+  }
+}
+
 function isClaudeAsk(runtime: Runtime): boolean {
   return runtime.permissionMode === "ask"
 }
@@ -650,12 +702,27 @@ function requireClaudeModels(value: unknown): ClaudeModel[] {
   })
 }
 
-function resultError(message: ClaudeSdkMessage): string {
+function resultError(
+  message: ClaudeSdkMessage,
+  assistantError: string | undefined,
+  stderr: string,
+): string {
   const errors = Array.isArray(message.errors)
     ? message.errors.filter((entry): entry is string => typeof entry === "string")
     : []
   const subtype = message.subtype && message.subtype !== "success" ? message.subtype : ""
-  return [subtype, errors.join("; ")].filter(Boolean).join(": ")
+  const result = typeof message.result === "string" ? message.result : ""
+  return claudeFailureDetail([subtype, assistantError, result, ...errors, stderr])
+}
+
+function claudeFailureError(error: unknown, stderr: string): Error {
+  const reason = error instanceof Error ? error.message : "Claude session failed"
+  return new Error(claudeFailureDetail([reason, stderr]))
+}
+
+function claudeFailureDetail(parts: Array<string | undefined>): string {
+  const unique = [...new Set(parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part)))]
+  return redactDurableText(unique.join(": ")).value
 }
 
 async function claudeContextOccupancy(
