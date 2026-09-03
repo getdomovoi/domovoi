@@ -1,8 +1,13 @@
 {
   "startup": {
-    "web": { "javascriptBytes": 1250000, "stylesheetBytes": 115000 },
+    "web": {
+      "javascriptBytes": 1250000,
+      "lazyJavascriptBytes": 400000,
+      "stylesheetBytes": 115000
+    },
     "desktop": {
       "rendererJavascriptBytes": 1250000,
+      "rendererLazyJavascriptBytes": 400000,
       "rendererStylesheetBytes": 115000,
       "mainBytes": 32768,
       "preloadBytes": 8192
