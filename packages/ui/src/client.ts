@@ -482,6 +482,7 @@ export class DomovoiClient extends EventTarget {
     revision: number
     purpose: ArtifactAccess["purpose"]
     bridgeChannel?: string
+    parentOrigin?: string
   }): Promise<ArtifactAccess> {
     return this.request(
       "artifact.authorize",

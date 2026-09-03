@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -124,6 +124,21 @@ describe("provider usage telemetry", () => {
       model: "grok-code",
       usage: normalizeUsage({ cost: { amount: 1, currency: "EUR" } }),
     })).toThrow("mixed currencies")
+  })
+
+  it.skipIf(process.platform === "win32")("keeps usage telemetry readable only by the owner", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-permissions-"))
+    const path = join(directory, "usage.sqlite")
+    try {
+      const ledger = new UsageLedger(path)
+      ledger.close()
+      await chmod(path, 0o666)
+      const reopened = new UsageLedger(path)
+      expect((await stat(path)).mode & 0o777).toBe(0o600)
+      reopened.close()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   it("persists turn telemetry across ledger restarts", async () => {

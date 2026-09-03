@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
 import { mkdir, rename, rm, writeFile } from "node:fs/promises"
-import { dirname, join, resolve } from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
+import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 
-import { bootstrapPlan, verifyDownload } from "./bootstrap-plan.mjs"
+import { bootstrapPlan, pinnedSha256, verifyDownload } from "./bootstrap-plan.mjs"
 
 const defaultMaximumBytes = 256 * 1024 * 1024
 
@@ -76,10 +76,12 @@ export async function bootstrapDaemon({
   version,
   baseUrl,
   destination,
+  expectedSha256,
   download,
   maximumBytes = defaultMaximumBytes,
 }) {
   const plan = bootstrapPlan({ version, baseUrl })
+  const pinned = pinnedSha256(expectedSha256)
   const fetchBytes = download ?? ((url) => downloadOverHttps(url, { maximumBytes }))
 
   const manifest = String(await fetchBytes(plan.checksumUrl))
@@ -90,6 +92,9 @@ export async function bootstrapDaemon({
 
   const sha256 = createHash("sha256").update(bytes).digest("hex")
   verifyDownload({ file: plan.archive, manifest, digest: sha256 })
+  if (sha256 !== pinned) {
+    throw new Error(`${plan.archive} does not match the sha256 the caller pinned: expected ${pinned}, downloaded ${sha256}`)
+  }
 
   const release = join(destination, `v${plan.version}`)
   const path = join(release, plan.archive)
@@ -106,12 +111,15 @@ export async function bootstrapDaemon({
   return { version: plan.version, path, sha256 }
 }
 
+const usage = "Usage: node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>\n"
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [version, baseUrl, destination] = process.argv.slice(2)
-  const result = await bootstrapDaemon({
-    version,
-    baseUrl,
-    destination: destination ?? join(dirname(fileURLToPath(import.meta.url)), "..", "release"),
-  })
-  console.log(JSON.stringify(result, null, 2))
+  const [version, baseUrl, destination, expectedSha256] = process.argv.slice(2)
+  if (expectedSha256 === undefined) {
+    process.stderr.write(usage)
+    process.exitCode = 1
+  } else {
+    const result = await bootstrapDaemon({ version, baseUrl, destination, expectedSha256 })
+    console.log(JSON.stringify(result, null, 2))
+  }
 }

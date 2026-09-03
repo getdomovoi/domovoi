@@ -131,11 +131,7 @@ export class SqliteAuditLog implements AuditLog {
       )
       this.#database.prepare(`
         DELETE FROM audit_log
-        WHERE sequence <= (
-          SELECT sequence FROM audit_log
-          ORDER BY sequence DESC
-          LIMIT 1 OFFSET ?
-        )
+        WHERE sequence <= (SELECT MAX(sequence) - ? FROM audit_log)
       `).run(this.#maximumEntries)
       this.#database.exec("COMMIT")
     } catch (error) {
