@@ -3283,19 +3283,21 @@ export class DomovoiDaemon {
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
           }
-          const orphaned = this.#snapshot.sessions
-            .map((session) => session.workspacePath)
-            .filter((path): path is string => path !== undefined)
           try {
             await this.#cleanupSessions()
           } catch (error) {
+            const orphaned = error instanceof SessionCleanupError ? error.remaining : []
             // Every terminal, provider thread, and stream is already torn down,
             // so the switch must still leave the snapshot describing the project
             // that is now open rather than sessions that no longer exist. The
             // snapshot is about to lose every workspacePath, so name them here:
             // a worktree left on disk is only recoverable if something said where.
+            // A provider that would not stop is not a worktree left behind, so
+            // only a real removal failure names a path to remove by hand.
             this.#reportError(
-              `Domovoi could not remove every session worktree while switching projects. Remove these by hand: ${orphaned.join(", ")}`,
+              orphaned.length > 0
+                ? `Domovoi could not remove every session worktree while switching projects. Remove these by hand: ${orphaned.join(", ")}`
+                : "Domovoi could not clean up every session while switching projects",
               error,
             )
           }
@@ -5147,8 +5149,12 @@ export class DomovoiDaemon {
     }
   }
 
-  async #cleanupSessions(): Promise<void> {
+  // Returns the worktrees it could not remove, so a caller reporting the failure
+  // names the paths that are actually still on disk rather than every path the
+  // snapshot happened to hold.
+  async #cleanupSessions(): Promise<string[]> {
     const errors: unknown[] = []
+    const remaining: string[] = []
     for (const session of this.#snapshot.sessions) {
       if (session.providerThreadId) {
         try {
@@ -5177,11 +5183,24 @@ export class DomovoiDaemon {
           )
         } catch (error) {
           errors.push(error)
+          remaining.push(session.workspacePath)
           this.#reportError("Domovoi could not remove a session worktree", error)
         }
       }
     }
-    if (errors.length) throw new AggregateError(errors, "Domovoi could not clean up all sessions")
+    if (errors.length) {
+      throw new SessionCleanupError(remaining, errors)
+    }
+    return remaining
+  }
+}
+
+class SessionCleanupError extends AggregateError {
+  readonly remaining: string[]
+
+  constructor(remaining: string[], errors: unknown[]) {
+    super(errors, "Domovoi could not clean up all sessions")
+    this.remaining = remaining
   }
 }
 
