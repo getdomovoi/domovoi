@@ -19,6 +19,13 @@ const publicationReadAttempts = 100
 export const defaultLockStalenessMs = 5_000
 const unsupportedHardLinkCodes = new Set(["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EPERM", "EXDEV"])
 
+class MalformedMachineIdentityError extends Error {
+  constructor() {
+    super("Machine identity is malformed")
+    this.name = "MalformedMachineIdentityError"
+  }
+}
+
 export function normalizeMachineLabel(label: string): string {
   const trimmed = label.trim().slice(0, maximumLabelLength).trim()
   return trimmed || defaultMachineLabel
@@ -29,21 +36,21 @@ function parseMachineIdentity(contents: string): MachineIdentity {
   try {
     value = JSON.parse(contents)
   } catch {
-    throw new Error("Machine identity is malformed")
+    throw new MalformedMachineIdentityError()
   }
   if (typeof value !== "object" || value === null) {
-    throw new Error("Machine identity is malformed")
+    throw new MalformedMachineIdentityError()
   }
   const { id, label } = value as { id?: unknown; label?: unknown }
   if (typeof id !== "string" || !machineIdSchema.safeParse(id).success) {
-    throw new Error("Machine identity is malformed")
+    throw new MalformedMachineIdentityError()
   }
   if (
     typeof label !== "string"
     || label.trim() === ""
     || label.length > maximumLabelLength
   ) {
-    throw new Error("Machine identity is malformed")
+    throw new MalformedMachineIdentityError()
   }
   return { id, label }
 }
@@ -122,7 +129,7 @@ async function adoptPublishedIdentity(path: string): Promise<MachineIdentity> {
       const identity = await readMachineIdentity(path)
       if (identity) return identity
     } catch (error) {
-      if (!(error instanceof Error) || error.message !== "Machine identity is malformed") throw error
+      if (!(error instanceof MalformedMachineIdentityError)) throw error
     }
     await delay(identityPollDelayMs)
   }
