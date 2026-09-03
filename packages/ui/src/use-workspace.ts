@@ -434,6 +434,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       revision: number
       purpose: ArtifactAccess["purpose"]
       bridgeChannel?: string
+      parentOrigin?: string
     },
   ): Promise<ArtifactAccess> => {
     const client = clientRef.current

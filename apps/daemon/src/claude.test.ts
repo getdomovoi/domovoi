@@ -1,3 +1,5 @@
+import { resolve } from "node:path"
+
 import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
@@ -398,6 +400,74 @@ describe("ClaudeAgentSdkAdapter", () => {
       updatedInput: { command: "pnpm test" },
       updatedPermissions: [expect.objectContaining({ destination: "session" })],
     })
+    await adapter.close()
+  })
+
+  it("forwards the edited file and blocked path on file tool approvals", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const event = vi.fn()
+    adapter.onEvent(event)
+
+    await adapter.resumeThread({
+      threadId: "22222222-2222-4222-8222-222222222222",
+      cwd: "/worktree",
+      runtime: runtime("build"),
+    })
+
+    const blocked = calls[0]!.options.canUseTool!(
+      "Edit",
+      { file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" },
+      {
+        signal: new AbortController().signal,
+        blockedPath: "/worktree/.claude/settings.json",
+        toolUseID: "tool-edit-blocked",
+        requestId: "claude-request-2",
+        title: "Edit a settings file",
+      },
+    )
+    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+      type: "approval-requested",
+      requestId: 1,
+      threadId: "22222222-2222-4222-8222-222222222222",
+      itemId: "tool-edit-blocked",
+      command: "Edit",
+      cwd: "/worktree/.claude/settings.json",
+      path: "/worktree/src/index.ts",
+      blockedPath: "/worktree/.claude/settings.json",
+      reason: "Edit a settings file",
+    })))
+    adapter.resolveApproval(1, "allow-once")
+    await expect(blocked).resolves.toMatchObject({
+      behavior: "allow",
+      updatedInput: { file_path: "/worktree/src/index.ts" },
+    })
+
+    const relative = calls[0]!.options.canUseTool!(
+      "Write",
+      { file_path: "src/generated.ts", content: "export {}\n" },
+      {
+        signal: new AbortController().signal,
+        toolUseID: "tool-write-relative",
+        requestId: "claude-request-3",
+        title: "Write a generated file",
+      },
+    )
+    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+      type: "approval-requested",
+      requestId: 2,
+      threadId: "22222222-2222-4222-8222-222222222222",
+      itemId: "tool-write-relative",
+      command: "Write",
+      cwd: "/worktree",
+      // A relative tool path is resolved against the thread cwd, and resolve()
+      // anchors a bare posix root to the current drive on Windows, so the
+      // expectation has to be computed the same way rather than hardcoded.
+      path: resolve("/worktree", "src/generated.ts"),
+      reason: "Write a generated file",
+    })))
+    adapter.resolveApproval(2, "deny")
+    await expect(relative).resolves.toMatchObject({ behavior: "deny" })
     await adapter.close()
   })
 

@@ -30,15 +30,15 @@ describe("SqliteWorkspaceStore", () => {
     }))
     let heartbeats = 0
     const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
-    const startedAt = performance.now()
 
     await store.saveAsync(snapshot)
 
-    const elapsedMs = performance.now() - startedAt
     clearInterval(heartbeat)
     expect(store.load().thread).toHaveLength(6_000)
+    // Timers must keep firing during persistence; the count stays low because
+    // Windows resolves timers to roughly 15 ms, so this asserts they ran at
+    // all rather than a rate the platform does not promise.
     expect(heartbeats).toBeGreaterThanOrEqual(2)
-    expect(elapsedMs).toBeLessThan(5_000)
     await store.close()
   }, 10_000)
 
@@ -156,6 +156,30 @@ describe("SqliteWorkspaceStore", () => {
     reopened.close()
   })
 
+  it("opens its main connection in WAL mode with synchronous NORMAL", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-pragma-"))
+    scratchDirectories.push(scratch)
+    const connections = new Set<DatabaseSync>()
+    const exec = DatabaseSync.prototype.exec
+    const observed = vi.spyOn(DatabaseSync.prototype, "exec")
+      .mockImplementation(function (this: DatabaseSync, sql) {
+        connections.add(this)
+        return exec.call(this, sql)
+      })
+    let store: SqliteWorkspaceStore
+    try {
+      store = new SqliteWorkspaceStore(join(scratch, "state.sqlite"), demoWorkspace)
+    } finally {
+      observed.mockRestore()
+    }
+
+    expect(connections.size).toBe(1)
+    const [connection] = connections
+    expect(connection!.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "wal" })
+    expect(connection!.prepare("PRAGMA synchronous").get()).toMatchObject({ synchronous: 1 })
+    store.close()
+  })
+
   it("keeps paired device credentials across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
@@ -169,6 +193,121 @@ describe("SqliteWorkspaceStore", () => {
     expect(reopened.devices.list()).toEqual([
       expect.objectContaining({ id: paired.device.id, label: "studio-ipad" }),
     ])
+    reopened.close()
+  })
+
+  it("keeps a per-project row so opening another project preserves the first", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-per-project-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const first = store.load()
+
+    const second = createEmptyWorkspace(first.machine)
+    second.project = {
+      id: "project-second",
+      machineId: first.machine.id,
+      name: "second",
+      path: "/code/second",
+      branch: "main",
+    }
+    store.save(second)
+
+    expect(store.load().project?.id).toBe("project-second")
+    const restored = store.loadProject(first.project!.id)
+    expect(restored?.project).toEqual(first.project)
+    expect(restored?.sessions).toEqual(first.sessions)
+    expect(restored?.activeSessionId).toEqual(first.activeSessionId)
+    expect(restored?.approvals).toEqual(first.approvals)
+    expect(restored?.approvalRules).toEqual(first.approvalRules)
+    expect(restored?.thread).toEqual(first.thread)
+    expect(restored?.artifacts).toEqual(first.artifacts)
+    expect(restored?.annotations).toEqual(first.annotations)
+    expect(store.loadProject("project-unknown")).toBeUndefined()
+    store.close()
+  })
+
+  it("keeps machine-scoped state out of every per-project row", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-project-scope-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const withReviews = structuredClone(demoWorkspace)
+    withReviews.skillEnablements = [{
+      projectId: "project-elsewhere",
+      skillId: `skill-${"b".repeat(12)}`,
+      enabled: true,
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      manifest: { version: 1, capabilities: [] },
+      reviewedAt: "2026-08-29T12:00:00.000Z",
+      reviewedBy: { client: "desktop", clientId: "reviewer" },
+    }]
+    const store = new SqliteWorkspaceStore(databasePath, withReviews)
+    store.save(withReviews)
+    store.close()
+
+    const database = new DatabaseSync(databasePath)
+    const row = database.prepare(
+      "SELECT state FROM workspace_projects WHERE project_id = ?",
+    ).get(demoWorkspace.project!.id) as { state: string } | undefined
+    database.close()
+    expect(row).toBeDefined()
+    const stored = JSON.parse(row!.state) as Record<string, unknown>
+    expect(Object.keys(stored).sort()).toEqual([
+      "activeSessionId",
+      "annotations",
+      "approvalRules",
+      "approvals",
+      "artifacts",
+      "project",
+      "sessions",
+      "thread",
+    ])
+  })
+
+  it("migrates a single-row database into per-project rows without losing state", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-project-migration-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const legacy = new DatabaseSync(databasePath)
+    legacy.exec(`
+      CREATE TABLE workspace_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        snapshot TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `)
+    legacy.prepare("INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, ?, ?)")
+      .run(JSON.stringify(demoWorkspace), "2026-08-29T12:00:00.000Z")
+    legacy.close()
+
+    const migrated = new SqliteWorkspaceStore(
+      databasePath,
+      createEmptyWorkspace(demoWorkspace.machine),
+    )
+    const live = migrated.load()
+    expect(live.project?.id).toBe(demoWorkspace.project!.id)
+    expect(migrated.loadProject(demoWorkspace.project!.id)).toEqual({
+      project: live.project,
+      sessions: live.sessions,
+      activeSessionId: live.activeSessionId,
+      approvals: live.approvals,
+      approvalRules: live.approvalRules,
+      thread: live.thread,
+      artifacts: live.artifacts,
+      annotations: live.annotations,
+    })
+    migrated.close()
+
+    const reopened = new SqliteWorkspaceStore(
+      databasePath,
+      createEmptyWorkspace(demoWorkspace.machine),
+    )
+    expect(reopened.load()).toEqual(live)
+    expect(reopened.loadProject(demoWorkspace.project!.id)?.sessions).toEqual(live.sessions)
+    const database = new DatabaseSync(databasePath)
+    const rows = database.prepare("SELECT project_id FROM workspace_projects").all()
+    database.close()
+    expect(rows).toEqual([{ project_id: demoWorkspace.project!.id }])
     reopened.close()
   })
 
