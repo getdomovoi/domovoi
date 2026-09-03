@@ -66,7 +66,7 @@ describe("runOpenCommand", () => {
   it("prints usage for more arguments than it takes", async () => {
     const deps = dependencies()
     expect(await runOpenCommand(["open", ".", "extra"], deps)).toBe(1)
-    expect(deps.stderr.mock.calls.join("")).toContain("Usage")
+    expect(deps.stderr.mock.calls.join("")).toContain("Usage: domovoid open")
     expect(deps.open).not.toHaveBeenCalled()
   })
 
