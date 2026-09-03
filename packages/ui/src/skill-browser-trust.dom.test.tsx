@@ -28,7 +28,6 @@ function props(overrides: Partial<Parameters<typeof SkillBrowser>[0]> = {}) {
     skills: [skill],
     loading: false,
     error: "",
-    onBack: vi.fn(),
     onOpenAudit: vi.fn(),
     onReadSkill: vi.fn(),
     projectId: "project-acme-api",

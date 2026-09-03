@@ -15,7 +15,6 @@ function shellProps() {
     approvalRules: [] as readonly ApprovalRule[],
     notifications: defaultNotificationPreferences(),
     onNotificationsChange: vi.fn(),
-    onBack: vi.fn(),
     onOpenSkills: vi.fn(),
     onOpenFleet: vi.fn(),
     onOpenAudit: vi.fn(),
@@ -37,7 +36,6 @@ it("lists every settings destination in the handoff order", () => {
 
   const labels = nav().getAllByRole("button").map((button) => button.textContent)
   expect(labels).toEqual([
-    "Workspace",
     "Fleet & machines",
     "Skills",
     "Providers",

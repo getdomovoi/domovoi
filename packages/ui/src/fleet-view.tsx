@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { ArrowLeftIcon, CircleStopIcon, KeyRoundIcon, PlusIcon, ServerIcon } from "lucide-react"
+import { CircleStopIcon, KeyRoundIcon, PlusIcon, ServerIcon } from "lucide-react"
 
 import {
   transportPreference,
@@ -112,7 +112,6 @@ export function FleetView({
   machines,
   currentMachineId,
   currentSessionCount,
-  onBack,
   onOpenSkills,
   onListDevices,
   onRevokeDevice,
@@ -123,7 +122,6 @@ export function FleetView({
   machines: FleetMachine[]
   currentMachineId: string
   currentSessionCount: number
-  onBack: () => void
   onOpenSkills: () => void
   onListDevices: (
     options?: DomovoiRequestOptions,
@@ -194,10 +192,6 @@ export function FleetView({
   return (
     <div className="flex min-h-0 flex-1">
       <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <Button variant="ghost" className="mb-2 justify-start" onClick={onBack}>
-          <ArrowLeftIcon data-icon="inline-start" />
-          Workspace
-        </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
         <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
         <Button variant="secondary" className="justify-start">Fleet</Button>
@@ -206,10 +200,6 @@ export function FleetView({
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto flex w-full max-w-[900px] flex-col px-4 py-5 sm:px-8 sm:py-7">
           <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 self-start sm:hidden">
-            <Button variant="ghost" className="min-h-11" onClick={onBack}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              Workspace
-            </Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
           </nav>
 

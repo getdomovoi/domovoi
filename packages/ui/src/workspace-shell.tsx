@@ -3625,7 +3625,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onNotificationsChange={(next: NotificationPreferences) => {
               setWorkspaceUi((current) => ({ ...current, notifications: next }))
             }}
-            onBack={() => setSurface("workspace")}
             onOpenFleet={() => setSurface("fleet")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
@@ -3652,7 +3651,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             inventorySources={skillInventories}
             loading={skillsLoading}
             error={skillsError}
-            onBack={() => setSurface("workspace")}
             onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
             requestedSkillId={requestedSkillId}
@@ -3672,7 +3670,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             machines={fleet ?? [localMachineEntry(snapshot)]}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
             currentSessionCount={activeSessionCount(snapshot)}
-            onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
@@ -3682,7 +3679,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : surface === "audit" ? (
           <AuditLogView
             connected={connected}
-            onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onQuery={queryAudit}
             onExport={exportAudit}
