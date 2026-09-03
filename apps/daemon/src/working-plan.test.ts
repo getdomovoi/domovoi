@@ -11,12 +11,15 @@ import {
 } from "@getdomovoi/protocol"
 
 import {
+  agentPromptWithWorkingPlan,
   clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
   finalizePendingWorkingPlanEdit,
+  markWorkingPlanDelivered,
   submitWorkingPlanEdit,
   syncWorkingPlanArtifact,
   updateWorkingPlanFromProvider,
+  workingPlanNeedsProviderDelivery,
 } from "./working-plan.js"
 
 const firstAt = "2026-09-03T20:00:00.000Z"
@@ -230,6 +233,56 @@ describe("working-plan artifacts", () => {
       changed: false,
     })
     expect(result.artifact.revision).toBe(revision)
+  })
+})
+
+describe("working-plan provider delivery", () => {
+  it("sends only canonical steps and pins delivery to a provider runtime", () => {
+    const current = plan({
+      revision: 3,
+      structureRevision: 2,
+      pendingEdit: {
+        id: "edit-queued",
+        basedOnStructureRevision: 2,
+        baseSteps: [
+          { id: "step-inspect", text: "Inspect the handler" },
+          { id: "step-test", text: "Add a regression test" },
+        ],
+        draftSteps: [{ id: "step-test", text: "Do not send this draft" }],
+        status: "queued",
+        submittedAt: firstAt,
+        submittedBy: attribution,
+      },
+    })
+    const target = {
+      provider: "claude-code",
+      model: "claude-opus-5",
+      providerThreadId: "thread-a",
+    }
+
+    expect(workingPlanNeedsProviderDelivery(current, target)).toBe(true)
+    const prompt = agentPromptWithWorkingPlan(current, "Continue safely")
+    expect(prompt).toContain("<domovoi_working_plan>")
+    expect(prompt).toContain('"structureRevision":2')
+    expect(prompt).toContain('"text":"Add a regression test"')
+    expect(prompt).not.toContain("Do not send this draft")
+    expect(prompt).toContain("Continue safely")
+
+    const delivered = markWorkingPlanDelivered(current, target, nextAt)
+    expect(delivered).toMatchObject({
+      revision: 4,
+      providerSync: {
+        ...target,
+        structureRevision: 2,
+        deliveredAt: nextAt,
+      },
+    })
+    expect(workingPlanNeedsProviderDelivery(delivered, target)).toBe(false)
+    expect(workingPlanNeedsProviderDelivery(delivered, {
+      ...target,
+      model: "claude-sonnet-5",
+    })).toBe(true)
+    expect(markWorkingPlanDelivered(delivered, target, nextAt)).toBe(delivered)
   })
 })
 

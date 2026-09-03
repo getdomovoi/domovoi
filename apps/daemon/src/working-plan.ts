@@ -43,9 +43,59 @@ export type WorkingPlanUpdateResult = {
   structureChanged: boolean
 }
 
+export type WorkingPlanProviderTarget = {
+  provider: string
+  model: string
+  providerThreadId: string
+}
+
 export class WorkingPlanMutationError extends Error {}
 
 const defaultIdFactory: WorkingPlanIdFactory = (kind) => `plan-${kind}-${randomUUID()}`
+
+export function workingPlanNeedsProviderDelivery(
+  plan: WorkingPlan,
+  target: WorkingPlanProviderTarget,
+): boolean {
+  return plan.providerSync?.provider !== target.provider
+    || plan.providerSync.model !== target.model
+    || plan.providerSync.providerThreadId !== target.providerThreadId
+    || plan.providerSync.structureRevision !== plan.structureRevision
+}
+
+export function agentPromptWithWorkingPlan(plan: WorkingPlan, userPrompt: string): string {
+  const context = JSON.stringify({
+    revision: plan.revision,
+    structureRevision: plan.structureRevision,
+    steps: plan.steps.map(({ id, text, status }) => ({ id, text, status })),
+  }).replaceAll("<", "\\u003c")
+  return [
+    "Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.",
+    "<domovoi_working_plan>",
+    context,
+    "</domovoi_working_plan>",
+    "",
+    userPrompt,
+  ].join("\n")
+}
+
+export function markWorkingPlanDelivered(
+  plan: WorkingPlan,
+  target: WorkingPlanProviderTarget,
+  deliveredAt: string,
+): WorkingPlan {
+  if (!workingPlanNeedsProviderDelivery(plan, target)) return plan
+  return workingPlanSchema.parse({
+    ...plan,
+    revision: plan.revision + 1,
+    providerSync: {
+      ...target,
+      structureRevision: plan.structureRevision,
+      deliveredAt,
+    },
+    updatedAt: deliveredAt,
+  })
+}
 
 export function updateWorkingPlanFromProvider(
   current: WorkingPlan | undefined,
