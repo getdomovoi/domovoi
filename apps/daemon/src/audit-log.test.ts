@@ -128,6 +128,31 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
+  it("holds exactly the retention bound after every append past it", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database, { maximumEntries: 5 })
+    const storedRows = database.prepare("SELECT COUNT(*) AS count FROM audit_log")
+    for (let index = 1; index <= 8; index += 1) {
+      audit.append({
+        id: `audit-${index}`,
+        occurredAt: "2026-08-29T12:00:00.000Z",
+        actor: { kind: "daemon", component: "workspace" },
+        action: "workspace.get",
+        outcome: "succeeded",
+      })
+      expect(storedRows.get()).toMatchObject({ count: Math.min(index, 5) })
+    }
+
+    expect(audit.query({ limit: 10 }).entries.map(({ id }) => id)).toEqual([
+      "audit-8",
+      "audit-7",
+      "audit-6",
+      "audit-5",
+      "audit-4",
+    ])
+    database.close()
+  })
+
   it("rejects unknown cursors instead of returning a misleading empty page", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database)
