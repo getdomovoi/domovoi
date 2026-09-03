@@ -135,6 +135,7 @@ describe("workspace protocol", () => {
       ["rate-limit", "retry", "Provider rate limit reached", true],
       ["quota-exhausted", "check-quota", "Provider quota is exhausted", false],
       ["model-unavailable", "change-model", "Selected model is unavailable", false],
+      ["context-window-exceeded", "shorten-context", "Turn exceeded the model context window", false],
       ["transport", "retry", "Provider connection failed", true],
       ["unknown", "retry", "Provider request failed", true],
     ] as const
@@ -147,6 +148,12 @@ describe("workspace protocol", () => {
         retryable,
       })
     }
+    expect(providerFailureSchema.safeParse({
+      kind: "context-window-exceeded",
+      action: "retry",
+      message: "Turn exceeded the model context window",
+      retryable: true,
+    }).success).toBe(false)
     expect(providerFailureSchema.safeParse({
       kind: "authentication-expired",
       action: "sign-in",

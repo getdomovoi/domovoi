@@ -79,6 +79,7 @@ export const providerFailureSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("rate-limit"), action: z.literal("retry"), message: z.literal("Provider rate limit reached"), retryable: z.literal(true) }),
   z.object({ kind: z.literal("quota-exhausted"), action: z.literal("check-quota"), message: z.literal("Provider quota is exhausted"), retryable: z.literal(false) }),
   z.object({ kind: z.literal("model-unavailable"), action: z.literal("change-model"), message: z.literal("Selected model is unavailable"), retryable: z.literal(false) }),
+  z.object({ kind: z.literal("context-window-exceeded"), action: z.literal("shorten-context"), message: z.literal("Turn exceeded the model context window"), retryable: z.literal(false) }),
   z.object({ kind: z.literal("transport"), action: z.literal("retry"), message: z.literal("Provider connection failed"), retryable: z.literal(true) }),
   z.object({ kind: z.literal("unknown"), action: z.literal("retry"), message: z.literal("Provider request failed"), retryable: z.literal(true) }),
 ])

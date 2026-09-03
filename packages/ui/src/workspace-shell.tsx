@@ -386,6 +386,7 @@ export function providerFailureActionCopy(failure: ProviderFailure): string {
     }
     case "check-quota": return "Check the provider quota or billing plan, then retry."
     case "change-model": return "Choose another model in the runtime controls, then retry."
+    case "shorten-context": return "Shorten the turn, or start a new session from a checkpoint."
   }
 }
 
