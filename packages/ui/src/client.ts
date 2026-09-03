@@ -420,6 +420,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.send", { sessionId, prompt, client: this.kind })
   }
 
+  revertSessionFile(sessionId: string, path: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.revertFile", { sessionId, path, client: this.kind })
+  }
+
   createCheckpoint(sessionId: string, label?: string): Promise<WorkspaceSnapshot> {
     return this.request("checkpoint.create", {
       sessionId,
