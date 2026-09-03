@@ -55,6 +55,9 @@ class FakeQuery extends MessageStream implements ClaudeQuery {
     supportsEffort: true,
     supportedEffortLevels: ["low", "medium", "high", "max"] as const,
   }])
+  readonly getContextUsage = vi.fn(async (): Promise<unknown> => {
+    throw new Error("Context usage unavailable")
+  })
   readonly setModel = vi.fn(async () => {})
   readonly setPermissionMode = vi.fn(async () => {})
   readonly applyFlagSettings = vi.fn(async () => {})
@@ -200,6 +203,56 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(event).toHaveBeenCalledTimes(2)
+  })
+
+  it("reports current context from the Claude SDK after a turn", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const event = vi.fn()
+    adapter.onEvent(event)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+    calls[0]!.query.getContextUsage.mockResolvedValueOnce({
+      model: "claude-sonnet-5",
+      totalTokens: 128_000,
+      maxTokens: 180_000,
+      rawMaxTokens: 200_000,
+    })
+
+    calls[0]!.query.emit({
+      type: "result",
+      subtype: "success",
+      session_id: threadId,
+      is_error: false,
+      usage: { input_tokens: 120_000, output_tokens: 8_000 },
+    })
+
+    await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
+      type: "usage",
+      threadId,
+      turnId,
+      usage: {
+        inputTokens: 120_000,
+        cachedInputTokens: 0,
+        outputTokens: 8_000,
+        reasoningTokens: 0,
+        totalTokens: 128_000,
+        contextTokens: 128_000,
+        contextWindowTokens: 200_000,
+        costSource: "unavailable",
+      },
+    }))
+    expect(calls[0]!.query.getContextUsage).toHaveBeenCalledOnce()
+    await adapter.close()
   })
 
   it("fails the active turn and reopens the session when the Claude stream ends without a result", async () => {

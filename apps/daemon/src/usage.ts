@@ -3,6 +3,12 @@ import { DatabaseSync } from "node:sqlite"
 
 export type ProviderCost = { amount: number; currency: string }
 
+type ActiveUsageContext = {
+  provider: string
+  model: string
+  threadId?: string
+}
+
 export type NormalizedUsage = {
   inputTokens: number
   cachedInputTokens: number
@@ -10,6 +16,8 @@ export type NormalizedUsage = {
   reasoningTokens: number
   totalTokens: number
   costSource: "provider-reported" | "unavailable"
+  contextTokens?: number
+  contextWindowTokens?: number
   costMicros?: number
   currency?: string
 }
@@ -17,6 +25,7 @@ export type NormalizedUsage = {
 export type TurnUsage = {
   sessionId: string
   turnId: string
+  threadId?: string
   provider: string
   model: string
   usage: NormalizedUsage
@@ -28,6 +37,8 @@ export function normalizeUsage(input: {
   outputTokens?: number
   reasoningTokens?: number
   totalTokens?: number
+  contextTokens?: number
+  contextWindowTokens?: number
   cost?: ProviderCost
 }): NormalizedUsage {
   const inputTokens = input.inputTokens ?? 0
@@ -51,6 +62,7 @@ export function normalizeUsage(input: {
     outputTokens,
     reasoningTokens,
     totalTokens,
+    ...reportedContextOccupancy(input.contextTokens, input.contextWindowTokens),
   }
   if (!input.cost) return { ...base, costSource: "unavailable" }
   if (!Number.isFinite(input.cost.amount) || input.cost.amount < 0) {
@@ -80,9 +92,18 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
     usage.reasoning_tokens ?? usage.reasoningTokens ?? usage.reasoning,
   )
   const totalTokens = counter(usage.total_tokens ?? usage.totalTokens ?? usage.total)
+  const context = reportedContextOccupancy(
+    root.context_tokens ?? root.contextTokens,
+    root.context_window_tokens ?? root.contextWindowTokens,
+  )
   const rawCost = root.total_cost_usd ?? root.cost_usd ?? root.cost
   const cost = typeof rawCost === "number" ? { amount: rawCost, currency: "USD" } : undefined
-  if ([inputTokens, cachedInputTokens, outputTokens, reasoningTokens, totalTokens].every((value) => value === undefined) && !cost) {
+  if (
+    [inputTokens, cachedInputTokens, outputTokens, reasoningTokens, totalTokens]
+      .every((value) => value === undefined)
+    && !cost
+    && context.contextTokens === undefined
+  ) {
     return undefined
   }
   return normalizeUsage({
@@ -91,6 +112,7 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...context,
     ...(cost ? { cost } : {}),
   })
 }
@@ -107,6 +129,7 @@ export class UsageLedger {
       CREATE TABLE IF NOT EXISTS provider_usage (
         session_id TEXT NOT NULL,
         turn_id TEXT NOT NULL,
+        provider_thread_id TEXT,
         provider TEXT NOT NULL,
         model TEXT NOT NULL,
         input_tokens INTEGER NOT NULL,
@@ -114,6 +137,8 @@ export class UsageLedger {
         output_tokens INTEGER NOT NULL,
         reasoning_tokens INTEGER NOT NULL,
         total_tokens INTEGER NOT NULL,
+        context_tokens INTEGER,
+        context_window_tokens INTEGER,
         cost_source TEXT NOT NULL CHECK (cost_source IN ('provider-reported', 'unavailable')),
         cost_micros INTEGER,
         currency TEXT,
@@ -121,11 +146,18 @@ export class UsageLedger {
       );
       CREATE INDEX IF NOT EXISTS provider_usage_session ON provider_usage(session_id);
     `)
+    this.#addColumnIfMissing("provider_thread_id", "TEXT")
+    this.#addColumnIfMissing("context_tokens", "INTEGER")
+    this.#addColumnIfMissing("context_window_tokens", "INTEGER")
     this.#restrictFilePermissions()
   }
 
   record(record: TurnUsage): void {
     const currency = record.usage.currency
+    const context = reportedContextOccupancy(
+      record.usage.contextTokens,
+      record.usage.contextWindowTokens,
+    )
     if (currency) {
       const existing = this.#database.prepare(`
         SELECT currency FROM provider_usage
@@ -136,11 +168,13 @@ export class UsageLedger {
     }
     this.#database.prepare(`
       INSERT INTO provider_usage (
-        session_id, turn_id, provider, model,
+        session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+        context_tokens, context_window_tokens,
         cost_source, cost_micros, currency
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, turn_id) DO UPDATE SET
+        provider_thread_id = excluded.provider_thread_id,
         provider = excluded.provider,
         model = excluded.model,
         input_tokens = excluded.input_tokens,
@@ -148,12 +182,18 @@ export class UsageLedger {
         output_tokens = excluded.output_tokens,
         reasoning_tokens = excluded.reasoning_tokens,
         total_tokens = excluded.total_tokens,
+        context_tokens = COALESCE(excluded.context_tokens, provider_usage.context_tokens),
+        context_window_tokens = COALESCE(
+          excluded.context_window_tokens,
+          provider_usage.context_window_tokens
+        ),
         cost_source = excluded.cost_source,
         cost_micros = excluded.cost_micros,
         currency = excluded.currency
     `).run(
       record.sessionId,
       record.turnId,
+      record.threadId ?? null,
       record.provider,
       record.model,
       record.usage.inputTokens,
@@ -161,6 +201,8 @@ export class UsageLedger {
       record.usage.outputTokens,
       record.usage.reasoningTokens,
       record.usage.totalTokens,
+      context.contextTokens ?? null,
+      context.contextWindowTokens ?? null,
       record.usage.costSource,
       record.usage.costMicros ?? null,
       record.usage.currency ?? null,
@@ -168,15 +210,18 @@ export class UsageLedger {
     this.#restrictFilePermissions()
   }
 
-  session(sessionId: string) {
-    const turns = this.#database.prepare(`
+  session(sessionId: string, active?: ActiveUsageContext) {
+    const rows = this.#database.prepare(`
       SELECT
-        session_id, turn_id, provider, model,
+        session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+        context_tokens, context_window_tokens,
         cost_source, cost_micros, currency
-      FROM provider_usage WHERE session_id = ? ORDER BY turn_id
-    `).all(sessionId).map(turnUsageFromRow)
+      FROM provider_usage WHERE session_id = ? ORDER BY rowid
+    `).all(sessionId)
+    const turns = rows.map(turnUsageFromRow)
     const totals = sumUsage(turns.map((turn) => turn.usage))
+    const context = currentContextOccupancy(rows.at(-1), active)
     const groups = new Map<string, TurnUsage[]>()
     for (const turn of turns) {
       const key = `${turn.provider}\0${turn.model}`
@@ -195,7 +240,7 @@ export class UsageLedger {
     }).sort((left, right) => (
       `${left.provider}\0${left.model}`.localeCompare(`${right.provider}\0${right.model}`)
     ))
-    return { sessionId, ...totals, byRuntime }
+    return { sessionId, ...totals, ...context, byRuntime }
   }
 
   close(): void {
@@ -207,6 +252,12 @@ export class UsageLedger {
     for (const path of [this.#path, `${this.#path}-wal`, `${this.#path}-shm`]) {
       if (existsSync(path)) chmodSync(path, 0o600)
     }
+  }
+
+  #addColumnIfMissing(name: string, type: "TEXT" | "INTEGER"): void {
+    const columns = this.#database.prepare("PRAGMA table_info(provider_usage)").all()
+      .map((column) => String((column as Record<string, unknown>).name))
+    if (!columns.includes(name)) this.#database.exec(`ALTER TABLE provider_usage ADD COLUMN ${name} ${type}`)
   }
 }
 
@@ -258,10 +309,26 @@ function turnUsageFromRow(value: unknown): TurnUsage {
   return {
     sessionId: String(row.session_id),
     turnId: String(row.turn_id),
+    ...(typeof row.provider_thread_id === "string" ? { threadId: row.provider_thread_id } : {}),
     provider: String(row.provider),
     model: String(row.model),
     usage,
   }
+}
+
+function currentContextOccupancy(
+  value: unknown,
+  active?: ActiveUsageContext,
+): { contextTokens?: number; contextWindowTokens?: number } {
+  const row = record(value)
+  if (!row) return {}
+  if (active && (
+    row.provider !== active.provider
+    || row.model !== active.model
+    || active.threadId === undefined
+    || row.provider_thread_id !== active.threadId
+  )) return {}
+  return reportedContextOccupancy(row.context_tokens, row.context_window_tokens)
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -270,4 +337,19 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function counter(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function reportedContextOccupancy(
+  rawContextTokens: unknown,
+  rawContextWindowTokens: unknown,
+): { contextTokens?: number; contextWindowTokens?: number } {
+  const contextTokens = counter(rawContextTokens)
+  const contextWindowTokens = counter(rawContextWindowTokens)
+  if (
+    contextTokens === undefined
+    || contextWindowTokens === undefined
+    || contextWindowTokens === 0
+    || contextTokens > contextWindowTokens
+  ) return {}
+  return { contextTokens, contextWindowTokens }
 }

@@ -295,6 +295,8 @@ export class AcpAgentAdapter implements AgentAdapter {
         turnId,
         usage: normalizeUsage({
           totalTokens: update.used,
+          contextTokens: update.used,
+          contextWindowTokens: update.size,
           ...(update.cost ? { cost: update.cost } : {}),
         }),
       })

@@ -452,6 +452,19 @@ export class CodexAppServerAdapter implements AgentAdapter {
         phase: message.method === "item/started" ? "started" : "completed",
         params,
       })
+    } else if (message.method === "thread/tokenUsage/updated") {
+      const tokenUsage = asRecord(params.tokenUsage)
+      const last = asRecord(tokenUsage?.last)
+      // Codex defines last.totalTokens as current context. tokenUsage.total is
+      // cumulative session usage and must never drive context occupancy.
+      const usage = last ? normalizeProviderUsage({
+        usage: last,
+        contextTokens: last.totalTokens,
+        contextWindowTokens: tokenUsage?.modelContextWindow,
+      }) : undefined
+      if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
+        this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
+      }
     } else if (message.method === "turn/completed") {
       const usage = normalizeProviderUsage(params.turn ?? params)
       if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
