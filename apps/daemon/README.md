@@ -76,6 +76,19 @@ console.log(address)
 await daemon.stop()
 ```
 
+## Terminal dependency
+
+`node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed
+to start a PTY on macOS in this daemon (commit `082c2c7`, "fix(terminal): repair macos pty
+startup"). The matching upstream defect is https://github.com/microsoft/node-pty/issues/850: the
+darwin prebuild shipped `spawn-helper` without the execute bit, so `posix_spawnp` failed under
+pnpm. The fix landed in `1.2.0-beta.2` (#858) and `1.2.0-beta.4` (#866). The pin is exact so a
+prerelease bump is a reviewed change. Move to the next stable release that contains the fix once
+it exists, and verify it on the three CI runners.
+
 ## License
 
-Apache-2.0
+Apache-2.0 for this package. The Claude Code session adapter has a runtime dependency on
+`@anthropic-ai/claude-agent-sdk`, which is proprietary. Domovoi does not redistribute it; npm
+installs it under Anthropic's terms. The recorded exception is documented at
+https://github.com/getdomovoi/domovoi/blob/main/docs/licensing.md.
