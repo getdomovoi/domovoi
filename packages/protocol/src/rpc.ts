@@ -677,7 +677,7 @@ const clientHelloParamsSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema.optional(),
   clientVersion: z.string().min(1).max(64),
-  protocolVersion: protocolVersionPatternSchema,
+  protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: z.string().min(1).optional(),
 }).strict()
 
@@ -685,7 +685,7 @@ const machineHelloParamsSchema = z.object({
   client: z.literal("machine"),
   machineId: machineIdSchema,
   clientVersion: z.string().min(1).max(64),
-  protocolVersion: protocolVersionPatternSchema,
+  protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: z.string().min(1).optional(),
 }).strict()
 
