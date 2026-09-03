@@ -71,15 +71,15 @@ describe("loadOrCreateMachineIdentity", () => {
     )
   })
 
-  it("recovers from an interrupted initial write", async () => {
+  it("refuses to replace an interrupted initial write without operator recovery", async () => {
     const root = await scratch()
     const identityPath = join(root, "machine.json")
     await writeFile(identityPath, "")
 
-    const identity = await loadOrCreateMachineIdentity(identityPath, { label: "workshop" })
+    await expect(loadOrCreateMachineIdentity(identityPath, { label: "workshop" }))
+      .rejects.toThrow("Remove it explicitly before restarting Domovoi")
 
-    expect(identity.id).toMatch(/^machine-[0-9a-f]{32}$/)
-    expect(JSON.parse(await readFile(identityPath, "utf8")) as { id: string }).toEqual(identity)
+    expect(await readFile(identityPath, "utf8")).toBe("")
   })
 
   it("leaves no partial file behind after creating an identity", async () => {
@@ -114,6 +114,48 @@ describe("loadOrCreateMachineIdentity", () => {
 
     const published = await Promise.all(candidates.map(
       (identity) => publishMachineIdentity(identityPath, identity),
+    ))
+
+    expect(new Set(published.map((identity) => identity.id)).size).toBe(1)
+    expect(JSON.parse(await readFile(identityPath, "utf8"))).toEqual(published[0])
+  })
+
+  it("never deletes an interrupted empty identity to publish a winner", async () => {
+    const identityPath = join(await scratch(), "machine.json")
+    await writeFile(identityPath, "")
+    const candidates = Array.from({ length: 8 }, (_, index) => ({
+      id: `machine-${index.toString(16).padStart(32, "0")}`,
+      label: `candidate-${index}`,
+    }))
+
+    const attempts = await Promise.allSettled(candidates.map(
+      (identity) => publishMachineIdentity(identityPath, identity),
+    ))
+
+    expect(attempts.every((attempt) => attempt.status === "rejected")).toBe(true)
+    expect(attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: "rejected",
+        reason: expect.objectContaining({
+          message: expect.stringContaining("Remove it explicitly"),
+        }),
+      }),
+    ]))
+    expect(await readFile(identityPath, "utf8")).toBe("")
+  })
+
+  it("keeps no-clobber publication when the filesystem rejects hard links", async () => {
+    const identityPath = join(await scratch(), "machine.json")
+    const candidates = Array.from({ length: 8 }, (_, index) => ({
+      id: `machine-${index.toString(16).padStart(32, "0")}`,
+      label: `candidate-${index}`,
+    }))
+    const hardLinkUnavailable = async () => {
+      throw Object.assign(new Error("Hard links unsupported"), { code: "ENOTSUP" })
+    }
+
+    const published = await Promise.all(candidates.map(
+      (identity) => publishMachineIdentity(identityPath, identity, hardLinkUnavailable),
     ))
 
     expect(new Set(published.map((identity) => identity.id)).size).toBe(1)
