@@ -56,13 +56,20 @@ describe("SqliteWorkspaceStore", () => {
     changed.approvals[0]!.risk = "normal"
     changed.approvals[0]!.command = "pnpm test --token persisted-command-secret"
     changed.approvals[0]!.operation = "Authorization: Bearer persisted-reason-secret"
+    const secretExecution = structuredClone(demoWorkspace.approvals[0]!.execution)
+    if (secretExecution.state === "resolved" && secretExecution.record.kind === "shell") {
+      secretExecution.record.entries[0]!.parts[0]!.argv = [
+        "pnpm", "test", "--token", "persisted-execution-secret",
+      ]
+    }
+    changed.approvals[0]!.execution = secretExecution
     changed.approvalRules.push({
       id: "rule-secret",
       projectId: changed.project!.id,
-      operation: "Deploy with secret",
-      command: "deploy --api-key persisted-rule-secret",
+      operation: "Run tests",
+      command: "pnpm test",
       status: "active",
-      execution: demoWorkspace.approvals[0]!.execution as Extract<
+      execution: secretExecution as Extract<
         typeof demoWorkspace.approvals[number]["execution"],
         { state: "resolved" }
       >,
@@ -86,6 +93,7 @@ describe("SqliteWorkspaceStore", () => {
       risk: "hard-gate",
       command: "pnpm test --token [REDACTED]",
       operation: "Authorization: [REDACTED]",
+      execution: { state: "unresolved", reason: "sensitive-content" },
     })
     expect(loaded.approvalRules).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "rule-secret" }),
@@ -101,7 +109,7 @@ describe("SqliteWorkspaceStore", () => {
     const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
     database.close()
     expect(JSON.stringify(raw)).not.toMatch(
-      /persisted-command-secret|persisted-reason-secret|persisted-rule-secret|persisted-title-secret|persisted-output-secret/,
+      /persisted-command-secret|persisted-reason-secret|persisted-execution-secret|persisted-title-secret|persisted-output-secret/,
     )
     store.close()
   })
