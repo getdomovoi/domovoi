@@ -5,7 +5,6 @@ type QueueEntry = {
   notified: boolean
   cancelled: Promise<void>
   resolveCancelled: () => void
-  execution?: Promise<void>
   onCancelled?: (reason: unknown) => void
 }
 
@@ -14,7 +13,6 @@ export class ResourceMutationQueue {
   #barrier = Promise.resolve()
   #resources = new Map<string, Promise<void>>()
   #generation = 0
-  #retired = new Set<Promise<void>>()
   #entries = new Set<QueueEntry>()
 
   constructor(onError: (error: unknown) => void = () => {}) {
@@ -32,13 +30,11 @@ export class ResourceMutationQueue {
     const execution = Promise.all([barrier, previous])
       .then(() => this.#run(entry, task))
       .catch((error: unknown) => this.#onError(error))
-    entry.execution = execution
-    const queued = Promise.race([execution, entry.cancelled])
-    this.#resources.set(resource, queued)
-    void queued.finally(() => {
-      if (this.#resources.get(resource) === queued) this.#resources.delete(resource)
+    this.#resources.set(resource, execution)
+    void execution.finally(() => {
+      if (this.#resources.get(resource) === execution) this.#resources.delete(resource)
     })
-    return queued
+    return Promise.race([execution, entry.cancelled])
   }
 
   enqueueExclusive(
@@ -50,22 +46,13 @@ export class ResourceMutationQueue {
     const execution = Promise.all(dependencies)
       .then(() => this.#run(entry, task))
       .catch((error: unknown) => this.#onError(error))
-    entry.execution = execution
-    const queued = Promise.race([execution, entry.cancelled])
-    this.#barrier = queued
-    return queued
+    this.#barrier = execution
+    return Promise.race([execution, entry.cancelled])
   }
 
   cancelAll(reason: unknown): { active: number; queued: number } {
     this.#generation += 1
     const entries = [...this.#entries]
-    const dependencies = new Set(entries.flatMap(({ execution }) => execution ? [execution] : []))
-    this.#barrier = Promise.resolve()
-    this.#resources.clear()
-    for (const dependency of dependencies) {
-      this.#retired.add(dependency)
-      void dependency.finally(() => this.#retired.delete(dependency))
-    }
     for (const entry of entries) {
       entry.controller.abort(reason)
       if (!entry.started) {
@@ -81,7 +68,7 @@ export class ResourceMutationQueue {
   }
 
   async drain(): Promise<void> {
-    await Promise.all([this.#barrier, ...this.#resources.values(), ...this.#retired])
+    await Promise.all([this.#barrier, ...this.#resources.values()])
   }
 
   #entry(onCancelled?: (reason: unknown) => void) {

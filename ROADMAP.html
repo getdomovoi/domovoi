@@ -265,6 +265,8 @@ td { color: var(--ink2); }
 </li>
 <li>Repair permissive existing files on startup.
 </li>
+<li>On Windows, state lives under <code>.domovoi</code> in the user profile directory; no ACL restriction equivalent exists yet.
+</li>
 </ul>
 </li>
 <li>[x] Make RPC timeouts cancel or quarantine underlying work
@@ -372,7 +374,17 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add explicit fork-with-model beside switch-here behavior
 </li>
-<li>[x] Require explicit confirmation before switching projects discards current sessions and worktrees
+<li>[x] Require explicit confirmation before switching projects stops the current project's running work
+</li>
+<li>[x] Keep workspace state per project so opening a second repository preserves the first
+<ul>
+<li>Persist one snapshot row per project id beside the active-workspace row, migrating an existing single-row database into the row for its own project.
+</li>
+<li>Restore a project's sessions, thread, approvals, artifacts, and annotations on reopen, and keep machine-scoped state such as machine facts and skill enablement reviews out of the per-project rows.
+</li>
+<li>Stop live provider threads, active turns, and terminals when switching away, and delete session worktrees only on the deliberate <code>session.archive</code> path.
+</li>
+</ul>
 </li>
 </ul>
 <h3 id="providers-and-credentials">Providers and credentials</h3>
@@ -577,7 +589,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Authenticate every connection even inside a tailnet
 </li>
-<li>[x] Bootstrap <code>domovoid</code> through a version-pinned, checksummed install script
+<li>[x] Bootstrap <code>domovoid</code> through a version-pinned install script that checks the archive against a caller-supplied SHA-256 and the <code>SHA256SUMS</code> the release publishes; signature verification is tracked under signed GitHub Release artifacts
 </li>
 <li>[x] Install and supervise the daemon for the user who asked, through a systemd user unit, a launchd agent, and a Windows logon task
 <ul>
