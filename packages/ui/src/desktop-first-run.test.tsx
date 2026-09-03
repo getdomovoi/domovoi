@@ -32,6 +32,7 @@ const failure = (kind: ProviderFailure["kind"]): ProviderFailure => {
     "rate-limit": { kind: "rate-limit", action: "retry", message: "Provider rate limit reached", retryable: true },
     "quota-exhausted": { kind: "quota-exhausted", action: "check-quota", message: "Provider quota is exhausted", retryable: false },
     "model-unavailable": { kind: "model-unavailable", action: "change-model", message: "Selected model is unavailable", retryable: false },
+    "context-window-exceeded": { kind: "context-window-exceeded", action: "shorten-context", message: "Turn exceeded the model context window", retryable: false },
     transport: { kind: "transport", action: "retry", message: "Provider connection failed", retryable: true },
     unknown: { kind: "unknown", action: "retry", message: "Provider request failed", retryable: true },
   } as const satisfies Record<ProviderFailure["kind"], ProviderFailure>
