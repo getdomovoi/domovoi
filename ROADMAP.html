@@ -346,7 +346,7 @@ td { color: var(--ink2); }
 </li>
 <li><a href="https://github.com/getdomovoi/domovoi/pull/100">#100</a> — <code>build: enforce workspace quality gates</code> — <code>MERGED</code>: closes audit concerns I1–I5 and adds the workspace lint gate. Before it, <code>pnpm lint</code> matched no package script and passed without linting anything.
 </li>
-<li><a href="https://github.com/getdomovoi/domovoi/pull/101">#101</a> — <code>perf: bound desktop alpha hot paths</code> — <code>MERGED</code>: offloads snapshot persistence to a worker that waits for a busy database and refuses work once it is gone, bounds RPC output, debounces history search, and backs off reconnects without retrying a device a machine has revoked.
+<li><a href="https://github.com/getdomovoi/domovoi/pull/101">#101</a> — <code>perf: bound desktop alpha hot paths</code> — <code>MERGED</code>: offloads snapshot persistence to a worker that waits for a busy database and is replaced once it is gone, bounds RPC output, debounces history search, and backs off reconnects without retrying a device a machine has revoked.
 </li>
 </ul>
 <p>Every ledger entry is now merged.</p>
