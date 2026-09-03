@@ -431,6 +431,8 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing model access
 <ul>
+<li>Written and verified on <code>feat/daemon-provider-limits</code>, tip <code>b63eda8</code>, but not merged. <code>main</code> does not classify <code>context-window-exceeded</code>, so this line stays open until that branch lands.
+</li>
 <li>A failure classifier exists, but the Claude adapter drops the failure reason and provider stderr is discarded, so authentication and rate-limit failures surface as unknown/retry.
 </li>
 </ul>
@@ -444,13 +446,13 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Per-project standing approval rules
 </li>
-<li>[ ] Stop translating a standing approval into provider-native persistence
+<li>[x] Stop translating a standing approval into provider-native persistence
 <ul>
 <li><code>always-project</code> currently becomes <code>acceptForSession</code> in <code>apps/daemon/src/codex.ts</code>, <code>always</code> in <code>apps/daemon/src/opencode.ts</code>, and provider-suggested <code>updatedPermissions</code> in <code>apps/daemon/src/claude.ts</code>. The provider then answers later requests itself, where Domovoi cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the daemon must own every standing rule. This blocks the fingerprint work below, and it would also let a retired rule keep approving through the provider.
 </li>
 </ul>
 </li>
-<li>[ ] Key standing rules on a fingerprint of the resolved command rather than its text
+<li>[x] Key standing rules on a fingerprint of the resolved command rather than its text
 <ul>
 <li>A rule matches on <code>projectId</code> and the literal command, so it keeps approving a script whose body has since changed. The fingerprint should cover the normalized command, the project-relative directory, recursively expanded script bodies, lifecycle scripts such as <code>pretest</code>, and the validated runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the approval and rule schemas.
 </li>
@@ -565,7 +567,7 @@ td { color: var(--ink2); }
 <ul>
 <li>[ ] Fleet screen with transport order, machine cards, version and <code>UPDATE</code> state, and Use, Terminal, and Revoke actions
 <ul>
-<li>Transport order, machine cards, pairing, revocation, and credential rotation ship in <code>packages/ui/src/fleet-view.tsx</code>. The Use and Terminal actions on a machine card are the remaining work.
+<li>Transport order, machine cards, pairing, revocation, rotation, and the Use and Terminal card actions all ship in <code>packages/ui/src/fleet-view.tsx</code>. The <code>UPDATE</code> badge for a machine running an older daemon than the fleet is the remaining work.
 </li>
 </ul>
 </li>
@@ -573,7 +575,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Cost and token readouts in the app bar and session header from <code>session.usage</code>
 </li>
-<li>[ ] Context occupancy readout beside those totals
+<li>[x] Context occupancy readout beside those totals
 <ul>
 <li><code>sessionUsageSchema</code> carries <code>contextTokens</code> and <code>contextWindowTokens</code>, and both are optional so a client shows the readout only when the provider reported the pair. No adapter populates them and no client reads them yet.
 </li>
@@ -586,12 +588,20 @@ td { color: var(--ink2); }
 </ul>
 </li>
 <li>[ ] Editable working plan with per-step state in the Plan tab
+<ul>
+<li>Protocol and client ship: <code>workingPlans</code> on the snapshot, <code>plan.edit</code> and <code>plan.discardEdit</code>, and a Plan tab that renders steps, marks a blocked step as waiting, shows queued and conflicted edits with their draft, and edits, reorders, and discards. No adapter or daemon handler populates a plan yet, so the card does not appear in a running session.
+</li>
+</ul>
 </li>
 <li>[x] Per-file diff review with revert in the Changes tab
 </li>
 <li>[ ] Composer skill chip
 </li>
-<li>[ ] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane, 280px inspector, and the fixed chrome heights recorded in <code>DESIGN.md</code>
+<li>[x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane, 280px inspector, and the fixed chrome heights recorded in <code>DESIGN.md</code>
+<ul>
+<li>Sizes live as tokens in <code>packages/ui/src/styles.css</code> with a test comparing them against the table in <code>DESIGN.md</code>, so drift fails in both directions. Claude Design settled the desktop chrome as a 38px titlebar and a permanent 62px rail, with no horizontal 62px header.
+</li>
+</ul>
 </li>
 <li>[ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract lives in the repository rather than only in the project
 </li>
