@@ -38,6 +38,11 @@ import {
   previewBridgeResolveAnchorsMessageSchema,
   previewBridgeAnchorResolutionsMessageSchema,
   previewBridgeSelectionMessageSchema,
+  annotationAnchorSchema,
+  clientIdentityIdSchema,
+  reasoningEffortSchema,
+  runtimeSchema,
+  terminalOwnerSchema,
   sessionActivateParamsSchema,
   sessionArchiveParamsSchema,
   sessionCreateParamsSchema,
@@ -504,17 +509,131 @@ describe("workspace protocol", () => {
     }).success).toBe(false)
   })
 
+  it("accepts the client identity the handshake accepts on terminal calls", () => {
+    expect(terminalCreateParamsSchema.parse({
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      client: "cli",
+      clientId: "abc",
+    }).clientId).toBe("abc")
+    expect(terminalOwnerSchema.parse({
+      client: "cli",
+      clientId: "  padded  ",
+    }).clientId).toBe("padded")
+    expect(terminalOwnerSchema.shape.clientId).toBe(clientIdentityIdSchema)
+  })
+
   it("accepts an optional daemon credential during hello", () => {
     expect(helloParamsSchema.parse({
       client: "web",
       clientVersion: "0.0.1",
+      protocolVersion: "0.1.0",
       authToken: "token-with-enough-entropy",
     }).authToken).toBe("token-with-enough-entropy")
     expect(helloParamsSchema.safeParse({
       client: "web",
       clientVersion: "0.0.1",
+      protocolVersion: "0.1.0",
       authToken: "",
     }).success).toBe(false)
+  })
+
+  it("bounds the free text a client types into the daemon", () => {
+    const runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "high",
+      permissionMode: "ask" as const,
+      auto: false,
+    }
+    expect(sessionSendParamsSchema.safeParse({
+      sessionId: "session-billing",
+      prompt: "x".repeat(262_144),
+      client: "desktop",
+    }).success).toBe(true)
+    expect(sessionSendParamsSchema.safeParse({
+      sessionId: "session-billing",
+      prompt: "x".repeat(262_145),
+      client: "desktop",
+    }).success).toBe(false)
+    expect(sessionCreateParamsSchema.safeParse({
+      title: "x".repeat(512),
+      runtime,
+      client: "desktop",
+    }).success).toBe(true)
+    expect(sessionCreateParamsSchema.safeParse({
+      title: "x".repeat(513),
+      runtime,
+      client: "desktop",
+    }).success).toBe(false)
+    expect(projectOpenParamsSchema.safeParse({
+      path: "x".repeat(4_096),
+      client: "desktop",
+    }).success).toBe(true)
+    expect(projectOpenParamsSchema.safeParse({
+      path: "x".repeat(4_097),
+      client: "desktop",
+    }).success).toBe(false)
+    expect(checkpointCreateParamsSchema.safeParse({
+      sessionId: "session-billing",
+      label: "x".repeat(513),
+      client: "desktop",
+    }).success).toBe(false)
+    expect(approvalResolveParamsSchema.safeParse({
+      approvalId: "approval-1",
+      decision: "deny",
+      explanation: "x".repeat(4_097),
+    }).success).toBe(false)
+    expect(annotationCreateParamsSchema.safeParse({
+      sessionId: "session-billing",
+      artifactId: "artifact-preview",
+      anchor: { cssSelector: "main" },
+      body: "x".repeat(8_193),
+      client: "tablet",
+    }).success).toBe(false)
+    expect(annotationReplyParamsSchema.safeParse({
+      annotationId: "annotation-1",
+      body: "x".repeat(8_193),
+      client: "tablet",
+    }).success).toBe(false)
+    expect(runtimeModelsParamsSchema.safeParse({
+      provider: "x".repeat(65),
+      client: "desktop",
+    }).success).toBe(false)
+    expect(runtimeSchema.safeParse({ ...runtime, provider: "x".repeat(65) }).success).toBe(false)
+    expect(runtimeSchema.safeParse({ ...runtime, model: "x".repeat(257) }).success).toBe(false)
+    expect(reasoningEffortSchema.safeParse("x".repeat(65)).success).toBe(false)
+  })
+
+  it("keeps the stored annotation anchor as strict as the preview bridge anchor", () => {
+    expect(previewBridgeSelectionMessageSchema.shape.anchor).toBe(annotationAnchorSchema)
+    expect(
+      previewBridgeResolveAnchorsMessageSchema.shape.annotations.element.shape.anchor,
+    ).toBe(annotationAnchorSchema)
+    expect(annotationAnchorSchema.safeParse({
+      cssSelector: "main",
+      extra: true,
+    }).success).toBe(false)
+    expect(annotationAnchorSchema.safeParse({
+      cssSelector: "x".repeat(1_001),
+    }).success).toBe(false)
+    expect(annotationAnchorSchema.safeParse({
+      textQuote: "x".repeat(2_001),
+    }).success).toBe(false)
+    expect(annotationAnchorSchema.safeParse({
+      bbox: { x: 0, y: 0, width: Number.POSITIVE_INFINITY, height: 10 },
+    }).success).toBe(false)
+    expect(annotationAnchorSchema.safeParse({
+      bbox: { x: 0, y: 0, width: 10, height: 10, extra: true },
+    }).success).toBe(false)
+    expect(annotationAnchorSchema.safeParse({}).success).toBe(false)
+    expect(annotationAnchorSchema.safeParse({
+      cssSelector: "main > section:nth-child(2)",
+      textQuote: "Apply the migration",
+      bbox: { x: 40, y: 120, width: 280, height: 48 },
+    }).success).toBe(true)
   })
 
   it("validates anchored annotation threads", () => {

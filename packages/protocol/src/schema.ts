@@ -1,11 +1,20 @@
 import { z } from "zod"
 
+import {
+  annotationStatusSchema,
+  clientIdentityIdSchema,
+  clientKindSchema,
+  commitShaSchema,
+  forkRequestIdSchema,
+  toolKindSchema,
+  toolStatusSchema,
+} from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
+
+export { clientIdentityIdSchema, clientKindSchema }
 
 export const protocolVersion = "0.1.0" as const
 
-export const clientKindSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
-export const clientIdentityIdSchema = z.string().trim().min(1).max(128)
 export const connectionIdSchema = z.string().uuid()
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
 export const sessionStateSchema = z.enum([
@@ -25,11 +34,11 @@ export const approvalDecisionSchema = z.enum([
   "deny",
   "deny-explain",
 ])
-export const reasoningEffortSchema = z.string().trim().min(1)
+export const reasoningEffortSchema = z.string().trim().min(1).max(64)
 
 export const runtimeSchema = z.object({
-  provider: z.string().min(1),
-  model: z.string().min(1),
+  provider: z.string().min(1).max(64),
+  model: z.string().min(1).max(256),
   reasoning: reasoningEffortSchema,
   permissionMode: permissionModeSchema,
   auto: z.boolean(),
@@ -110,8 +119,8 @@ export const projectSchema = z.object({
 export const sessionForkOriginSchema = z.object({
   sourceSessionId: z.string().min(1),
   checkpointId: z.string().min(1),
-  checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
-  requestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
+  checkpointCommit: commitShaSchema,
+  requestId: forkRequestIdSchema,
   client: clientKindSchema,
   requestedRuntime: runtimeSchema,
 })
@@ -132,7 +141,7 @@ export const sessionSummarySchema = z.object({
   providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
   archiveRequestedAt: z.string().datetime().optional(),
-  archiveCheckpoint: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  archiveCheckpoint: commitShaSchema.optional(),
   archivedAt: z.string().datetime().optional(),
   forkedFrom: sessionForkOriginSchema.optional(),
 }).superRefine((session, context) => {
@@ -196,7 +205,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     sessionId: z.string().min(1),
     kind: z.literal("checkpoint"),
     label: z.string(),
-    commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+    commit: commitShaSchema.optional(),
     createdAt: z.string().datetime(),
   }),
   z.object({
@@ -241,8 +250,8 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     // Nothing emits "file-change" any more, but a snapshot written before it was
     // retired still carries it, and narrowing the enum would make that snapshot
     // fail to parse on startup. Accepted on read, never produced.
-    tool: z.enum(["command", "file-change"]),
-    status: z.enum(["running", "completed", "failed", "declined"]),
+    tool: toolKindSchema,
+    status: toolStatusSchema,
     title: z.string(),
     output: z.string().optional(),
     createdAt: z.string().datetime(),
@@ -269,15 +278,15 @@ export const artifactSchema = z.object({
 })
 
 export const annotationAnchorSchema = z.object({
-  cssSelector: z.string().min(1).optional(),
-  textQuote: z.string().min(1).optional(),
+  cssSelector: z.string().min(1).max(1_000).optional(),
+  textQuote: z.string().min(1).max(2_000).optional(),
   bbox: z.object({
-    x: z.number().nonnegative(),
-    y: z.number().nonnegative(),
-    width: z.number().positive(),
-    height: z.number().positive(),
-  }).optional(),
-}).refine(
+    x: z.number().finite().nonnegative(),
+    y: z.number().finite().nonnegative(),
+    width: z.number().finite().positive(),
+    height: z.number().finite().positive(),
+  }).strict().optional(),
+}).strict().refine(
   (anchor) => Boolean(anchor.cssSelector || anchor.textQuote || anchor.bbox),
   { message: "An annotation anchor requires a selector, quote, or bounding box" },
 )
@@ -319,7 +328,7 @@ export const annotationSchema = z.object({
   variantId: z.string().min(1).optional(),
   anchor: annotationAnchorSchema,
   body: z.string().min(1),
-  status: z.enum(["open", "resolved"]),
+  status: annotationStatusSchema,
   statusChangedBy: clientKindSchema.optional(),
   statusChangedAt: z.string().datetime().optional(),
   origin: clientKindSchema,
