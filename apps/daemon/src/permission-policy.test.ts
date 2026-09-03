@@ -62,6 +62,19 @@ describe("permissionDecisionFor", () => {
   })
 
   it.each([
+    "git diff -- .env",
+    "git diff HEAD -- .env",
+    "git log -p -- .env",
+    "git log -p -1 -- .env",
+    "git show HEAD -- .env",
+  ])("hard-gates secret paths selected as Git pathspecs: %s", (command) => {
+    expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
+      action: "review",
+      risk: "hard-gate",
+    })
+  })
+
+  it.each([
     "cat .env",
     "cat .env.production",
     "cat .envrc",
