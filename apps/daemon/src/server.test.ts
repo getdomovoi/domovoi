@@ -4505,6 +4505,48 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("discovers skills from the currently open project", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "domovoi-project-skill-"))
+    scratchDirectories.push(projectRoot)
+    const skillDirectory = join(projectRoot, ".domovoi", "skills", "project-only")
+    await mkdir(skillDirectory, { recursive: true })
+    await writeFile(join(skillDirectory, "SKILL.md"), [
+      "---",
+      "name: project-only",
+      "description: Instructions owned by this project.",
+      "---",
+      "",
+      "# Project instructions",
+      "",
+    ].join("\n"))
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.project!.path = projectRoot
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agents: {},
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    })
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "skill.list", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      result: expect.arrayContaining([
+        expect.objectContaining({ name: "project-only", scope: "project", source: "domovoi" }),
+      ]),
+    })
+    socket.close()
+  })
+
   it("persists exact project skill reviews and audits the client", async () => {
     const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
     let currentSkill: SkillSummary = {
