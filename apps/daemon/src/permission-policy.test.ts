@@ -98,7 +98,6 @@ describe("permissionDecisionFor", () => {
     "cat environment.md",
     "cat src/env.ts",
     "cat docs/keys.md",
-    "pnpm test --env=jsdom",
     "grep -r hosts src",
   ])("does not hard-gate an ordinary mention of a secret-like word: %s", (command) => {
     expect(permissionDecisionFor({ runtime: runtime(true), command })).not.toEqual({
@@ -124,10 +123,18 @@ describe("permissionDecisionFor", () => {
     "npm run lint",
     "yarn typecheck",
     "bun run check",
-  ])("reviews a Build-auto package-manager script run: %s", (command) => {
+    "pnpm test --env=jsdom",
+    "pnpm --filter @example/app test",
+    "npm run --if-present test",
+    "pnpm test > /tmp/result",
+    "pnpm test < /tmp/input",
+    "pnpm test $(custom-helper)",
+    "pnpm test `custom-helper`",
+    "pnpm test\ncustom-helper",
+  ])("hard-gates a repository-controlled package script: %s", (command) => {
     expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
       action: "review",
-      risk: "normal",
+      risk: "hard-gate",
     })
   })
 
@@ -147,7 +154,7 @@ describe("permissionDecisionFor", () => {
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "normal" })
+      })).toEqual({ action: "review", risk: "hard-gate" })
     },
   )
 
@@ -171,15 +178,14 @@ describe("permissionDecisionFor", () => {
     ["pnpm test", { test: "vitest run $(cat secrets.txt)" }],
     ["pnpm test", { build: "vitest run" }],
     ["pnpm test", { test: "pnpm run test" }],
-    ["pnpm exec vitest", { test: "vitest run" }],
   ] as const)(
-    "reviews a Build-auto script that cannot be resolved to a bounded body: %s",
+    "hard-gates a Build-auto script that cannot be resolved to a bounded body: %s",
     (command, packageScripts) => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "normal" })
+      })).toEqual({ action: "review", risk: "hard-gate" })
     },
   )
 
@@ -196,7 +202,7 @@ describe("permissionDecisionFor", () => {
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "normal" })
+      })).toEqual({ action: "review", risk: "hard-gate" })
     },
   )
 
@@ -212,7 +218,7 @@ describe("permissionDecisionFor", () => {
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "normal" })
+      })).toEqual({ action: "review", risk: "hard-gate" })
     },
   )
 
@@ -226,7 +232,7 @@ describe("permissionDecisionFor", () => {
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "normal" })
+      })).toEqual({ action: "review", risk: "hard-gate" })
     },
   )
 
@@ -238,12 +244,17 @@ describe("permissionDecisionFor", () => {
     })).toEqual({ action: "review", risk: "hard-gate" })
   })
 
-  it("keeps a resolved script under review outside Build auto", () => {
+  it("keeps a resolved script hard-gated outside Build auto", () => {
     expect(permissionDecisionFor({
       runtime: runtimeMode("build", false),
       command: "pnpm test",
       packageScripts: { test: "vitest run" },
-    })).toEqual({ action: "review", risk: "normal" })
+    })).toEqual({ action: "review", risk: "hard-gate" })
+  })
+
+  it("keeps an explicit package-manager executable under normal review", () => {
+    expect(permissionDecisionFor({ runtime: runtime(true), command: "pnpm exec vitest" }))
+      .toEqual({ action: "review", risk: "normal" })
   })
 
   it.each([
@@ -302,11 +313,6 @@ describe("permissionDecisionFor", () => {
     "Edit",
     "Write",
     "apply_patch",
-    "pnpm test > /tmp/result",
-    "pnpm test < /tmp/input",
-    "pnpm test $(custom-helper)",
-    "pnpm test `custom-helper`",
-    "pnpm test\ncustom-helper",
     "rg AWS_SECRET_ACCESS_KEY ~",
     "grep token ~/.config/service/credentials",
     "ls ~",
@@ -322,10 +328,10 @@ describe("permissionDecisionFor", () => {
       .toEqual({ action: "review", risk: "normal" })
   })
 
-  it("keeps Build manual reviewable", () => {
+  it("keeps package scripts hard-gated in Build manual", () => {
     expect(permissionDecisionFor({ runtime: runtime(false), command: "pnpm test" })).toEqual({
       action: "review",
-      risk: "normal",
+      risk: "hard-gate",
     })
   })
 

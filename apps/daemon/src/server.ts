@@ -99,7 +99,6 @@ import {
   redactErrorDetail,
 } from "./rpc-errors.js"
 import { isFileToolCommand, permissionDecisionFor } from "./permission-policy.js"
-import { readPackageScripts } from "./package-scripts.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
@@ -4084,15 +4083,10 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
-      const buildAuto = session.runtime.permissionMode === "build" && session.runtime.auto
-      const packageScripts = buildAuto && event.command
-        ? readPackageScripts(event.cwd ?? session.workspacePath ?? project.path)
-        : undefined
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(event.command ? { command: event.command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
-        ...(packageScripts ? { packageScripts } : {}),
       })
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")

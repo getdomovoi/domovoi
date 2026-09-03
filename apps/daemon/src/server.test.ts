@@ -7712,6 +7712,14 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = workspacePath
     session.providerThreadId = "thread-script-resolution"
     delete session.activeTurnId
+    snapshot.approvalRules.push({
+      id: "rule-stale-package-script",
+      projectId: snapshot.project!.id,
+      operation: "Run project tests",
+      command: "pnpm test",
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    })
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
@@ -7793,7 +7801,7 @@ describe("DomovoiDaemon", () => {
             expect.objectContaining({
               providerRequestId: 31,
               command: "pnpm test",
-              risk: "normal",
+              risk: "hard-gate",
             }),
             expect.objectContaining({
               providerRequestId: 32,
@@ -7927,7 +7935,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             providerRequestId: 13,
             command: "pnpm test",
-            risk: "normal",
+            risk: "hard-gate",
           }),
         ]),
       },
