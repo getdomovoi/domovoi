@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { clientIdentityIdSchema, commitShaSchema, machineIdSchema } from "./identifiers.js"
 import { clientKindSchema, type SessionSummary } from "./schema.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
 import { transferStreamRefusalSchema } from "./transfer-stream.js"
@@ -96,11 +97,11 @@ export function planTransfer(input: {
 
 export const transferReceiptSchema = z.object({
   sessionId: z.string().min(1),
-  sourceMachineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
-  targetMachineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+  sourceMachineId: machineIdSchema,
+  targetMachineId: machineIdSchema,
   method: transferMethodSchema,
   checkpointId: z.string().min(1),
-  checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  checkpointCommit: commitShaSchema,
   // The source keeps its recovery checkpoint, so a transfer can always be
   // undone from the machine that sent it. A receipt cannot say otherwise.
   recoveryCheckpointRetained: z.literal(true),
@@ -114,7 +115,7 @@ export const transferReceiptSchema = z.object({
   ]).optional(),
   decidedBy: z.object({
     client: clientKindSchema,
-    clientId: z.string().trim().min(1).max(128).optional(),
+    clientId: clientIdentityIdSchema.optional(),
   }).strict(),
   startedAt: z.string().datetime({ offset: true }),
   completedAt: z.string().datetime({ offset: true }),
