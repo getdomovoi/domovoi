@@ -536,8 +536,16 @@ export function SessionRow({
   )
 }
 
+function machineInitials(name: string): string {
+  const words = name.split(/[^a-z0-9]+/i).filter((word) => word.length > 0)
+  const first = words[0]?.[0] ?? name[0] ?? ""
+  const last = words.length > 1 ? (words[words.length - 1]?.[0] ?? "") : (words[0]?.[1] ?? "")
+  return `${first}${last}`.toUpperCase()
+}
+
 export function SessionsSidebar({
   snapshot,
+  fleet,
   onCollapse,
   onActivate,
   onNewSession,
@@ -545,6 +553,7 @@ export function SessionsSidebar({
   collapseButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
+  fleet?: FleetMachine[] | null
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
@@ -607,8 +616,8 @@ export function SessionsSidebar({
       </ScrollArea>
       <Separator />
       <div className="flex h-12 items-center gap-2 px-3">
-        <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">DF</span>
-        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">phetzy</span><span className="block font-machine text-[9px] text-faint">1 machine · local</span></span>
+        <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">{machineInitials(snapshot.machine.name)}</span>
+        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">{snapshot.machine.name}</span><span className="block font-machine text-[9px] text-faint">{outcomeCount(fleet?.length ?? 1, "machine", "machines")} · {snapshot.machine.connection}</span></span>
         <LaptopIcon className="size-3.5 text-muted-foreground" />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -3355,7 +3364,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
