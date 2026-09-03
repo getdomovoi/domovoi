@@ -820,6 +820,22 @@ describe("workspace protocol", () => {
       prompt: "x".repeat(262_145),
       client: "desktop",
     }).success).toBe(false)
+    const explicitSkills = {
+      mode: "turn-explicit" as const,
+      skills: [{
+        skillId: "skill-111111111111",
+        review: {
+          contentDigest: `sha256:${"a".repeat(64)}`,
+          manifest: { version: 1 as const, capabilities: ["filesystem.read" as const] },
+        },
+      }],
+    }
+    expect(sessionSendParamsSchema.parse({
+      sessionId: "session-billing",
+      prompt: "Run the audit",
+      client: "desktop",
+      skillSelection: explicitSkills,
+    }).skillSelection).toEqual(explicitSkills)
     expect(sessionCreateParamsSchema.safeParse({
       title: "x".repeat(512),
       runtime,

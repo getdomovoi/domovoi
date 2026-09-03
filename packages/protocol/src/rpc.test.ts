@@ -23,6 +23,7 @@ import {
   rpcResponseSchema,
   systemEmergencyStopResultSchema,
   systemEmergencyStoppedNotificationSchema,
+  turnSkillSelectionErrorCode,
   sessionEvidenceSchema,
   sessionHistoryCategorySchema,
   sessionHistoryEntrySchema,
@@ -32,6 +33,10 @@ import {
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
+  it("reserves a structured error for refused turn skill selections", () => {
+    expect(turnSkillSelectionErrorCode).toBe(-32015)
+  })
+
   it("carries the authenticated connection on client audit actors", () => {
     const actor = {
       kind: "client",

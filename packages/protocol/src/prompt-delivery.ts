@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import {
+  maximumTurnSkillSelections,
   skillContentDigestSchema,
   skillIdSchema,
   skillSummarySchema,
@@ -11,7 +12,7 @@ import {
  * This is not a provider token-window guarantee; tokenization differs by model.
  */
 export const maximumProviderPromptCodeUnits = 262_144
-export const maximumDeliveredPromptSkills = 8
+export const maximumDeliveredPromptSkills = maximumTurnSkillSelections
 export const maximumPromptSkillSelections = 2_048
 
 const nonnegativeCountSchema = z.number().int().nonnegative()
