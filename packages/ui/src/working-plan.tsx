@@ -1,6 +1,10 @@
 import type { PendingWorkingPlanEdit, WorkingPlan, WorkingPlanStep } from "@getdomovoi/protocol"
 
+import { useState } from "react"
+
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "./lib/utils"
 
@@ -21,15 +25,37 @@ function pendingEditCopy(edit: PendingWorkingPlanEdit): string {
     : `Your edit did not apply because the plan changed underneath it. Submitted from ${edit.submittedBy.client}.`
 }
 
+export type WorkingPlanDraftStep = { id?: string, text: string }
+
 export function WorkingPlanCard({
   plan,
   running,
+  onEditPlan,
+  onDiscardEdit,
 }: {
   plan: WorkingPlan | undefined
   running: boolean
+  onEditPlan?: ((edit: {
+    basedOnStructureRevision: number
+    baseSteps: { id: string, text: string }[]
+    draftSteps: WorkingPlanDraftStep[]
+  }) => Promise<void>) | undefined
+  onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
 }) {
+  const [draft, setDraft] = useState<WorkingPlanDraftStep[] | null>(null)
   if (!plan) return null
   const stepCount = plan.steps.length
+  const baseSteps = plan.steps.map((step) => ({ id: step.id, text: step.text }))
+  const editing = draft !== null
+  const save = () => {
+    if (!draft || !onEditPlan) return
+    setDraft(null)
+    void onEditPlan({
+      basedOnStructureRevision: plan.structureRevision,
+      baseSteps,
+      draftSteps: draft.map((step) => step.id === undefined ? { text: step.text } : { id: step.id, text: step.text }),
+    })
+  }
 
   return (
     <section aria-label="Working plan" className="rounded-xl border bg-card">
@@ -40,7 +66,46 @@ export function WorkingPlanCard({
         <span className="font-machine text-[9.5px] text-faint">revision {plan.revision}</span>
       </div>
 
-      {stepCount === 0 ? (
+      {editing ? (
+        <div className="flex flex-col gap-2 px-3 py-3">
+          {draft.map((step, index) => (
+            <div key={step.id ?? `new-${index}`} className="flex items-center gap-1.5">
+              <Input
+                aria-label={`Step ${index + 1}`}
+                value={step.text}
+                onChange={(event) => setDraft(draft.map((candidate, position) => (
+                  position === index ? { ...candidate, text: event.target.value } : candidate
+                )))}
+              />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Move step ${index + 1} up`}
+                disabled={index === 0}
+                onClick={() => setDraft(draft.map((candidate, position) => (
+                  position === index - 1 ? draft[index]! : position === index ? draft[index - 1]! : candidate
+                )))}
+              >
+                ↑
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Remove step ${index + 1}`}
+                onClick={() => setDraft(draft.filter((_, position) => position !== index))}
+              >
+                ×
+              </Button>
+            </div>
+          ))}
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDraft([...draft, { text: "" }])}>Add step</Button>
+            <span className="flex-1" />
+            <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>Cancel</Button>
+            <Button variant="secondary" size="sm" onClick={save}>Save plan</Button>
+          </div>
+        </div>
+      ) : stepCount === 0 ? (
         <p className="m-0 px-3.5 py-3 text-[11.5px] leading-relaxed text-muted-foreground">
           No steps yet. The agent adds them as it plans, and you can write the first one yourself.
         </p>
@@ -114,6 +179,18 @@ export function WorkingPlanCard({
 
       <Separator />
       <div className="flex items-center gap-2 px-3.5 py-2.5">
+        {onEditPlan && !editing ? (
+          <Button variant="outline" size="sm" onClick={() => setDraft(baseSteps)}>Edit plan</Button>
+        ) : null}
+        {onDiscardEdit && plan.pendingEdit ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { void onDiscardEdit(plan.pendingEdit!.id) }}
+          >
+            Discard edit
+          </Button>
+        ) : null}
         <span className="flex-1" />
         {running ? (
           <span className="font-machine text-[9.5px] text-faint">pinned while running</span>
