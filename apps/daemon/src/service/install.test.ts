@@ -172,6 +172,16 @@ describe("removeService", () => {
     await removeService({ platform: "linux", home: "/home/dl" }, dependencies)
     expect(dependencies.remove).not.toHaveBeenCalled()
   })
+
+  it("keeps the unit when the service manager fails operationally", async () => {
+    const dependencies = effects({
+      run: vi.fn(async () => { throw new Error("Failed to connect to bus") }),
+    })
+
+    await expect(removeService({ platform: "linux", home: "/home/dl" }, dependencies))
+      .rejects.toThrow("Failed to connect to bus")
+    expect(dependencies.remove).not.toHaveBeenCalled()
+  })
 })
 
 describe("serviceStatus", () => {
@@ -214,6 +224,19 @@ describe("serviceStatus", () => {
       running: true,
       detail: "Domovoi daemon is running",
     })
+  })
+
+  it("reports an unavailable service manager instead of an inactive service", async () => {
+    const dependencies = effects({
+      capture: vi.fn(async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "Failed to connect to bus",
+      })),
+    })
+
+    await expect(serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies))
+      .rejects.toThrow("Failed to connect to bus")
   })
 })
 
