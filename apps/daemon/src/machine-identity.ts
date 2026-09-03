@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
-import { chmod, link, mkdir, open, readFile, rm, stat } from "node:fs/promises"
+import { constants as fsConstants } from "node:fs"
+import { chmod, copyFile, link, mkdir, open, readFile, rm, stat } from "node:fs/promises"
 import { dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -14,7 +15,9 @@ export const defaultMachineLabel = "domovoi-machine"
 
 const maximumLabelLength = 128
 const identityPollDelayMs = 5
+const publicationReadAttempts = 100
 export const defaultLockStalenessMs = 5_000
+const unsupportedHardLinkCodes = new Set(["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EPERM", "EXDEV"])
 
 export function normalizeMachineLabel(label: string): string {
   const trimmed = label.trim().slice(0, maximumLabelLength).trim()
@@ -53,8 +56,9 @@ async function readMachineIdentity(path: string): Promise<MachineIdentity | unde
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
     throw error
   }
-  // An empty file is an initialization that was interrupted before its content
-  // was published, not a corrupted identity, so it is safe to replace.
+  // An empty file is an interrupted initialization. It has to remain distinct
+  // from absence: deleting it automatically would let an overlapping publisher
+  // remove a complete identity that appeared after this read.
   if (!contents) return undefined
   return parseMachineIdentity(contents)
 }
@@ -62,6 +66,7 @@ async function readMachineIdentity(path: string): Promise<MachineIdentity | unde
 export async function publishMachineIdentity(
   path: string,
   identity: MachineIdentity,
+  hardLink: typeof link = link,
 ): Promise<MachineIdentity> {
   const temporaryPath = `${path}.${randomBytes(8).toString("hex")}.tmp`
   try {
@@ -72,32 +77,65 @@ export async function publishMachineIdentity(
     } finally {
       await handle.close()
     }
-    try {
-      // A hard link publishes the already-synced bytes without replacing an
-      // identity another start won first. Every overlapping publisher either
-      // creates this name or adopts the one that already owns it.
-      await link(temporaryPath, path)
-      return identity
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      const published = await readMachineIdentity(path)
-      if (published) return published
-      // An empty identity predates this claim and represents an interrupted
-      // initialization. The initialization lock serializes its replacement.
-      await rm(path, { force: true })
-      try {
-        await link(temporaryPath, path)
-        return identity
-      } catch (retryError) {
-        if ((retryError as NodeJS.ErrnoException).code !== "EEXIST") throw retryError
-        const concurrent = await readMachineIdentity(path)
-        if (concurrent) return concurrent
-        throw retryError
-      }
-    }
+    return await publishCompletedIdentity(temporaryPath, path, identity, hardLink)
   } finally {
     await rm(temporaryPath, { force: true })
   }
+}
+
+async function publishCompletedIdentity(
+  temporaryPath: string,
+  path: string,
+  identity: MachineIdentity,
+  hardLink: typeof link,
+): Promise<MachineIdentity> {
+  try {
+    // A hard link publishes the already-synced bytes without replacing an
+    // identity another start won first. Every overlapping publisher either
+    // creates this name or adopts the one that already owns it.
+    await hardLink(temporaryPath, path)
+    return identity
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "EEXIST") return await adoptPublishedIdentity(path)
+    if (!code || !unsupportedHardLinkCodes.has(code)) {
+      throw publicationError(path, code, error)
+    }
+  }
+
+  try {
+    // Exclusive copy keeps the same no-clobber rule on filesystems that do not
+    // support hard links. A loser may briefly observe an incomplete copy, so
+    // adoption polls for the complete identity below.
+    await copyFile(temporaryPath, path, fsConstants.COPYFILE_EXCL)
+    return identity
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "EEXIST") return await adoptPublishedIdentity(path)
+    throw publicationError(path, code, error)
+  }
+}
+
+async function adoptPublishedIdentity(path: string): Promise<MachineIdentity> {
+  for (let attempt = 0; attempt < publicationReadAttempts; attempt += 1) {
+    try {
+      const identity = await readMachineIdentity(path)
+      if (identity) return identity
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "Machine identity is malformed") throw error
+    }
+    await delay(identityPollDelayMs)
+  }
+  throw new Error(
+    `Machine identity at ${path} exists without a complete identity. Remove it explicitly before restarting Domovoi.`,
+  )
+}
+
+function publicationError(path: string, code: string | undefined, cause: unknown): Error {
+  return new Error(
+    `Machine identity filesystem cannot publish without replacing an existing identity at ${path}${code ? ` (${code})` : ""}`,
+    { cause },
+  )
 }
 
 async function claimInitialization(lockPath: string): Promise<boolean> {
