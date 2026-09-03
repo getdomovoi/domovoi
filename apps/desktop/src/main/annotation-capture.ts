@@ -9,7 +9,7 @@ type CapturedImage = {
 
 type CaptureRect = { x: number; y: number; width: number; height: number }
 
-type CaptureTarget = {
+export type CaptureTarget = {
   capturePage(rect: CaptureRect): Promise<CapturedImage>
 }
 

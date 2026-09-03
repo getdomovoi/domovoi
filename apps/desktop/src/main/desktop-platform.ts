@@ -10,7 +10,7 @@ export type DesktopFileSystem = {
   }>
 }
 
-type OpenDirectoryDialog = {
+export type OpenDirectoryDialog = {
   showOpenDirectory(): Promise<{ canceled: boolean; filePaths: string[] }>
 }
 
