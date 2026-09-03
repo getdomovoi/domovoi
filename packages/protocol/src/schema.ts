@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
+
 import {
   annotationStatusSchema,
   clientIdentityIdSchema,
@@ -187,9 +189,17 @@ export const approvalRequestSchema = z.object({
   checkpoint: z.string().min(1),
   providerRequestId: z.number().int().nonnegative().optional(),
   requestedAt: z.string().datetime(),
+  execution: executionResolutionSchema,
+  reapproval: z.object({
+    reason: z.literal("legacy-text-only"),
+    inactiveRuleIds: z.array(z.string().min(1)).min(1).max(128).refine(
+      (ids) => new Set(ids).size === ids.length,
+      "Inactive rule IDs must be unique",
+    ),
+  }).strict().optional(),
 })
 
-export const approvalRuleSchema = z.object({
+const approvalRuleCommonFields = {
   id: z.string().min(1),
   projectId: z.string().min(1),
   operation: z.string().min(1),
@@ -198,7 +208,22 @@ export const approvalRuleSchema = z.object({
   createdByConnectionId: connectionIdSchema.optional(),
   createdByClientId: clientIdentityIdSchema.optional(),
   createdAt: z.string().datetime(),
-})
+} as const
+
+export const approvalRuleSchema = z.discriminatedUnion("status", [
+  z.object({
+    ...approvalRuleCommonFields,
+    status: z.literal("active"),
+    execution: resolvedExecutionSchema,
+  }).strict(),
+  z.object({
+    ...approvalRuleCommonFields,
+    status: z.literal("inactive"),
+    inactiveReason: z.enum(["legacy-text-only", "unsupported-record-version"]),
+    inactivatedAt: z.string().datetime(),
+    replacedByRuleId: z.string().min(1).optional(),
+  }).strict(),
+])
 
 export const threadItemSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -484,6 +509,7 @@ export const workspaceSnapshotSchema = z.object({
       path: ["activeSessionId"],
     })
   }
+  const approvalRulesById = new Map(snapshot.approvalRules.map((rule) => [rule.id, rule]))
   snapshot.approvals.forEach((approval, index) => {
     if (!sessionIds.has(approval.sessionId)) {
       context.addIssue({
@@ -492,6 +518,16 @@ export const workspaceSnapshotSchema = z.object({
         path: ["approvals", index, "sessionId"],
       })
     }
+    approval.reapproval?.inactiveRuleIds.forEach((ruleId, ruleIndex) => {
+      const rule = approvalRulesById.get(ruleId)
+      if (rule?.status !== "inactive" || rule.inactiveReason !== approval.reapproval?.reason) {
+        context.addIssue({
+          code: "custom",
+          message: "Reapproval must reference an inactive rule with the same reason",
+          path: ["approvals", index, "reapproval", "inactiveRuleIds", ruleIndex],
+        })
+      }
+    })
   })
   snapshot.approvalRules.forEach((rule, index) => {
     if (rule.projectId !== project.id) {
@@ -500,6 +536,16 @@ export const workspaceSnapshotSchema = z.object({
         message: "Approval rule must reference the workspace project",
         path: ["approvalRules", index, "projectId"],
       })
+    }
+    if (rule.status === "inactive" && rule.replacedByRuleId !== undefined) {
+      const replacement = approvalRulesById.get(rule.replacedByRuleId)
+      if (replacement?.status !== "active" || replacement.projectId !== rule.projectId) {
+        context.addIssue({
+          code: "custom",
+          message: "Inactive rule replacement must reference an active rule in the same project",
+          path: ["approvalRules", index, "replacedByRuleId"],
+        })
+      }
     }
   })
   snapshot.thread.forEach((item, index) => {
