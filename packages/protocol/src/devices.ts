@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { clientKindSchema } from "./schema.js"
+import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 
 export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
@@ -10,7 +10,7 @@ export const deviceLabelSchema = z.string().trim().min(1).max(maximumPairedDevic
 
 // Credentials are returned once at pairing and never described anywhere else,
 // so every device shape below is strict.
-export const deviceCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+export const deviceCredentialSchema = credentialSchema
 
 export const pairedDeviceSchema = z.object({
   id: deviceIdSchema,
@@ -49,15 +49,15 @@ export const deviceIssueCodeResultSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 }).strict()
 
-export const machineCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+export const machineCredentialSchema = credentialSchema
 
 export const deviceSaveCredentialParamsSchema = z.object({
-  machineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+  machineId: machineIdSchema,
   credential: machineCredentialSchema,
 }).strict()
 
 export const deviceMachineCredentialParamsSchema = z.object({
-  machineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+  machineId: machineIdSchema,
 }).strict()
 
 export const deviceMachineCredentialResultSchema = z.object({
