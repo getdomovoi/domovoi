@@ -1,9 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
+import type { Readable } from "node:stream"
 
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./agents.js"
+import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 export type { AgentAdapter, AgentEvent } from "./agents.js"
@@ -39,6 +41,8 @@ type PendingRequest = {
   resolve(value: unknown): void
   reject(error: Error): void
 }
+
+const STDERR_TAIL_BYTES = 16_384
 
 export function codexPolicyFor(runtime: Runtime, cwd: string): CodexPolicy {
   if (runtime.permissionMode === "ask") {
@@ -81,7 +85,7 @@ export class StdioCodexTransport implements CodexTransport {
   ), shutdownGraceMs = 2_000) {
     this.#child = childFactory()
     this.#shutdownGraceMs = shutdownGraceMs
-    this.#child.stderr.resume()
+    const stderrTail = captureStderrTail(this.#child.stderr)
     const lines = createInterface({ input: this.#child.stdout })
     lines.on("line", (line) => {
       try {
@@ -97,10 +101,11 @@ export class StdioCodexTransport implements CodexTransport {
     this.#child.stderr.on("error", (error) => this.#emitError(error))
     this.#child.once("exit", (code, signal) => {
       if (this.#closing) return
-      const reason = code !== null
+      const exit = code !== null
         ? `Codex app-server exited with code ${code}`
         : `Codex app-server exited from signal ${signal ?? "unknown"}`
-      this.#emitError(new Error(reason))
+      const stderr = redactDurableText(stderrTail()).value
+      this.#emitError(new Error(stderr ? `${exit}: ${stderr}` : exit))
     })
     this.#child.once("close", () => {
       this.#closed = true
@@ -466,6 +471,15 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
+}
+
+function captureStderrTail(stream: Readable): () => string {
+  let tail = Buffer.alloc(0)
+  stream.on("data", (chunk: Buffer) => {
+    tail = Buffer.concat([tail, chunk])
+    if (tail.length > STDERR_TAIL_BYTES) tail = tail.subarray(tail.length - STDERR_TAIL_BYTES)
+  })
+  return () => tail.toString("utf8").trim()
 }
 
 type CodexModel = {
