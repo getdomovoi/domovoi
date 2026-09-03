@@ -3,43 +3,65 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
+import type { WorkspaceSurface } from "./workspace-persistence.js"
 import { WorkspaceRail } from "./workspace-rail.js"
 
 afterEach(cleanup)
 
 function railProps() {
   return {
-    surface: "workspace" as const,
+    surface: "workspace" as WorkspaceSurface,
+    dockTab: "changes",
     machineName: "macbook-pro-m3",
     onSelectSurface: vi.fn(),
+    onSelectDockTab: vi.fn(),
   }
 }
 
-it("switches between every section from one permanent rail", async () => {
-  const props = railProps()
+function renderRail(overrides: Partial<ReturnType<typeof railProps>> = {}) {
+  const props = { ...railProps(), ...overrides }
   render(<TooltipProvider><WorkspaceRail {...props} /></TooltipProvider>)
+  return props
+}
 
-  for (const [name, surface] of [
-    ["Sessions", "workspace"],
-    ["Fleet", "fleet"],
-    ["Skills", "skills"],
-    ["Audit log", "audit"],
-    ["Settings", "providers"],
-  ] as const) {
+it("opens the workspace panes the design system puts on the rail", async () => {
+  const props = renderRail()
+
+  for (const [name, tab] of [["Changes", "changes"], ["Terminal", "terminal"], ["Preview", "preview"]] as const) {
     await userEvent.click(screen.getByRole("button", { name }))
-    expect(props.onSelectSurface).toHaveBeenCalledWith(surface)
+    expect(props.onSelectDockTab).toHaveBeenCalledWith(tab)
   }
+  expect(props.onSelectSurface).toHaveBeenCalledWith("workspace")
 })
 
-it("marks the open section for assistive technology", () => {
-  render(<TooltipProvider><WorkspaceRail {...railProps()} surface="skills" /></TooltipProvider>)
+it("returns to the sessions workspace without touching the open pane", async () => {
+  const props = renderRail({ surface: "skills" })
 
-  expect(screen.getByRole("button", { name: "Skills" }).getAttribute("aria-current")).toBe("page")
-  expect(screen.getByRole("button", { name: "Sessions" }).getAttribute("aria-current")).toBeNull()
+  await userEvent.click(screen.getByRole("button", { name: "Sessions" }))
+
+  expect(props.onSelectSurface).toHaveBeenCalledWith("workspace")
+  expect(props.onSelectDockTab).not.toHaveBeenCalled()
+})
+
+it("opens settings from the rail", async () => {
+  const props = renderRail()
+
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }))
+
+  expect(props.onSelectSurface).toHaveBeenCalledWith("providers")
+})
+
+it("marks the open pane, and marks none while another section is open", () => {
+  renderRail({ dockTab: "terminal" })
+  expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-current")).toBe("page")
+
+  cleanup()
+  renderRail({ surface: "skills", dockTab: "terminal" })
+  expect(screen.getByRole("button", { name: "Terminal" }).getAttribute("aria-current")).toBeNull()
 })
 
 it("names the machine behind the account avatar", () => {
-  render(<TooltipProvider><WorkspaceRail {...railProps()} /></TooltipProvider>)
+  renderRail()
 
   expect(screen.getByLabelText("Signed in on macbook-pro-m3")).toBeTruthy()
 })
