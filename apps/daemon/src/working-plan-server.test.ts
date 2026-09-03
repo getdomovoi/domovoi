@@ -1,0 +1,226 @@
+import WebSocket from "ws"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import {
+  demoWorkspace,
+  type RpcMethod,
+  type RpcResult,
+} from "@getdomovoi/protocol"
+
+import type { AuditLog } from "./audit-log.js"
+import { DomovoiDaemon } from "./server.js"
+import type { WorkspaceStore } from "./store.js"
+
+const running: DomovoiDaemon[] = []
+
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
+})
+
+function auditLog() {
+  const append = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
+    id: `audit-plan-${append.mock.calls.length}`,
+    occurredAt: "2026-09-03T20:00:00.000Z",
+    ...input,
+  }))
+  return {
+    append,
+    log: {
+      append,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn(() => ({
+        format: "jsonl" as const,
+        exportedAt: "2026-09-03T20:00:00.000Z",
+        content: "",
+        entryCount: 0,
+        hasMore: false,
+      })),
+    } satisfies AuditLog,
+  }
+}
+
+async function startedDaemon(snapshot: typeof demoWorkspace) {
+  let durable = structuredClone(snapshot)
+  const store = {
+    load: () => structuredClone(durable),
+    save: vi.fn((next: typeof snapshot) => { durable = structuredClone(next) }),
+    close: vi.fn(),
+  } satisfies WorkspaceStore
+  const audit = auditLog()
+  const daemon = new DomovoiDaemon({ port: 0, store, agents: {}, auditLog: audit.log })
+  running.push(daemon)
+  const address = await daemon.start()
+  const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+    headers: { authorization: `Bearer ${daemon.authToken}` },
+  })
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve)
+    socket.once("error", reject)
+  })
+  let nextId = 0
+  const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+    const id = ++nextId
+    return new Promise<Record<string, unknown> & { result: RpcResult<M> }>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown> & {
+          id?: number
+          result: RpcResult<M>
+        }
+        if (message.id !== id) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+    })
+  }
+  const hello = await rpc("system.hello", {
+    client: "desktop",
+    clientId: "desktop-plan-test",
+    clientVersion: "0.0.1",
+    protocolVersion: "0.1.0",
+  })
+  return {
+    daemon,
+    socket,
+    rpc,
+    audit: audit.append,
+    connectionId: (hello.result as typeof hello.result & { connectionId: string }).connectionId,
+    durable: () => durable,
+  }
+}
+
+describe("working plan RPC", () => {
+  it("persists an attributed idle edit after redaction and updates only the derived plan", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = [{
+      sessionId: session.id,
+      revision: 1,
+      structureRevision: 1,
+      steps: [{ id: "step-existing", text: "Inspect", status: "completed" }],
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:00:00.000Z",
+    }]
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.artifacts.push({
+      id: `plan-${session.id}-turn-old`,
+      sessionId: session.id,
+      title: "Old plan",
+      type: "plan",
+      revision: 2,
+      mimeType: "text/markdown",
+      content: "Old plan",
+    })
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    snapshot.annotations.push({
+      id: "annotation-working-plan",
+      sessionId: session.id,
+      artifactId: `plan-${session.id}-turn-old`,
+      anchor: { textQuote: "Old plan" },
+      body: "Preserve this review",
+      status: "open",
+      origin: "desktop",
+      thread: [],
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:00:00.000Z",
+    })
+    const context = await startedDaemon(snapshot)
+    const response = await context.rpc("plan.edit", {
+      sessionId: session.id,
+      basedOnStructureRevision: 1,
+      baseSteps: [{ id: "step-existing", text: "Inspect" }],
+      draftSteps: [
+        { id: "step-existing", text: "Inspect carefully" },
+        { text: "Run TOKEN=client-plan-secret" },
+      ],
+      client: "desktop",
+    })
+
+    expect(response).not.toHaveProperty("error")
+    expect(response.result.receipt).toMatchObject({
+      disposition: "applied",
+      client: "desktop",
+      clientId: "desktop-plan-test",
+      connectionId: context.connectionId,
+      basedOnStructureRevision: 1,
+      structureRevision: 2,
+    })
+    const plan = response.result.snapshot.workingPlans.find(
+      (candidate) => candidate.sessionId === session.id,
+    )!
+    expect(plan.steps).toEqual([
+      { id: "step-existing", text: "Inspect carefully", status: "completed" },
+      expect.objectContaining({ text: "Run TOKEN=[REDACTED]", status: "pending" }),
+    ])
+    const artifact = response.result.snapshot.artifacts.find(
+      (candidate) => candidate.id === `plan-${session.id}`,
+    )!
+    expect(artifact.content).toContain("Run TOKEN=[REDACTED]")
+    expect(artifact.content).not.toMatch(/completed|pending/)
+    expect(response.result.snapshot.annotations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "annotation-working-plan",
+        artifactId: `plan-${session.id}`,
+      }),
+    ]))
+    expect(JSON.stringify(context.durable())).not.toContain("client-plan-secret")
+    expect(context.audit).toHaveBeenCalledWith(expect.objectContaining({
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "desktop-plan-test",
+        connectionId: context.connectionId,
+      },
+      action: "plan.edit",
+      target: response.result.receipt.editId,
+      detail: expect.stringContaining("disposition=applied"),
+    }))
+    expect(JSON.stringify(context.audit.mock.calls)).not.toContain("client-plan-secret")
+    context.socket.close()
+  })
+
+  it("keeps a first edit queued while waiting and discards only by its id", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[1]!
+    session.state = "waiting"
+    snapshot.workingPlans = snapshot.workingPlans.filter((plan) => plan.sessionId !== session.id)
+    const context = await startedDaemon(snapshot)
+    const queued = await context.rpc("plan.edit", {
+      sessionId: session.id,
+      basedOnStructureRevision: 0,
+      baseSteps: [],
+      draftSteps: [{ text: "Inspect the empty state" }],
+      client: "desktop",
+    })
+
+    expect(queued.result.receipt.disposition).toBe("queued")
+    expect(queued.result.snapshot.workingPlans.find(
+      (plan) => plan.sessionId === session.id,
+    )).toMatchObject({
+      structureRevision: 0,
+      steps: [],
+      pendingEdit: {
+        id: queued.result.receipt.editId,
+        status: "queued",
+        draftSteps: [expect.objectContaining({ text: "Inspect the empty state" })],
+      },
+    })
+
+    const discarded = await context.rpc("plan.discardEdit", {
+      sessionId: session.id,
+      editId: queued.result.receipt.editId,
+      client: "desktop",
+    })
+    expect(discarded.result.receipt.disposition).toBe("discarded")
+    expect(discarded.result.snapshot.workingPlans.find(
+      (plan) => plan.sessionId === session.id,
+    )?.pendingEdit).toBeUndefined()
+    context.socket.close()
+  })
+})
