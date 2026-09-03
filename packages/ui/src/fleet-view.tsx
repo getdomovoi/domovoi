@@ -64,12 +64,14 @@ function MachineCard({
   machine,
   sessionCount,
   inUse,
+  connected,
   onUse,
   onOpenTerminal,
 }: {
   machine: FleetMachine
   sessionCount: number | undefined
   inUse: boolean
+  connected: boolean
   onUse?: ((machineId: string) => void) | undefined
   onOpenTerminal?: ((machineId: string) => void) | undefined
 }) {
@@ -84,7 +86,7 @@ function MachineCard({
           {inUse ? (
             <span className="font-machine text-[10px] text-faint">In use</span>
           ) : onUse ? (
-            <Button variant="outline" size="sm" aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
+            <Button variant="outline" size="sm" disabled={!connected} aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
               Use
             </Button>
           ) : null}
@@ -92,6 +94,7 @@ function MachineCard({
             <Button
               variant="outline"
               size="sm"
+              disabled={!connected}
               aria-label={`Terminal on ${machine.label}`}
               onClick={() => onOpenTerminal(machine.id)}
             >
@@ -277,6 +280,7 @@ export function FleetView({
                 machine={machine}
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
                 inUse={machine.id === currentMachineId}
+                connected={connected}
                 {...(onUseMachine ? { onUse: onUseMachine } : {})}
                 {...(onOpenMachineTerminal ? { onOpenTerminal: onOpenMachineTerminal } : {})}
               />

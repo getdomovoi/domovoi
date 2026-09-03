@@ -2679,6 +2679,7 @@ export function ArtifactDock({
                 <WorkingPlanCard
                   plan={workingPlan}
                   running={planRunning}
+                  readOnly={archiveReadOnly}
                   {...(onEditPlan ? { onEditPlan } : {})}
                   {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
                 />
