@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { agentPromptWithHandoff } from "./handoff-context.js"
+import { agentPromptWithHandoff, prepareHandoffPrompt } from "./handoff-context.js"
 
 describe("agentPromptWithHandoff", () => {
   it("adds bounded, parseable state to the first post-handoff turn", () => {
@@ -42,5 +42,31 @@ describe("agentPromptWithHandoff", () => {
       "session-billing",
       "Next request",
     )).toBe("Next request")
+  })
+
+  it("reports history compacted from the required handoff", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread = [
+      ...Array.from({ length: 45 }, (_, index) => ({
+        id: `history-${index}`,
+        sessionId: "session-billing",
+        kind: "assistant" as const,
+        body: `History ${index}`,
+        createdAt: "2026-09-03T12:00:00.000Z",
+      })),
+      {
+        id: "handoff-history-limit",
+        sessionId: "session-billing",
+        kind: "system" as const,
+        body: "Handed off codex to claude-code.",
+        createdAt: "2026-09-03T13:00:00.000Z",
+      },
+    ]
+
+    expect(prepareHandoffPrompt(snapshot, "session-billing", "Continue").delivery)
+      .toEqual({
+        status: "delivered",
+        omitted: { threadItems: 5, artifacts: 0, annotations: 0 },
+      })
   })
 })
