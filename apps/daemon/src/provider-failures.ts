@@ -5,16 +5,16 @@ export type ProviderFailureAction = ProviderFailure["action"]
 
 export function classifyProviderFailure(error: unknown): ProviderFailure {
   const detail = error instanceof Error ? error.message : ""
-  if (/\b401\b|unauthenticated|not logged|login required|token expired|authentication expired/i.test(detail)) {
+  if (/\b401\b|unauthenticated|not logged|login required|token expired|authentication[_ -]?(?:expired|failed)/i.test(detail)) {
     return failure("authentication-expired", "sign-in", "Provider authentication expired", false)
   }
-  if (/insufficient[_ -]?quota|quota exhausted|billing quota/i.test(detail)) {
+  if (/insufficient[_ -]?quota|quota exhausted|billing[_ -]?(?:quota|error)|out of (?:usage )?credits|out of usage.+add funds/i.test(detail)) {
     return failure("quota-exhausted", "check-quota", "Provider quota is exhausted", false)
   }
-  if (/\b429\b|rate limit|too many requests/i.test(detail)) {
+  if (/\b429\b|rate[_ -]?limit|too many requests|you(?:'ve| have) (?:hit|reached) your(?: [\w-]+){0,4} limit/i.test(detail)) {
     return failure("rate-limit", "retry", "Provider rate limit reached", true)
   }
-  if (/model.+(?:not found|unavailable|unsupported)|unknown model/i.test(detail)) {
+  if (/model.+(?:not[_ -]?found|unavailable|unsupported)|unknown[_ -]?model|(?:do not|don't|does not|doesn't|not) have access to (?:the )?model/i.test(detail)) {
     return failure("model-unavailable", "change-model", "Selected model is unavailable", false)
   }
   if (/ECONN|EPIPE|socket|connection (?:closed|reset)|transport/i.test(detail)) {
