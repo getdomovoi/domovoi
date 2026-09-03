@@ -588,6 +588,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("provider.secret.list", {})
   }
 
+  sessionUsage(sessionId: string): Promise<RpcResult<"session.usage">> {
+    return this.request("session.usage", { sessionId })
+  }
+
   listSkills(): Promise<SkillSummary[]> {
     return this.request("skill.list", {})
   }

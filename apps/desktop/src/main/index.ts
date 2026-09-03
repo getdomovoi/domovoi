@@ -1,5 +1,5 @@
 import { homedir } from "node:os"
-import { appendFileSync } from "node:fs"
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { randomBytes } from "node:crypto"
@@ -23,6 +23,14 @@ import {
   type DesktopPlatform,
 } from "./desktop-platform.js"
 import {
+  isWindowDecoration,
+  readWindowDecoration,
+  serializeWindowDecoration,
+  windowDecorationFileName,
+  windowFrameOptions,
+  type WindowDecoration,
+} from "./window-decoration.js"
+import {
   DesktopDeepLinkQueue,
   deepLinksFromArgv,
   parseDomovoiDeepLink,
@@ -35,6 +43,7 @@ if (process.platform !== "darwin" && process.platform !== "linux" && process.pla
 
 let mainWindow: BrowserWindow | undefined
 let mainRendererTarget: RendererTarget | undefined
+let activeWindowDecoration: WindowDecoration = "domovoi"
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
@@ -92,6 +101,23 @@ async function ensureDaemon(): Promise<void> {
   await ownedDaemon.start(daemon)
 }
 
+function windowDecorationPath(): string {
+  return join(app.getPath("userData"), windowDecorationFileName)
+}
+
+function storedWindowDecoration(): WindowDecoration {
+  return readWindowDecoration(() => readFileSync(windowDecorationPath(), "utf8"))
+}
+
+function persistWindowDecoration(decoration: WindowDecoration): boolean {
+  try {
+    writeFileSync(windowDecorationPath(), serializeWindowDecoration(decoration), { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
 function focusMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
@@ -114,16 +140,14 @@ function authorizedDesktopSender(event: DesktopIpcEvent): boolean {
 }
 
 function createWindow(): void {
-  const isMac = process.platform === "darwin"
+  activeWindowDecoration = storedWindowDecoration()
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 920,
     minWidth: 860,
     minHeight: 620,
     backgroundColor: "#19191b",
-    frame: isMac,
-    titleBarStyle: isMac ? "hiddenInset" : "hidden",
-    ...(isMac ? { trafficLightPosition: { x: 16, y: 14 } } : {}),
+    ...windowFrameOptions(activeWindowDecoration, process.platform),
     show: false,
     webPreferences: {
       additionalArguments: launchSmoke ? ["--domovoi-launch-smoke"] : [],
@@ -179,6 +203,16 @@ function createWindow(): void {
     void mainWindow.loadFile(mainRendererTarget.path)
   }
 }
+
+ipcMain.handle("domovoi:window-decoration-get", (event) => {
+  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
+  return activeWindowDecoration
+})
+ipcMain.handle("domovoi:window-decoration-set", (event, decoration: unknown) => {
+  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
+  if (!isWindowDecoration(decoration)) throw new Error("Window decoration is invalid")
+  return persistWindowDecoration(decoration)
+})
 
 registerDesktopIpc(ipcMain, {
   authorized: authorizedDesktopSender,

@@ -51,6 +51,7 @@ import type {
   SessionTransferResult,
   SkillSummary,
   SkillInventorySource,
+  SessionUsage,
   SystemEmergencyStopResult,
   ThreadItem,
   WorkspaceSnapshot,
@@ -151,6 +152,12 @@ import {
 } from "./preview-bridge"
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
+import {
+  formatTokenCount,
+  sessionUsageCostNote,
+  sessionUsageFetchKey,
+  sessionUsageReportedCost,
+} from "./session-usage"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
@@ -206,6 +213,7 @@ import {
   CommandPalette,
   type CommandPalettePlatform,
 } from "./command-palette"
+import { useAppearanceTheme, type WorkspaceTheme } from "./appearance"
 import { PromptEditorDialog } from "./prompt-editor"
 import { WorkspaceNotificationTracker } from "./desktop-notifications"
 import {
@@ -216,6 +224,7 @@ import {
   openProjectFromDesktop,
   type DesktopExternalEditor,
   type DesktopWindowBridge,
+  type WorkspaceWindowDecoration,
 } from "./desktop-platform"
 
 const TerminalPane = lazy(async () => {
@@ -405,6 +414,7 @@ export function AppBar({
   emergencyStopOutcome,
   emergencyStopError,
   bridge,
+  windowDecoration = "domovoi",
   onOpenProject,
   onPauseAll,
   onOpenCommands,
@@ -416,11 +426,13 @@ export function AppBar({
   emergencyStopOutcome: SystemEmergencyStopResult | null
   emergencyStopError: string | null
   bridge?: DesktopWindowBridge | undefined
+  windowDecoration?: WorkspaceWindowDecoration | undefined
   onOpenProject: () => void
   onPauseAll: () => void
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
 }) {
+  const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
     ? `Pause all failed: ${emergencyStopError}`
     : emergencyStopOutcome
@@ -428,7 +440,7 @@ export function AppBar({
       : null
   return (
     <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
-      {bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
+      {ownsDecoration && bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
@@ -479,8 +491,70 @@ export function AppBar({
           </span>
         ) : null}
       </div>
-      {bridge ? <WindowControls bridge={bridge} /> : null}
+      {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
+  )
+}
+
+export function SessionUsageSummary({ usage }: { usage: SessionUsage | null }) {
+  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
+  const cost = sessionUsageReportedCost(usage)
+  const note = sessionUsageCostNote(usage)
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" className="font-machine text-[10px] text-faint">
+          {formatTokenCount(usage.totalTokens)} tokens
+          <span aria-hidden="true">·</span>
+          {cost ?? "cost unavailable"}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-[320px]">
+        <DropdownMenuLabel>Session usage</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Input</span>
+            <span className="font-machine">{formatTokenCount(usage.inputTokens)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Cached input</span>
+            <span className="font-machine">{formatTokenCount(usage.cachedInputTokens)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Output</span>
+            <span className="font-machine">{formatTokenCount(usage.outputTokens)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Reasoning</span>
+            <span className="font-machine">{formatTokenCount(usage.reasoningTokens)}</span>
+          </div>
+        </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>By provider and model</DropdownMenuLabel>
+        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
+          {usage.byRuntime.length === 0 ? (
+            <span className="text-muted-foreground">No recorded turns yet.</span>
+          ) : usage.byRuntime.map((runtime) => (
+            <div key={`${runtime.provider}/${runtime.model}`} className="flex items-start justify-between gap-3">
+              <span className="flex min-w-0 flex-col">
+                <span className="font-medium">{providerDisplayName(runtime.provider)}</span>
+                <span className="truncate font-machine text-[9.5px] text-faint">{runtime.model}</span>
+              </span>
+              <span className="flex shrink-0 flex-col items-end font-machine text-[9.5px]">
+                <span>{formatTokenCount(runtime.totalTokens)} tokens</span>
+                <span className="text-faint">{runtime.turns === 1 ? "1 turn" : `${runtime.turns} turns`}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+        {note ? <>
+          <DropdownMenuSeparator />
+          <p className="m-0 px-2 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">{note}</p>
+        </> : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1166,6 +1240,7 @@ export function Thread({
   onSelectMachine,
   onTransferSession,
   externalEditor = "system",
+  usage = null,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -1194,6 +1269,7 @@ export function Thread({
     params: Omit<SessionTransferParams, "client">,
   ) => Promise<SessionTransferResult>) | undefined
   externalEditor?: DesktopExternalEditor | undefined
+  usage?: SessionUsage | null | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -1400,6 +1476,7 @@ export function Thread({
             <span>{active.changedFiles} files</span>
             <span className="text-success">{active.testsPassed} pass</span>
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
+            <SessionUsageSummary usage={usage} />
           </div>
         </div>
         {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : (
@@ -2916,6 +2993,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     rotateDevice,
     reviewSkill,
     sendMessage,
+    sessionUsage,
     setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
@@ -3026,7 +3104,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       error: "",
     }
   })
-  const { dockCollapsed, externalEditor, layouts, sidebarCollapsed, surface } = workspaceUi
+  const {
+    dockCollapsed,
+    externalEditor,
+    layouts,
+    sidebarCollapsed,
+    surface,
+    theme,
+    windowDecoration,
+  } = workspaceUi
+  const [activeWindowDecoration, setActiveWindowDecoration] = useState<WorkspaceWindowDecoration>("domovoi")
+  useAppearanceTheme(theme)
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
   const setSidebarCollapsed = (collapsed: boolean) => {
@@ -3047,6 +3135,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       restoreFocusAfterUpdate(collapsed ? dockExpandButtonRef : dockCollapseButtonRef)
     }
   }
+  const changeWindowDecoration = (decoration: WorkspaceWindowDecoration) => {
+    setWorkspaceUi((current) => ({ ...current, windowDecoration: decoration }))
+    if (!windowBridge) return
+    setWorkspaceError("")
+    void windowBridge.setWindowDecoration(decoration).then((saved) => {
+      if (!saved) setWorkspaceError("The window decoration preference could not be saved")
+    }, (cause: unknown) => {
+      setWorkspaceError(
+        cause instanceof Error ? cause.message : "The window decoration preference could not be saved",
+      )
+    })
+  }
   const setSurface = (nextSurface: WorkspaceSurface) => {
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
@@ -3061,6 +3161,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
@@ -3246,12 +3347,37 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setSurface("skills")
     },
   })
+  const usageSessionId = snapshot?.activeSessionId ?? null
+  const usageFetchKey = sessionUsageFetchKey(snapshot)
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
   useEffect(() => {
     notificationTrackerRef.current = new WorkspaceNotificationTracker()
   }, [clientKind, rpcUrl])
+
+  useEffect(() => {
+    if (!windowBridge) return
+    let active = true
+    void windowBridge.getWindowDecoration().then((decoration) => {
+      if (active) setActiveWindowDecoration(decoration)
+    }, () => {})
+    return () => { active = false }
+  }, [windowBridge])
+
+  useEffect(() => {
+    if (!connected || !usageFetchKey || !usageSessionId) {
+      setActiveSessionUsage(null)
+      return
+    }
+    let active = true
+    void sessionUsage(usageSessionId).then((next) => {
+      if (active) setActiveSessionUsage(next)
+    }, () => {
+      if (active) setActiveSessionUsage(null)
+    })
+    return () => { active = false }
+  }, [connected, sessionUsage, usageFetchKey, usageSessionId])
 
   useEffect(() => {
     if (!firstRunEnabled || !snapshot) return
@@ -3454,7 +3580,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
@@ -3472,12 +3598,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
+            theme={theme}
+            onThemeChange={(next: WorkspaceTheme) => {
+              setWorkspaceUi((current) => ({ ...current, theme: next }))
+            }}
             {...(firstRunEnabled ? { onResetFirstRun: resetFirstRun } : {})}
             {...(windowBridge ? {
               externalEditor,
               onExternalEditorChange: (editor: DesktopExternalEditor) => {
                 setWorkspaceUi((current) => ({ ...current, externalEditor: editor }))
               },
+            } : {})}
+            {...(windowBridge ? {
+              windowDecoration,
+              activeWindowDecoration,
+              onWindowDecorationChange: changeWindowDecoration,
             } : {})}
           />
         ) : snapshot && surface === "skills" ? (
@@ -3538,7 +3673,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}

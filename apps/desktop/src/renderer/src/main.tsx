@@ -1,8 +1,15 @@
 import { StrictMode, useEffect } from "react"
 import { createRoot } from "react-dom/client"
 
-import { StartupError, WorkspaceErrorBoundary, WorkspaceShell } from "@getdomovoi/ui"
+import {
+  applyStoredAppearanceTheme,
+  StartupError,
+  WorkspaceErrorBoundary,
+  WorkspaceShell,
+} from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
+
+applyStoredAppearanceTheme()
 
 const root = createRoot(document.getElementById("root")!)
 

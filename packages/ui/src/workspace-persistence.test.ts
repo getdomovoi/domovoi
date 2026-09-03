@@ -25,13 +25,15 @@ describe("workspace UI persistence", () => {
   it("round-trips only versioned non-secret navigation and layout state", () => {
     const storage = memoryStorage()
     const state = {
-      version: 2,
+      version: 3,
       sidebarCollapsed: true,
       dockCollapsed: false,
       surface: "skills",
       projectId: "project-1",
       sessionId: "session-1",
       externalEditor: "cursor",
+      theme: "light",
+      windowDecoration: "system",
       layouts: {
         "rail.dock": { thread: 68, dock: 32 },
       },
@@ -45,16 +47,51 @@ describe("workspace UI persistence", () => {
     const raw = storage.getItem("domovoi.workspace-ui")!
     expect(raw).not.toContain("must-not-persist")
     expect(loadWorkspaceUiState(storage)).toEqual({
-      version: 2,
+      version: 3,
       sidebarCollapsed: true,
       dockCollapsed: false,
       surface: "skills",
       projectId: "project-1",
       sessionId: "session-1",
       externalEditor: "cursor",
+      theme: "light",
+      windowDecoration: "system",
       layouts: {
         "rail.dock": { thread: 68, dock: 32 },
       },
+    })
+  })
+
+  it.each([
+    ["dark", "domovoi"],
+    ["light", "system"],
+    ["system", "system"],
+  ] as const)(
+    "restores the %s theme and %s window decoration after restart",
+    (theme, windowDecoration) => {
+      const storage = memoryStorage()
+      saveWorkspaceUiState(storage, { ...defaultWorkspaceUiState(), theme, windowDecoration })
+
+      const loaded = loadWorkspaceUiState(storage)
+      expect(loaded.theme).toBe(theme)
+      expect(loaded.windowDecoration).toBe(windowDecoration)
+    },
+  )
+
+  it("defaults appearance to the system theme and Domovoi decoration", () => {
+    expect(defaultWorkspaceUiState().theme).toBe("system")
+    expect(defaultWorkspaceUiState().windowDecoration).toBe("domovoi")
+  })
+
+  it("reconciles unknown appearance values to their defaults", () => {
+    const invalid = JSON.stringify({
+      ...defaultWorkspaceUiState(),
+      theme: "solarized",
+      windowDecoration: "gnome",
+    })
+    expect(loadWorkspaceUiState(memoryStorage(invalid))).toMatchObject({
+      theme: "system",
+      windowDecoration: "domovoi",
     })
   })
 
@@ -84,9 +121,11 @@ describe("workspace UI persistence", () => {
       layouts: {},
     })
     expect(loadWorkspaceUiState(memoryStorage(versionOne))).toMatchObject({
-      version: 2,
+      version: 3,
       surface: "skills",
       externalEditor: "system",
+      theme: "system",
+      windowDecoration: "domovoi",
     })
 
     const invalidEditor = JSON.stringify({
@@ -102,7 +141,7 @@ describe("workspace UI persistence", () => {
 
   it.each([
     ["invalid JSON", "{"],
-    ["unknown version", JSON.stringify({ ...defaultWorkspaceUiState(), version: 3 })],
+    ["unknown version", JSON.stringify({ ...defaultWorkspaceUiState(), version: 4 })],
     ["unknown surface", JSON.stringify({ ...defaultWorkspaceUiState(), surface: "terminal" })],
     ["invalid identifiers", JSON.stringify({ ...defaultWorkspaceUiState(), projectId: "" })],
     ["invalid layout", JSON.stringify({ ...defaultWorkspaceUiState(), layouts: { "sidebar.dock": { thread: Number.NaN } } })],
