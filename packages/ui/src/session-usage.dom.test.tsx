@@ -4,7 +4,7 @@ import { afterEach, expect, it } from "vitest"
 
 import type { SessionUsage } from "@getdomovoi/protocol"
 
-import { SessionUsageSummary } from "./workspace-shell.js"
+import { AppBar, SessionUsageSummary } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -71,4 +71,28 @@ it("stays quiet for a session with no recorded turns", () => {
     />,
   )
   expect(view.container.textContent).toBe("")
+})
+
+function appBarProps() {
+  return {
+    snapshot: null,
+    connected: true,
+    emergencyStopPending: false,
+    emergencyStopOutcome: null,
+    emergencyStopError: null,
+    onOpenProject: () => {},
+    onPauseAll: () => {},
+  }
+}
+
+it("reads the active session cost and tokens out in the app bar", () => {
+  render(<AppBar {...appBarProps()} usage={usage()} />)
+
+  expect(screen.getByRole("button", { name: /1\.2k tokens/u }).textContent).toContain("$0.00")
+})
+
+it("leaves the app bar readout out until a session reports usage", () => {
+  render(<AppBar {...appBarProps()} usage={null} />)
+
+  expect(screen.queryByRole("button", { name: /tokens/u })).toBeNull()
 })
