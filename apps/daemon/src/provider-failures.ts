@@ -11,7 +11,7 @@ export function classifyProviderFailure(error: unknown): ProviderFailure {
   if (/insufficient[_ -]?quota|quota exhausted|billing[_ -]?(?:quota|error)|out of (?:usage )?credits|out of usage.+add funds/i.test(detail)) {
     return failure("quota-exhausted", "check-quota", "Provider quota is exhausted", false)
   }
-  if (/\b429\b|rate[_ -]?limit|too many requests|you(?:'ve| have) (?:hit|reached) your(?: [\w-]+){0,4} limit/i.test(detail)) {
+  if (isRateLimit(detail)) {
     return failure("rate-limit", "retry", "Provider rate limit reached", true)
   }
   if (/model.+(?:not[_ -]?found|unavailable|unsupported)|unknown[_ -]?model|(?:do not|don't|does not|doesn't|not) have access to (?:the )?model/i.test(detail)) {
@@ -21,6 +21,14 @@ export function classifyProviderFailure(error: unknown): ProviderFailure {
     return failure("transport", "retry", "Provider connection failed", true)
   }
   return failure("unknown", "retry", "Provider request failed", true)
+}
+
+function isRateLimit(detail: string): boolean {
+  if (/\b429\b|\brate[_ -]?limit\b|\btoo many requests\b|\btokens?[- ]per[- ](?:minute|second) limit\b/i.test(detail)) {
+    return true
+  }
+  const claudeLimit = /you've (?:hit|reached) your(?: [\w-]+){0,4} limit/i.exec(detail)?.[0]
+  return Boolean(claudeLimit && !/\b(?:context|conversation|input|output|length|tokens?)\b/i.test(claudeLimit))
 }
 
 export function providerTurnCompletion(params: Record<string, unknown>): {
