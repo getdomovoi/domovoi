@@ -166,3 +166,28 @@ it("offers no editing to a client that cannot edit", () => {
 
   expect(screen.queryByRole("button", { name: "Edit plan" })).toBeNull()
 })
+
+it("keeps the draft and says why when the daemon refuses the edit", async () => {
+  const onEdit = vi.fn(async () => { throw new Error("Session is archived and read-only") })
+  render(<WorkingPlanCard plan={plan()} running={false} onEditPlan={onEdit} />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Edit plan" }))
+  const first = screen.getByRole("textbox", { name: "Step 1" })
+  await userEvent.clear(first)
+  await userEvent.type(first, "Add a replay table with a unique claim")
+  await userEvent.click(screen.getByRole("button", { name: "Save plan" }))
+
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Session is archived"))
+  expect(screen.getByRole("textbox", { name: "Step 1" })).toHaveProperty("value", "Add a replay table with a unique claim")
+})
+
+it("leaves edit mode once the daemon accepts the edit", async () => {
+  const onEdit = vi.fn(async () => {})
+  render(<WorkingPlanCard plan={plan()} running={false} onEditPlan={onEdit} />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Edit plan" }))
+  await userEvent.click(screen.getByRole("button", { name: "Save plan" }))
+
+  expect(await screen.findByRole("button", { name: "Edit plan" })).toBeTruthy()
+  expect(screen.queryByRole("alert")).toBeNull()
+})
