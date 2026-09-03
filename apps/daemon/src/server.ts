@@ -1675,7 +1675,12 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, invalidParams, "Connection client identity is already established")
         return
       }
-      if (protocolCompatibility(protocolVersion, hello.protocolVersion) !== "compatible") {
+      // A hello with no version comes from a client built before the field
+      // existed. Versions move in lockstep through 0.x, so those clients all
+      // spoke the version this daemon speaks; refusing them would break an
+      // upgrade that changes nothing else.
+      const clientProtocol = hello.protocolVersion ?? protocolVersion
+      if (protocolCompatibility(protocolVersion, clientProtocol) !== "compatible") {
         // A refused handshake leaves the socket unauthenticated, so a client
         // on another protocol version cannot fall through to other methods.
         this.#authenticatedClients.delete(socket)
@@ -1683,7 +1688,7 @@ export class DomovoiDaemon {
           socket,
           request.id,
           protocolVersionMismatchErrorCode,
-          `This daemon speaks protocol ${protocolVersion}; the client speaks ${hello.protocolVersion}`,
+          `This daemon speaks protocol ${protocolVersion}; the client speaks ${clientProtocol}`,
         )
         return
       }

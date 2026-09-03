@@ -283,10 +283,12 @@ describe("authenticated client identity", () => {
   })
 
   it("carries the protocol version in the handshake", () => {
+    // A hello with no version is a client from before the field existed and is
+    // accepted; the daemon treats it as speaking this protocol version.
     expect(helloParamsSchema.safeParse({
       client: "web",
       clientVersion: "1.0.0",
-    }).success).toBe(false)
+    }).success).toBe(true)
     expect(helloParamsSchema.parse({
       client: "web",
       clientVersion: "1.0.0",
@@ -821,5 +823,28 @@ describe("JSON value depth bounds", () => {
       id: "req-1",
       result: params,
     }).success).toBe(true)
+  })
+})
+
+describe("hello version compatibility", () => {
+  it("accepts a hello from a client built before the version field existed", () => {
+    const legacy = {
+      client: "desktop" as const,
+      clientId: "client-1",
+      clientVersion: "0.0.1",
+      authToken: "token",
+    }
+    expect(helloParamsSchema.safeParse(legacy).success).toBe(true)
+  })
+
+  it("still rejects a version that is not three-part semver", () => {
+    const bad = {
+      client: "desktop" as const,
+      clientId: "client-1",
+      clientVersion: "0.0.1",
+      protocolVersion: "one",
+      authToken: "token",
+    }
+    expect(helloParamsSchema.safeParse(bad).success).toBe(false)
   })
 })
