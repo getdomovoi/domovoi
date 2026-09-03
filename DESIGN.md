@@ -231,6 +231,33 @@ binary, packages, and domain. Do not abbreviate it. Voice states mechanisms and 
 punctuation. Never use "control plane," unexplained security claims, exclamation marks, or
 account-free promises.
 
+## Handoff status notes
+
+The Claude Design handoff under `design/` is signed and is never edited in this repository. These
+notes record where the repository has moved past it. They do not change the handoff.
+
+**Open question 1 is resolved.** `design/design_handoff_domovoi/OPEN-QUESTIONS.md` still asks
+whether a transfer to an unreachable machine queues or refuses. `ROADMAP.md` records the decision
+under "Resolved architecture decisions": a transfer is refused at the moment it is requested, so a
+session never changes hands later and unattended. Preflight refuses an unreachable target, a target
+that is not answering, a target on an incompatible protocol in either direction, a target that
+needs an upgrade, a target that does not run sessions, and the machine already holding the session.
+No pending-transfer state is built.
+
+**Open question 3 is partly resolved.** Terminal skill installs are gated as hard gates through the
+normal permission system, capability manifests and content digests are defined, and unsigned or
+unverified skills are excluded from Build auto. Still open: the signer registry and key custody
+model that would let a skill reach a trusted state, and fetching skill inventories from every
+reachable fleet member.
+
+**Superseded copy in the desktop prototype.** `Domovoi Desktop.dc.html` predates the copy
+constraint in `OPEN-QUESTIONS.md` #5, so treat these regions as work in progress and do not
+implement their wording: the first-run line about a hosted account adding relay, notifications, and
+billing; the pairing note that the daemon registers itself under your account; the `Domovoi Cloud`
+entry in the fleet transport order; and the `Account & relay` settings pane. Hosted account,
+billing, and relay surfaces are Goal 3 work, and no product surface may claim account or relay
+behavior that is not implemented.
+
 ## Do's and Don'ts
 
 ### Do
