@@ -43,8 +43,10 @@ listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT
 `DOMOVOI_TLS_KEY_PATH`, which must be set together. The daemon terminates TLS itself and refuses
 to start a plaintext non-loopback listener.
 
-The bearer token protects RPC access. Health checks remain public and preview documents use their
-own short-lived signed capabilities.
+The bearer token protects RPC access. Health checks remain public. Preview documents require their
+own short-lived signed capabilities on every listener, loopback included; each capability is scoped
+to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
+retargeted request returns 404.
 
 ## When state cannot reach disk
 

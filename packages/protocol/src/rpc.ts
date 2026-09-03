@@ -57,7 +57,7 @@ import {
   toolKindSchema,
   toolStatusSchema,
 } from "./identifiers.js"
-import { previewBridgeChannelSchema } from "./preview-bridge.js"
+import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
 import {
   skillCapabilityManifestSchema,
   skillContentDigestSchema,
@@ -712,10 +712,14 @@ export const artifactAuthorizeParamsSchema = z.object({
   revision: z.number().int().positive(),
   purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
+  parentOrigin: previewParentOriginSchema.optional(),
   client: clientKindSchema,
 }).strict().superRefine((value, context) => {
   if (value.bridgeChannel && value.purpose !== "preview") {
     context.addIssue({ code: "custom", path: ["bridgeChannel"], message: "Only preview access may use the bridge" })
+  }
+  if (value.parentOrigin && !value.bridgeChannel) {
+    context.addIssue({ code: "custom", path: ["parentOrigin"], message: "Only bridged preview access names a parent origin" })
   }
 })
 
@@ -725,6 +729,7 @@ export const artifactAuthorizeResultSchema = z.object({
   revision: z.number().int().positive(),
   purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
+  parentOrigin: previewParentOriginSchema.optional(),
   expiresAt: z.number().int().positive(),
   signature: credentialSchema,
 }).strict()
