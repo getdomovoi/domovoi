@@ -1012,12 +1012,31 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
   sessionId: z.string().min(1),
   reportedCostTurns: z.number().int().nonnegative(),
   unavailableCostTurns: z.number().int().nonnegative(),
+  contextTokens: z.number().int().nonnegative().optional(),
+  contextWindowTokens: z.number().int().positive().optional(),
   byRuntime: z.array(usageTotalsSchema.extend({
     provider: z.string().min(1),
     model: z.string().min(1),
     turns: z.number().int().nonnegative(),
   }).strict()),
-}).strict()
+}).strict().superRefine((usage, context) => {
+  if (usage.contextTokens === undefined) return
+  if (usage.contextWindowTokens === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["contextWindowTokens"],
+      message: "Context occupancy requires the window it was measured against",
+    })
+    return
+  }
+  if (usage.contextTokens > usage.contextWindowTokens) {
+    context.addIssue({
+      code: "custom",
+      path: ["contextTokens"],
+      message: "Context occupancy cannot exceed the context window",
+    })
+  }
+})
 
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: systemHelloResultSchema },

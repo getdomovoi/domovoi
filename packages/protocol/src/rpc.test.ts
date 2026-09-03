@@ -267,6 +267,43 @@ describe("session usage RPC contracts", () => {
       }],
     }).byRuntime[0]).toMatchObject({ provider: "claude-code", model: "claude-opus" })
   })
+
+  it("carries context occupancy only beside the window it is measured against", () => {
+    const totals = {
+      sessionId: "session-1",
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      reasoningTokens: 1,
+      totalTokens: 15,
+      costMicros: 12_000,
+      currency: "USD",
+      reportedCostTurns: 1,
+      unavailableCostTurns: 0,
+      byRuntime: [],
+    }
+
+    expect(rpcMethods["session.usage"].result.parse(totals).contextTokens).toBeUndefined()
+    expect(rpcMethods["session.usage"].result.parse({
+      ...totals,
+      contextTokens: 120_000,
+      contextWindowTokens: 200_000,
+    })).toMatchObject({ contextTokens: 120_000, contextWindowTokens: 200_000 })
+    expect(rpcMethods["session.usage"].result.safeParse({
+      ...totals,
+      contextTokens: 120_000,
+    }).success).toBe(false)
+    expect(rpcMethods["session.usage"].result.safeParse({
+      ...totals,
+      contextTokens: 200_001,
+      contextWindowTokens: 200_000,
+    }).success).toBe(false)
+    expect(rpcMethods["session.usage"].result.safeParse({
+      ...totals,
+      contextTokens: 0,
+      contextWindowTokens: 0,
+    }).success).toBe(false)
+  })
 })
 
 describe("provider thread restart RPC contracts", () => {
