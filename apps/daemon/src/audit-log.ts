@@ -302,6 +302,11 @@ function sanitizeAuditActor(actor: AuditActor): AuditActor {
           ? {}
           : { component: sanitizeAuditText(actor.component, 128) }),
       }
+    case "machine":
+      return {
+        kind: actor.kind,
+        machineId: sanitizeAuditText(actor.machineId, 128),
+      }
   }
 }
 
@@ -310,6 +315,7 @@ function auditActorName(actor: AuditActor): string | null {
     case "client": return actor.client
     case "provider": return actor.provider
     case "daemon": return actor.component ?? null
+    case "machine": return actor.machineId
   }
 }
 
@@ -318,6 +324,7 @@ function auditActorReference(actor: AuditActor): string | null {
     case "client": return actor.clientId ?? null
     case "provider": return actor.providerThreadId ?? null
     case "daemon": return null
+    case "machine": return null
   }
 }
 
@@ -339,6 +346,11 @@ function storedAuditActor(row: StoredAuditEntry): unknown {
       return {
         kind: row.actor_kind,
         ...(row.actor_name === null ? {} : { component: row.actor_name }),
+      }
+    case "machine":
+      return {
+        kind: row.actor_kind,
+        ...(row.actor_name === null ? {} : { machineId: row.actor_name }),
       }
     default:
       return { kind: row.actor_kind }
