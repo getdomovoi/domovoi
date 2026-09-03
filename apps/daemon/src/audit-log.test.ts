@@ -17,7 +17,12 @@ describe("SqliteAuditLog", () => {
     const audit = new SqliteAuditLog(database)
 
     const stored = audit.append({
-      actor: { kind: "client", client: "desktop", clientId: "token=actor-secret" },
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "token=actor-secret",
+        connectionId: "11111111-1111-4111-8111-111111111111",
+      },
       action: "provider.configure secret=action-secret",
       outcome: "succeeded",
       sessionId: "session-1 password=session-secret",
@@ -28,13 +33,19 @@ describe("SqliteAuditLog", () => {
 
     expect(stored.detail).toBe("Authorization: [REDACTED] api_key=[REDACTED]")
     expect(stored).toMatchObject({
-      actor: { clientId: "token=[REDACTED]" },
+      actor: {
+        clientId: "token=[REDACTED]",
+        connectionId: "11111111-1111-4111-8111-111111111111",
+      },
       action: "provider.configure secret=[REDACTED]",
       sessionId: "session-1 password=[REDACTED]",
       projectId: "project-1 token=[REDACTED]",
       target: "https://[REDACTED]@example.com",
     })
     const raw = database.prepare("SELECT * FROM audit_log WHERE id = ?").get(stored.id)
+    expect(raw).toMatchObject({
+      actor_connection_id: "11111111-1111-4111-8111-111111111111",
+    })
     expect(JSON.stringify(raw)).not.toContain("top-secret-token")
     expect(JSON.stringify(raw)).not.toContain("sk-live-secret-value")
     expect(JSON.stringify(raw)).not.toContain("actor-secret")
@@ -242,6 +253,45 @@ describe("SqliteAuditLog", () => {
     database = new DatabaseSync(path)
     const entries = new SqliteAuditLog(database).query({ projectId: "project-restart", limit: 10 }).entries
     expect(entries).toEqual([expect.objectContaining({ id: "audit-restart", detail: "Authorization: [REDACTED]" })])
+    database.close()
+  })
+
+  it("adds durable connection attribution to an existing audit database", () => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE audit_log (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        occurred_at TEXT NOT NULL,
+        actor_kind TEXT NOT NULL,
+        actor_name TEXT,
+        actor_reference TEXT,
+        action TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        session_id TEXT,
+        project_id TEXT,
+        target TEXT,
+        detail TEXT
+      )
+    `)
+    const audit = new SqliteAuditLog(database)
+    audit.append({
+      id: "audit-connection",
+      actor: {
+        kind: "client",
+        client: "desktop",
+        connectionId: "11111111-1111-4111-8111-111111111111",
+      },
+      action: "plan.edit",
+      outcome: "succeeded",
+    })
+
+    expect(audit.query({ actor: "11111111-1111-4111-8111-111111111111" }).entries)
+      .toEqual([expect.objectContaining({
+        actor: expect.objectContaining({
+          connectionId: "11111111-1111-4111-8111-111111111111",
+        }),
+      })])
     database.close()
   })
 })

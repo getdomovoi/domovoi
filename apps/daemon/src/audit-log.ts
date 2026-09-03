@@ -49,6 +49,7 @@ type StoredAuditEntry = {
   actor_kind: string
   actor_name: string | null
   actor_reference: string | null
+  actor_connection_id: string | null
   action: string
   outcome: string
   session_id: string | null
@@ -72,6 +73,7 @@ export class SqliteAuditLog implements AuditLog {
         actor_kind TEXT NOT NULL,
         actor_name TEXT,
         actor_reference TEXT,
+        actor_connection_id TEXT,
         action TEXT NOT NULL,
         outcome TEXT NOT NULL,
         session_id TEXT,
@@ -86,6 +88,9 @@ export class SqliteAuditLog implements AuditLog {
     const columns = this.#database.prepare("PRAGMA table_info(audit_log)").all() as Array<{ name: string }>
     if (!columns.some(({ name }) => name === "project_id")) {
       this.#database.exec("ALTER TABLE audit_log ADD COLUMN project_id TEXT")
+    }
+    if (!columns.some(({ name }) => name === "actor_connection_id")) {
+      this.#database.exec("ALTER TABLE audit_log ADD COLUMN actor_connection_id TEXT")
     }
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS audit_log_project ON audit_log (project_id);
@@ -113,15 +118,16 @@ export class SqliteAuditLog implements AuditLog {
     try {
       this.#database.prepare(`
         INSERT INTO audit_log (
-          id, occurred_at, actor_kind, actor_name, actor_reference,
+          id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
           action, outcome, session_id, project_id, target, detail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         entry.id,
         entry.occurredAt,
         entry.actor.kind,
         auditActorName(entry.actor),
         auditActorReference(entry.actor),
+        entry.actor.kind === "client" ? entry.actor.connectionId ?? null : null,
         entry.action,
         entry.outcome,
         entry.sessionId ?? null,
@@ -198,8 +204,8 @@ export class SqliteAuditLog implements AuditLog {
       values.push(filters.action)
     }
     if (filters.actor) {
-      conditions.push("(actor_kind = ? OR actor_name = ? OR actor_reference = ?)")
-      values.push(filters.actor, filters.actor, filters.actor)
+      conditions.push("(actor_kind = ? OR actor_name = ? OR actor_reference = ? OR actor_connection_id = ?)")
+      values.push(filters.actor, filters.actor, filters.actor, filters.actor)
     }
     if (filters.outcome) {
       conditions.push("outcome = ?")
@@ -220,16 +226,17 @@ export class SqliteAuditLog implements AuditLog {
         OR actor_kind LIKE ? ESCAPE '\\'
         OR COALESCE(actor_name, '') LIKE ? ESCAPE '\\'
         OR COALESCE(actor_reference, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(actor_connection_id, '') LIKE ? ESCAPE '\\'
         OR COALESCE(session_id, '') LIKE ? ESCAPE '\\'
         OR COALESCE(project_id, '') LIKE ? ESCAPE '\\'
         OR COALESCE(target, '') LIKE ? ESCAPE '\\'
         OR COALESCE(detail, '') LIKE ? ESCAPE '\\'
       )`)
-      values.push(query, query, query, query, query, query, query, query)
+      values.push(query, query, query, query, query, query, query, query, query)
     }
     const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`
     const statement = this.#database.prepare(`
-      SELECT id, occurred_at, actor_kind, actor_name, actor_reference,
+      SELECT id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
         action, outcome, session_id, project_id, target, detail
       FROM audit_log
       ${where}
@@ -282,6 +289,7 @@ function sanitizeAuditActor(actor: AuditActor): AuditActor {
         ...(actor.clientId === undefined
           ? {}
           : { clientId: sanitizeAuditText(actor.clientId, 128) }),
+        ...(actor.connectionId === undefined ? {} : { connectionId: actor.connectionId }),
       }
     case "provider":
       return {
@@ -331,6 +339,7 @@ function storedAuditActor(row: StoredAuditEntry): unknown {
         kind: row.actor_kind,
         client: row.actor_name,
         ...(row.actor_reference === null ? {} : { clientId: row.actor_reference }),
+        ...(row.actor_connection_id === null ? {} : { connectionId: row.actor_connection_id }),
       }
     case "provider":
       return {
