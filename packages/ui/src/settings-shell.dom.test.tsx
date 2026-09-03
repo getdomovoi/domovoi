@@ -72,16 +72,41 @@ it("routes fleet and skills to the surfaces that own them", async () => {
   expect(props.onOpenSkills).toHaveBeenCalledTimes(1)
 })
 
+const activeRule: ApprovalRule = {
+  id: "rule-1",
+  projectId: "project-1",
+  operation: "shell",
+  command: "pnpm test",
+  createdBy: "desktop",
+  createdAt: "2026-09-03T10:00:00.000Z",
+  status: "active",
+  execution: {
+    state: "resolved",
+    digest: `sha256:${"a".repeat(64)}`,
+    record: {
+      version: 1,
+      cwd: ".",
+      kind: "shell",
+      coverage: "command-and-script-text",
+      entries: [{ id: 0, source: { kind: "request" }, parts: [{ operator: null, argv: ["pnpm", "test"], expandsTo: [] }] }],
+    },
+  },
+}
+
+const legacyRule: ApprovalRule = {
+  id: "rule-2",
+  projectId: "project-1",
+  operation: "shell",
+  command: "pnpm build",
+  createdBy: "web",
+  createdAt: "2026-08-30T10:00:00.000Z",
+  status: "inactive",
+  inactiveReason: "legacy-text-only",
+  inactivatedAt: "2026-09-03T09:00:00.000Z",
+}
+
 it("shows standing rules with the client that created them", async () => {
-  const rule: ApprovalRule = {
-    id: "rule-1",
-    projectId: "project-1",
-    operation: "shell",
-    command: "pnpm test",
-    createdBy: "desktop",
-    createdAt: "2026-09-03T10:00:00.000Z",
-  }
-  render(<SettingsShell {...shellProps()} approvalRules={[rule]} />)
+  render(<SettingsShell {...shellProps()} approvalRules={[activeRule]} />)
 
   await openPane("Permissions & rules")
 
@@ -90,6 +115,37 @@ it("shows standing rules with the client that created them", async () => {
   expect(entry.getByText("pnpm test")).toBeTruthy()
   expect(entry.getByText(/shell/u)).toBeTruthy()
   expect(entry.getByText(/desktop/u)).toBeTruthy()
+})
+
+it("says what a rule match does not cover", async () => {
+  render(<SettingsShell {...shellProps()} approvalRules={[activeRule]} />)
+
+  await openPane("Permissions & rules")
+
+  expect(screen.getByText(/Matches command and package-script text only/u)).toBeTruthy()
+  expect(screen.getByText(/dependency binaries may still change/u)).toBeTruthy()
+})
+
+it("announces a retired legacy rule before its approval card returns", async () => {
+  render(<SettingsShell {...shellProps()} approvalRules={[activeRule, legacyRule]} />)
+
+  await openPane("Permissions & rules")
+
+  const retired = within(screen.getByRole("list", { name: "Retired approval rules" }))
+  const entry = within(retired.getAllByRole("listitem")[0]!)
+  expect(entry.getByText("pnpm build")).toBeTruthy()
+  expect(entry.getByText(/text only/u)).toBeTruthy()
+  expect(entry.getByText(/needs explicit reapproval/u)).toBeTruthy()
+  expect(within(screen.getByRole("list", { name: "Standing approval rules" })).queryByText("pnpm build")).toBeNull()
+})
+
+it("keeps a retired rule out of the active list even when it is the only rule", async () => {
+  render(<SettingsShell {...shellProps()} approvalRules={[legacyRule]} />)
+
+  await openPane("Permissions & rules")
+
+  expect(screen.getByText(/No standing rules/u)).toBeTruthy()
+  expect(screen.getByRole("list", { name: "Retired approval rules" })).toBeTruthy()
 })
 
 it("states when a project has no standing rules", async () => {
