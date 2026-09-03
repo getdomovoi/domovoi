@@ -237,7 +237,9 @@ const historyEntryBase = {
 }
 
 const historyToolFields = {
-  tool: z.enum(["command"]),
+  // Matches threadItemSchema: a retired value still has to survive the trip from
+  // a stored snapshot into a history page.
+  tool: z.enum(["command", "file-change"]),
   status: z.enum(["running", "completed", "failed", "declined"]),
   title: z.string(),
   output: z.string().optional(),
