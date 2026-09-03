@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite"
 import { createEmptyWorkspace, demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { SqliteWorkspaceStore, type WorkspaceWriter } from "./store.js"
+import { isCorruption, SqliteWorkspaceStore, type WorkspaceWriter } from "./store.js"
 
 const scratchDirectories: string[] = []
 
@@ -430,6 +430,26 @@ describe("SqliteWorkspaceStore", () => {
       reopened.close()
       expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
     }
+
+    it.each([
+      ["unable to open database file", "ERR_SQLITE_ERROR"],
+      ["database is locked", "SQLITE_BUSY"],
+      ["attempt to write a readonly database", "SQLITE_READONLY"],
+      ["disk I/O error", "SQLITE_IOERR"],
+      ["EACCES: permission denied, open", "EACCES"],
+    ])("treats %j as operational rather than corruption", (message, code) => {
+      // Quarantine renames the live database, so anything that is merely
+      // unavailable must propagate instead: a locked or unreadable file is
+      // still a healthy one, and moving it loses more than it saves.
+      expect(isCorruption(Object.assign(new Error(message), { code }))).toBe(false)
+    })
+
+    it.each([
+      ["file is not a database", "ERR_SQLITE_ERROR"],
+      ["database disk image is malformed", "SQLITE_CORRUPT"],
+    ])("treats %j as corruption", (message, code) => {
+      expect(isCorruption(Object.assign(new Error(message), { code }))).toBe(true)
+    })
 
     it("keeps a truncated snapshot row beside the database and reseeds the workspace", async () => {
       const { scratch, databasePath, damaged } = await seedThenDamage("truncated-json", async (path) => {
