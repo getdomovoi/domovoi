@@ -4126,9 +4126,16 @@ export class DomovoiDaemon {
         projectId: project.id,
         ...(event.itemId ? { target: event.itemId } : {}),
       })
-      if (!containsSecret && decision.action === "allow") {
+      // An automatic approval is a decision the daemon cannot record once state
+      // stops reaching disk, so it stops deciding and asks the user instead.
+      // Refusing new RPCs is not enough: a turn already running keeps asking.
+      // An automatic approval is a decision the daemon cannot record once state
+      // stops reaching disk, so it stops deciding and asks the user instead.
+      // Refusing new RPCs is not enough: a turn already running keeps asking.
+      const mayDecide = !this.#persistenceUnavailable
+      if (mayDecide && !containsSecret && decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
-      } else if (decision.risk === "normal" && matchingRule) {
+      } else if (mayDecide && decision.risk === "normal" && matchingRule) {
         this.#agents.require(provider).resolveApproval(event.requestId, "always-project")
       } else {
         this.#snapshot.approvals.push({
