@@ -1096,9 +1096,12 @@ export class DomovoiDaemon {
     })
   }
 
-  #catalog(projectPath?: string): SkillCatalog {
+  #catalog(): SkillCatalog {
     return this.#skillCatalog
-      ?? new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews)
+      ?? new FileSkillCatalog(
+        skillRoots(homedir(), this.#snapshot.project?.path),
+        this.#skillReviews,
+      )
   }
 
   #registerAudit(
@@ -2121,7 +2124,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.list") {
-        const catalog = this.#catalog(this.#snapshot.project?.path)
+        const catalog = this.#catalog()
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -2588,7 +2591,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        const catalog = this.#catalog(this.#snapshot.project?.path)
+        const catalog = this.#catalog()
         const machine = this.#snapshot.machine
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -2609,7 +2612,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.read") {
         const params = paramsResult.data as RpcParams<"skill.read">
-        const catalog = this.#catalog(this.#snapshot.project?.path)
+        const catalog = this.#catalog()
         try {
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -2635,7 +2638,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
           return
         }
-        const catalog = this.#catalog(project.path)
+        const catalog = this.#catalog()
         let current
         try {
           current = (await catalog.read(params.id)).skill
@@ -2687,7 +2690,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
           return
         }
-        const catalog = this.#catalog(this.#snapshot.project?.path)
+        const catalog = this.#catalog()
         let current
         try {
           current = (await catalog.read(params.id)).skill
@@ -3715,7 +3718,7 @@ export class DomovoiDaemon {
           this.#annotationVisualContext,
         )
         const prompt = await agentPromptWithSkills(
-          this.#catalog(this.#snapshot.project?.path),
+          this.#catalog(),
           this.#snapshot,
           preparedTurn.prompt,
           {
