@@ -43,18 +43,30 @@ export function WorkingPlanCard({
   onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
 }) {
   const [draft, setDraft] = useState<WorkingPlanDraftStep[] | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [editError, setEditError] = useState("")
   if (!plan) return null
   const stepCount = plan.steps.length
   const baseSteps = plan.steps.map((step) => ({ id: step.id, text: step.text }))
   const editing = draft !== null
   const save = () => {
     if (!draft || !onEditPlan) return
-    setDraft(null)
+    setEditError("")
+    setSaving(true)
     void onEditPlan({
       basedOnStructureRevision: plan.structureRevision,
       baseSteps,
       draftSteps: draft.map((step) => step.id === undefined ? { text: step.text } : { id: step.id, text: step.text }),
-    })
+    }).then(
+      () => {
+        setSaving(false)
+        setDraft(null)
+      },
+      (cause: unknown) => {
+        setSaving(false)
+        setEditError(cause instanceof Error ? cause.message : "The plan edit was refused")
+      },
+    )
   }
 
   return (
@@ -98,11 +110,16 @@ export function WorkingPlanCard({
               </Button>
             </div>
           ))}
+          {editError ? (
+            <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">
+              {editError} Your steps are still here.
+            </p>
+          ) : null}
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setDraft([...draft, { text: "" }])}>Add step</Button>
+            <Button variant="outline" size="sm" disabled={saving} onClick={() => setDraft([...draft, { text: "" }])}>Add step</Button>
             <span className="flex-1" />
-            <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>Cancel</Button>
-            <Button variant="secondary" size="sm" onClick={save}>Save plan</Button>
+            <Button variant="ghost" size="sm" disabled={saving} onClick={() => { setEditError(""); setDraft(null) }}>Cancel</Button>
+            <Button variant="secondary" size="sm" disabled={saving} onClick={save}>Save plan</Button>
           </div>
         </div>
       ) : stepCount === 0 ? (
