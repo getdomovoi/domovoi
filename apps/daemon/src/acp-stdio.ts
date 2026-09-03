@@ -51,6 +51,10 @@ export class StdioAcpPeer implements AcpPeer {
   async initialize(): Promise<void> {
     this.#closing = false
     const process = await this.#spawnFirstAvailable()
+    if (this.#closing) {
+      await terminateProcess(process)
+      throw new Error(`${this.#definition.id} ACP peer was closed during initialization`)
+    }
     this.#process = process
     process.stderr.resume()
     process.once("exit", () => {
@@ -143,29 +147,7 @@ export class StdioAcpPeer implements AcpPeer {
     this.#process = undefined
     this.#connection = undefined
     this.#capabilities = undefined
-    if (!process) return
-    const exit = processExit(process)
-    try {
-      if (!process.kill()) {
-        exit.cancel()
-        return
-      }
-    } catch {
-      exit.cancel()
-      return
-    }
-    if (await settlesBefore(exit.promise, ACP_CLOSE_GRACE_MS)) return
-    try {
-      if (!process.kill("SIGKILL")) {
-        exit.cancel()
-        return
-      }
-    } catch {
-      exit.cancel()
-      return
-    }
-    await settlesBefore(exit.promise, ACP_FORCE_CLOSE_MS)
-    exit.cancel()
+    if (process) await terminateProcess(process)
   }
 
   async #spawnFirstAvailable(): Promise<ChildProcessWithoutNullStreams> {
@@ -297,6 +279,31 @@ function spawned(process: ChildProcessWithoutNullStreams): Promise<ChildProcessW
 
 function isMissingCommand(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT"
+}
+
+async function terminateProcess(process: ChildProcessWithoutNullStreams): Promise<void> {
+  const exit = processExit(process)
+  try {
+    if (!process.kill()) {
+      exit.cancel()
+      return
+    }
+  } catch {
+    exit.cancel()
+    return
+  }
+  if (await settlesBefore(exit.promise, ACP_CLOSE_GRACE_MS)) return
+  try {
+    if (!process.kill("SIGKILL")) {
+      exit.cancel()
+      return
+    }
+  } catch {
+    exit.cancel()
+    return
+  }
+  await settlesBefore(exit.promise, ACP_FORCE_CLOSE_MS)
+  exit.cancel()
 }
 
 function processExit(process: ChildProcessWithoutNullStreams): {

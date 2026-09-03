@@ -7,6 +7,7 @@ import { join } from "node:path"
 
 import {
   demoWorkspace,
+  maximumTerminalReplayCharacters,
   type RpcMethod,
   type RpcResult,
 } from "@getdomovoi/protocol"
@@ -284,6 +285,92 @@ describe("terminal RPC", () => {
     })
     expect(agent.resumeThread).not.toHaveBeenCalled()
     expect(agent.startTurn).not.toHaveBeenCalled()
+    socket.close()
+  })
+
+  it("refuses session.send while emergency stop is interrupting the turn", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/send-during-stop"
+    session.providerThreadId = "thread-send-during-stop"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.thread = snapshot.thread.filter((item) => item.sessionId !== session.id)
+    let interruptStarted: (() => void) | undefined
+    let releaseInterrupt: (() => void) | undefined
+    const interruptBegan = new Promise<void>((resolve) => { interruptStarted = resolve })
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-1"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(() => new Promise<void>((resolve) => {
+        releaseInterrupt = resolve
+        interruptStarted!()
+      })),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as TestRpcResponse<M>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const sessionOf = (result: RpcResult<"workspace.get">) =>
+      result.sessions.find(({ id: sessionId }) => sessionId === session.id)!
+
+    const first = await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "first prompt",
+      client: "desktop",
+    })
+    expect(sessionOf(first.result)).toMatchObject({ state: "active", activeTurnId: "turn-1" })
+
+    const stopping = rpc("system.emergencyStop", { client: "desktop" })
+    await interruptBegan
+    const second = await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "prompt sent during emergency stop",
+      client: "desktop",
+    })
+    expect(second).toMatchObject({
+      error: { code: -32602, message: "Emergency stop is in progress" },
+    })
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+
+    releaseInterrupt!()
+    const stopped = await stopping
+    expect(stopped.result.outcomes).toMatchObject({ turnsStopped: 1 })
+    expect(stopped.result.failures).toEqual([])
+    const after = await rpc("workspace.get", {})
+    expect(sessionOf(after.result)).toMatchObject({ state: "idle" })
+    expect(sessionOf(after.result)).not.toHaveProperty("activeTurnId")
+    expect(agent.steerTurn).not.toHaveBeenCalled()
     socket.close()
   })
 
@@ -848,6 +935,74 @@ describe("terminal RPC", () => {
     socket.close()
   })
 
+  it("hands a reattaching client the last replay window of everything the terminal printed", async () => {
+    const dataListeners = new Set<(data: string) => void>()
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn((listener: (data: string) => void) => {
+        dataListeners.add(listener)
+        return { dispose: () => dataListeners.delete(listener) }
+      }),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-replay"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const create = {
+      terminalId: "terminal-replay",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-replay",
+    }
+    await rpc("terminal.create", create)
+
+    // Every read is a distinct line, so a replay that dropped, reordered or
+    // duplicated one read would differ from the tail of the whole stream.
+    const reads: string[] = []
+    for (let index = 0; index < 640; index += 1) reads.push(`${`${index}:`.padEnd(511, "x")}\n`)
+    const everything = reads.join("")
+    expect(everything.length).toBeGreaterThan(maximumTerminalReplayCharacters)
+    for (const read of reads) for (const listener of dataListeners) listener(read)
+
+    const attached = await rpc("terminal.create", create) as TestRpcResponse<"terminal.create">
+    expect(attached.result.buffer).toHaveLength(maximumTerminalReplayCharacters)
+    expect(attached.result.buffer).toBe(everything.slice(-maximumTerminalReplayCharacters))
+
+    socket.close()
+  })
+
   it("refuses terminal input from a connection that only claims the owner's identity", async () => {
     const terminal = {
       process: "bash",
@@ -956,6 +1111,122 @@ describe("terminal RPC", () => {
 
     owner.socket.close()
     intruder.socket.close()
+  })
+
+  it("returns a terminal to its owner when the owner reconnects", async () => {
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-reconnect"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+
+    const open = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+        headers: { authorization: `Bearer ${daemon.authToken}` },
+      })
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      let id = 0
+      const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+        const requestId = ++id
+        const response = new Promise<TestRpcResponse<M>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== requestId) return
+            socket.off("message", receive)
+            resolve(message as TestRpcResponse<M>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+        return response
+      }
+      return { socket, rpc }
+    }
+
+    const owner = await open()
+    await owner.rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      clientId: "desktop-owner",
+    })
+    await expect(owner.rpc("terminal.create", {
+      terminalId: "terminal-reconnect",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({ result: { terminalId: "terminal-reconnect" } })
+
+    const watcher = await open()
+    const ownership: unknown[] = []
+    watcher.socket.on("message", (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as { method?: unknown }
+      if (message.method === "terminal.ownership") ownership.push(message)
+    })
+    await watcher.rpc("system.hello", {
+      client: "tablet",
+      clientVersion: "0.0.1",
+      clientId: "tablet-watcher",
+    })
+
+    owner.socket.close()
+    await new Promise<void>((resolve) => owner.socket.once("close", resolve))
+
+    const reconnected = await open()
+    await reconnected.rpc("system.hello", {
+      client: "desktop",
+      clientVersion: "0.0.1",
+      clientId: "desktop-owner",
+    })
+    await expect(reconnected.rpc("terminal.create", {
+      terminalId: "terminal-reconnect",
+      sessionId: session.id,
+      cols: 100,
+      rows: 30,
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({
+      result: { owner: { client: "desktop", clientId: "desktop-owner" } },
+    })
+
+    await expect(reconnected.rpc("terminal.input", {
+      terminalId: "terminal-reconnect",
+      data: "pnpm test\r",
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({ result: { accepted: true } })
+    expect(terminal.write).toHaveBeenCalledWith("pnpm test\r")
+
+    await expect(reconnected.rpc("terminal.resize", {
+      terminalId: "terminal-reconnect",
+      cols: 120,
+      rows: 40,
+      client: "desktop",
+      clientId: "desktop-owner",
+    })).resolves.toMatchObject({ result: { accepted: true } })
+    expect(terminal.resize).toHaveBeenCalledWith(120, 40)
+    await vi.waitFor(() => expect(ownership).toContainEqual(expect.objectContaining({
+      method: "terminal.ownership",
+      params: { terminalId: "terminal-reconnect", owner: { client: "desktop", clientId: "desktop-owner" } },
+    })))
+
+    watcher.socket.close()
+    reconnected.socket.close()
   })
 
   it("owns terminal input, resize, output, and shutdown on the daemon", async () => {

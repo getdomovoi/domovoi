@@ -55,8 +55,9 @@ Every daemon requires authentication. Standalone `domovoid` creates a user-priva
 `~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require
 `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and `DOMOVOI_TLS_KEY_PATH`; the
 daemon terminates TLS itself and refuses a plaintext non-loopback listener. Set
-`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Remote preview
-documents use short-lived capabilities scoped to one artifact and annotation bridge channel.
+`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Preview documents
+on every listener, loopback included, require short-lived signed capabilities scoped to one
+artifact revision, purpose, annotation bridge channel, and parent origin.
 
 ## Verify
 
@@ -87,5 +88,8 @@ the verified command set are summarized in [`AGENTS.md`](AGENTS.md).
 ## Licensing
 
 Domovoi is open-core. This repository contains the Apache-2.0-licensed daemon, protocol, clients,
-and local transports. Future hosted account, billing, relay, encrypted vault, and team-policy
-services may live outside this repository.
+and local transports. The daemon's Claude Code session adapter depends at runtime on the
+proprietary `@anthropic-ai/claude-agent-sdk`, installed from npm under Anthropic's terms rather
+than redistributed here; that exception is recorded in [`docs/licensing.md`](docs/licensing.md).
+Future hosted account, billing, relay, encrypted vault, and team-policy services may live outside
+this repository.
