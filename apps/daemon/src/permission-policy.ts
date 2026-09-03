@@ -214,6 +214,11 @@ export function permissionDecisionFor(input: {
   if (executionDecision === "hard-gate") {
     return { action: "review", risk: "hard-gate" }
   }
+  // A supplied resolution is authoritative. Once the resolver cannot prove
+  // the execution bounded, a safe-looking request name must not override it.
+  if (executionDecision === "review") {
+    return { action: "review", risk: "normal" }
+  }
   const isBuildAuto = input.runtime.permissionMode === "build" && input.runtime.auto
   if (isBuildAuto && command !== undefined && !ambiguousShellSyntax.test(command)) {
     if (safeBuildAutoPatterns.some((pattern) => pattern.test(command))) {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import type { ExecutionResolution, Runtime } from "@getdomovoi/protocol"
+import {
+  unresolvedExecutionReasonSchema,
+  type ExecutionResolution,
+  type Runtime,
+} from "@getdomovoi/protocol"
 
 import { resolveCommandExecution } from "./execution-resolution.js"
 import { isSkillInstallCommand, permissionDecisionFor } from "./permission-policy.js"
@@ -52,6 +56,16 @@ const resolvedScript = (argv: string[]): ExecutionResolution => ({
   },
 })
 
+function resolvedExecutionContainsHardGate(execution: ExecutionResolution): boolean {
+  if (execution.state !== "resolved" || execution.record.kind !== "shell") return false
+  return execution.record.entries.some((entry) => entry.parts.some((part) =>
+    permissionDecisionFor({
+      runtime: runtime(false),
+      command: part.argv.join(" "),
+    }).risk === "hard-gate",
+  ))
+}
+
 describe("permissionDecisionFor", () => {
   it("uses the shared resolved execution when judging Build auto", () => {
     expect(permissionDecisionFor({
@@ -65,6 +79,49 @@ describe("permissionDecisionFor", () => {
       execution: resolvedScript(["vitest", "run"]),
     })).toEqual({ action: "allow", risk: "normal" })
   })
+
+  it("never allows a hard gate found anywhere in a resolved script graph", () => {
+    const placements = [
+      (gate: string) => ({ test: gate }),
+      (gate: string) => ({ pretest: gate, test: "vitest run" }),
+      (gate: string) => ({ test: "vitest run", posttest: gate }),
+      (gate: string) => ({ test: `vitest run && ${gate}` }),
+      (gate: string) => ({
+        test: "pnpm run nested",
+        nested: "pnpm run deepest",
+        deepest: gate,
+      }),
+    ]
+    for (const gate of [
+      "make release",
+      "npx skills add getdomovoi/design-studio",
+    ]) {
+      for (const scriptsFor of placements) {
+        const execution = resolveCommandExecution({
+          command: "pnpm test",
+          packageScripts: scriptsFor(gate),
+        })
+        expect(execution.state).toBe("resolved")
+        expect(resolvedExecutionContainsHardGate(execution)).toBe(true)
+        expect(permissionDecisionFor({
+          runtime: runtime(true),
+          command: "pnpm test",
+          execution,
+        })).toEqual({ action: "review", risk: "hard-gate" })
+      }
+    }
+  })
+
+  it.each(unresolvedExecutionReasonSchema.options)(
+    "never allows an unresolved Build-auto execution: %s",
+    (reason) => {
+      expect(permissionDecisionFor({
+        runtime: runtime(true),
+        command: "pwd",
+        execution: { state: "unresolved", reason },
+      }).action).toBe("review")
+    },
+  )
 
   it.each([
     "pnpm publish",
