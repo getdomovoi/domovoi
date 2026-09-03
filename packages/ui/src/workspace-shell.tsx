@@ -422,6 +422,7 @@ export function AppBar({
   onPauseAll,
   onOpenCommands,
   commandShortcut,
+  usage,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -434,6 +435,7 @@ export function AppBar({
   onPauseAll: () => void
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
+  usage?: SessionUsage | null | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
@@ -464,6 +466,7 @@ export function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
+        <SessionUsageSummary usage={usage ?? null} />
         {onOpenCommands ? (
           <Button variant="ghost" size="sm" aria-label="Open command palette" onClick={onOpenCommands}>
             <SearchIcon data-icon="inline-start" />
@@ -3585,7 +3588,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
