@@ -9175,7 +9175,7 @@ describe("DomovoiDaemon session transfer requests", () => {
 })
 
 describe("DomovoiDaemon persistence refusal", () => {
-  function persistenceDaemon() {
+  function persistenceDaemon(agents: Record<string, AgentAdapter> = {}) {
     const snapshot = structuredClone(demoWorkspace)
     deferLiveTurns(snapshot)
     snapshot.approvals = []
@@ -9191,7 +9191,7 @@ describe("DomovoiDaemon persistence refusal", () => {
       close: vi.fn(),
     } satisfies WorkspaceStore
     const errorSink = vi.fn()
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: {}, errorSink })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents, errorSink })
     running.push(daemon)
     return { daemon, snapshot, persistence, errorSink }
   }
