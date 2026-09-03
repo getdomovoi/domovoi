@@ -236,3 +236,25 @@ it("offers no terminal on a machine that reports no terminal capability", () => 
   const card = within(screen.getByRole("group", { name: "studio" }))
   expect(card.queryByRole("button", { name: "Terminal on studio" })).toBeNull()
 })
+
+it("does not offer machine actions while the daemon is unreachable", () => {
+  const onUseMachine = vi.fn()
+  render(
+    <FleetView
+      connected={false}
+      machines={[{ ...studio, capabilities: ["sessions", "terminals"] }]}
+      currentMachineId={local.id}
+      currentSessionCount={2}
+      onOpenSkills={() => {}}
+      onListDevices={(() => Promise.resolve({ devices: [] })) as never}
+      onRevokeDevice={(() => Promise.resolve({})) as never}
+      onRotateDevice={(() => Promise.resolve({})) as never}
+      onUseMachine={onUseMachine}
+      onOpenMachineTerminal={vi.fn()}
+    />,
+  )
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  expect(card.getByRole("button", { name: "Use studio" })).toHaveProperty("disabled", true)
+  expect(card.getByRole("button", { name: "Terminal on studio" })).toHaveProperty("disabled", true)
+})

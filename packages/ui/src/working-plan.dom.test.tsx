@@ -191,3 +191,66 @@ it("leaves edit mode once the daemon accepts the edit", async () => {
   expect(await screen.findByRole("button", { name: "Edit plan" })).toBeTruthy()
   expect(screen.queryByRole("alert")).toBeNull()
 })
+
+it("submits the baseline it opened against, not the one that arrived while typing", async () => {
+  const onEdit = vi.fn(async () => {})
+  const { rerender } = render(<WorkingPlanCard plan={plan()} running={false} onEditPlan={onEdit} />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Edit plan" }))
+  rerender(<WorkingPlanCard
+    plan={plan({
+      revision: 9,
+      structureRevision: 7,
+      steps: [
+        { id: "step-1", text: "Add a replay table", status: "completed" },
+        { id: "step-9", text: "A step the agent added while you typed", status: "pending" },
+      ],
+    })}
+    running={false}
+    onEditPlan={onEdit}
+  />)
+  await userEvent.click(screen.getByRole("button", { name: "Save plan" }))
+
+  expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({
+    basedOnStructureRevision: 2,
+    baseSteps: [
+      { id: "step-1", text: "Add a replay table" },
+      { id: "step-2", text: "Claim before side effects" },
+      { id: "step-3", text: "Apply the migration" },
+      { id: "step-4", text: "Assert exactly-once delivery" },
+    ],
+  }))
+})
+
+it("says why a discard failed instead of swallowing it", async () => {
+  const onDiscard = vi.fn(async () => { throw new Error("Persistence is unavailable") })
+  render(<WorkingPlanCard
+    plan={plan({
+      pendingEdit: {
+        id: "edit-1",
+        basedOnStructureRevision: 1,
+        baseSteps: [{ id: "step-1", text: "Add a replay table" }],
+        draftSteps: [{ id: "step-1", text: "Add a replay table with a claim" }],
+        status: "conflicted",
+        submittedAt: "2026-09-03T10:31:00.000Z",
+        submittedBy: { client: "web", connectionId: "connection-2" },
+      },
+    })}
+    running={false}
+    onDiscardEdit={onDiscard}
+  />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Discard edit" }))
+
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    expect.stringContaining("Persistence is unavailable"),
+  )
+})
+
+it("offers no plan mutation on a read-only session", () => {
+  render(<WorkingPlanCard plan={plan()} running={false} readOnly onEditPlan={vi.fn()} onDiscardEdit={vi.fn()} />)
+
+  expect(screen.queryByRole("button", { name: "Edit plan" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Discard edit" })).toBeNull()
+})

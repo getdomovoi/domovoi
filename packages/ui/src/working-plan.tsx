@@ -32,9 +32,11 @@ export function WorkingPlanCard({
   running,
   onEditPlan,
   onDiscardEdit,
+  readOnly = false,
 }: {
   plan: WorkingPlan | undefined
   running: boolean
+  readOnly?: boolean | undefined
   onEditPlan?: ((edit: {
     basedOnStructureRevision: number
     baseSteps: { id: string, text: string }[]
@@ -42,25 +44,35 @@ export function WorkingPlanCard({
   }) => Promise<void>) | undefined
   onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
 }) {
-  const [draft, setDraft] = useState<WorkingPlanDraftStep[] | null>(null)
+  const [edit, setEdit] = useState<{
+    baseline: { structureRevision: number, steps: { id: string, text: string }[] }
+    draft: WorkingPlanDraftStep[]
+  } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
   const [editError, setEditError] = useState("")
   if (!plan) return null
   const stepCount = plan.steps.length
   const baseSteps = plan.steps.map((step) => ({ id: step.id, text: step.text }))
-  const editing = draft !== null
+  const draft = edit?.draft ?? null
+  const editing = edit !== null
+  const canEdit = Boolean(onEditPlan) && !readOnly
+  const canDiscard = Boolean(onDiscardEdit) && !readOnly
+  const setDraft = (next: WorkingPlanDraftStep[] | null) => {
+    setEdit((current) => next === null || !current ? null : { ...current, draft: next })
+  }
   const save = () => {
-    if (!draft || !onEditPlan) return
+    if (!edit || !onEditPlan) return
     setEditError("")
     setSaving(true)
     void onEditPlan({
-      basedOnStructureRevision: plan.structureRevision,
-      baseSteps,
-      draftSteps: draft.map((step) => step.id === undefined ? { text: step.text } : { id: step.id, text: step.text }),
+      basedOnStructureRevision: edit.baseline.structureRevision,
+      baseSteps: edit.baseline.steps,
+      draftSteps: edit.draft.map((step) => step.id === undefined ? { text: step.text } : { id: step.id, text: step.text }),
     }).then(
       () => {
         setSaving(false)
-        setDraft(null)
+        setEdit(null)
       },
       (cause: unknown) => {
         setSaving(false)
@@ -78,14 +90,14 @@ export function WorkingPlanCard({
         <span className="font-machine text-[9.5px] text-faint">revision {plan.revision}</span>
       </div>
 
-      {editing ? (
+      {edit ? (
         <div className="flex flex-col gap-2 px-3 py-3">
-          {draft.map((step, index) => (
+          {edit.draft.map((step, index) => (
             <div key={step.id ?? `new-${index}`} className="flex items-center gap-1.5">
               <Input
                 aria-label={`Step ${index + 1}`}
                 value={step.text}
-                onChange={(event) => setDraft(draft.map((candidate, position) => (
+                onChange={(event) => setDraft(edit.draft.map((candidate, position) => (
                   position === index ? { ...candidate, text: event.target.value } : candidate
                 )))}
               />
@@ -94,8 +106,8 @@ export function WorkingPlanCard({
                 size="icon-sm"
                 aria-label={`Move step ${index + 1} up`}
                 disabled={index === 0}
-                onClick={() => setDraft(draft.map((candidate, position) => (
-                  position === index - 1 ? draft[index]! : position === index ? draft[index - 1]! : candidate
+                onClick={() => setDraft(edit.draft.map((candidate, position) => (
+                  position === index - 1 ? edit.draft[index]! : position === index ? edit.draft[index - 1]! : candidate
                 )))}
               >
                 ↑
@@ -104,7 +116,7 @@ export function WorkingPlanCard({
                 variant="ghost"
                 size="icon-sm"
                 aria-label={`Remove step ${index + 1}`}
-                onClick={() => setDraft(draft.filter((_, position) => position !== index))}
+                onClick={() => setDraft(edit.draft.filter((_, position) => position !== index))}
               >
                 ×
               </Button>
@@ -116,9 +128,9 @@ export function WorkingPlanCard({
             </p>
           ) : null}
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={saving} onClick={() => setDraft([...draft, { text: "" }])}>Add step</Button>
+            <Button variant="outline" size="sm" disabled={saving} onClick={() => setDraft([...edit.draft, { text: "" }])}>Add step</Button>
             <span className="flex-1" />
-            <Button variant="ghost" size="sm" disabled={saving} onClick={() => { setEditError(""); setDraft(null) }}>Cancel</Button>
+            <Button variant="ghost" size="sm" disabled={saving} onClick={() => { setEditError(""); setEdit(null) }}>Cancel</Button>
             <Button variant="secondary" size="sm" disabled={saving} onClick={save}>Save plan</Button>
           </div>
         </div>
@@ -194,16 +206,46 @@ export function WorkingPlanCard({
         </>
       ) : null}
 
+      {editError && !edit ? (
+        <>
+          <Separator />
+          <p role="alert" className="m-0 px-3.5 py-2.5 text-[11px] leading-relaxed text-destructive">
+            {editError}
+          </p>
+        </>
+      ) : null}
+
       <Separator />
       <div className="flex items-center gap-2 px-3.5 py-2.5">
-        {onEditPlan && !editing ? (
-          <Button variant="outline" size="sm" onClick={() => setDraft(baseSteps)}>Edit plan</Button>
+        {canEdit && !editing ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setEdit({
+              baseline: { structureRevision: plan.structureRevision, steps: baseSteps },
+              draft: baseSteps,
+            })}
+          >
+            Edit plan
+          </Button>
         ) : null}
-        {onDiscardEdit && plan.pendingEdit ? (
+        {canDiscard && plan.pendingEdit ? (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => { void onDiscardEdit(plan.pendingEdit!.id) }}
+            disabled={discarding}
+            onClick={() => {
+              const editId = plan.pendingEdit!.id
+              setEditError("")
+              setDiscarding(true)
+              void onDiscardEdit!(editId).then(
+                () => setDiscarding(false),
+                (cause: unknown) => {
+                  setDiscarding(false)
+                  setEditError(cause instanceof Error ? cause.message : "The edit could not be discarded")
+                },
+              )
+            }}
           >
             Discard edit
           </Button>
