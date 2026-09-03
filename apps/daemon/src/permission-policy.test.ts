@@ -180,6 +180,31 @@ describe("permissionDecisionFor", () => {
     },
   )
 
+  it.each([
+    ["pnpm test", { test: "node scripts/anything.js" }],
+    ["pnpm test", { test: "./bin/whatever" }],
+    ["pnpm test", { test: "python evil.py" }],
+    ["pnpm build", { build: "./gradlew assemble" }],
+    ["pnpm test", { test: "vitest run && node scripts/anything.js" }],
+  ] as const)(
+    "reviews a Build-auto script whose body it does not recognise: %s",
+    (command, packageScripts) => {
+      expect(permissionDecisionFor({
+        runtime: runtime(true),
+        command,
+        packageScripts,
+      })).toEqual({ action: "review", risk: "normal" })
+    },
+  )
+
+  it("still hard-gates a dangerous word inside a script body", () => {
+    expect(permissionDecisionFor({
+      runtime: runtime(true),
+      command: "pnpm build",
+      packageScripts: { build: "make release" },
+    })).toEqual({ action: "review", risk: "hard-gate" })
+  })
+
   it("keeps a resolved script under review outside Build auto", () => {
     expect(permissionDecisionFor({
       runtime: runtimeMode("build", false),

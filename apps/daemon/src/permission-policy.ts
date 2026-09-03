@@ -154,6 +154,33 @@ type BodyDecision = "allow" | "review" | "hard-gate"
 // manifest defines today, and an agent that can edit the manifest can change
 // it. Judge the resolved body, and every body it delegates to, by the same
 // rules as a typed command.
+// A resolved body is only as safe as what it actually runs, and the hard-gate
+// patterns describe what is known dangerous rather than what is known safe.
+// Anything outside this list is reviewed, so an unrecognised runner cannot ride
+// in on a script name a human once trusted.
+const boundedScriptRunners = new Set([
+  "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
+  "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
+  "next", "astro", "rimraf", "changeset", "attw", "publint", "knip", "madge",
+])
+
+function boundedLeafCommand(candidate: string): boolean {
+  const tokens = candidate.split(/\s+/)
+  const executable = tokens[0]?.toLowerCase()
+  if (executable === undefined) return false
+  if (boundedScriptRunners.has(executable)) return true
+  // `npx vitest run` and `pnpm exec tsc` are the same leaf wearing a runner.
+  if (["npx", "pnpm", "npm", "yarn", "bun"].includes(executable)) {
+    const rest = tokens.slice(1).filter((token) => !token.startsWith("-"))
+    const next = rest[0]?.toLowerCase()
+    if (next === "exec" || next === "dlx" || next === "run" || next === "x") {
+      return boundedScriptRunners.has(rest[1]?.toLowerCase() ?? "")
+    }
+    return boundedScriptRunners.has(next ?? "")
+  }
+  return false
+}
+
 function resolvedScriptDecision(
   body: string,
   scripts: Readonly<Record<string, string>>,
@@ -162,21 +189,24 @@ function resolvedScriptDecision(
   if (seen.size > 4) return "review"
   if (hardGatePatterns.some((pattern) => pattern.test(body))) return "hard-gate"
   if (ambiguousShellSyntax.test(body)) return "review"
-  for (const segment of body.split(commandSeparators)) {
-    const candidate = segment.trim()
-    if (!candidate) continue
+  const segments = body.split(commandSeparators).map((segment) => segment.trim()).filter(Boolean)
+  if (segments.length === 0) return "review"
+  for (const candidate of segments) {
     if (hardGatePatterns.some((pattern) => pattern.test(candidate))) return "hard-gate"
     const nested = packageScriptRun(candidate)
-    if (!nested) continue
-    if (seen.has(nested.script)) return "review"
-    const nestedBody = scripts[nested.script]
-    if (nestedBody === undefined) return "review"
-    const decision = resolvedScriptDecision(
-      `${nestedBody} ${nested.rest}`.trim(),
-      scripts,
-      new Set([...seen, nested.script]),
-    )
-    if (decision !== "allow") return decision
+    if (nested) {
+      if (seen.has(nested.script)) return "review"
+      const nestedBody = scripts[nested.script]
+      if (nestedBody === undefined) return "review"
+      const decision = resolvedScriptDecision(
+        `${nestedBody} ${nested.rest}`.trim(),
+        scripts,
+        new Set([...seen, nested.script]),
+      )
+      if (decision !== "allow") return decision
+      continue
+    }
+    if (!boundedLeafCommand(candidate)) return "review"
   }
   return "allow"
 }
