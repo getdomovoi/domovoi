@@ -239,9 +239,9 @@ export function ProjectSwitchConfirmationDialog({
     <AlertDialog open onOpenChange={(open) => { if (!open && !pending) onCancel() }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Remove current sessions and switch projects?</AlertDialogTitle>
+          <AlertDialogTitle>Stop running work and switch projects?</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes {confirmation.sessionCount} sessions and their saved history, including {confirmation.worktreeCount} isolated {confirmation.worktreeCount === 1 ? "worktree" : "worktrees"}. Archive anything you want to preserve first.
+            Domovoi keeps {confirmation.sessionCount} sessions and their saved history, including {confirmation.worktreeCount} isolated {confirmation.worktreeCount === 1 ? "worktree" : "worktrees"}, and restores them when you reopen this project. Switching now stops any turn, provider thread, and terminal that is still running.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <ScrollArea className="max-h-44 rounded-md border">
@@ -258,11 +258,10 @@ export function ProjectSwitchConfirmationDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>Keep current project</AlertDialogCancel>
           <Button
-            variant="destructive"
             disabled={pending}
             onClick={() => onConfirm(confirmation.requestedPath)}
           >
-            {pending ? "Switching…" : "Remove sessions and switch"}
+            {pending ? "Switching…" : "Stop work and switch"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
