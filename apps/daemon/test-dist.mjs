@@ -2,7 +2,14 @@ import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 
-const { DomovoiDaemon } = await import("./dist/server.js")
+const { DomovoiDaemon } = await import("./dist/public.js")
+const internal = await import("./dist/server.js")
+
+// The published entry stays narrow; the injection seams stay reachable on the
+// internal path the workspace and the tests use.
+assert.deepEqual(Object.keys(await import("./dist/public.js")).sort(), ["DomovoiDaemon"])
+assert.ok(internal.DomovoiDaemon)
+assert.ok(Object.keys(internal).length > 10)
 
 const daemon = new DomovoiDaemon({ statePath: ":memory:" })
 assert.match(daemon.authToken, /^[A-Za-z0-9_-]{43}$/)

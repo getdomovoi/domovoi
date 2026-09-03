@@ -48,6 +48,42 @@ artifacts. Do not make the root test command parallel without first removing tha
 [AGENTS.md](AGENTS.md) is the agent-facing summary of these commands, the project boundaries, and
 the conventions below.
 
+### Coverage
+
+Every package with tests runs the `v8` coverage provider on each `vitest run`, and each one carries
+its own global thresholds. A run that drops below them fails, so coverage is part of `pnpm test`
+rather than a separate command. Report output is a text summary; the HTML and JSON reports are not
+generated.
+
+The thresholds are a floor, not a target. They were set from the first measured run of each
+package, rounded down to the nearest whole percent, so the gate is green on the code as it stands
+and catches a regression rather than describing an ambition. Raise a package's floor in the same
+change that raises its real coverage. Never lower one to make a run pass.
+
+Measured baseline, from the first coverage run of each package on Node 22:
+
+| Package | Statements | Branches | Functions | Lines |
+| --- | --- | --- | --- | --- |
+| `@getdomovoi/protocol` | 97.14% | 91.87% | 98.57% | 97.50% |
+| `@getdomovoi/daemon` | 84.94% | 78.13% | 86.68% | 87.71% |
+| `@getdomovoi/ui` | 52.62% | 51.04% | 50.95% | 55.95% |
+| `@getdomovoi/desktop` | 50.37% | 57.10% | 45.31% | 53.60% |
+| `@getdomovoi/web` | 48.48% | 69.23% | 50.00% | 50.00% |
+
+Thresholds in force, at or just under those numbers:
+
+| Package | Statements | Branches | Functions | Lines |
+| --- | --- | --- | --- | --- |
+| `@getdomovoi/protocol` | 97 | 91 | 98 | 97 |
+| `@getdomovoi/daemon` | 84 | 77 | 86 | 87 |
+| `@getdomovoi/ui` | 52 | 51 | 50 | 55 |
+| `@getdomovoi/desktop` | 50 | 57 | 45 | 53 |
+| `@getdomovoi/web` | 48 | 69 | 49 | 49 |
+
+The daemon's branch floor is a point below its measured 78.13% because a few of its suites cover
+timing-dependent branches, and `@getdomovoi/web` sits a point below on the two figures that
+measured as exact integers.
+
 ## Project boundaries
 
 - The daemon owns canonical session, terminal, approval, and artifact state.
