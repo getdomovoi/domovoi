@@ -9211,6 +9211,8 @@ describe("DomovoiDaemon", () => {
   })
 
   it("auto-allows bounded work but keeps hard gates explicit", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-build-auto-"))
+    scratchDirectories.push(workspacePath)
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.runtime = {
@@ -9221,7 +9223,7 @@ describe("DomovoiDaemon", () => {
       auto: true,
     }
     session.state = "idle"
-    session.workspacePath = "/worktrees/build-auto"
+    session.workspacePath = workspacePath
     session.providerThreadId = "thread-build-auto"
     delete session.activeTurnId
     const skillInstallCommand = "/usr/bin/bash -lc 'pnpm dlx skills add getdomovoi/design-studio'"
