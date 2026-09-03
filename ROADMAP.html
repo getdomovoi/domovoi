@@ -429,11 +429,9 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing model access
+<li>[x] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing model access
 <ul>
-<li>Written and verified on <code>feat/daemon-provider-limits</code>, tip <code>b63eda8</code>, but not merged. <code>main</code> does not classify <code>context-window-exceeded</code>, so this line stays open until that branch lands.
-</li>
-<li>A failure classifier exists, but the Claude adapter drops the failure reason and provider stderr is discarded, so authentication and rate-limit failures surface as unknown/retry.
+<li>The Claude adapter keeps a bounded, redacted tail of provider stderr and preserves the reported error, so each condition reaches a client as its own classified failure rather than unknown/retry. Outgrowing the context window is its own <code>context-window-exceeded</code> kind, which is not retryable, so no client offers a retry that cannot succeed.
 </li>
 </ul>
 </li>
@@ -598,6 +596,16 @@ td { color: var(--ink2); }
 <li>[x] Per-file diff review with revert in the Changes tab
 </li>
 <li>[ ] Composer skill chip
+<ul>
+<li>Waiting on the prompt composer's budget decision. The chip has to state what actually reached the provider, so whether a selected skill can be dropped silently decides what the chip can honestly claim. Design position agreed on 2026-09-03: a turn selection is a subset of what the project has already reviewed and enabled, never a second path to running unreviewed code.
+</li>
+</ul>
+</li>
+<li>[ ] Give the prompt composer a total budget and a documented drop order
+<ul>
+<li><code>apps/daemon/src/prompt-composer.ts</code> now assembles skills, annotations, working plan, handoff, and user text in one place, and <code>apps/daemon/src/prompt-composition.golden.test.ts</code> pins all sixteen section combinations byte for byte. Each section still truncates against its own limit with no knowledge of the others, so five sections that each pass can still compose a prompt none of them thought was too large. This is a deliberate behaviour change and needs its own tests; do not fold it into a refactor.
+</li>
+</ul>
 </li>
 <li>[x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane, 280px inspector, and the fixed chrome heights recorded in <code>DESIGN.md</code>
 <ul>
@@ -613,9 +621,9 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Rework the Changes dock as per-file accordions from the current design revision
+<li>[x] Rework the Changes dock as per-file accordions from the current design revision
 <ul>
-<li>The same live revision that restyled the terminal also replaced the file list plus separate diff body with expandable per-file rows carrying a caret, a hunk header, and inline diff lines, plus an Expand all control. Found on 2026-09-03 by diffing the live desktop file against the tracked handoff; it is a design change nobody had recorded.
+<li>Each file row opens its own diff, with Expand all and Collapse all on the section. The protocol carries one worktree diff rather than a diff per file, so the client partitions that text on its <code>diff --git</code> headers. A file with nothing to show says why, naming a truncated transport bound or a binary file, rather than opening empty.
 </li>
 </ul>
 </li>
