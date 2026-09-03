@@ -146,6 +146,7 @@ import {
   discardPendingWorkingPlanEdit,
   submitWorkingPlanEdit,
   syncWorkingPlanArtifact,
+  updateWorkingPlanFromProvider,
   WorkingPlanMutationError,
 } from "./working-plan.js"
 
@@ -4610,24 +4611,71 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-delta") {
-      const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
-        artifact.sessionId === session.id && artifact.type === "plan"
-      ).map((artifact) => artifact.id))
-      const artifact = appendPlanDelta(
-        this.#snapshot.artifacts,
-        this.#snapshot.annotations,
-        session.id,
-        event.delta,
+      const canonical = this.#snapshot.workingPlans.some(
+        (plan) => plan.sessionId === session.id,
       )
-      requiresFullSnapshot = [...previousPlanIds].some((id) => id !== artifact.id)
-      if (!requiresFullSnapshot) {
-        delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
-          kind: "plan.append" as const,
-          id: artifact.id,
-          delta: chunk,
-          revision: artifact.revision,
-        })))
+      if (!canonical) {
+        const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
+          artifact.sessionId === session.id && artifact.type === "plan"
+        ).map((artifact) => artifact.id))
+        const artifact = appendPlanDelta(
+          this.#snapshot.artifacts,
+          this.#snapshot.annotations,
+          session.id,
+          event.delta,
+        )
+        requiresFullSnapshot = [...previousPlanIds].some((id) => id !== artifact.id)
+        if (!requiresFullSnapshot) {
+          delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
+            kind: "plan.append" as const,
+            id: artifact.id,
+            delta: chunk,
+            revision: artifact.revision,
+          })))
+        }
       }
+    }
+
+    if (event.type === "plan-updated") {
+      const currentIndex = this.#snapshot.workingPlans.findIndex(
+        (plan) => plan.sessionId === session.id,
+      )
+      const current = currentIndex === -1
+        ? undefined
+        : this.#snapshot.workingPlans[currentIndex]
+      const mutation = updateWorkingPlanFromProvider(current, {
+        sessionId: session.id,
+        provider,
+        model: session.runtime.model,
+        providerThreadId: threadId,
+        steps: event.steps,
+        updatedAt: createdAt,
+      })
+      if (currentIndex === -1) this.#snapshot.workingPlans.push(mutation.plan)
+      else this.#snapshot.workingPlans[currentIndex] = mutation.plan
+      if (mutation.structureChanged) {
+        syncWorkingPlanArtifact(
+          this.#snapshot.artifacts,
+          this.#snapshot.annotations,
+          mutation.plan,
+          true,
+        )
+      }
+      this.#appendAudit({
+        actor: { kind: "provider", provider, providerThreadId: threadId },
+        action: "provider.plan-updated",
+        outcome: "succeeded",
+        sessionId: session.id,
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        target: session.id,
+        detail: [
+          `revision=${mutation.plan.revision}`,
+          `structure=${mutation.plan.structureRevision}`,
+          `structureChanged=${mutation.structureChanged}`,
+          `pending=${mutation.plan.pendingEdit?.status ?? "none"}`,
+        ].join(" "),
+      })
+      requiresFullSnapshot = true
     }
 
     if (event.type === "command-output") {
