@@ -31,6 +31,13 @@ export type RestoreResult = {
   recoveryCommit: string
 }
 
+export type FileRevert = {
+  path: string
+  outcome: "restored" | "removed"
+  baseCommit: string
+  recoveryCommit: string
+}
+
 export type ChangedFileEvidence = {
   path: string
   previousPath?: string
@@ -54,11 +61,27 @@ export type WorkspaceEvidence = {
 export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
+const maximumGitOutputBytes = 32 * 1_024 * 1_024
 
 export class SessionWorktreeExistsError extends Error {
   constructor() {
     super("Session worktree already exists")
     this.name = "SessionWorktreeExistsError"
+  }
+}
+
+// The recovery checkpoint is taken before the worktree moves, so a revert that
+// stops afterwards still has somewhere to put the work back. The commit travels
+// with the failure rather than being lost with it.
+export class FileRevertIncompleteError extends Error {
+  readonly recoveryCommit: string
+  constructor(recoveryCommit: string, options?: { cause?: unknown }) {
+    super(
+      `File revert stopped after its recovery checkpoint ${recoveryCommit.slice(0, 8)}`,
+      options,
+    )
+    this.name = "FileRevertIncompleteError"
+    this.recoveryCommit = recoveryCommit
   }
 }
 
@@ -71,6 +94,7 @@ export class WorkspaceEvidenceUnstableError extends Error {
 
 export type GitWorkspaceServiceOptions = {
   afterEvidenceObservation?: (observation: "status") => void | Promise<void>
+  afterCheckpointStaging?: () => void | Promise<void>
 }
 
 export interface WorkspaceService {
@@ -90,6 +114,7 @@ export interface WorkspaceService {
   archiveSessionWorkspace?(worktreePath: string, signal?: AbortSignal): Promise<void>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
+  revertFile?(worktreePath: string, path: string, signal?: AbortSignal): Promise<FileRevert>
   evidence?(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence>
   bundleSession?(
     worktreePath: string,
@@ -136,6 +161,18 @@ async function restrictBundlePermissions(path: string): Promise<void> {
   await chmod(path, 0o600)
 }
 
+// The protocol refuses an unsafe path at the wire, and this refuses it again at
+// the boundary that actually runs git.
+function isWorktreeRelativePath(path: string): boolean {
+  if (path.length === 0 || path.length > 1024) return false
+  if (path.startsWith("-") || path.includes("\0")) return false
+  if (isAbsolute(path) || path.startsWith("/") || path.startsWith("\\")) return false
+  if (/^[a-zA-Z]:[\\/]/.test(path)) return false
+  return path
+    .split(/[\\/]/)
+    .every((segment) => segment.length > 0 && segment !== ".." && segment !== ".")
+}
+
 async function git(
   repositoryPath: string,
   arguments_: string[],
@@ -144,6 +181,7 @@ async function git(
   signal?.throwIfAborted()
   const result = await execute("git", ["-C", repositoryPath, ...arguments_], {
     encoding: "utf8",
+    maxBuffer: maximumGitOutputBytes,
     signal,
   })
   return result.stdout.trim()
@@ -391,10 +429,12 @@ function parseNumstat(output: string): Map<string, {
 export class GitWorkspaceService implements WorkspaceService {
   readonly worktreeRoot: string
   readonly #afterEvidenceObservation?: GitWorkspaceServiceOptions["afterEvidenceObservation"]
+  readonly #afterCheckpointStaging?: GitWorkspaceServiceOptions["afterCheckpointStaging"]
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
     this.worktreeRoot = resolve(worktreeRoot)
     this.#afterEvidenceObservation = options.afterEvidenceObservation
+    this.#afterCheckpointStaging = options.afterCheckpointStaging
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
@@ -553,7 +593,15 @@ export class GitWorkspaceService implements WorkspaceService {
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
     await git(worktreePath, ["add", "--all"], signal)
-    const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+    await this.#afterCheckpointStaging?.()
+    let names: string
+    try {
+      names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+    } catch (error) {
+      // Everything is staged by now; a failed checkpoint must not leave it so.
+      await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
+      throw error
+    }
     const changedFiles = names.split("\0").filter(Boolean)
     if (changedFiles.length === 0) {
       const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
@@ -804,6 +852,60 @@ export class GitWorkspaceService implements WorkspaceService {
     const recovery = await this.checkpoint(worktreePath, "before restore", signal)
     await git(worktreePath, ["reset", "--hard", checkpointCommit], signal)
     return { restoredCommit: checkpointCommit, recoveryCommit: recovery.commit }
+  }
+
+  // Reverting one file discards uncommitted work, so the recovery checkpoint is
+  // taken before anything in the worktree moves, and every step after it either
+  // completes or throws. The checkpoint commits the whole worktree, so HEAD is
+  // put back where it was afterwards and only the named file is changed.
+  async revertFile(
+    worktreePath: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<FileRevert> {
+    if (!isWorktreeRelativePath(path)) {
+      throw new Error("File path must stay inside the session worktree")
+    }
+    const pathspec = `:(literal)${path}`
+    const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    const status = await git(worktreePath, [
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      pathspec,
+    ], signal)
+    if (status.length === 0) throw new Error("File has no changes to revert")
+
+    let tracked = true
+    try {
+      await git(worktreePath, ["cat-file", "-e", `${baseCommit}:${path}`], signal)
+    } catch {
+      signal?.throwIfAborted()
+      tracked = false
+    }
+
+    const recovery = await this.checkpoint(worktreePath, `before revert ${path}`, signal)
+    // The checkpoint moved HEAD onto the work being reverted. Putting HEAD back
+    // keeps the session where it was, and leaves the recovery commit reachable
+    // only through its durable checkpoint ref.
+    try {
+      await git(worktreePath, ["reset", "--soft", baseCommit], signal)
+      if (tracked) {
+        await git(worktreePath, ["checkout", baseCommit, "--", pathspec], signal)
+      } else {
+        await git(worktreePath, ["rm", "--force", "--quiet", "--", pathspec], signal)
+      }
+    } catch (cause) {
+      throw new FileRevertIncompleteError(recovery.commit, { cause })
+    }
+    return {
+      path,
+      outcome: tracked ? "restored" : "removed",
+      baseCommit,
+      recoveryCommit: recovery.commit,
+    }
   }
 
   async removeSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {

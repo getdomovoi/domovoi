@@ -60,7 +60,11 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { internalRpcErrorMessage } from "./rpc-errors.js"
 import { maximumPairedDevices } from "./device-registry.js"
 import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
-import { WorkspaceEvidenceUnstableError, type WorkspaceService } from "./workspace.js"
+import {
+  FileRevertIncompleteError,
+  WorkspaceEvidenceUnstableError,
+  type WorkspaceService,
+} from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
@@ -2056,6 +2060,135 @@ describe("DomovoiDaemon", () => {
     await expect(daemon.stop()).rejects.toThrow("Domovoi shutdown failed")
     expect(agent.close).toHaveBeenCalledOnce()
     expect(store.close).toHaveBeenCalledOnce()
+  })
+
+  it("stops with a drain timeout instead of hanging on a mutation that never settles", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-drain-hang"
+    session.activeTurnId = "turn-drain-hang"
+    const activateTurns = deferLiveTurns(snapshot)
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(),
+      saveAsync: vi.fn(() => new Promise<void>(() => {})),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "drain-timeout-token",
+      store,
+      agent,
+      agentTimeoutMs: 100,
+    })
+    await daemon.start()
+    activateTurns()
+    listener!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-drain-hang",
+        turnId: "turn-drain-hang",
+        turn: { id: "turn-drain-hang", status: "failed", error: "provider stalled" },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    await expect(daemon.stop()).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: "Domovoi shutdown drain timed out" })],
+    })
+    expect(agent.close).toHaveBeenCalledOnce()
+    expect(store.close).toHaveBeenCalledOnce()
+  })
+
+  it("tells clients when a save fails so a lost write is not silent", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.providerThreadId = "thread-save-signal"
+    session.activeTurnId = "turn-save-signal"
+    const activateTurns = deferLiveTurns(snapshot)
+    const store = {
+      load: vi.fn(() => snapshot),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => { throw new Error("disk unavailable") }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: "save-signal-token",
+      store,
+      agent,
+    })
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const changes: Record<string, unknown>[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>
+      if (message.method !== "workspace.changed") return
+      changes.push(message.params as Record<string, unknown>)
+    })
+
+    listener!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-save-signal",
+        turnId: "turn-save-signal",
+        turn: { id: "turn-save-signal", status: "failed", error: "provider stalled" },
+      },
+    })
+
+    await vi.waitFor(() => expect(changes).toHaveLength(1))
+    expect(changes[0]).toMatchObject({
+      thread: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "system",
+          body: "Domovoi cannot save changes right now. New activity is being kept in memory only.",
+          detail: "disk unavailable",
+        }),
+      ]),
+    })
+    socket.close()
+    await daemon.stop()
   })
 
   it("bounds client snapshots without deleting durable session history", () => {
@@ -10479,6 +10612,179 @@ describe("DomovoiDaemon session transfer requests", () => {
     })
 
     expect(answer).toMatchObject({ error: { message: "Session does not exist" } })
+    socket.close()
+  })
+  it("refuses a file revert during an active turn and records a receipt for the one it performs", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.sessions = [structuredClone(snapshot.sessions[0]!)]
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    delete session.activeTurnId
+    session.workspacePath = "/worktrees/session-revert"
+    session.providerThreadId = "thread-revert"
+    session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
+    snapshot.activeSessionId = session.id
+    snapshot.approvals = []
+    snapshot.thread = []
+    snapshot.artifacts = []
+    snapshot.annotations = []
+
+    const agentListeners: Array<(event: AgentEvent) => void> = []
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "thread-revert"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-revert"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        agentListeners.push(listener)
+        return () => {}
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const revertFile = vi.fn(async (_worktreePath: string, path: string) => ({
+      path,
+      outcome: "removed" as const,
+      baseCommit: "a".repeat(40),
+      recoveryCommit: "c".repeat(40),
+    }))
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      revertFile,
+    } satisfies WorkspaceService
+
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      workspaceService,
+      artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await expect(rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Change the webhook handler",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: { sessions: expect.arrayContaining([expect.objectContaining({
+        id: session.id,
+        activeTurnId: "turn-revert",
+      })]) },
+    })
+
+    const duringTurn = await rpc("session.revertFile", {
+      sessionId: session.id,
+      path: "src/webhooks.ts",
+      client: "desktop",
+    })
+    expect(duringTurn).toMatchObject({
+      error: { code: -32602, message: "Stop the active turn before reverting a file" },
+    })
+    expect(revertFile).not.toHaveBeenCalled()
+
+    for (const listener of agentListeners) {
+      listener({
+        type: "turn-completed",
+        params: {
+          threadId: "thread-revert",
+          turnId: "turn-revert",
+          turn: { id: "turn-revert", status: "completed" },
+        },
+      })
+    }
+    await rpc("workspace.get", {})
+
+    const escaping = await rpc("session.revertFile", {
+      sessionId: session.id,
+      path: "../outside.ts",
+      client: "desktop",
+    })
+    expect(escaping).toMatchObject({ error: { code: -32602 } })
+    expect(revertFile).not.toHaveBeenCalled()
+
+    const reverted = await rpc("session.revertFile", {
+      sessionId: session.id,
+      path: "src/webhooks.ts",
+      client: "web",
+    })
+    expect(revertFile).toHaveBeenCalledWith(
+      "/worktrees/session-revert",
+      "src/webhooks.ts",
+      expect.any(AbortSignal),
+    )
+    expect(reverted).toMatchObject({
+      result: {
+        thread: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "checkpoint",
+            label: expect.stringContaining("before revert"),
+            commit: "c".repeat(40),
+          }),
+          expect.objectContaining({
+            kind: "receipt",
+            operation: "Revert src/webhooks.ts",
+            decision: "allow-once",
+            checkpoint: "c".repeat(40),
+            client: "desktop",
+          }),
+        ]),
+      },
+    })
+
+    // A revert that stops after its recovery checkpoint still has to leave the
+    // checkpoint where the session can restore it.
+    revertFile.mockImplementationOnce(async () => {
+      throw new FileRevertIncompleteError("d".repeat(40))
+    })
+    const incomplete = await rpc("session.revertFile", {
+      sessionId: session.id,
+      path: "src/webhooks.ts",
+      client: "desktop",
+    })
+    expect(incomplete).toMatchObject({
+      error: {
+        code: -32603,
+        message: expect.stringContaining("The worktree was not fully reverted"),
+      },
+    })
+    const afterFailure = await rpc("workspace.get", {}) as TestRpcResponse<"workspace.get">
+    expect(afterFailure.result.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "checkpoint", commit: "d".repeat(40) }),
+    ]))
+    expect(afterFailure.result.thread.filter(
+      (item) => item.kind === "receipt" && item.operation === "Revert src/webhooks.ts",
+    )).toHaveLength(1)
     socket.close()
   })
 })

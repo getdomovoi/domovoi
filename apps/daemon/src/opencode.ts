@@ -384,17 +384,26 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     this.#directories.set(cwd, { controller, threadIds: new Set([threadId]) })
     this.#sessions.set(threadId, session)
-    void this.#consume(cwd, events.stream).catch((error: unknown) => {
-      if (controller.signal.aborted) return
-      for (const candidate of this.#sessions.values()) {
-        if (candidate.cwd !== cwd || !candidate.activeTurnId) continue
-        this.#complete(
-          candidate,
-          "failed",
-          error instanceof Error ? error.message : `${this.#identity.providerName} event stream failed`,
-        )
-      }
-    })
+    void this.#consume(cwd, events.stream).then(
+      () => this.#disconnect(cwd, controller, `${this.#identity.providerName} event stream connection closed`),
+      (error: unknown) => this.#disconnect(
+        cwd,
+        controller,
+        error instanceof Error ? error.message : `${this.#identity.providerName} event stream failed`,
+      ),
+    )
+  }
+
+  #disconnect(cwd: string, controller: AbortController, reason: string): void {
+    if (controller.signal.aborted) return
+    controller.abort()
+    this.#directories.delete(cwd)
+    for (const session of this.#sessions.values()) {
+      if (session.cwd !== cwd) continue
+      this.#complete(session, "failed", reason)
+      this.#sessions.delete(session.threadId)
+    }
+    this.#emit({ type: "provider-disconnected", reason })
   }
 
   #unloadSession(session: Session): void {
