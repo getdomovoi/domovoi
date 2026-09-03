@@ -135,7 +135,15 @@ Every ledger entry is now merged.
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
-- [x] Require explicit confirmation before switching projects discards current sessions and worktrees
+- [x] Require explicit confirmation before switching projects stops the current project's running work
+- [x] Keep workspace state per project so opening a second repository preserves the first
+  - Persist one snapshot row per project id beside the active-workspace row, migrating an
+    existing single-row database into the row for its own project.
+  - Restore a project's sessions, thread, approvals, artifacts, and annotations on reopen, and
+    keep machine-scoped state such as machine facts and skill enablement reviews out of the
+    per-project rows.
+  - Stop live provider threads, active turns, and terminals when switching away, and delete
+    session worktrees only on the deliberate `session.archive` path.
 
 ### Providers and credentials
 
