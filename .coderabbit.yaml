@@ -170,7 +170,7 @@ reviews:
     - path: "**/*.md"
       instructions: |
         Check claims against current code and repository contracts. Keep README, PRODUCT, DESIGN, CONTRIBUTING, SECURITY, distribution docs, and ROADMAP consistent.
-        ROADMAP.md is the reviewed source; ROADMAP.html must be regenerated with it but is excluded from generated-file comments.
+        ROADMAP.md is the reviewed source; ROADMAP.html must be regenerated with it via `pnpm roadmap:html` but is excluded from generated-file comments.
         Changeset Markdown is release metadata, not prose documentation.
 
 chat:
