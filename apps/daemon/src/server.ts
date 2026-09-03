@@ -154,6 +154,18 @@ const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
 export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
 export const maximumAuthenticationPayloadBytes = 4 * 1_024
+
+export function helloProtocolCompatibility(
+  daemonProtocol: string,
+  declaredClientProtocol: string | undefined,
+) {
+  const clientProtocol = declaredClientProtocol ?? versionlessClientProtocol
+  return {
+    clientProtocol,
+    compatibility: protocolCompatibility(daemonProtocol, clientProtocol),
+  }
+}
+
 const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
@@ -1681,8 +1693,11 @@ export class DomovoiDaemon {
       // the compatibility check honest: once this daemon moves past 0.1.x, a
       // versionless client is correctly judged incompatible rather than being
       // waved through as whatever the daemon happens to speak.
-      const clientProtocol = hello.protocolVersion ?? versionlessClientProtocol
-      if (protocolCompatibility(protocolVersion, clientProtocol) !== "compatible") {
+      const { clientProtocol, compatibility } = helloProtocolCompatibility(
+        protocolVersion,
+        hello.protocolVersion,
+      )
+      if (compatibility !== "compatible") {
         // A refused handshake leaves the socket unauthenticated, so a client
         // on another protocol version cannot fall through to other methods.
         this.#authenticatedClients.delete(socket)

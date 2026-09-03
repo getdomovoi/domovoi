@@ -34,6 +34,7 @@ import {
   canServeArtifacts,
   frameAncestorsFor,
   DomovoiDaemon,
+  helloProtocolCompatibility,
   hostAuthorityMatches,
   isTestCommandTitle,
   maximumAuthenticationPayloadBytes,
@@ -68,6 +69,15 @@ const skillSecurityMetadata = {
   signature: { state: "unsigned" as const },
   trust: { state: "untrusted" as const, reason: "unsigned" as const },
 }
+
+describe("helloProtocolCompatibility", () => {
+  it("keeps a versionless client on its historical protocol after a breaking minor", () => {
+    expect(helloProtocolCompatibility("0.2.0", undefined)).toEqual({
+      clientProtocol: "0.1.0",
+      compatibility: "machine-ahead",
+    })
+  })
+})
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
