@@ -1,0 +1,15 @@
+/* shadcn's --radius, with the calc() steps the surfaces actually use.
+   The window frame is the only thing larger than --radius-xl. */
+
+:root {
+  --radius: 0.65rem;              /* 10.4px — the default */
+  --radius-xs: calc(var(--radius) - 6px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: 14px;              /* card, panel */
+  --radius-2xl: 16px;             /* marketing card */
+  --radius-3xl: 20px;             /* marketing CTA block */
+  --radius-window: 14px;          /* app frame */
+  --radius-pill: 999px;
+}

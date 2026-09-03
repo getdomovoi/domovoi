@@ -2914,6 +2914,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     replyToAnnotation,
     revokeDevice,
     rotateDevice,
+    reviewSkill,
     sendMessage,
     setSkillEnabled,
     setRuntime,
@@ -3492,6 +3493,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             projectId={snapshot.project?.id}
             enablements={snapshot.skillEnablements}
             onSetSkillEnabled={setSkillEnabled}
+            onReviewSkill={async (input) => {
+              const reviewed = await reviewSkill(input)
+              setSkillsRefresh((current) => current + 1)
+              return reviewed
+            }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
         ) : snapshot && surface === "fleet" ? (

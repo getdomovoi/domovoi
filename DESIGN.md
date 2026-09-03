@@ -74,16 +74,88 @@ components:
 
 ## Overview
 
-The normative product-design source is the Claude Design handoff under
-[`design/design_handoff_domovoi/`](design/design_handoff_domovoi/README.md). The companion
-[`design/design_handoff_domovoi_brand/`](design/design_handoff_domovoi_brand/README.md) governs
-the mark, wordmark, state family, and voice. Product tokens remain the color authority. Recreate
-both handoffs in the production stack; do not port prototype markup or `support.js`.
+The normative product-design source is the Claude Design system in the project "Relay multi-device
+platform". The tracked bundles under
+[`design/design_handoff_domovoi/`](design/design_handoff_domovoi/README.md) and
+[`design/design_handoff_domovoi_brand/`](design/design_handoff_domovoi_brand/README.md) are the
+signed snapshot taken from that project on 2026-08-26; the brand bundle still governs the mark,
+wordmark, state family, and voice. Recreate the design in the production stack; do not port
+prototype markup or `support.js`.
+
+Where the tracked handoff and the newer design system disagree, the design system wins. See
+"Design authority" below for what that changes and what is still to be synced.
 
 The system presents the same daemon-owned objects across desktop, browser, tablet, and phone:
 machine, project, session, turn, artifact, and annotation. State remains consistent across
 clients, consequential decisions are attributed to their originating client, and smaller
 surfaces collapse information rather than silently removing it.
+
+## Design authority
+
+Recorded 2026-09-02, resolving the two conflicts the repository audit raised.
+
+**The Claude Design system governs.** Its readme, tokens, and specimen cards are the contract. The
+signed `.dc.html` surfaces decide anything the design system does not state, including dock tabs,
+sidebar groups, and approval labels. The tracked handoff README is the oldest of the three and
+loses to both where they disagree.
+
+**Shell geometry follows the design system, not the tracked handoff README.**
+
+| Region | Design system | Tracked handoff README |
+| --- | --- | --- |
+| Rail | 62px, never collapses | not present |
+| Sidebar | 240px | 200 to 420px, collapsing to a 46px icon rail |
+| Thread lane | 760px centred | 620px centred |
+| Inspector | 280px | resizable dock |
+| Titlebar | 38px | unstated |
+| Header | 62px | unstated |
+| Control height | 34px | unstated |
+| Touch target | 44px minimum | 44pt iOS, 48dp Android |
+
+Other design-system rules that supersede the tracked handoff: theme scoping is `.theme-dark` and
+`.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
+literal named scale with compound paddings rather than a 4px grid; motion is `dv-pop-in`,
+`dv-pulse`, `dv-sweep`, and `dv-blink` at 90, 140, 200, and 320ms, collapsing to 0.01ms under
+reduced motion; product sans type never exceeds 20px (`--text-title`) or falls below 10.5px
+(`--text-micro`), while mono sits one notch below its sans sibling and bottoms out at 10px
+(`--text-mono-xs`) for machine metadata; icons are Lucide at 1.5px
+stroke, 16px in rows and toolbars, 20px in the rail, 24px in empty states; cards carry a one pixel
+border and no shadow, with shadows reserved for menu, popover, dialog, and window elevations.
+
+`design/REVISIONS.json` records a SHA-256 and a byte count for every file under `design/`, and
+`pnpm release:invariants` fails when the tree and the record disagree. That detects drift, not
+tampering: `pnpm design:revision` re-records whatever is on disk, so the check proves the tree
+matches what someone recorded on purpose. A diff touching both `design/` and `REVISIONS.json`
+is what a reviewer should look at. Verifying the handoff against a signature from Claude Design
+would close that gap and is not something this record claims to do.
+
+Files under `design/` are never edited in this repository. When Claude Design publishes a new
+revision, replace the bundle from the project and run `pnpm design:revision` in the same change so
+the record moves with it.
+
+**The design system is vendored** at `design/design_system_domovoi/`: `styles.css` and the nine
+token files, pulled from the project on 2026-09-02. Those files are the token contract; this
+section covers what they do not state.
+
+**Still to sync.** Measured against the vendored tokens on 2026-09-02:
+
+- `--faint` has drifted. The design system sets `oklch(0.53 0.01 285)` for dark; production ships
+  `oklch(0.59 0.01 285)` in `packages/ui/src/styles.css`. Machine metadata reads lighter than
+  intended.
+- Seven tokens are absent from production: `--desk`, `--overlay`, `--danger-on`, and the whole
+  `--info-bg`, `--info-border`, `--info-fg`, `--info-dim` ramp. The info ramp is what a handoff
+  receipt should fill with, which is why those surfaces currently approximate with a translucent
+  accent.
+- Production matches the design system on the other 39 dark tokens, counting the ten it expresses
+  as `var()` aliases.
+- The live desktop surface restyles the terminal pane. Command rows carry a two pixel primary
+  left edge over an eight percent primary wash with the prompt as a separate non-selectable span,
+  failure rows sit in a ten percent destructive band using the danger foreground and dim ramps,
+  summary rows use the strong token with the duration in muted foreground, blank lines become
+  seven pixel spacers, the header and footer bars use the sidebar token, and the line height
+  is 1.85. Everything else matches the tracked bundle.
+- Production still implements the tracked handoff geometry rather than the numbers above. Aligning
+  the shell is tracked in `ROADMAP.md`, not done.
 
 ## Colors
 
@@ -108,15 +180,20 @@ Desktop body text is 12.5–13px with a 1.6–1.72 line height. Window and secti
 
 ## Layout
 
-Implement the surface shells, panes, collapse order, resizing behavior, and platform-specific
-adaptations exactly as documented in the handoff. Desktop uses custom window decoration and its
-specified resizable workspace. Browser promotes preview work. Tablet promotes side-by-side
-artifact review. Phone promotes approvals while retaining preview, annotation, fleet, session,
-and terminal workflows.
+Shell geometry comes from `design/design_system_domovoi/tokens/spacing.css` and the table in
+"Design authority" above: a 62px rail that never collapses, a 240px sidebar, a 760px thread lane,
+a 280px inspector, and the fixed chrome heights. Those values supersede the resizable sidebar and
+620px thread column the tracked handoff README describes.
 
-Spacing follows a 4px base. Desktop rows are 28px, browser rows 30px, tablet targets at least
-44px, and phone targets at least 44pt on iOS or 48dp on Android. Container-responsive controls
-use measured container width where resizable panes make viewport media queries insufficient.
+Everything the tokens do not fix still comes from the handoff: pane collapse order, resizing
+behavior, and the platform adaptations. Browser promotes preview work, tablet promotes
+side-by-side artifact review, and phone promotes approvals while retaining preview, annotation,
+fleet, session, and terminal workflows.
+
+Spacing is the literal named scale in `tokens/spacing.css`, not a 4px grid: if a value is 5px it
+stays 5px. The compound paddings that recur are named there too. Touch targets stay at the
+platform floor, 44pt on iOS and 48dp on Android. Container-responsive controls use measured
+container width where resizable panes make viewport media queries insufficient.
 
 ## Elevation & Depth
 
@@ -127,10 +204,11 @@ semantically aligned.
 
 ## Shapes
 
-All standard controls derive from the 0.65rem base radius. Cards, panels, and popovers use the
-base radius; tracks, inputs, chips, tabs, and buttons subtract two to four pixels. Pills, dots,
-and avatars use fully rounded geometry. Device frames follow the exact platform values in the
-handoff and are reference framing rather than application components.
+Radii come from `design/design_system_domovoi/tokens/radii.css`. All standard controls derive from
+the 0.65rem base: cards and popovers use the base radius, and the steps below it subtract two to
+six pixels. Panels use `--radius-xl` at 14px, which is also the window frame. Pills, dots, and
+avatars use `--radius-pill`. Device frames follow the exact platform values in the handoff and are
+reference framing rather than application components.
 
 ## Components
 
