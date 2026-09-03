@@ -76,7 +76,7 @@ export function TerminalPane({
       disableStdin: true,
       fontFamily: "JetBrains Mono Variable, JetBrains Mono, monospace",
       fontSize: 11,
-      lineHeight: 1.55,
+      lineHeight: 1.85,
       screenReaderMode: true,
       scrollback: 5_000,
       theme: {
@@ -201,7 +201,7 @@ export function TerminalPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-code">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-sidebar px-3">
         <span aria-hidden="true" data-status-dot="" className={`size-1.5 rounded-full ${closed ? "bg-faint" : connected ? "bg-success" : "bg-warning"}`} />
         <span role="status" className="sr-only">Terminal status: {terminalStatus}. </span>
         <span className="min-w-0 truncate font-machine text-[10px] text-muted-foreground">
@@ -240,7 +240,7 @@ export function TerminalPane({
       ) : null}
       <div ref={containerRef} className="min-h-0 flex-1 p-3" />
       <div
-        className="hidden shrink-0 items-center gap-2 overflow-x-auto border-t px-3 py-2 [@media(any-pointer:coarse)]:flex"
+        className="hidden shrink-0 items-center gap-2 overflow-x-auto border-t bg-sidebar px-3 py-2 [@media(any-pointer:coarse)]:flex"
         aria-label="Terminal quick keys"
         role="toolbar"
       >

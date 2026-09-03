@@ -158,3 +158,13 @@ describe("TerminalPane ownership", () => {
     expect(target.write).not.toHaveBeenCalled()
   })
 })
+
+describe("terminal chrome", () => {
+  it("separates the terminal chrome from the output surface", () => {
+    const { controls } = harness()
+    render(<TerminalPane sessionId={sessionId} machineName="workshop" controls={controls} connected />)
+
+    const header = screen.getByText(/^pty · workshop/u).closest("div")
+    expect(header?.className).toContain("bg-sidebar")
+  })
+})
