@@ -7,6 +7,7 @@ import { join } from "node:path"
 
 import {
   demoWorkspace,
+  maximumTerminalReplayCharacters,
   type RpcMethod,
   type RpcResult,
 } from "@getdomovoi/protocol"
@@ -930,6 +931,74 @@ describe("terminal RPC", () => {
       clientId: "desktop-secret",
     })
 
+
+    socket.close()
+  })
+
+  it("hands a reattaching client the last replay window of everything the terminal printed", async () => {
+    const dataListeners = new Set<(data: string) => void>()
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn((listener: (data: string) => void) => {
+        dataListeners.add(listener)
+        return { dispose: () => dataListeners.delete(listener) }
+      }),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/terminal-replay"
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      terminalService: { spawn: vi.fn(() => terminal) },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const create = {
+      terminalId: "terminal-replay",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "desktop-replay",
+    }
+    await rpc("terminal.create", create)
+
+    // Every read is a distinct line, so a replay that dropped, reordered or
+    // duplicated one read would differ from the tail of the whole stream.
+    const reads: string[] = []
+    for (let index = 0; index < 640; index += 1) reads.push(`${`${index}:`.padEnd(511, "x")}\n`)
+    const everything = reads.join("")
+    expect(everything.length).toBeGreaterThan(maximumTerminalReplayCharacters)
+    for (const read of reads) for (const listener of dataListeners) listener(read)
+
+    const attached = await rpc("terminal.create", create) as TestRpcResponse<"terminal.create">
+    expect(attached.result.buffer).toHaveLength(maximumTerminalReplayCharacters)
+    expect(attached.result.buffer).toBe(everything.slice(-maximumTerminalReplayCharacters))
 
     socket.close()
   })

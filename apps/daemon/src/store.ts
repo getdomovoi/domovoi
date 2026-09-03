@@ -145,6 +145,7 @@ async function start() {
   const database = new DatabaseSync(workerData.path)
   database.exec("PRAGMA journal_mode = WAL;")
   database.exec("PRAGMA busy_timeout = 5000;")
+  database.exec("PRAGMA synchronous = NORMAL;")
   const save = database.prepare(
     "INSERT INTO workspace_state (id, snapshot, updated_at) VALUES (1, ?, ?) " +
     "ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at",
@@ -277,6 +278,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
+      PRAGMA synchronous = NORMAL;
       CREATE TABLE IF NOT EXISTS workspace_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         snapshot TEXT NOT NULL,
