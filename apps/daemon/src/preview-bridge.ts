@@ -1,4 +1,4 @@
-import { previewBridgeChannelSchema } from "@getdomovoi/protocol"
+import { previewBridgeChannelSchema, previewParentOriginSchema } from "@getdomovoi/protocol"
 import { parse, type DefaultTreeAdapterTypes } from "parse5"
 
 import { resolveAnnotationAnchor } from "./annotation-anchor-resolver.js"
@@ -79,17 +79,8 @@ export function validPreviewBridgeChannel(value: string | null): string | undefi
 }
 
 export function validPreviewParentOrigin(value: string | null): string | undefined {
-  if (value === "null") return value
-  if (!value) return undefined
-  try {
-    const url = new URL(value)
-    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.origin !== value) {
-      return undefined
-    }
-    return url.origin
-  } catch {
-    return undefined
-  }
+  const result = previewParentOriginSchema.safeParse(value)
+  return result.success ? result.data : undefined
 }
 
 export function injectPreviewBridge(
