@@ -444,7 +444,7 @@ export function AppBar({
       ? emergencyStopAnnouncement(emergencyStopOutcome)
       : null
   return (
-    <header className="electron-drag flex h-[var(--shell-header)] shrink-0 items-center border-b bg-sidebar px-3">
+    <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
       {ownsDecoration && bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />

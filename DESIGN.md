@@ -112,6 +112,13 @@ loses to both where they disagree.
 | Control height | 34px | unstated |
 | Touch target | 44px minimum | 44pt iOS, 48dp Android |
 
+The titlebar and header rows are unresolved against the desktop design file. `Domovoi Desktop.dc.html`
+draws one unified 44px bar that carries the project switcher, machine chip, permission mode, and
+approvals, with the macOS traffic lights inset into it, and it has no second header row. The shell
+implements that 44px bar. Until Claude Design says whether the desktop shell splits into a 38px
+titlebar above a 62px header, the app bar stays at 44px and `--shell-titlebar` and `--shell-header`
+are recorded but unused.
+
 Other design-system rules that supersede the tracked handoff: theme scoping is `.theme-dark` and
 `.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
 literal named scale with compound paddings rather than a 4px grid; motion is `dv-pop-in`,
