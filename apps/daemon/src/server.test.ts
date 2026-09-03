@@ -6714,6 +6714,11 @@ describe("DomovoiDaemon", () => {
         detail: expect.stringContaining("worktree is held by another process"),
       }),
     ]))
+    // The snapshot is about to lose every workspacePath, so the report has to
+    // name the worktree that is still on disk, and only that one.
+    const orphanReport = errorEntries.find((entry) => entry.context.includes("Remove these by hand"))
+    expect(orphanReport?.context).toContain(`/worktrees/${doomedId}`)
+    expect(orphanReport?.context).not.toContain(`/worktrees/${keptId}`)
     expect((await rpc("workspace.get", {}) as { result: { sessions: unknown[]; project: { name: string } } }).result)
       .toMatchObject({ project: { name: "elsewhere" }, sessions: [] })
     socket.close()
