@@ -45,6 +45,9 @@ Use test-driven development for behavior changes:
 Tests run sequentially at the workspace root because packages consume the generated protocol
 artifacts. Do not make the root test command parallel without first removing that build dependency.
 
+[AGENTS.md](AGENTS.md) is the agent-facing summary of these commands, the project boundaries, and
+the conventions below.
+
 ### Coverage
 
 Every package with tests runs the `v8` coverage provider on each `vitest run`, and each one carries
@@ -85,7 +88,8 @@ measured as exact integers.
 
 - The daemon owns canonical session, terminal, approval, and artifact state.
 - Code, credentials, tool execution, and repository state stay on the execution machine.
-- Remote daemon access requires authentication and an encrypted outer transport.
+- Remote daemon access requires authentication and daemon-terminated TLS; a non-loopback listener
+  without TLS material refuses to start.
 - Generated previews remain inside sandboxed artifact containers.
 - Ask, Plan, and Build are permission modes; Auto is a separate control.
 - Protocol additions require runtime validation and tests in `packages/protocol`.
