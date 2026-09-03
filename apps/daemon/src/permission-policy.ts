@@ -1,4 +1,4 @@
-import type { ApprovalRisk, Runtime } from "@getdomovoi/protocol"
+import type { ApprovalRisk, ExecutionResolution, Runtime } from "@getdomovoi/protocol"
 
 export type PermissionDecision = {
   action: "allow" | "review"
@@ -127,27 +127,6 @@ export function isSkillInstallCommand(command: string): boolean {
   return trimmed.split(commandSeparators).some((segment) => segment !== trimmed && isSkillInstallSegment(segment))
 }
 
-const packageManagers = new Set(["pnpm", "npm", "yarn", "bun"])
-const packageSubcommands = new Set([
-  "exec", "dlx", "x", "install", "i", "add", "remove", "rm", "up", "update",
-  "audit", "publish", "pack", "create", "init", "link", "why", "dedupe", "store", "patch",
-])
-const scriptName = /^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/i
-
-type PackageScriptRun = { script: string; rest: string }
-
-function packageScriptRun(command: string): PackageScriptRun | undefined {
-  const tokens = command.trim().split(/\s+/)
-  const manager = tokens[0]?.toLowerCase()
-  if (!manager || !packageManagers.has(manager)) return undefined
-  const explicitRun = tokens[1]?.toLowerCase() === "run"
-  const index = explicitRun ? 2 : 1
-  const script = tokens[index]
-  if (!script || !scriptName.test(script)) return undefined
-  if (!explicitRun && packageSubcommands.has(script.toLowerCase())) return undefined
-  return { script, rest: tokens.slice(index + 1).join(" ") }
-}
-
 type BodyDecision = "allow" | "review" | "hard-gate"
 
 // A script name authorizes nothing on its own: what runs is the body the
@@ -169,8 +148,7 @@ const boundedScriptRunners = new Set([
 // binary under a name on this list, so an unknown flag ends the match.
 const harmlessRunnerFlags = new Set(["-y", "--yes", "--silent", "-s"])
 
-function boundedLeafCommand(candidate: string): boolean {
-  const tokens = candidate.split(/\s+/).filter(Boolean)
+function boundedLeafCommand(tokens: readonly string[]): boolean {
   const executable = tokens[0]?.toLowerCase()
   if (executable === undefined) return false
   if (boundedScriptRunners.has(executable)) return true
@@ -193,32 +171,25 @@ function boundedLeafCommand(candidate: string): boolean {
   return boundedScriptRunners.has(next ?? "")
 }
 
-function resolvedScriptDecision(
-  body: string,
-  scripts: Readonly<Record<string, string>>,
-  seen: ReadonlySet<string>,
-): BodyDecision {
-  if (seen.size > 4) return "review"
-  if (hardGatePatterns.some((pattern) => pattern.test(body))) return "hard-gate"
-  if (ambiguousShellSyntax.test(body)) return "review"
-  const segments = body.split(commandSeparators).map((segment) => segment.trim()).filter(Boolean)
-  if (segments.length === 0) return "review"
-  for (const candidate of segments) {
-    if (hardGatePatterns.some((pattern) => pattern.test(candidate))) return "hard-gate"
-    const nested = packageScriptRun(candidate)
-    if (nested) {
-      if (seen.has(nested.script)) return "review"
-      const nestedBody = scripts[nested.script]
-      if (nestedBody === undefined) return "review"
-      const decision = resolvedScriptDecision(
-        `${nestedBody} ${nested.rest}`.trim(),
-        scripts,
-        new Set([...seen, nested.script]),
-      )
-      if (decision !== "allow") return decision
-      continue
+function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision {
+  if (execution.state === "unresolved") {
+    return execution.reason === "sensitive-content" ? "hard-gate" : "review"
+  }
+  if (execution.record.kind !== "shell") return "review"
+  for (const entry of execution.record.entries) {
+    for (const part of entry.parts) {
+      const command = part.argv.join(" ")
+      if (
+        isSkillInstallCommand(command)
+        || hardGatePatterns.some((pattern) => pattern.test(command))
+      ) return "hard-gate"
+      if (part.expandsTo.length > 0) continue
+      if (entry.source.kind === "request") {
+        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) return "review"
+      } else if (!boundedLeafCommand(part.argv)) {
+        return "review"
+      }
     }
-    if (!boundedLeafCommand(candidate)) return "review"
   }
   return "allow"
 }
@@ -227,7 +198,7 @@ export function permissionDecisionFor(input: {
   runtime: Runtime
   command?: string
   reason?: string
-  packageScripts?: Readonly<Record<string, string>>
+  execution?: ExecutionResolution
 }): PermissionDecision {
   const command = input.command?.trim()
   const operation = `${command ?? ""}\n${input.reason ?? ""}`.trim()
@@ -237,23 +208,18 @@ export function permissionDecisionFor(input: {
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
     return { action: "review", risk: "hard-gate" }
   }
+  const executionDecision = input.execution
+    ? resolvedExecutionDecision(input.execution)
+    : undefined
+  if (executionDecision === "hard-gate") {
+    return { action: "review", risk: "hard-gate" }
+  }
   const isBuildAuto = input.runtime.permissionMode === "build" && input.runtime.auto
   if (isBuildAuto && command !== undefined && !ambiguousShellSyntax.test(command)) {
     if (safeBuildAutoPatterns.some((pattern) => pattern.test(command))) {
       return { action: "allow", risk: "normal" }
     }
-    const invocation = packageScriptRun(command)
-    const scripts = input.packageScripts
-    const body = invocation && scripts ? scripts[invocation.script] : undefined
-    if (invocation && scripts && body !== undefined) {
-      const decision = resolvedScriptDecision(
-        `${body} ${invocation.rest}`.trim(),
-        scripts,
-        new Set([invocation.script]),
-      )
-      if (decision === "allow") return { action: "allow", risk: "normal" }
-      if (decision === "hard-gate") return { action: "review", risk: "hard-gate" }
-    }
+    if (executionDecision === "allow") return { action: "allow", risk: "normal" }
   }
   return { action: "review", risk: "normal" }
 }
