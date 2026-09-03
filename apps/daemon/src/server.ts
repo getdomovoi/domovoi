@@ -142,6 +142,12 @@ import {
   terminalRedactionCarryCharacters,
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
+import {
+  discardPendingWorkingPlanEdit,
+  submitWorkingPlanEdit,
+  syncWorkingPlanArtifact,
+  WorkingPlanMutationError,
+} from "./working-plan.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -183,6 +189,8 @@ const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
   "checkpoint.restore",
+  "plan.discardEdit",
+  "plan.edit",
   "session.archive",
   "session.pause",
   "session.evidence",
@@ -1197,6 +1205,16 @@ export class DomovoiDaemon {
     })
     this.#pendingAudits.set(socket, pending)
     return true
+  }
+
+  #amendPendingAudit(
+    socket: WebSocket,
+    id: string | number | null,
+    updates: Pick<AuditAppendInput, "target" | "detail">,
+  ): void {
+    const input = this.#pendingAudits.get(socket)?.get(JSON.stringify(id))
+    if (!input) return
+    Object.assign(input, updates)
   }
 
   #auditSessionId(values: Record<string, unknown>): string | undefined {
@@ -3130,6 +3148,180 @@ export class DomovoiDaemon {
         annotation.statusChangedAt = changedAt
         annotation.updatedAt = changedAt
         changed = true
+      }
+
+      if (method === "plan.edit") {
+        const params = paramsResult.data as RpcParams<"plan.edit">
+        const actor = this.#authenticatedActors.get(socket)
+        const connectionId = this.#connectionIds.get(socket)
+        if (!actor || actor.kind !== "client" || !connectionId) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Plan editing requires an authenticated connection identity",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
+        const currentIndex = this.#snapshot.workingPlans.findIndex(
+          (candidate) => candidate.sessionId === params.sessionId,
+        )
+        const current = currentIndex === -1
+          ? undefined
+          : this.#snapshot.workingPlans[currentIndex]
+        const updatedAt = new Date().toISOString()
+        let mutation
+        try {
+          mutation = submitWorkingPlanEdit(
+            current,
+            params,
+            {
+              client: actor.client,
+              connectionId,
+              ...(actor.clientId ? { clientId: actor.clientId } : {}),
+            },
+            Boolean(session.activeTurnId)
+              || session.state === "active"
+              || session.state === "waiting",
+            updatedAt,
+          )
+        } catch (error) {
+          if (!(error instanceof WorkingPlanMutationError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        if (currentIndex === -1) this.#snapshot.workingPlans.push(mutation.plan)
+        else this.#snapshot.workingPlans[currentIndex] = mutation.plan
+        session.updatedAt = updatedAt
+        if (mutation.structureChanged) {
+          syncWorkingPlanArtifact(
+            this.#snapshot.artifacts,
+            this.#snapshot.annotations,
+            mutation.plan,
+            true,
+          )
+          this.#syncArtifactWatchers()
+        }
+        this.#amendPendingAudit(socket, request.id, {
+          target: mutation.receipt.editId,
+          detail: [
+            `disposition=${mutation.receipt.disposition}`,
+            `base=${mutation.receipt.basedOnStructureRevision}`,
+            `plan=${mutation.receipt.planRevision}`,
+            `structure=${mutation.receipt.structureRevision}`,
+          ].join(" "),
+        })
+        workspaceSnapshotSchema.parse(this.#snapshot)
+        await this.#persistSnapshot()
+        const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            snapshot: clientSnapshot,
+            receipt: mutation.receipt,
+          }),
+        })
+        this.#broadcastNotification("workspace.changed", clientSnapshot)
+        return
+      }
+
+      if (method === "plan.discardEdit") {
+        const params = paramsResult.data as RpcParams<"plan.discardEdit">
+        const actor = this.#authenticatedActors.get(socket)
+        const connectionId = this.#connectionIds.get(socket)
+        if (!actor || actor.kind !== "client" || !connectionId) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Plan editing requires an authenticated connection identity",
+          )
+          return
+        }
+        if (params.client !== actor.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Plan edit client does not match the authenticated client",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (!session) {
+          this.#error(socket, request.id, invalidParams, "Session does not exist")
+          return
+        }
+        if (sessionIsArchiveReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+          return
+        }
+        const currentIndex = this.#snapshot.workingPlans.findIndex(
+          (candidate) => candidate.sessionId === params.sessionId,
+        )
+        const current = currentIndex === -1
+          ? undefined
+          : this.#snapshot.workingPlans[currentIndex]
+        if (!current) {
+          this.#error(socket, request.id, invalidParams, "Working plan does not exist")
+          return
+        }
+        const updatedAt = new Date().toISOString()
+        let mutation
+        try {
+          mutation = discardPendingWorkingPlanEdit(
+            current,
+            params.editId,
+            {
+              client: actor.client,
+              connectionId,
+              ...(actor.clientId ? { clientId: actor.clientId } : {}),
+            },
+            updatedAt,
+          )
+        } catch (error) {
+          if (!(error instanceof WorkingPlanMutationError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        this.#snapshot.workingPlans[currentIndex] = mutation.plan
+        session.updatedAt = updatedAt
+        this.#amendPendingAudit(socket, request.id, {
+          target: mutation.receipt.editId,
+          detail: [
+            `disposition=${mutation.receipt.disposition}`,
+            `base=${mutation.receipt.basedOnStructureRevision}`,
+            `plan=${mutation.receipt.planRevision}`,
+            `structure=${mutation.receipt.structureRevision}`,
+          ].join(" "),
+        })
+        workspaceSnapshotSchema.parse(this.#snapshot)
+        await this.#persistSnapshot()
+        const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            snapshot: clientSnapshot,
+            receipt: mutation.receipt,
+          }),
+        })
+        this.#broadcastNotification("workspace.changed", clientSnapshot)
+        return
       }
 
       if (method === "approval.resolve") {
