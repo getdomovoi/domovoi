@@ -166,6 +166,7 @@ import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
+import { WorkingPlanCard } from "./working-plan"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
   DesktopFirstRunDialog,
@@ -2238,6 +2239,12 @@ export function ArtifactDock({
   onRevertSessionFile: (sessionId: string, path: string) => Promise<void>
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
+  const workingPlan = snapshot.workingPlans.find(
+    (candidate) => candidate.sessionId === snapshot.activeSessionId,
+  )
+  const planRunning = snapshot.sessions.some(
+    (session) => session.id === snapshot.activeSessionId && session.activeTurnId !== undefined,
+  )
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | undefined>(previewCandidate?.id)
   const previewVariants = useMemo(
@@ -2658,7 +2665,13 @@ export function ArtifactDock({
           )}
         </TabsContent>
         <TabsContent value="plan" className="min-h-0">
-          {plan?.content ? (
+          {workingPlan ? (
+            <ScrollArea className="h-full">
+              <div className="p-3">
+                <WorkingPlanCard plan={workingPlan} running={planRunning} />
+              </div>
+            </ScrollArea>
+          ) : plan?.content ? (
             <ScrollArea className="h-full">
               <article className="p-4">
                 <div className="mb-4 border-b pb-3">
