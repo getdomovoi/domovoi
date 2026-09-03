@@ -1,13 +1,13 @@
-import { chmod, mkdir, mkdtemp, stat } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createEmptyWorkspace, demoWorkspace } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { SqliteWorkspaceStore } from "./store.js"
+import { isCorruption, SqliteWorkspaceStore, type WorkspaceWriter } from "./store.js"
 
 const scratchDirectories: string[] = []
 
@@ -511,6 +511,192 @@ describe("SqliteWorkspaceStore", () => {
     store.close()
   })
 
+  describe("recovery from unreadable state", () => {
+    const initial = demoWorkspace
+    const auditEntry = {
+      id: "audit-before-corruption",
+      occurredAt: "2026-08-29T12:00:00.000Z",
+      actor: { kind: "client", client: "desktop" },
+      action: "session.send",
+      outcome: "succeeded",
+      sessionId: demoWorkspace.sessions[0]!.id,
+    } as const
+
+    async function seedThenDamage(
+      name: string,
+      damage: (databasePath: string) => Promise<string>,
+    ): Promise<{ scratch: string; databasePath: string; damaged: string }> {
+      const scratch = await mkdtemp(join(tmpdir(), `domovoi-store-${name}-`))
+      scratchDirectories.push(scratch)
+      const databasePath = join(scratch, "state.sqlite")
+      const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+      seed.auditLog.append(auditEntry)
+      seed.close()
+      const damaged = await damage(databasePath)
+      return { scratch, databasePath, damaged }
+    }
+
+    function replaceSnapshotRow(databasePath: string, snapshot: string): string {
+      const database = new DatabaseSync(databasePath)
+      database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(snapshot)
+      const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+      database.close()
+      return row.snapshot
+    }
+
+    function recoveryNotice(quarantinedPath: string) {
+      return expect.objectContaining({
+        id: expect.stringMatching(/^system-state-recovery-/),
+        sessionId: initial.activeSessionId,
+        kind: "system",
+        detail: expect.stringContaining(quarantinedPath),
+      })
+    }
+
+    function recovered(quarantinedPath: string) {
+      return { ...initial, thread: [...initial.thread, recoveryNotice(quarantinedPath)] }
+    }
+
+    async function expectPersistedRecovery(
+      scratch: string,
+      databasePath: string,
+      quarantinedPath: string,
+    ): Promise<void> {
+      const entriesBefore = (await readdir(scratch)).sort()
+      const reopened = new SqliteWorkspaceStore(databasePath, initial)
+      expect(reopened.recovery).toBeUndefined()
+      expect(reopened.load()).toEqual(recovered(quarantinedPath))
+      reopened.close()
+      expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
+    }
+
+    it.each([
+      ["unable to open database file", "ERR_SQLITE_ERROR"],
+      ["database is locked", "SQLITE_BUSY"],
+      ["attempt to write a readonly database", "SQLITE_READONLY"],
+      ["disk I/O error", "SQLITE_IOERR"],
+      ["EACCES: permission denied, open", "EACCES"],
+    ])("treats %j as operational rather than corruption", (message, code) => {
+      // Quarantine renames the live database, so anything that is merely
+      // unavailable must propagate instead: a locked or unreadable file is
+      // still a healthy one, and moving it loses more than it saves.
+      expect(isCorruption(Object.assign(new Error(message), { code }))).toBe(false)
+    })
+
+    it.each([
+      ["file is not a database", "ERR_SQLITE_ERROR"],
+      ["database disk image is malformed", "SQLITE_CORRUPT"],
+    ])("treats %j as corruption", (message, code) => {
+      expect(isCorruption(Object.assign(new Error(message), { code }))).toBe(true)
+    })
+
+    it("does not quarantine a locked live database", async () => {
+      const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-locked-"))
+      scratchDirectories.push(scratch)
+      const databasePath = join(scratch, "state.sqlite")
+      const lock = new DatabaseSync(databasePath)
+      lock.exec("CREATE TABLE held_open (id INTEGER); BEGIN EXCLUSIVE")
+      const before = await stat(databasePath)
+      try {
+        expect(() => new SqliteWorkspaceStore(databasePath, initial)).toThrow(/locked/i)
+        expect((await readdir(scratch)).some((entry) => entry.includes(".corrupt-"))).toBe(false)
+        expect((await stat(databasePath)).ino).toBe(before.ino)
+      } finally {
+        lock.exec("ROLLBACK")
+        lock.close()
+      }
+    })
+
+    it("keeps a truncated snapshot row beside the database and reseeds the workspace", async () => {
+      const { scratch, databasePath, damaged } = await seedThenDamage("truncated-json", async (path) => {
+        const database = new DatabaseSync(path)
+        const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+        database.close()
+        return replaceSnapshotRow(path, row.snapshot.slice(0, 40))
+      })
+
+      const store = new SqliteWorkspaceStore(databasePath, initial)
+      const recovery = store.recovery
+      expect(recovery).toEqual({
+        kind: "snapshot",
+        quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
+        reason: expect.stringContaining("JSON"),
+      })
+      expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
+      expect(await readdir(scratch)).toContain(join(recovery!.quarantinedPath).slice(scratch.length + 1))
+      expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
+      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([
+        expect.objectContaining({ id: "audit-before-corruption" }),
+      ])
+      store.close()
+
+      await expectPersistedRecovery(scratch, databasePath, recovery!.quarantinedPath)
+    })
+
+    it("keeps a schema-incompatible snapshot row beside the database and reseeds the workspace", async () => {
+      const incompatible = '{"protocolVersion":"999","machine":{"id":"m"}}'
+      const { scratch, databasePath, damaged } = await seedThenDamage("schema-incompatible", async (path) =>
+        replaceSnapshotRow(path, incompatible),
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, initial)
+      const recovery = store.recovery
+      expect(recovery).toEqual({
+        kind: "snapshot",
+        quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
+        reason: expect.stringContaining("ZodError"),
+      })
+      expect(damaged).toBe(incompatible)
+      expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(incompatible)
+      expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
+      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([
+        expect.objectContaining({ id: "audit-before-corruption" }),
+      ])
+      store.close()
+
+      await expectPersistedRecovery(scratch, databasePath, recovery!.quarantinedPath)
+    })
+
+    it("moves a file that is not a database aside without its stale WAL and starts fresh", async () => {
+      const garbage = "this is not sqlite\n".repeat(64)
+      const { scratch, databasePath } = await seedThenDamage("not-a-database", async (path) => {
+        await writeFile(path, garbage)
+        await writeFile(`${path}-wal`, "stale wal")
+        return garbage
+      })
+
+      const store = new SqliteWorkspaceStore(databasePath, initial)
+      const recovery = store.recovery
+      expect(recovery).toEqual({
+        kind: "database",
+        quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
+        reason: expect.stringContaining("not a database"),
+      })
+      expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(garbage)
+      const freshSidecar = await readFile(`${databasePath}-wal`, "utf8").catch(() => "")
+      expect(freshSidecar).not.toBe("stale wal")
+      expect((await stat(databasePath)).size).toBeGreaterThan(0)
+      expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
+      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([])
+      store.close()
+
+      await expectPersistedRecovery(scratch, databasePath, recovery!.quarantinedPath)
+    })
+
+    it("starts an unopened workspace from the initial snapshot and reports the recovery", async () => {
+      const empty = createEmptyWorkspace(demoWorkspace.machine)
+      const { databasePath, damaged } = await seedThenDamage("unopened", async (path) =>
+        replaceSnapshotRow(path, "{}"),
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, empty, { legacySnapshots: [demoWorkspace] })
+      expect(store.recovery).toMatchObject({ kind: "snapshot" })
+      expect(await readFile(store.recovery!.quarantinedPath, "utf8")).toBe(damaged)
+      expect(store.load()).toEqual(empty)
+      store.close()
+    })
+  })
+
   it.skipIf(process.platform === "win32")("repairs private state and sidecar permissions", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
@@ -612,4 +798,49 @@ it("releases the database once the store is closed", async () => {
   await expect(store.saveAsync?.({ ...demoWorkspace })).rejects.toThrow(
     "Workspace persistence worker is closed",
   )
+})
+
+it("replaces a persistence worker that failed and accepts the next save", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-writer-recreate-"))
+  scratchDirectories.push(root)
+  const written: WorkspaceSnapshot[] = []
+  const closeWrites: unknown[] = []
+  let failNext = true
+  const factory = vi.fn((path: string): WorkspaceWriter => {
+    const writer: { failed: boolean; closed: boolean } = { failed: false, closed: false }
+    return {
+      get failed() {
+        return writer.failed
+      },
+      async write(snapshot: WorkspaceSnapshot) {
+        if (writer.closed) throw new Error("Workspace persistence worker is closed")
+        if (failNext) {
+          failNext = false
+          writer.failed = true
+          throw new Error("Workspace persistence worker exited with code 1")
+        }
+        written.push(snapshot)
+      },
+      async close() {
+        writer.closed = true
+        closeWrites.push(path)
+      },
+    }
+  })
+  const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), demoWorkspace, {
+    writerFactory: factory,
+  })
+
+  await expect(store.saveAsync(demoWorkspace)).rejects.toThrow(
+    "Workspace persistence worker exited with code 1",
+  )
+  await store.saveAsync(demoWorkspace)
+
+  expect(factory).toHaveBeenCalledTimes(2)
+  expect(written).toHaveLength(1)
+  await store.close()
+  await expect(store.saveAsync(demoWorkspace)).rejects.toThrow(
+    "Workspace persistence worker is closed",
+  )
+  expect(factory).toHaveBeenCalledTimes(2)
 })

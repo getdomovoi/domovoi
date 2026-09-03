@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs"
-import { homedir, hostname } from "node:os"
+import { homedir, hostname, userInfo } from "node:os"
 
 import { DomovoiDaemon } from "./server.js"
 import { CliProviderProbe } from "./providers.js"
@@ -11,6 +11,7 @@ import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
+import { installShutdownHandlers } from "./shutdown.js"
 import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
@@ -19,6 +20,7 @@ import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
+import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
 
 async function requestPairingCode(
   config: { host: string; port: number; tls?: unknown },
@@ -157,6 +159,9 @@ const help = `Usage: domovoid [options]
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
+       domovoid service install
+       domovoid service status
+       domovoid service remove
 
 Options:
   -h, --help       Show this help
@@ -192,6 +197,23 @@ async function main() {
     process.exitCode = await runProviderSecretCommand(args, {
       manager: new ProviderSecretManager(),
       readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "service") {
+    // The service runs as the user who asked for it, so the plan is built from
+    // this process's own identity rather than anything a caller passes in.
+    const { uid, username } = userInfo()
+    process.exitCode = await runServiceCommand(args, {
+      ...nodeServiceEffects(),
+      platform: process.platform,
+      execPath: process.argv[1] ?? process.execPath,
+      runtime: process.execPath,
+      home: homedir(),
+      uid,
+      user: username,
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -261,14 +283,12 @@ async function main() {
     : undefined
   if (published) await publishEndpointFile({ home: homedir(), ...published })
 
-  const shutdown = async () => {
-    await removeEndpointFile(homedir(), published)
-    await daemon.stop()
-    process.exit(0)
-  }
-
-  process.on("SIGINT", shutdown)
-  process.on("SIGTERM", shutdown)
+  installShutdownHandlers({
+    removeEndpointFile: () => removeEndpointFile(homedir(), published),
+    stopDaemon: () => daemon.stop(),
+    exit: (code) => process.exit(code),
+    writeStderr: (text) => process.stderr.write(text),
+  })
 }
 
 await main()

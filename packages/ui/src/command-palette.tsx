@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import {
   ClipboardIcon,
   CircleStopIcon,
+  CpuIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
   HistoryIcon,
   MessageSquarePlusIcon,
   PanelTopIcon,
   RefreshCwIcon,
+  MessagesSquareIcon,
   SettingsIcon,
   SparklesIcon,
 } from "lucide-react"
@@ -22,6 +24,9 @@ import {
   CommandList,
   CommandShortcut,
 } from "./components/ui/command"
+import type { FleetMachine, WorkspaceSnapshot } from "@getdomovoi/protocol"
+
+import { machineSelection } from "./machine-selection"
 import type { WorkspaceSurface } from "./workspace-persistence"
 import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
 
@@ -34,13 +39,26 @@ type ShortcutEvent = {
   altKey: boolean
 }
 
+export const commandSections = [
+  "Project",
+  "Session",
+  "Sessions",
+  "Machines",
+  "Skills",
+  "Navigate",
+  "Connection",
+] as const
+
+export type CommandSection = typeof commandSections[number]
+
 export type WorkspaceCommand = {
   id: string
   label: string
-  section: "Project" | "Session" | "Navigate" | "Connection"
+  section: CommandSection
   keywords: readonly string[]
   icon?: ComponentType
   shortcut?: string
+  detail?: string
   restoreFocus?: boolean
   disabled?: boolean
   run: () => void
@@ -92,6 +110,12 @@ export function buildWorkspaceCommands({
   pauseAll,
   reconnect,
   setSurface,
+  sessions,
+  machines,
+  skills,
+  activateSession,
+  selectMachine,
+  openSkill,
 }: {
   activeWorkspacePath?: string | undefined
   copyWorktreePath?: (() => void) | undefined
@@ -105,6 +129,12 @@ export function buildWorkspaceCommands({
   pauseAll: () => void
   reconnect: () => void
   setSurface: (surface: WorkspaceSurface) => void
+  sessions?: readonly WorkspaceSnapshot["sessions"][number][] | undefined
+  machines?: readonly FleetMachine[] | null | undefined
+  skills?: readonly { id: string; name: string; scope: string }[] | undefined
+  activateSession?: ((sessionId: string) => void) | undefined
+  selectMachine?: ((machineId: string) => void) | undefined
+  openSkill?: ((skillId: string) => void) | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -119,6 +149,39 @@ export function buildWorkspaceCommands({
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },
     { id: "surface-audit", label: "Audit log", section: "Navigate", keywords: ["history", "receipts"], icon: HistoryIcon, run: () => setSurface("audit") },
     ...(connected ? [] : [{ id: "reconnect", label: "Reconnect daemon", section: "Connection" as const, keywords: ["retry", "machine"], icon: RefreshCwIcon, run: reconnect }]),
+    // The launcher opens the objects the workspace already holds: a session, a
+    // paired machine, a discovered skill. Nothing here fetches anything.
+    ...(activateSession ? (sessions ?? []).map((session) => ({
+      id: `session-${session.id}`,
+      label: session.title,
+      section: "Sessions" as const,
+      keywords: [session.state, session.runtime.provider, session.runtime.model],
+      icon: MessagesSquareIcon,
+      detail: session.state,
+      run: () => activateSession(session.id),
+    })) : []),
+    ...(selectMachine ? (machines ?? []).map((machine) => {
+      const selection = machineSelection(machine)
+      return {
+        id: `machine-${machine.id}`,
+        label: machine.label,
+        section: "Machines" as const,
+        keywords: [machine.platform, machine.connection, machine.health],
+        icon: CpuIcon,
+        detail: machine.self ? "this machine" : machine.connection,
+        disabled: !machine.self && !selection.selectable,
+        run: () => selectMachine(machine.id),
+      }
+    }) : []),
+    ...(openSkill ? (skills ?? []).map((skill) => ({
+      id: `skill-${skill.id}`,
+      label: skill.name,
+      section: "Skills" as const,
+      keywords: [skill.scope, "skill"],
+      icon: SparklesIcon,
+      detail: skill.scope,
+      run: () => openSkill(skill.id),
+    })) : []),
   ]
 }
 
@@ -143,7 +206,7 @@ export function CommandPalette({
   const wasOpen = useRef(open)
   const shouldRestoreFocus = useRef(true)
   const ranked = useMemo(() => rankWorkspaceCommands(commands, query), [commands, query])
-  const sections = ["Project", "Session", "Navigate", "Connection"] as const
+  const sections = commandSections
 
   useEffect(() => {
     if (!wasOpen.current && open) shouldRestoreFocus.current = true
@@ -192,7 +255,10 @@ export function CommandPalette({
                       }}
                     >
                       {Icon ? <Icon /> : null}
-                      <span>{command.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{command.label}</span>
+                      {command.detail ? (
+                        <span className="shrink-0 font-machine text-[10px] text-faint">{command.detail}</span>
+                      ) : null}
                       {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
                     </CommandItem>
                   )

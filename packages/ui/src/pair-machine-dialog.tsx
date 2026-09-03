@@ -92,8 +92,10 @@ export function PairMachineDialog({
           <DialogHeader>
             <DialogTitle>Pair a machine</DialogTitle>
             <DialogDescription>
-              Run <span className="font-machine">domovoid pair</span> on the other machine and enter
-              the code it shows. A code works once and lasts a few minutes.
+              Run <span className="font-machine">domovoid service install</span> on the other
+              machine so its daemon starts at login, then{" "}
+              <span className="font-machine">domovoid pair</span> and enter the code it shows. A code
+              works once and lasts a few minutes.
             </DialogDescription>
           </DialogHeader>
           {error ? (
