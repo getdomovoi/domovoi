@@ -3700,6 +3700,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onRevokeDevice={revokeDevice}
             onRotateDevice={rotateDevice}
             onPairMachine={pairMachine}
+            onUseMachine={(machineId: string) => {
+              switchMachine(machineId)
+              setSurface("workspace")
+            }}
+            onOpenMachineTerminal={(machineId: string) => {
+              switchMachine(machineId)
+              setSurface("workspace")
+              openDockTab("terminal")
+            }}
           />
         ) : surface === "audit" ? (
           <AuditLogView
