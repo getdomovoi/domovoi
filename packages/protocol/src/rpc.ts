@@ -77,6 +77,7 @@ export const machineCredentialMissingErrorCode = -32011 as const
 export const projectSwitchConfirmationErrorCode = -32010 as const
 export const protocolVersionMismatchErrorCode = -32012 as const
 export const devicePairingLimitErrorCode = -32013 as const
+export const daemonPersistenceUnavailableErrorCode = -32014 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -1054,6 +1055,9 @@ export const rpcMethods = {
     params: systemEmergencyStopParamsSchema,
     result: systemEmergencyStopResultSchema,
   },
+  // A diagnostic and test-harness read. Clients receive the same snapshot from
+  // `system.hello` on every connection and resync through it after a reconnect,
+  // so a client with no call to this method is behaving normally, not missing one.
   "workspace.get": { params: z.object({}).strict(), result: workspaceSnapshotSchema },
   "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
@@ -1132,6 +1136,85 @@ export const rpcMethods = {
 } as const
 
 export type RpcMethod = keyof typeof rpcMethods
+
+export type RpcMethodMutation = "mutating" | "read-only"
+
+// A method is mutating when handling it is expected to change state the daemon
+// must write to disk. A method that only reads, or that changes live process
+// state a restart would discard anyway, is read-only. The distinction is stated
+// here rather than inferred by each implementation, because a daemon that can no
+// longer persist refuses mutating methods and must answer read-only ones.
+export const rpcMethodMutations = {
+  "system.hello": "read-only",
+  "workspace.get": "read-only",
+  "artifact.authorize": "read-only",
+  "terminal.create": "read-only",
+  "terminal.claim": "read-only",
+  "terminal.input": "read-only",
+  "terminal.resize": "read-only",
+  "terminal.close": "read-only",
+  "fleet.list": "read-only",
+  "transfer.have": "read-only",
+  "device.machineCredential": "read-only",
+  "device.list": "read-only",
+  "session.evidence": "read-only",
+  "session.history": "read-only",
+  "session.usage": "read-only",
+  "audit.query": "read-only",
+  "audit.export": "read-only",
+  "skill.list": "read-only",
+  "skill.inventory": "read-only",
+  "skill.read": "read-only",
+  "runtime.models": "read-only",
+  "provider.secret.list": "read-only",
+  "device.pair": "mutating",
+  "device.claim": "mutating",
+  "device.issueCode": "mutating",
+  "device.saveCredential": "mutating",
+  "device.revoke": "mutating",
+  "device.rotate": "mutating",
+  "session.transfer": "mutating",
+  "transfer.fromRef": "mutating",
+  "transfer.begin": "mutating",
+  "transfer.chunk": "mutating",
+  "system.pauseAll": "mutating",
+  "system.emergencyStop": "mutating",
+  "skill.setEnabled": "mutating",
+  "provider.refresh": "mutating",
+  "annotation.create": "mutating",
+  "annotation.reply": "mutating",
+  "annotation.setStatus": "mutating",
+  "approval.resolve": "mutating",
+  "session.setRuntime": "mutating",
+  "session.restartProviderThread": "mutating",
+  "project.open": "mutating",
+  "session.activate": "mutating",
+  "session.pause": "mutating",
+  "session.archive": "mutating",
+  "session.create": "mutating",
+  "session.fork": "mutating",
+  "session.send": "mutating",
+  "checkpoint.create": "mutating",
+  "checkpoint.restore": "mutating",
+} as const satisfies Record<RpcMethod, RpcMethodMutation>
+
+// Mutating methods that stay reachable while persistence is unavailable,
+// because they exist to reduce what an unpersisted daemon is still doing.
+export const persistenceRecoveryRpcMethods = [
+  "system.pauseAll",
+  "session.pause",
+  "system.emergencyStop",
+] as const satisfies readonly RpcMethod[]
+
+export function isMutatingRpcMethod(method: RpcMethod): boolean {
+  return rpcMethodMutations[method] === "mutating"
+}
+
+export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
+  if (!isMutatingRpcMethod(method)) return false
+  return !(persistenceRecoveryRpcMethods as readonly RpcMethod[]).includes(method)
+}
+
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
 export type RpcRequest = z.infer<typeof rpcRequestSchema>
