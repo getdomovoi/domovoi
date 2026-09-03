@@ -204,10 +204,12 @@ Every ledger entry is now merged.
 
 - [x] Discover and deduplicate local skills
 - [x] Show provenance, scope, exact path, metadata, and source
-- [x] Define capability manifests, content digests, and the signature and trust state model
+- [x] Define capability manifests, content digests, signature state, and trust state
+- [x] Add a manual-review trust path that binds trust to the reviewed content digest and records
+  the reviewing client in the audit log
 - [ ] Verify skill signatures and produce a trusted state
-  - The catalog only emits `unverified`, `unsigned`, or `invalid` signatures and `untrusted` or
-    `blocked` trust, so Build auto rejects every skill. Blocked on unresolved decision 2.
+  - Cryptographic signatures are still only `unverified`, `unsigned`, or `invalid`; trust currently
+    comes only from manual review of an exact content digest. Blocked on unresolved decision 2.
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
@@ -422,15 +424,19 @@ dependent work starts.
    and the warning difference between switch and fork.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
    custody model. Current `.sig` declarations are content-digest-bound but are not
-   cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
+   cryptographically verified, so a signature alone never grants trust. Manual review is the
+   interim trust path: a person reviews an exact content digest on one machine, the daemon records
+   that decision with the reviewing client, and the skill becomes trusted only while its content
+   digest still matches. Any content change drops it back to untrusted. Cryptographic verification
+   is still blocked on this decision, and an invalid signature stays blocked regardless of review.
 3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
    run unattended inside a containment boundary. An allowlisted runner executes files the
    repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits
    a changed `vitest.config.ts`, setup file, plugin, or test file to run with the daemon user's
    permissions, and no command pattern can see that. If the answer is yes, bounded has to mean
    bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
-   every package manager command is a hard gate and Build auto is narrower than this roadmap
-   describes.
+    every package manager command is a hard gate and Build auto is narrower than this roadmap
+    describes.
 4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
 5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
