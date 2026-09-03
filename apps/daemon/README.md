@@ -39,8 +39,9 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
 reuses a high-entropy credential at `~/.domovoi/daemon.token` with user-only permissions. Remote
-listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. Use an encrypted outer transport such
-as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
+listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and
+`DOMOVOI_TLS_KEY_PATH`, which must be set together. The daemon terminates TLS itself and refuses
+to start a plaintext non-loopback listener.
 
 The bearer token protects RPC access. Health checks remain public. Preview documents require their
 own short-lived signed capabilities on every listener, loopback included; each capability is scoped

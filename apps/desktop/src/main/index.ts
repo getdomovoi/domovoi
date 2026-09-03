@@ -182,12 +182,7 @@ ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
   if (!authorizedDesktopSender(event) || !mainWindow) {
     throw new Error("Annotation capture sender is not authorized")
   }
-  return captureAnnotationPng(mainWindow.webContents, rect as {
-    x: number
-    y: number
-    width: number
-    height: number
-  })
+  return captureAnnotationPng(mainWindow.webContents, rect)
 })
 ipcMain.handle("domovoi:notify", (event, request: unknown) => {
   if (!authorizedDesktopSender(event)) return false

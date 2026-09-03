@@ -30,6 +30,7 @@ export function createMachineDialer(input: {
   credentials: MachineCredentials | undefined
   open: (input: {
     endpoint: string
+    machineId: string
     credential: string
     signal?: AbortSignal
   }) => Promise<MachineConnection>
@@ -60,6 +61,7 @@ export function createMachineDialer(input: {
 
     return input.open({
       endpoint: transport.endpoint,
+      machineId,
       credential,
       ...(signal ? { signal } : {}),
     })
