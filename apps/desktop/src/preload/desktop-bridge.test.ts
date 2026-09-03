@@ -6,7 +6,7 @@ function ipc() {
   const handlers = new Map<string, (event: unknown, value: unknown) => void>()
   const target = {
     handlers,
-    invoke: vi.fn(async (channel: string) => {
+    invoke: vi.fn(async (channel: string): Promise<unknown> => {
       if (channel === "domovoi:open-directory") return { status: "selected", path: "/project" }
       if (channel === "domovoi:clipboard-read") return "clipboard"
       return true
@@ -71,6 +71,36 @@ describe("createDesktopWindowBridge", () => {
       bridge.setWindowDecoration("gnome" as never),
     ).rejects.toThrow("Window decoration is invalid")
     expect(target.invoke).toHaveBeenCalledTimes(1)
+  })
+
+  it("validates annotation capture replies before they reach the renderer", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "linux")
+    const rect = { x: 0, y: 0, width: 320, height: 120 }
+    const capture = { mimeType: "image/png", width: 320, height: 120, data: "AAAA" }
+
+    target.invoke.mockResolvedValueOnce(capture)
+    await expect(bridge.captureAnnotation(rect)).resolves.toEqual(capture)
+    expect(target.invoke).toHaveBeenCalledWith("domovoi:capture-annotation", rect)
+
+    for (const reply of [
+      "AAAA",
+      null,
+      [capture],
+      { mimeType: "image/jpeg", width: 320, height: 120, data: "AAAA" },
+      { mimeType: "image/jpeg" },
+      { mimeType: "image/png", width: 0, height: 120, data: "AAAA" },
+      { mimeType: "image/png", width: 320, height: 2049, data: "AAAA" },
+      { mimeType: "image/png", width: 320.5, height: 120, data: "AAAA" },
+      { mimeType: "image/png", width: 320, height: 120, data: "" },
+      { mimeType: "image/png", width: 320, height: 120, data: "A".repeat(2_000_001) },
+      { mimeType: "image/png", width: 320, height: 120, data: "AAAA", extra: true },
+    ]) {
+      target.invoke.mockResolvedValueOnce(reply)
+      await expect(bridge.captureAnnotation(rect)).rejects.toThrow(
+        "Desktop returned an invalid annotation capture response",
+      )
+    }
   })
 
   it("routes only bounded deep-link session IDs and removes its listener", () => {

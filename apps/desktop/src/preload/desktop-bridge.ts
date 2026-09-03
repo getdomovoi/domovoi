@@ -13,9 +13,12 @@ export type IpcRendererAdapter = {
 }
 
 type DesktopPlatform = DesktopWindowBridge["platform"]
+type DesktopAnnotationCapture = Awaited<ReturnType<DesktopWindowBridge["captureAnnotation"]>>
 
 const sessionIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u
 const maximumClipboardLength = 1_000_000
+const maximumCaptureDimension = 2048
+const maximumCaptureDataLength = 2_000_000
 
 function absolutePath(value: unknown, platform: DesktopPlatform): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 4_096 || /[\0\r\n]/u.test(value)) return false
@@ -36,6 +39,29 @@ function directoryResult(value: unknown, platform: DesktopPlatform): DesktopDire
     && absolutePath(result.path, platform)
   ) return { status: "selected", path: result.path }
   throw new Error("Desktop returned an invalid folder response")
+}
+
+function captureDimension(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= maximumCaptureDimension
+}
+
+function captureResult(value: unknown): DesktopAnnotationCapture {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.keys(value).sort().join(",") !== "data,height,mimeType,width"
+  ) throw new Error("Desktop returned an invalid annotation capture response")
+  const result = value as Record<string, unknown>
+  if (
+    result.mimeType !== "image/png"
+    || !captureDimension(result.width)
+    || !captureDimension(result.height)
+    || typeof result.data !== "string"
+    || result.data.length === 0
+    || result.data.length > maximumCaptureDataLength
+  ) throw new Error("Desktop returned an invalid annotation capture response")
+  return { mimeType: "image/png", width: result.width, height: result.height, data: result.data }
 }
 
 function externalRequest(value: DesktopOpenExternalRequest, platform: DesktopPlatform): DesktopOpenExternalRequest {
@@ -72,7 +98,7 @@ export function createDesktopWindowBridge(
       if (typeof result !== "string" || !result) throw new Error("Desktop authentication token is unavailable")
       return result
     },
-    captureAnnotation: async (rect) => await ipc.invoke("domovoi:capture-annotation", rect) as Awaited<ReturnType<DesktopWindowBridge["captureAnnotation"]>>,
+    captureAnnotation: async (rect) => captureResult(await ipc.invoke("domovoi:capture-annotation", rect)),
     notify: async (request) => booleanResult(await ipc.invoke("domovoi:notify", request), "notification"),
     onNotificationActivate: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {

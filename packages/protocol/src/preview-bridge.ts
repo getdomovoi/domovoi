@@ -18,23 +18,9 @@ export const previewBridgeSelectionMessageSchema = z.object({
   label: z.string().trim().min(1).max(240),
 })
 
-const previewBridgeAnnotationAnchorValueSchema = z.object({
-  cssSelector: z.string().min(1).max(1_000).optional(),
-  textQuote: z.string().min(1).max(2_000).optional(),
-  bbox: z.object({
-    x: z.number().finite().nonnegative(),
-    y: z.number().finite().nonnegative(),
-    width: z.number().finite().positive(),
-    height: z.number().finite().positive(),
-  }).strict().optional(),
-}).strict().refine(
-  (anchor) => Boolean(anchor.cssSelector || anchor.textQuote || anchor.bbox),
-  { message: "A preview annotation anchor requires a selector, quote, or bounding box" },
-)
-
 const previewBridgeAnnotationAnchorSchema = z.object({
   annotationId: z.string().trim().min(1).max(256),
-  anchor: previewBridgeAnnotationAnchorValueSchema,
+  anchor: annotationAnchorSchema,
 }).strict()
 
 export const previewBridgeResolveAnchorsMessageSchema = z.object({
