@@ -23,6 +23,8 @@ describe("GitWorkspaceService", () => {
     const repositoryPath = join(scratch, "project")
     const worktreeRoot = join(scratch, "worktrees")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "source\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
@@ -61,6 +63,8 @@ describe("GitWorkspaceService", () => {
     const repositoryPath = join(scratch, "project")
     const worktreeRoot = join(scratch, "worktrees")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "before\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", [
@@ -144,6 +148,8 @@ describe("GitWorkspaceService", () => {
     await mkdir(canonicalWorktreeRoot)
     await symlink(canonicalWorktreeRoot, worktreeRoot, process.platform === "win32" ? "junction" : "dir")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "source\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
@@ -232,6 +238,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "before\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", [
@@ -261,6 +269,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await mkdir(join(repositoryPath, "src"))
     await writeFile(join(repositoryPath, "README.md"), "before\n")
     await writeFile(join(repositoryPath, "binary.dat"), Buffer.from([0, 1, 2]))
@@ -345,6 +355,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "alpha.txt"), "alpha base\n")
     await writeFile(join(repositoryPath, "beta.txt"), "beta base\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
@@ -388,6 +400,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "alpha.txt"), "alpha base\n")
     await writeFile(join(repositoryPath, "beta.txt"), "beta base\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
@@ -423,6 +437,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "tracked.txt"), "before\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
     await execute("git", [
@@ -456,6 +472,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, ".gitattributes"), "*.secret diff=observe\n")
     await writeFile(join(repositoryPath, "value.secret"), "before\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
@@ -488,6 +506,8 @@ describe("GitWorkspaceService", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "before\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
     await execute("git", [
@@ -520,6 +540,89 @@ describe("GitWorkspaceService", () => {
       .resolves.toMatchObject({ totalChangedFiles: 1 })
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
+
+  it("reads evidence and checkpoints a worktree whose status exceeds Node's default output buffer", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-large-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    const names = Array.from(
+      { length: 7_200 },
+      (_, index) => `untracked-${String(index).padStart(5, "0")}-${"x".repeat(144)}`,
+    )
+    const statusBytes = names.reduce((total, name) => total + Buffer.byteLength(`? ${name}\0`), 0)
+    expect(statusBytes).toBeGreaterThan(1_024 * 1_024)
+    for (let start = 0; start < names.length; start += 500) {
+      await Promise.all(
+        names.slice(start, start + 500).map((name) => writeFile(join(repositoryPath, name), "")),
+      )
+    }
+
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    await expect(service.evidence(repositoryPath)).resolves.toMatchObject({
+      totalChangedFiles: names.length,
+      filesTruncated: true,
+    })
+    const checkpoint = await service.checkpoint(repositoryPath, "large")
+    expect(checkpoint.changedFiles).toHaveLength(names.length)
+    expect((await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(checkpoint.commit)
+  })
+
+  it("restores the index when a checkpoint fails after staging", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-rollback-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+    await rm(join(repositoryPath, "remove.txt"))
+    await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")
+    const observe = async () => ({
+      head: (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim(),
+      staged: (await execute("git", ["-C", repositoryPath, "diff", "--cached", "--name-only"])).stdout,
+      status: (await execute("git", ["-C", repositoryPath, "status", "--porcelain"])).stdout,
+      tracked: await readFile(join(repositoryPath, "tracked.txt"), "utf8"),
+      fresh: await readFile(join(repositoryPath, "fresh.txt"), "utf8"),
+    })
+    const before = await observe()
+    expect(before.staged).toBe("")
+
+    const controller = new AbortController()
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterCheckpointStaging: () => controller.abort(new Error("checkpoint timed out")),
+    })
+    await expect(service.checkpoint(repositoryPath, "interrupted", controller.signal))
+      .rejects.toThrow("checkpoint timed out")
+
+    expect(await observe()).toEqual(before)
+  })
 })
 
 describe("GitWorkspaceService session bundles", () => {
@@ -529,6 +632,8 @@ describe("GitWorkspaceService session bundles", () => {
     const repositoryPath = join(scratch, "project")
     const worktreeRoot = join(scratch, "worktrees")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "base\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", [
@@ -601,6 +706,8 @@ describe("GitWorkspaceService bundle restore", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "base\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", [
@@ -706,6 +813,8 @@ describe("GitWorkspaceService session refs", () => {
     const repositoryPath = join(scratch, "project")
     const remotePath = join(scratch, "remote.git")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await execute("git", ["init", "--bare", remotePath])
     await writeFile(join(repositoryPath, "README.md"), "base\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
@@ -764,6 +873,8 @@ describe("GitWorkspaceService session ref restore", () => {
     const repositoryPath = join(scratch, "project")
     const remotePath = join(scratch, "remote.git")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await execute("git", ["init", "--bare", remotePath])
     await writeFile(join(repositoryPath, "README.md"), "base\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
@@ -802,6 +913,8 @@ describe("GitWorkspaceService session head", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "base\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", [
@@ -834,6 +947,8 @@ describe("GitWorkspaceService incremental restore", () => {
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
     await writeFile(join(repositoryPath, "README.md"), "base\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await execute("git", [
@@ -867,5 +982,103 @@ describe("GitWorkspaceService incremental restore", () => {
     expect(updated.baseCommit).toBe(second.commit)
     const contents = await readFile(join(updated.path, "README.md"), "utf8")
     expect(contents.replace(/\r\n/g, "\n")).toBe("second\n")
+  })
+})
+
+describe("GitWorkspaceService file revert", () => {
+  it("restores a tracked file after taking a recovery checkpoint", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-revert-tracked-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
+    await writeFile(join(repositoryPath, "kept.ts"), "original\n")
+    await writeFile(join(repositoryPath, "other.ts"), "other original\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-revert-tracked")
+    await writeFile(join(workspace.path, "kept.ts"), "agent edit\n")
+    await writeFile(join(workspace.path, "other.ts"), "other agent edit\n")
+
+    const reverted = await service.revertFile(workspace.path, "kept.ts")
+
+    expect(reverted).toMatchObject({ path: "kept.ts", outcome: "restored", baseCommit: workspace.baseCommit })
+    expect(reverted.recoveryCommit).toMatch(/^[a-f0-9]{40}$/)
+    expect(await readFile(join(workspace.path, "kept.ts"), "utf8")).toBe("original\n")
+    expect(await readFile(join(workspace.path, "other.ts"), "utf8")).toBe("other agent edit\n")
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(workspace.baseCommit)
+    expect((await execute("git", ["-C", workspace.path, "show", `${reverted.recoveryCommit}:kept.ts`])).stdout)
+      .toBe("agent edit\n")
+    expect((await execute("git", [
+      "-C",
+      workspace.path,
+      "rev-parse",
+      `refs/domovoi/checkpoints/${reverted.recoveryCommit}`,
+    ])).stdout.trim()).toBe(reverted.recoveryCommit)
+    expect((await execute("git", ["-C", workspace.path, "status", "--porcelain"])).stdout)
+      .not.toContain("kept.ts")
+  })
+
+  it("removes an untracked file and refuses paths it cannot revert", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-revert-untracked-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
+    await writeFile(join(repositoryPath, "README.md"), "source\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-revert-untracked")
+    await mkdir(join(workspace.path, "generated"), { recursive: true })
+    await writeFile(join(workspace.path, "generated", "added.ts"), "agent file\n")
+
+    const reverted = await service.revertFile(workspace.path, "generated/added.ts")
+
+    expect(reverted).toMatchObject({ path: "generated/added.ts", outcome: "removed" })
+    await expect(readFile(join(workspace.path, "generated", "added.ts"), "utf8")).rejects.toThrow()
+    expect((await execute("git", [
+      "-C",
+      workspace.path,
+      "show",
+      `${reverted.recoveryCommit}:generated/added.ts`,
+    ])).stdout).toBe("agent file\n")
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(workspace.baseCommit)
+
+    await expect(service.revertFile(workspace.path, "README.md")).rejects.toThrow(
+      "File has no changes to revert",
+    )
+    await expect(service.revertFile(workspace.path, "../escape.ts")).rejects.toThrow(
+      "File path must stay inside the session worktree",
+    )
   })
 })
