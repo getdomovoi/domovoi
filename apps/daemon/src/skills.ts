@@ -43,40 +43,22 @@ export class SkillNotFoundError extends Error {
 
 export class FileSkillCatalog implements SkillCatalog {
   readonly #roots: readonly SkillRoot[]
+  #listing: { key: string; skills: Promise<SkillSummary[]> } | undefined
 
   constructor(roots: readonly SkillRoot[]) {
     this.#roots = roots
   }
 
+  invalidate(): void {
+    this.#listing = undefined
+  }
+
   async list(): Promise<SkillSummary[]> {
-    const skills: SkillSummary[] = []
-    const seenFiles = new Set<string>()
-    for (const root of this.#roots) {
-      if (skills.length >= maxSkills) break
-      const rootPath = await canonicalDirectory(root.path)
-      if (!rootPath) continue
-      const files = await skillFiles(rootPath, root.scope)
-      for (const path of files) {
-        if (skills.length >= maxSkills) break
-        let canonicalPath
-        try {
-          canonicalPath = await realpath(path)
-        } catch {
-          continue
-        }
-        if (seenFiles.has(canonicalPath)) continue
-        seenFiles.add(canonicalPath)
-        const skill = await readSkill(path, root)
-        if (skill) skills.push(skill)
-      }
-    }
-    return skills.sort((left, right) =>
-      left.name.localeCompare(right.name) || left.path.localeCompare(right.path),
-    )
+    return this.#cachedList()
   }
 
   async read(id: string): Promise<SkillDocument> {
-    const skill = (await this.list()).find((candidate) => candidate.id === id)
+    const skill = (await this.#cachedList()).find((candidate) => candidate.id === id)
     if (!skill) throw new SkillNotFoundError()
     let handle
     try {
@@ -105,6 +87,57 @@ export class FileSkillCatalog implements SkillCatalog {
     } finally {
       await handle?.close()
     }
+  }
+
+  async #cachedList(): Promise<SkillSummary[]> {
+    const key = await this.#listingKey()
+    if (this.#listing?.key === key) return this.#listing.skills
+    const entry = { key, skills: this.#walk() }
+    this.#listing = entry
+    entry.skills.catch(() => {
+      if (this.#listing === entry) this.#listing = undefined
+    })
+    return entry.skills
+  }
+
+  async #listingKey(): Promise<string> {
+    const parts: string[] = []
+    for (const root of this.#roots) {
+      try {
+        const metadata = await stat(root.path)
+        parts.push(`${root.path}:${metadata.mtimeMs}`)
+      } catch {
+        parts.push(`${root.path}:missing`)
+      }
+    }
+    return parts.join("|")
+  }
+
+  async #walk(): Promise<SkillSummary[]> {
+    const skills: SkillSummary[] = []
+    const seenFiles = new Set<string>()
+    for (const root of this.#roots) {
+      if (skills.length >= maxSkills) break
+      const rootPath = await canonicalDirectory(root.path)
+      if (!rootPath) continue
+      const files = await skillFiles(rootPath, root.scope)
+      for (const path of files) {
+        if (skills.length >= maxSkills) break
+        let canonicalPath
+        try {
+          canonicalPath = await realpath(path)
+        } catch {
+          continue
+        }
+        if (seenFiles.has(canonicalPath)) continue
+        seenFiles.add(canonicalPath)
+        const skill = await readSkill(path, root)
+        if (skill) skills.push(skill)
+      }
+    }
+    return skills.sort((left, right) =>
+      left.name.localeCompare(right.name) || left.path.localeCompare(right.path),
+    )
   }
 }
 

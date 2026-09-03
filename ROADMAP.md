@@ -51,6 +51,8 @@ access.
 - [x] Restrict persisted state permissions
   - Create the Domovoi state directory as `0700` and database plus sidecars as `0600` on POSIX.
   - Repair permissive existing files on startup.
+  - On Windows, state lives under `.domovoi` in the user profile directory; no ACL restriction
+    equivalent exists yet.
 - [x] Make RPC timeouts cancel or quarantine underlying work
   - A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the
     serialized request has failed.
@@ -133,7 +135,15 @@ Every ledger entry is now merged.
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
-- [x] Require explicit confirmation before switching projects discards current sessions and worktrees
+- [x] Require explicit confirmation before switching projects stops the current project's running work
+- [x] Keep workspace state per project so opening a second repository preserves the first
+  - Persist one snapshot row per project id beside the active-workspace row, migrating an
+    existing single-row database into the row for its own project.
+  - Restore a project's sessions, thread, approvals, artifacts, and annotations on reopen, and
+    keep machine-scoped state such as machine facts and skill enablement reviews out of the
+    per-project rows.
+  - Stop live provider threads, active turns, and terminals when switching away, and delete
+    session worktrees only on the deliberate `session.archive` path.
 
 ### Providers and credentials
 
@@ -264,7 +274,9 @@ fleet.
   6. outbound relay fallback after hosted services exist (slot reserved; nothing advertises or
      dials a relay until Goal 3 ships the service).
 - [x] Authenticate every connection even inside a tailnet
-- [x] Bootstrap `domovoid` through a version-pinned, checksummed install script
+- [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
+  a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
+  tracked under signed GitHub Release artifacts
 - [x] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - `domovoid service install`, `status`, and `remove` ship in the daemon package. Nothing is

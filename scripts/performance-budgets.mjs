@@ -17,17 +17,51 @@ async function sumExtensions(root, extensions) {
   return total
 }
 
+function startupScriptReferences(html) {
+  const references = []
+  for (const match of html.matchAll(/<script\b[^>]*>/g)) {
+    const tag = match[0]
+    if (!/\btype\s*=\s*"module"/.test(tag)) continue
+    const source = /\bsrc\s*=\s*"([^"]+)"/.exec(tag)
+    if (source) references.push(source[1])
+  }
+  for (const match of html.matchAll(/<link\b[^>]*>/g)) {
+    const tag = match[0]
+    if (!/\brel\s*=\s*"modulepreload"/.test(tag)) continue
+    const href = /\bhref\s*=\s*"([^"]+)"/.exec(tag)
+    if (href) references.push(href[1])
+  }
+  return references
+}
+
+async function sumStartupScripts(indexHtmlPath) {
+  const html = await readFile(indexHtmlPath, "utf8")
+  const root = dirname(indexHtmlPath)
+  let total = 0
+  for (const reference of new Set(startupScriptReferences(html))) {
+    const path = reference.startsWith("/")
+      ? join(root, reference.slice(1))
+      : resolve(root, reference)
+    total += (await readFile(path)).byteLength
+  }
+  return total
+}
+
 export async function collectArtifactMeasurements(root = repositoryRoot) {
   const web = join(root, "apps", "web", "dist")
   const desktop = join(root, "apps", "desktop", "out")
   const renderer = join(desktop, "renderer")
+  const webStartupBytes = await sumStartupScripts(join(web, "index.html"))
+  const rendererStartupBytes = await sumStartupScripts(join(renderer, "index.html"))
   return {
     web: {
-      javascriptBytes: await sumExtensions(web, new Set([".js", ".mjs"])),
+      javascriptBytes: webStartupBytes,
+      lazyJavascriptBytes: (await sumExtensions(web, new Set([".js", ".mjs"]))) - webStartupBytes,
       stylesheetBytes: await sumExtensions(web, new Set([".css"])),
     },
     desktop: {
-      rendererJavascriptBytes: await sumExtensions(renderer, new Set([".js", ".mjs"])),
+      rendererJavascriptBytes: rendererStartupBytes,
+      rendererLazyJavascriptBytes: (await sumExtensions(renderer, new Set([".js", ".mjs"]))) - rendererStartupBytes,
       rendererStylesheetBytes: await sumExtensions(renderer, new Set([".css"])),
       mainBytes: (await readFile(join(desktop, "main", "index.js"))).byteLength,
       preloadBytes: (await readFile(join(desktop, "preload", "index.cjs"))).byteLength,
