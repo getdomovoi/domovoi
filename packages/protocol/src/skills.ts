@@ -5,6 +5,7 @@ import { clientIdentityIdSchema, clientKindSchema } from "./identifiers.js"
 export const skillScopeSchema = z.enum(["user", "project", "system"])
 export const skillSourceSchema = z.enum(["domovoi", "agents", "kilo", "claude", "codex"])
 export const skillIdSchema = z.string().regex(/^skill-[a-f0-9]{12}$/)
+export const maximumTurnSkillSelections = 8
 
 export const skillCapabilitySchema = z.enum([
   "filesystem.read",
@@ -176,6 +177,35 @@ export const skillEnablementReviewSchema = z.object({
 
 export const skillEnablementReviewsSchema = z.array(skillEnablementReviewSchema).max(2_048)
 
+export const turnSkillSelectionReferenceSchema = z.object({
+  skillId: skillIdSchema,
+  review: z.object({
+    contentDigest: skillContentDigestSchema,
+    manifest: skillCapabilityManifestSchema,
+  }).strict(),
+}).strict()
+
+export const turnSkillSelectionSchema = z.object({
+  mode: z.literal("turn-explicit"),
+  skills: z.array(turnSkillSelectionReferenceSchema)
+    .max(maximumTurnSkillSelections)
+    .superRefine((skills, context) => {
+      const ids = skills.map((skill) => skill.skillId)
+      if (new Set(ids).size !== ids.length) {
+        context.addIssue({
+          code: "custom",
+          message: "Turn skill selections must be unique",
+        })
+      }
+    }),
+}).strict()
+
+export const turnSkillSelectionRefusalSchema = z.object({
+  kind: z.literal("turn-skill-selection-refused"),
+  skillId: skillIdSchema,
+  reason: z.enum(["not-enabled", "unavailable", "review-changed", "policy"]),
+}).strict()
+
 export const skillReviewDecisionSchema = z.enum(["trust", "revoke"])
 
 export const skillManualReviewSchema = z.object({
@@ -197,6 +227,9 @@ export type SkillTrust = z.infer<typeof skillTrustSchema>
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 export type SkillDocument = z.infer<typeof skillDocumentSchema>
 export type SkillEnablementReview = z.infer<typeof skillEnablementReviewSchema>
+export type TurnSkillSelectionReference = z.infer<typeof turnSkillSelectionReferenceSchema>
+export type TurnSkillSelection = z.infer<typeof turnSkillSelectionSchema>
+export type TurnSkillSelectionRefusal = z.infer<typeof turnSkillSelectionRefusalSchema>
 export type SkillReviewDecision = z.infer<typeof skillReviewDecisionSchema>
 export type SkillManualReview = z.infer<typeof skillManualReviewSchema>
 export type SkillInventorySignature = z.infer<typeof skillInventorySignatureSchema>

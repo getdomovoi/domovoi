@@ -74,6 +74,7 @@ import {
   skillReviewDecisionSchema,
   skillSummariesSchema,
   skillSummarySchema,
+  turnSkillSelectionSchema,
 } from "./skills.js"
 
 export const requestIdSchema = z.union([
@@ -87,6 +88,7 @@ export const projectSwitchConfirmationErrorCode = -32010 as const
 export const protocolVersionMismatchErrorCode = -32012 as const
 export const devicePairingLimitErrorCode = -32013 as const
 export const daemonPersistenceUnavailableErrorCode = -32014 as const
+export const turnSkillSelectionErrorCode = -32015 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -950,6 +952,7 @@ export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
   prompt: z.string().trim().min(1).max(maximumSessionPromptCharacters),
   client: clientKindSchema,
+  skillSelection: turnSkillSelectionSchema.optional(),
 })
 
 export const checkpointCreateParamsSchema = z.object({

@@ -1,15 +1,62 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  maximumTurnSkillSelections,
   skillCapabilityManifestSchema,
   skillEnablementReviewSchema,
   skillInventorySchema,
   skillSignatureSchema,
   skillSummarySchema,
   skillTrustSchema,
+  turnSkillSelectionRefusalSchema,
+  turnSkillSelectionSchema,
 } from "./skills.js"
 
 describe("skill security metadata", () => {
+  it("pins bounded turn selections to the exact reviewed content and capabilities", () => {
+    const selected = {
+      mode: "turn-explicit",
+      skills: [{
+        skillId: "skill-111111111111",
+        review: {
+          contentDigest: `sha256:${"a".repeat(64)}`,
+          manifest: { version: 1, capabilities: ["filesystem.read"] },
+        },
+      }],
+    } as const
+
+    expect(turnSkillSelectionSchema.parse(selected)).toEqual(selected)
+    expect(turnSkillSelectionSchema.parse({
+      mode: "turn-explicit",
+      skills: [],
+    }).skills).toEqual([])
+    expect(turnSkillSelectionSchema.safeParse({
+      ...selected,
+      skills: [selected.skills[0], selected.skills[0]],
+    }).success).toBe(false)
+    expect(turnSkillSelectionSchema.safeParse({
+      ...selected,
+      skills: Array.from({ length: maximumTurnSkillSelections + 1 }, (_, index) => ({
+        ...selected.skills[0],
+        skillId: `skill-${index.toString(16).padStart(12, "0")}`,
+      })),
+    }).success).toBe(false)
+  })
+
+  it("reports a refused turn selection with a catalog-matchable skill id", () => {
+    const refusal = {
+      kind: "turn-skill-selection-refused",
+      skillId: "skill-111111111111",
+      reason: "review-changed",
+    } as const
+
+    expect(turnSkillSelectionRefusalSchema.parse(refusal)).toEqual(refusal)
+    expect(turnSkillSelectionRefusalSchema.safeParse({
+      ...refusal,
+      skillId: "repo-audit",
+    }).success).toBe(false)
+  })
+
   it("bounds fleet inventory to non-distributable metadata", () => {
     const inventory = {
       machine: {
