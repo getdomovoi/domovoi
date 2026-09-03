@@ -50,6 +50,7 @@ import {
   type TerminalOwner,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
+  versionlessClientProtocol,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
@@ -1676,10 +1677,11 @@ export class DomovoiDaemon {
         return
       }
       // A hello with no version comes from a client built before the field
-      // existed. Versions move in lockstep through 0.x, so those clients all
-      // spoke the version this daemon speaks; refusing them would break an
-      // upgrade that changes nothing else.
-      const clientProtocol = hello.protocolVersion ?? protocolVersion
+      // existed, and every one of those spoke 0.1.0. Pinning that literal keeps
+      // the compatibility check honest: once this daemon moves past 0.1.x, a
+      // versionless client is correctly judged incompatible rather than being
+      // waved through as whatever the daemon happens to speak.
+      const clientProtocol = hello.protocolVersion ?? versionlessClientProtocol
       if (protocolCompatibility(protocolVersion, clientProtocol) !== "compatible") {
         // A refused handshake leaves the socket unauthenticated, so a client
         // on another protocol version cannot fall through to other methods.

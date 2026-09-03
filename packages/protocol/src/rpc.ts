@@ -671,6 +671,11 @@ export const sessionEvidenceSchema = z.object({
   tests: testEvidenceSchema,
 }).strict()
 
+// The protocol version every client spoke before the handshake carried one.
+// It is a fixed historical fact, not the daemon's current version, so a
+// versionless client stays correctly classified once this daemon moves on.
+export const versionlessClientProtocol = "0.1.0" as const
+
 const protocolVersionPatternSchema = z.string().regex(/^\d+\.\d+\.\d+$/, "Protocol version must be a three-part semver")
 
 const clientHelloParamsSchema = z.object({
