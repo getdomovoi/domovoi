@@ -1,0 +1,10 @@
+# Checkout has to be byte-identical on every platform. Windows would otherwise
+# convert text files to CRLF, which changes the bytes that the roadmap render
+# check compares and that the design revision record hashes, so a green branch
+# fails on Windows alone.
+* text=auto eol=lf
+
+# Binary files must never be converted.
+*.png binary
+*.zip binary
+*.woff2 binary
