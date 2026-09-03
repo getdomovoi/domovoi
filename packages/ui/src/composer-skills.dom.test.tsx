@@ -76,3 +76,10 @@ it("says nothing at all without an open project", () => {
 
   expect(screen.queryByRole("button", { name: "Add a skill to this turn" })).toBeNull()
 })
+
+it("appears in the composer, not only as a component", () => {
+  const shell = readFileSync(join(import.meta.dirname, "workspace-shell.tsx"), "utf8")
+
+  expect(shell).toContain("<ComposerSkillChip")
+  expect(shell).toContain("<PromptDeliveryNote")
+})
