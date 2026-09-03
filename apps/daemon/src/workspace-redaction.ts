@@ -6,6 +6,17 @@ import {
   redactDurableText,
 } from "./secret-redaction.js"
 
+function executionContainsSecret(
+  execution: WorkspaceSnapshot["approvals"][number]["execution"],
+): boolean {
+  if (execution.state !== "resolved" || execution.record.kind !== "shell") return false
+  return execution.record.entries.some((entry) => (
+    entry.parts.some((part) => redactDurableCommand(part.argv.join(" ")).redacted)
+    || (entry.source.kind === "package-script"
+      && redactDurableCommand(entry.source.arguments.join(" ")).redacted)
+  ))
+}
+
 export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
   const sanitized = structuredClone(snapshot)
   sanitized.approvals = sanitized.approvals.map((approval) => {
@@ -14,10 +25,11 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
     const directory = redactDurableText(approval.directory)
     const affects = redactDurableText(approval.affects)
     const network = redactDurableText(approval.network)
+    const unsafeExecution = executionContainsSecret(approval.execution)
     return {
       ...approval,
       risk: command.redacted || operation.redacted || directory.redacted
-        || affects.redacted || network.redacted
+        || affects.redacted || network.redacted || unsafeExecution
         ? "hard-gate"
         : approval.risk,
       command: command.value,
@@ -25,12 +37,19 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
       directory: directory.value,
       affects: affects.value,
       network: network.value,
+      execution: unsafeExecution
+        ? { state: "unresolved", reason: "sensitive-content" }
+        : approval.execution,
     }
   })
   sanitized.approvalRules = sanitized.approvalRules.flatMap((rule) => {
     const command = redactDurableCommand(rule.command)
     const operation = redactDurableText(rule.operation)
-    if (command.redacted || operation.redacted) return []
+    if (
+      command.redacted
+      || operation.redacted
+      || (rule.status === "active" && executionContainsSecret(rule.execution))
+    ) return []
     return [{ ...rule, command: command.value, operation: operation.value }]
   })
   sanitized.thread = sanitized.thread.map((item) => {
