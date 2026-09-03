@@ -12,6 +12,11 @@ import {
   type DesktopExternalEditor,
   type WorkspaceWindowDecoration,
 } from "./desktop-platform"
+import {
+  defaultNotificationPreferences,
+  parseNotificationPreferences,
+  type NotificationPreferences,
+} from "./notification-preferences"
 
 export const workspaceUiStorageKey = "domovoi.workspace-ui"
 
@@ -22,7 +27,7 @@ const layoutKeys = new Set(["sidebar.dock", "sidebar.rail", "rail.dock", "rail.r
 const panelIds = new Set(["sessions", "thread", "dock"])
 
 export type WorkspaceUiState = {
-  version: 3
+  version: 4
   sidebarCollapsed: boolean
   dockCollapsed: boolean
   surface: WorkspaceSurface
@@ -31,6 +36,7 @@ export type WorkspaceUiState = {
   externalEditor: DesktopExternalEditor
   theme: WorkspaceTheme
   windowDecoration: WorkspaceWindowDecoration
+  notifications: NotificationPreferences
   layouts: Record<string, Record<string, number>>
 }
 
@@ -42,7 +48,7 @@ export type WorkspaceUiDaemonTruth = {
 
 export function defaultWorkspaceUiState(): WorkspaceUiState {
   return {
-    version: 3,
+    version: 4,
     sidebarCollapsed: false,
     dockCollapsed: false,
     surface: "workspace",
@@ -51,6 +57,7 @@ export function defaultWorkspaceUiState(): WorkspaceUiState {
     externalEditor: "system",
     theme: "system",
     windowDecoration: "domovoi",
+    notifications: defaultNotificationPreferences(),
     layouts: {},
   }
 }
@@ -95,7 +102,7 @@ function parseLayouts(value: unknown): WorkspaceUiState["layouts"] | undefined {
 }
 
 export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefined {
-  if (!isRecord(value) || ![1, 2, 3].includes(value.version as number)) return undefined
+  if (!isRecord(value) || ![1, 2, 3, 4].includes(value.version as number)) return undefined
   if (typeof value.sidebarCollapsed !== "boolean" || typeof value.dockCollapsed !== "boolean") {
     return undefined
   }
@@ -106,7 +113,7 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
   const layouts = parseLayouts(value.layouts)
   if (!layouts) return undefined
   return {
-    version: 3,
+    version: 4,
     sidebarCollapsed: value.sidebarCollapsed,
     dockCollapsed: value.dockCollapsed,
     surface: value.surface as WorkspaceSurface,
@@ -119,6 +126,7 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
     windowDecoration: isWorkspaceWindowDecoration(value.windowDecoration)
       ? value.windowDecoration
       : "domovoi",
+    notifications: parseNotificationPreferences(value.notifications) ?? defaultNotificationPreferences(),
     layouts,
   }
 }

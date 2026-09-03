@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   ExternalEditorSettings,
-  ProviderSettings,
   providerAccountAction,
   providerAccountCommand,
 } from "./provider-settings.js"
+import { defaultNotificationPreferences } from "./notification-preferences.js"
+import { SettingsShell } from "./settings-shell.js"
 
 const providers: ProviderRuntime[] = [
   {
@@ -53,20 +54,24 @@ const providers: ProviderRuntime[] = [
   },
 ]
 
-describe("ProviderSettings", () => {
+describe("Settings shell and provider pane", () => {
   it("shows external-editor settings only with an explicit desktop capability", () => {
     const shared = {
       providers,
       secrets: [],
+      approvalRules: [],
+      notifications: defaultNotificationPreferences(),
+      onNotificationsChange: vi.fn(),
       onBack: vi.fn(),
+      onOpenFleet: vi.fn(),
       onOpenSkills: vi.fn(),
       onOpenAudit: vi.fn(),
       theme: "dark" as const,
       onThemeChange: vi.fn(),
     }
-    const webMarkup = renderToStaticMarkup(<ProviderSettings {...shared} />)
+    const webMarkup = renderToStaticMarkup(<SettingsShell {...shared} />)
     const desktopMarkup = renderToStaticMarkup(
-      <ProviderSettings
+      <SettingsShell
         {...shared}
         externalEditor="cursor"
         onExternalEditorChange={vi.fn()}
@@ -87,14 +92,18 @@ describe("ProviderSettings", () => {
 
   it("renders signed-handoff provider readiness and keychain status", () => {
     const markup = renderToStaticMarkup(
-      <ProviderSettings
+      <SettingsShell
         providers={providers}
         secrets={[
           { provider: "anthropic", state: "stored", source: "keychain" },
           { provider: "openai", state: "not-set", source: "keychain" },
           { provider: "openrouter", state: "unavailable", source: "keychain" },
         ]}
+        approvalRules={[]}
+        notifications={defaultNotificationPreferences()}
+        onNotificationsChange={vi.fn()}
         onBack={vi.fn()}
+        onOpenFleet={vi.fn()}
         onOpenSkills={vi.fn()}
         onOpenAudit={vi.fn()}
         theme="dark"

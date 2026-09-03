@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   defaultWorkspaceUiState,
   loadWorkspaceUiState,
+  parseWorkspaceUiState,
   reconcileWorkspaceUiState,
   saveWorkspaceUiState,
   type WorkspaceUiState,
@@ -25,7 +26,7 @@ describe("workspace UI persistence", () => {
   it("round-trips only versioned non-secret navigation and layout state", () => {
     const storage = memoryStorage()
     const state = {
-      version: 3,
+      version: 4,
       sidebarCollapsed: true,
       dockCollapsed: false,
       surface: "skills",
@@ -34,6 +35,7 @@ describe("workspace UI persistence", () => {
       externalEditor: "cursor",
       theme: "light",
       windowDecoration: "system",
+      notifications: { completion: true, failure: true, approvalNeeded: true },
       layouts: {
         "rail.dock": { thread: 68, dock: 32 },
       },
@@ -47,7 +49,7 @@ describe("workspace UI persistence", () => {
     const raw = storage.getItem("domovoi.workspace-ui")!
     expect(raw).not.toContain("must-not-persist")
     expect(loadWorkspaceUiState(storage)).toEqual({
-      version: 3,
+      version: 4,
       sidebarCollapsed: true,
       dockCollapsed: false,
       surface: "skills",
@@ -56,6 +58,7 @@ describe("workspace UI persistence", () => {
       externalEditor: "cursor",
       theme: "light",
       windowDecoration: "system",
+      notifications: { completion: true, failure: true, approvalNeeded: true },
       layouts: {
         "rail.dock": { thread: 68, dock: 32 },
       },
@@ -121,7 +124,7 @@ describe("workspace UI persistence", () => {
       layouts: {},
     })
     expect(loadWorkspaceUiState(memoryStorage(versionOne))).toMatchObject({
-      version: 3,
+      version: 4,
       surface: "skills",
       externalEditor: "system",
       theme: "system",
@@ -216,4 +219,31 @@ describe("workspace UI persistence", () => {
       sessionId: null,
     })
   })
+})
+
+it("keeps every notification kind on when upgrading a version 3 state", () => {
+  const parsed = parseWorkspaceUiState({
+    version: 3,
+    sidebarCollapsed: false,
+    dockCollapsed: false,
+    surface: "workspace",
+    projectId: null,
+    sessionId: null,
+    externalEditor: "system",
+    theme: "system",
+    windowDecoration: "domovoi",
+    layouts: {},
+  })
+
+  expect(parsed?.version).toBe(4)
+  expect(parsed?.notifications).toEqual({ completion: true, failure: true, approvalNeeded: true })
+})
+
+it("round-trips a stored notification preference", () => {
+  const parsed = parseWorkspaceUiState({
+    ...defaultWorkspaceUiState(),
+    notifications: { completion: true, failure: false, approvalNeeded: true },
+  })
+
+  expect(parsed?.notifications.failure).toBe(false)
 })

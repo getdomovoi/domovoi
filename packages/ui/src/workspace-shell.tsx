@@ -161,7 +161,9 @@ import {
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
-import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
+import { type ProviderSecretStatus } from "./provider-settings"
+import { SettingsShell } from "./settings-shell"
+import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
   DesktopFirstRunDialog,
   desktopFirstRunAvailable,
@@ -3109,6 +3111,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     dockCollapsed,
     externalEditor,
     layouts,
+    notifications: notificationPreferences,
     sidebarCollapsed,
     surface,
     theme,
@@ -3441,9 +3444,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     const notifications = notificationTrackerRef.current.observe(snapshot)
     if (!windowBridge) return
     for (const notification of notifications) {
+      if (!notificationPreferenceFor(notificationPreferences, notification.kind)) continue
       void windowBridge.notify(notification).catch(() => {})
     }
-  }, [snapshot, windowBridge])
+  }, [notificationPreferences, snapshot, windowBridge])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3593,10 +3597,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           onReconnect={reconnectDaemon}
         />
         {snapshot && surface === "providers" ? (
-          <ProviderSettings
+          <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
+            approvalRules={snapshot.approvalRules}
+            notifications={notificationPreferences}
+            onNotificationsChange={(next: NotificationPreferences) => {
+              setWorkspaceUi((current) => ({ ...current, notifications: next }))
+            }}
             onBack={() => setSurface("workspace")}
+            onOpenFleet={() => setSurface("fleet")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
             theme={theme}
