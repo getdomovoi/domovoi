@@ -126,6 +126,13 @@ describe("permissionDecisionFor", () => {
     "pnpm test --env=jsdom",
     "pnpm --filter @example/app test",
     "npm run --if-present test",
+    "pnpm exec vitest",
+    "pnpm install",
+    "npx vitest run",
+    "bunx vitest run",
+    "/usr/bin/pnpm test",
+    "corepack pnpm test",
+    String.raw`"C:\Program Files\nodejs\npm.cmd" test`,
     "pnpm test > /tmp/result",
     "pnpm test < /tmp/input",
     "pnpm test $(custom-helper)",
@@ -250,11 +257,6 @@ describe("permissionDecisionFor", () => {
       command: "pnpm test",
       packageScripts: { test: "vitest run" },
     })).toEqual({ action: "review", risk: "hard-gate" })
-  })
-
-  it("keeps an explicit package-manager executable under normal review", () => {
-    expect(permissionDecisionFor({ runtime: runtime(true), command: "pnpm exec vitest" }))
-      .toEqual({ action: "review", risk: "normal" })
   })
 
   it.each([
@@ -383,9 +385,18 @@ describe("permissionDecisionFor", () => {
     "npx vitest run",
     "pnpm dlx prettier --check .",
     "bunx eslint .",
+  ])("hard-gates package execution without mislabeling it as a skill install: %s", (command) => {
+    expect(isSkillInstallCommand(command)).toBe(false)
+    expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
+      action: "review",
+      risk: "hard-gate",
+    })
+  })
+
+  it.each([
     "bash ./scripts/install.sh",
     "bash -c 'echo add skills'",
-  ])("does not classify ordinary dependency command as a skill install: %s", (command) => {
+  ])("does not classify an ordinary local command as a skill install: %s", (command) => {
     expect(isSkillInstallCommand(command)).toBe(false)
     expect(permissionDecisionFor({ runtime: runtime(true), command })).not.toEqual({
       action: "review",

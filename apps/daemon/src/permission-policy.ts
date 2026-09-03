@@ -127,23 +127,13 @@ export function isSkillInstallCommand(command: string): boolean {
   return trimmed.split(commandSeparators).some((segment) => segment !== trimmed && isSkillInstallSegment(segment))
 }
 
-const packageManagers = new Set(["pnpm", "npm", "yarn", "bun"])
-const packageSubcommands = new Set([
-  "exec", "dlx", "x", "install", "i", "add", "remove", "rm", "up", "update",
-  "audit", "publish", "pack", "create", "init", "link", "why", "dedupe", "store", "patch",
-])
-function isPackageScriptCommand(command: string): boolean {
-  const tokens = command.trim().split(/\s+/)
-  const manager = tokens[0]?.toLowerCase()
-  if (!manager || !packageManagers.has(manager)) return false
-  const candidate = tokens[1]?.toLowerCase()
-  if (!candidate) return false
-  // `run` always dispatches through the manifest. A leading option can move or
-  // replace the apparent script (`pnpm --filter x test`, `npm run --if-present
-  // test`), so it is dynamic too. Every remaining unknown word is the package
-  // manager's shorthand for a script; only named package-manager subcommands
-  // are direct operations.
-  return candidate === "run" || candidate.startsWith("-") || !packageSubcommands.has(candidate)
+const packageExecutionPattern = new RegExp(
+  String.raw`(?:^|[\s/\\'"])(?:npm(?:-cli\.js)?|npx|pnpm(?:\.cjs)?|yarn(?:pkg)?|bunx?|corepack)(?:\.cmd|\.exe)?(?=$|[\s'"])`,
+  "i",
+)
+
+function isPackageExecutionCommand(command: string): boolean {
+  return packageExecutionPattern.test(command)
 }
 
 export function permissionDecisionFor(input: {
@@ -160,10 +150,12 @@ export function permissionDecisionFor(input: {
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
     return { action: "review", risk: "hard-gate" }
   }
-  // A package script is mutable repository content behind a stable command.
-  // Even normal review is insufficient: an `always-project` rule for `pnpm
-  // test` would otherwise approve a different body after package.json changes.
-  if (command && isPackageScriptCommand(command)) {
+  // Package managers dispatch mutable repository scripts, local binaries, and
+  // lifecycle hooks behind stable commands. Even normal review is insufficient:
+  // an `always-project` rule would approve different code after the manifest,
+  // lockfile, or installed package changes. Paths and wrappers are included so
+  // alternate spellings cannot lower the gate.
+  if (command && isPackageExecutionCommand(command)) {
     return { action: "review", risk: "hard-gate" }
   }
   const isBuildAuto = input.runtime.permissionMode === "build" && input.runtime.auto
