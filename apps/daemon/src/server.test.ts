@@ -5078,6 +5078,39 @@ describe("DomovoiDaemon", () => {
     second.socket.close()
   })
 
+  it("accepts a hello with no protocol version and treats it as the legacy one", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
+      authToken: "correct-horse-battery-staple",
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    // A client built before the handshake carried a version sends none at all.
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { client: "web", clientVersion: "0.0.1", authToken: daemon.authToken },
+    }))
+
+    const accepted = await response
+    expect(accepted).toMatchObject({ result: { connectionId: expect.any(String) } })
+    expect(accepted.error).toBeUndefined()
+    socket.close()
+  })
+
   it("refuses a client that speaks another protocol version", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
