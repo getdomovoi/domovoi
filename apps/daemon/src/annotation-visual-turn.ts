@@ -7,14 +7,20 @@ import type { AnnotationVisualContextReader } from "./annotation-visual-context.
 const maximumImagesPerTurn = 4
 const maximumVisualBytesPerTurn = 4_000_000
 
-export async function prepareAnnotationTurn(
+export type AnnotationVisualDelivery = "image-attached" | "provider-text-fallback" | "crop-unavailable"
+
+export type PreparedAnnotationVisuals = {
+  deliveries: Map<string, AnnotationVisualDelivery>
+  visualContexts: AgentVisualContext[]
+}
+
+export async function prepareAnnotationVisuals(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
-  userPrompt: string,
   capabilities: AgentCapabilities | undefined,
   reader: AnnotationVisualContextReader,
-): Promise<{ prompt: string; visualContexts: AgentVisualContext[] }> {
-  const deliveries = new Map<string, "image-attached" | "provider-text-fallback" | "crop-unavailable">()
+): Promise<PreparedAnnotationVisuals> {
+  const deliveries = new Map<string, AnnotationVisualDelivery>()
   const visualContexts: AgentVisualContext[] = []
   let totalBytes = 0
   const annotations = snapshot.annotations
@@ -44,8 +50,24 @@ export async function prepareAnnotationTurn(
       deliveries.set(annotation.id, "crop-unavailable")
     }
   }
+  return { deliveries, visualContexts }
+}
+
+export async function prepareAnnotationTurn(
+  snapshot: WorkspaceSnapshot,
+  sessionId: string,
+  userPrompt: string,
+  capabilities: AgentCapabilities | undefined,
+  reader: AnnotationVisualContextReader,
+): Promise<{ prompt: string; visualContexts: AgentVisualContext[] }> {
+  const prepared = await prepareAnnotationVisuals(
+    snapshot,
+    sessionId,
+    capabilities,
+    reader,
+  )
   return {
-    prompt: agentPromptWithAnnotations(snapshot, sessionId, userPrompt, deliveries),
-    visualContexts,
+    prompt: agentPromptWithAnnotations(snapshot, sessionId, userPrompt, prepared.deliveries),
+    visualContexts: prepared.visualContexts,
   }
 }

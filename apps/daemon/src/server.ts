@@ -89,7 +89,10 @@ import {
   AnnotationVisualContextService,
   type AnnotationVisualContextReader,
 } from "./annotation-visual-context.js"
-import { composeProviderPrompt } from "./prompt-composer.js"
+import {
+  composeProviderPrompt,
+  PromptCompositionLimitError,
+} from "./prompt-composer.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -4181,17 +4184,26 @@ export class DomovoiDaemon {
         const deliversPlan = !session.activeTurnId
           && boundaryPlan !== undefined
           && workingPlanNeedsProviderDelivery(boundaryPlan, providerTarget)
-        const preparedTurn = await composeProviderPrompt({
-          snapshot: this.#snapshot,
-          sessionId: session.id,
-          userPrompt: params.prompt,
-          ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
-          capabilities: registeredAgent.capabilities,
-          annotationVisualContext: this.#annotationVisualContext,
-          skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
-          requireTrustedSkills:
-            session.runtime.permissionMode === "build" && session.runtime.auto,
-        })
+        let preparedTurn
+        try {
+          preparedTurn = await composeProviderPrompt({
+            snapshot: this.#snapshot,
+            sessionId: session.id,
+            userPrompt: params.prompt,
+            ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
+            capabilities: registeredAgent.capabilities,
+            annotationVisualContext: this.#annotationVisualContext,
+            skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
+            requireTrustedSkills:
+              session.runtime.permissionMode === "build" && session.runtime.auto,
+          })
+        } catch (error) {
+          if (error instanceof PromptCompositionLimitError) {
+            this.#error(socket, request.id, invalidParams, error.message)
+            return
+          }
+          throw error
+        }
         const { prompt } = preparedTurn
         const createdAt = new Date().toISOString()
         const emergencyThread = providerThreadKey(
@@ -4347,6 +4359,7 @@ export class DomovoiDaemon {
           sessionId: currentSession.id,
           kind: "user",
           body: params.prompt,
+          providerPromptDelivery: preparedTurn.providerPromptDelivery,
           createdAt,
         })
         currentSession.state = "active"

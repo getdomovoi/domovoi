@@ -1,4 +1,7 @@
-import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type {
+  ProviderPromptHandoffDelivery,
+  WorkspaceSnapshot,
+} from "@getdomovoi/protocol"
 
 const contextBudget = 24_000
 const maximumThreadItems = 40
@@ -12,29 +15,29 @@ function serialize(value: unknown): string {
   return JSON.stringify(value).replaceAll("<", "\\u003c")
 }
 
-export function agentPromptWithHandoff(
+export function prepareHandoffPrompt(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
   userPrompt: string,
-): string {
+): { prompt: string; delivery: ProviderPromptHandoffDelivery } {
   const sessionThread = snapshot.thread.filter((item) => item.sessionId === sessionId)
   const handoffIndex = sessionThread.findLastIndex(
     (item) => item.kind === "system"
       && (item.id.startsWith("handoff-") || item.body.startsWith("Handed off ")),
   )
-  if (handoffIndex < 0) return userPrompt
+  if (handoffIndex < 0) return { prompt: userPrompt, delivery: { status: "not-required" } }
   if (sessionThread.slice(handoffIndex + 1).some(
     (item) => item.kind === "user" || item.kind === "assistant",
   )) {
-    return userPrompt
+    return { prompt: userPrompt, delivery: { status: "not-required" } }
   }
 
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)
   const handoff = sessionThread[handoffIndex]
-  const history = sessionThread
+  const allHistory = sessionThread
     .slice(0, handoffIndex)
     .filter((item) => item.kind === "user" || item.kind === "assistant" || item.kind === "system")
-    .slice(-maximumThreadItems)
+  const history = allHistory.slice(-maximumThreadItems)
     .map((item) => ({ kind: item.kind, body: truncate(item.body, 2_000) }))
   const hasWorkingPlan = snapshot.workingPlans.some((plan) => plan.sessionId === sessionId)
   const artifacts = snapshot.artifacts
@@ -67,23 +70,45 @@ export function agentPromptWithHandoff(
     artifacts,
     openAnnotations,
   }
+  const omitted = {
+    threadItems: Math.max(0, allHistory.length - history.length),
+    artifacts: 0,
+    annotations: 0,
+  }
   let boundedContext = serialize(context)
   while (boundedContext.length > contextBudget) {
-    if (context.history.length) context.history.shift()
-    else if (context.openAnnotations.length) context.openAnnotations.pop()
-    else if (context.artifacts.length) context.artifacts.pop()
-    else break
+    if (context.history.length) {
+      context.history.shift()
+      omitted.threadItems += 1
+    } else if (context.openAnnotations.length) {
+      context.openAnnotations.pop()
+      omitted.annotations += 1
+    } else if (context.artifacts.length) {
+      context.artifacts.pop()
+      omitted.artifacts += 1
+    } else break
     boundedContext = serialize(context)
   }
 
-  return [
-    "Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.",
-    "<domovoi_handoff_context>",
-    boundedContext,
-    "</domovoi_handoff_context>",
-    "",
-    "<user_request>",
-    userPrompt,
-    "</user_request>",
-  ].join("\n")
+  return {
+    prompt: [
+      "Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.",
+      "<domovoi_handoff_context>",
+      boundedContext,
+      "</domovoi_handoff_context>",
+      "",
+      "<user_request>",
+      userPrompt,
+      "</user_request>",
+    ].join("\n"),
+    delivery: { status: "delivered", omitted },
+  }
+}
+
+export function agentPromptWithHandoff(
+  snapshot: WorkspaceSnapshot,
+  sessionId: string,
+  userPrompt: string,
+): string {
+  return prepareHandoffPrompt(snapshot, sessionId, userPrompt).prompt
 }

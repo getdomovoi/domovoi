@@ -123,8 +123,15 @@ function snapshotFor(sections: Sections) {
   return snapshot
 }
 
-async function promptFor(sections: Sections): Promise<string> {
+type PromptRunOptions = {
+  prompt?: string
+  mutateSnapshot?: (snapshot: ReturnType<typeof snapshotFor>) => void
+}
+
+async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
   const snapshot = snapshotFor(sections)
+  options.mutateSnapshot?.(snapshot)
+  const initial = structuredClone(snapshot)
   let durable = structuredClone(snapshot)
   const store = {
     load: () => structuredClone(durable),
@@ -204,11 +211,16 @@ async function promptFor(sections: Sections): Promise<string> {
   })
   const sent = await rpc("session.send", {
     sessionId: snapshot.sessions[0]!.id,
-    prompt: "Replay the duplicate delivery and report what changed.",
+    prompt: options.prompt ?? "Replay the duplicate delivery and report what changed.",
     client: "desktop",
   })
-  expect(sent).not.toHaveProperty("error")
   socket.close()
+  return { durable, initial, prompts, sent }
+}
+
+async function promptFor(sections: Sections): Promise<string> {
+  const { prompts, sent } = await sendFor(sections)
+  expect(sent).not.toHaveProperty("error")
   expect(prompts).toHaveLength(1)
   return prompts[0]!
 }
@@ -244,4 +256,59 @@ it("keeps the outer-to-inner order the call site produces", async () => {
   ]
   expect(order.every((position) => position >= 0)).toBe(true)
   expect([...order].sort((left, right) => left - right)).toEqual(order)
+})
+
+it("persists exact delivery facts only after the provider accepts a turn", async () => {
+  const { durable, prompts, sent } = await sendFor({
+    handoff: true,
+    plan: true,
+    annotations: true,
+    skills: true,
+  })
+
+  expect(sent).not.toHaveProperty("error")
+  const userItem = durable.thread.findLast((item) => item.kind === "user")
+  expect(userItem).toMatchObject({
+    providerPromptDelivery: {
+      version: 1,
+      budget: {
+        unit: "utf16-code-units",
+        limit: 262_144,
+        used: prompts[0]!.length,
+      },
+      handoff: { status: "delivered" },
+      workingPlan: { status: "delivered", structureRevision: 2 },
+      annotations: { availableCount: 1 },
+      skills: {
+        selection: "project-default",
+        delivered: [expect.objectContaining({ id: skillSummary.id })],
+      },
+    },
+  })
+})
+
+it("persists nothing when required context exceeds the payload limit", async () => {
+  const { durable, initial, prompts, sent } = await sendFor(
+    { handoff: false, plan: true, annotations: false, skills: false },
+    {
+      prompt: "u".repeat(205_000),
+      mutateSnapshot: (snapshot) => {
+        snapshot.workingPlans[0]!.steps = Array.from({ length: 15 }, (_, index) => ({
+          id: `step-${index}`,
+          text: "p".repeat(4_000),
+          status: "pending",
+        }))
+      },
+    },
+  )
+
+  expect(sent).toMatchObject({
+    error: {
+      code: -32602,
+      message: expect.stringMatching(/working plan.+262144 UTF-16 code units/i),
+    },
+  })
+  expect(prompts).toEqual([])
+  expect(durable.thread).toEqual(initial.thread)
+  expect(durable.workingPlans).toEqual(initial.workingPlans)
 })

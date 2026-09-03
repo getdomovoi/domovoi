@@ -13,6 +13,8 @@ import {
   maximumInjectedSkills,
   maximumReviewedSkillCandidates,
   maximumSkillContextLength,
+  prepareProjectSkillContext,
+  renderProjectSkillContext,
 } from "./skill-context.js"
 import type { SkillCatalog } from "./skills.js"
 
@@ -97,9 +99,22 @@ describe("agentPromptWithSkills", () => {
       contentDigest: digest("f"),
     }
 
-    const prompt = await agentPromptWithSkills(skillCatalog, snapshot, "Run tests")
+    const prepared = await prepareProjectSkillContext(skillCatalog, snapshot)
+    const { prompt, delivery } = renderProjectSkillContext(
+      prepared,
+      prepared.deliverable.length,
+      "Run tests",
+    )
 
     expect(skillCatalog.read).toHaveBeenCalledTimes(5)
+    expect(delivery).toMatchObject({
+      delivered: [{ id: alpha.id }, { id: beta.id }],
+      omitted: {
+        unavailable: [missing.id],
+        reviewChanged: [stale.id],
+        policy: [blocked.id],
+      },
+    })
     expect(prompt.indexOf('"name":"alpha"')).toBeLessThan(prompt.indexOf('"name":"beta"'))
     expect(prompt).toContain('"includedSkillCount":2')
     expect(prompt).toContain('"omittedSkillCount":3')
