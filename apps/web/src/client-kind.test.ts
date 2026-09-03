@@ -13,6 +13,19 @@ describe("clientKindForBrowser", () => {
     })).toBe("tablet")
   })
 
+  it("classifies iOS user agents by device rather than touch capability", () => {
+    const base = { coarsePointer: true, maxTouchPoints: 5, platform: "iPhone", viewportWidth: 1180 }
+
+    expect(clientKindForBrowser({ ...base, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)" })).toBe("phone")
+    expect(clientKindForBrowser({ ...base, userAgent: "Mozilla/5.0 (iPod touch; CPU iPhone OS 18_0)" })).toBe("phone")
+    expect(clientKindForBrowser({
+      ...base,
+      platform: "iPad",
+      userAgent: "Mozilla/5.0 (iPad; CPU OS 18_0)",
+      viewportWidth: 390,
+    })).toBe("tablet")
+  })
+
   it("distinguishes Android phones from tablets", () => {
     const base = {
       coarsePointer: true,

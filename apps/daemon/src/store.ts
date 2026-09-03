@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { fileURLToPath } from "node:url"
 import { Worker } from "node:worker_threads"
 
 import {
@@ -15,7 +16,7 @@ import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
 import { SqliteFleetRegistry, type FleetRegistry } from "./fleet-registry.js"
 import { SqliteSkillReviews, type SkillReviews } from "./skill-reviews.js"
-import { redactWorkspaceCopies } from "./secret-redaction.js"
+import { redactWorkspaceCopies } from "./workspace-redaction.js"
 
 type StoredWorkspace = {
   snapshot: string
@@ -84,6 +85,35 @@ export type WorkspaceStoreOptions = {
   manageDirectoryPermissions?: boolean
   writerFactory?: (path: string) => WorkspaceWriter
 }
+
+// Redacting a large snapshot costs tens of milliseconds of regex work, and the
+// asynchronous write path exists so that cost does not land on the event loop
+// while a provider streams. The persistence worker runs from an eval'd source
+// and can only import real JavaScript, so the redaction is emitted as its own
+// build entry and the worker is handed its URL. `dist` is the packaged layout;
+// `../dist` is the layout when the daemon runs from `src`.
+const workspaceRedactionCandidates = [
+  "./workspace-redaction.js",
+  "../dist/workspace-redaction.js",
+]
+
+export function resolveWorkspaceRedactionModule(): string | undefined {
+  for (const specifier of workspaceRedactionCandidates) {
+    let url: string
+    try {
+      url = import.meta.resolve(specifier)
+    } catch {
+      continue
+    }
+    // A loader that runs the daemon from TypeScript rewrites this to the
+    // source file, which the worker cannot import, so only real JavaScript
+    // counts as resolved.
+    if (url.endsWith(".js") && existsSync(fileURLToPath(url))) return url
+  }
+  return undefined
+}
+
+const workspaceRedactionModule = resolveWorkspaceRedactionModule()
 
 function legacyFingerprint(snapshot: WorkspaceSnapshot): string {
   return JSON.stringify({ ...snapshot, annotations: [] })
@@ -247,6 +277,9 @@ const { parentPort, workerData } = require("node:worker_threads")
 
 async function start() {
   const { workspaceSnapshotSchema } = await import(workerData.protocolUrl)
+  const redact = workerData.redactionUrl
+    ? (await import(workerData.redactionUrl)).redactWorkspaceCopies
+    : (snapshot) => snapshot
   const database = new DatabaseSync(workerData.path)
   database.exec("PRAGMA journal_mode = WAL;")
   database.exec("PRAGMA busy_timeout = 5000;")
@@ -266,7 +299,7 @@ async function start() {
         parentPort.postMessage({ id: message.id })
         return
       }
-      const validated = workspaceSnapshotSchema.parse(message.snapshot)
+      const validated = workspaceSnapshotSchema.parse(redact(message.snapshot))
       save.run(JSON.stringify(validated), message.updatedAt)
       if (validated.project) {
         saveProject.run(
@@ -314,7 +347,11 @@ class AsyncWorkspaceWriter {
   constructor(path: string) {
     this.#worker = new Worker(workspaceWriterSource, {
       eval: true,
-      workerData: { path, protocolUrl: import.meta.resolve("@getdomovoi/protocol") },
+      workerData: {
+        path,
+        protocolUrl: import.meta.resolve("@getdomovoi/protocol"),
+        redactionUrl: workspaceRedactionModule,
+      },
     })
     this.#worker.on("message", (response: WriterResponse) => {
       const pending = this.#pending.get(response.id)
@@ -466,15 +503,21 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 
   async saveAsync(snapshot: WorkspaceSnapshot): Promise<void> {
-    const sanitized = redactWorkspaceCopies(snapshot)
     if (this.path === ":memory:") {
       await new Promise<void>((resolve) => setImmediate(resolve))
-      this.#writeValidated(workspaceSnapshotSchema.parse(sanitized))
+      this.#writeValidated(workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot)))
       return
     }
     if (this.#writer?.failed && !this.#writerClosed) this.#writer = undefined
     this.#writer ??= this.#writerFactory?.(this.path) ?? new AsyncWorkspaceWriter(this.path)
-    await this.#writer.write(sanitized)
+    // The built-in worker redacts when it can load the module. A custom writer
+    // does not share that contract, and an unresolved module cannot be trusted,
+    // so those paths still receive a redacted snapshot from the main thread.
+    await this.#writer.write(
+      workspaceRedactionModule && !this.#writerFactory
+        ? snapshot
+        : redactWorkspaceCopies(snapshot),
+    )
   }
 
   loadProject(projectId: string): ProjectWorkspaceState | undefined {
