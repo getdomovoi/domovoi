@@ -15,13 +15,16 @@ import {
 
 function SnapshotProbe() {
   const {
+    authenticationRequired,
     emergencyStop,
     emergencyStopError,
     emergencyStopOutcome,
     emergencyStopPending,
     forkSession,
-    refreshProviders,
+    protocolError,
     reconnect,
+    reconnecting,
+    refreshProviders,
     snapshot,
   } = useWorkspace("ws://127.0.0.1:47831/rpc", "web")
   return (
@@ -34,6 +37,9 @@ function SnapshotProbe() {
       {!emergencyStopPending && !emergencyStopOutcome && !emergencyStopError
         ? " · emergency stop idle"
         : ""}
+      {protocolError === null ? " · protocol healthy" : ""}
+      {authenticationRequired === null ? " · credential accepted" : ""}
+      {reconnecting === false ? " · not retrying" : ""}
     </span>
   )
 }
@@ -47,6 +53,9 @@ describe("useWorkspace", () => {
     expect(markup).toContain("can refresh providers")
     expect(markup).toContain("can emergency stop")
     expect(markup).toContain("emergency stop idle")
+    expect(markup).toContain("protocol healthy")
+    expect(markup).toContain("credential accepted")
+    expect(markup).toContain("not retrying")
   })
 
   it("does not expose a snapshot owned by another connection target", () => {

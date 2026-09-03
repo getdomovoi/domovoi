@@ -64,6 +64,25 @@ is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyS
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
 
+## Supervise
+
+Install the daemon as a service for the user who asks for it:
+
+```bash
+domovoid service install
+domovoid service status
+domovoid service remove
+```
+
+`install` writes a systemd user unit on Linux, a launch agent in the user's own `LaunchAgents` on
+macOS, and a logon task on Windows, then asks the platform's service manager to load it. Nothing is
+written to a system-wide location and no step asks for elevation. `status` reports whether the
+service file is present and whether the manager currently runs it, and exits non-zero when nothing
+is installed. `remove` stops the service and deletes the file it pointed at.
+
+A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
+user-private files the daemon already reads.
+
 ## Programmatic use
 
 The package has two entry points. `@getdomovoi/daemon` is the supported surface: one class, and

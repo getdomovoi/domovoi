@@ -25,6 +25,7 @@ import {
   systemEmergencyStoppedNotificationSchema,
   sessionEvidenceSchema,
   sessionHistoryCategorySchema,
+  sessionHistoryEntrySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
   workspaceSnapshotSchema,
@@ -423,7 +424,7 @@ describe("JSON-RPC envelopes", () => {
       ...base,
       failures: [
         { target: "provider", targetId: "codex", message: "reset failed" },
-        { target: "mutation", targetId: "mutation-1", message: "cancel failed" },
+        { target: "terminal", targetId: "terminal-1", message: "close failed" },
         { target: "persistence", message: "snapshot save failed" },
       ],
     }).failures).toHaveLength(3)
@@ -431,6 +432,21 @@ describe("JSON-RPC envelopes", () => {
       ...base,
       failures: [{ target: "queued-turn", message: "legacy target" }],
     }).success).toBe(false)
+    expect(systemEmergencyStopResultSchema.safeParse({
+      ...base,
+      failures: [{ target: "mutation", message: "legacy target" }],
+    }).success).toBe(false)
+  })
+
+  it("carries command tool rows and a retired file-change row into history", () => {
+    const entry = {
+      id: "history-1", sourceId: "tool-1", sessionId: "session-a", category: "tools",
+      status: "completed", title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "command" }).success).toBe(true)
+    // A stored snapshot can still hold it, so history has to page it out.
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "file-change" }).success).toBe(true)
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "invented" }).success).toBe(false)
   })
 
   it("registers archive as a typed session mutation", () => {
@@ -829,6 +845,38 @@ describe("JSON value depth bounds", () => {
       id: "req-1",
       result: params,
     }).success).toBe(true)
+  })
+})
+
+describe("session.revertFile parameters", () => {
+  const accept = (path: string) => rpcMethods["session.revertFile"].params.safeParse({
+    sessionId: "session-1",
+    path,
+    client: "desktop",
+  }).success
+
+  it("accepts a worktree-relative file path", () => {
+    expect(accept("src/app.ts")).toBe(true)
+    expect(accept("docs/notes with spaces.md")).toBe(true)
+  })
+
+  it("rejects paths that could reach outside the session worktree", () => {
+    expect(accept("/etc/passwd")).toBe(false)
+    expect(accept("../secrets.env")).toBe(false)
+    expect(accept("src/../../secrets.env")).toBe(false)
+    expect(accept("C:\\Windows\\system.ini")).toBe(false)
+    expect(accept("--upload-pack=evil")).toBe(false)
+    expect(accept("")).toBe(false)
+  })
+
+  it("rejects unknown keys and returns a snapshot", () => {
+    expect(rpcMethods["session.revertFile"].params.safeParse({
+      sessionId: "session-1",
+      path: "src/app.ts",
+      client: "desktop",
+      force: true,
+    }).success).toBe(false)
+    expect(rpcMethods["session.revertFile"].result.safeParse(demoWorkspace).success).toBe(true)
   })
 })
 

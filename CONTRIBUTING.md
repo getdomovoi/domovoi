@@ -114,8 +114,12 @@ widths. Describe keyboard, touch, loading, empty, and failure states when they a
 Every workspace package shares one version and is released as one compatibility unit. Record the
 release intent of a change with `pnpm changeset` and commit the generated file alongside the
 change. `pnpm release:status` lists changed packages that still lack metadata, and
-`pnpm release:invariants` fails when package versions drift apart or a workflow references an
-action by a mutable tag.
+`pnpm release:invariants` fails when package versions drift apart, a workflow references an
+action by a mutable tag, or `ROADMAP.html` is stale relative to `ROADMAP.md`.
+
+`ROADMAP.md` is the reviewed roadmap source. `ROADMAP.html` is generated from it by
+`scripts/roadmap-html.mjs`; run `pnpm roadmap:html` after editing the Markdown and commit both
+files together.
 
 Documentation-only and repository-tooling changes do not need a changeset. See
 [docs/distribution.md](docs/distribution.md) for the release model.
