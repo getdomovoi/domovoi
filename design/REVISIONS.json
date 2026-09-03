@@ -4,7 +4,7 @@
     "project": "Relay multi-device platform",
     "projectId": "a3b4404e-4d0c-451e-8dd2-203116a76c06"
   },
-  "recordedOn": "2026-09-02",
+  "recordedOn": "2026-09-03",
   "files": {
     "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
       "bytes": 103,
@@ -85,6 +85,46 @@
     "design/design_handoff_domovoi_brand/screenshots/01-brand-directions.png": {
       "bytes": 23998,
       "sha256": "9e88ce23aea1cb8b552a7b07de66763a56d3028b0d03a9dde08d1e1a9cdac4ec"
+    },
+    "design/design_system_domovoi/styles.css": {
+      "bytes": 286,
+      "sha256": "39e0f6511b7dbd77a48ce7e9f0cbbe4b72cfd6b9d6971593cb701944ca54b9c5"
+    },
+    "design/design_system_domovoi/tokens/base.css": {
+      "bytes": 804,
+      "sha256": "4bb77c10679d5374506ae37a889c0ddd50a4e72732a33ab583ce27e99edbe01c"
+    },
+    "design/design_system_domovoi/tokens/colors.css": {
+      "bytes": 4701,
+      "sha256": "49f0e772b9887148bc7b5995a7151fbfdbae1b06d7820dcf093b18f76b7903db"
+    },
+    "design/design_system_domovoi/tokens/elevation.css": {
+      "bytes": 587,
+      "sha256": "0007c34b47578a9022464e6fab851a8702cca54cc2d3fa05251dabd286df680b"
+    },
+    "design/design_system_domovoi/tokens/fonts.css": {
+      "bytes": 321,
+      "sha256": "cc7acf85fb63f624c3e253ab44022ffd87c04f7f66e1d8a33b3f1c19848926cb"
+    },
+    "design/design_system_domovoi/tokens/motion.css": {
+      "bytes": 1425,
+      "sha256": "2b7ffff48dae4d92d34c8879c87761b034b4f3e608b86f3f9113f15229dd01b4"
+    },
+    "design/design_system_domovoi/tokens/radii.css": {
+      "bytes": 608,
+      "sha256": "651ff128f481b798eab0f65f0147f5ca365ba64d9d70f5ba258c030ee5dddf56"
+    },
+    "design/design_system_domovoi/tokens/scrollbar.css": {
+      "bytes": 1236,
+      "sha256": "bc844485b9ee9c002a396de2e83e49e54b382596eb87d3a9eec6c77b85adc5f6"
+    },
+    "design/design_system_domovoi/tokens/spacing.css": {
+      "bytes": 1135,
+      "sha256": "79e477b4796ca6b0fd76d5c99751f8289586217999ebcd2b0e1cc7c75f02304c"
+    },
+    "design/design_system_domovoi/tokens/typography.css": {
+      "bytes": 1270,
+      "sha256": "89aa63a1ef0423af683a1db51dc0e170f84861b33056256e91d3314919e87d1c"
     }
   }
 }

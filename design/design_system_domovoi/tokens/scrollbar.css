@@ -1,0 +1,31 @@
+/* Scrollbars are styled on pointer surfaces and hidden on touch ones.
+   The thumb picks up --primary on drag so it reads as a control. */
+
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track {
+    background: color-mix(in oklab, var(--code) 70%, transparent);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%);
+    border-radius: var(--radius-pill);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background: var(--primary);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+}
+
+/* touch: the OS draws its own overlay indicator */
+@media (hover: none), (pointer: coarse) {
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  * { scrollbar-width: none; -ms-overflow-style: none; }
+}
