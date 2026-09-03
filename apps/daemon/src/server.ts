@@ -12,6 +12,7 @@ import {
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
+  devicePairingLimitErrorCode,
   sourcePreflight,
   transferPreflight,
   type TransferReceipt,
@@ -25,8 +26,10 @@ import {
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
+  protocolCompatibility,
   protocolVersion,
   projectSwitchConfirmationErrorCode,
+  protocolVersionMismatchErrorCode,
   rpcMethods,
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
@@ -49,6 +52,7 @@ import {
   type TerminalOwner,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
+  versionlessClientProtocol,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
@@ -106,6 +110,7 @@ import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
+import { DeviceLimitReachedError } from "./device-registry.js"
 import type { MachineCredentials } from "./machine-credentials.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
@@ -158,6 +163,18 @@ export const persistenceFailureThreshold = 3
 export const persistenceUnavailableContext = "Domovoi can no longer persist state"
 export const persistenceUnavailableMessage =
   "Daemon cannot persist state, so changes are refused"
+
+export function helloProtocolCompatibility(
+  daemonProtocol: string,
+  declaredClientProtocol: string | undefined,
+) {
+  const clientProtocol = declaredClientProtocol ?? versionlessClientProtocol
+  return {
+    clientProtocol,
+    compatibility: protocolCompatibility(daemonProtocol, clientProtocol),
+  }
+}
+
 const sessionResourceMethods = new Set([
   "annotation.create",
   "checkpoint.create",
@@ -742,8 +759,9 @@ export class DomovoiDaemon {
         Date.now(),
       ).machines ?? [],
       credentials: this.#machineCredentials,
-      open: ({ endpoint, credential, signal }) => openMachineSocket({
+      open: ({ endpoint, machineId, credential, signal }) => openMachineSocket({
         endpoint,
+        machineId,
         credential,
         ...(signal ? { signal } : {}),
       }),
@@ -990,7 +1008,10 @@ export class DomovoiDaemon {
           return
         }
         if (!this.#authenticatedClients.has(socket)) {
-          void this.#handle(socket, raw)
+          void this.#handle(socket, raw).catch((error: unknown) => {
+            this.#reportError("RPC dispatch failed", error)
+            this.#error(socket, null, internalError, internalRpcErrorMessage)
+          })
           return
         }
         const resource = this.#requestResource(raw)
@@ -1003,8 +1024,12 @@ export class DomovoiDaemon {
         } else if (
           this.#bypassesMutationQueue(raw)
           && this.#authenticatedClients.has(socket)
-        ) void this.#handle(socket, raw)
-        else void this.#mutations.enqueueExclusive(
+        ) {
+          void this.#handle(socket, raw).catch((error: unknown) => {
+            this.#reportError("RPC dispatch failed", error)
+            this.#error(socket, null, internalError, internalRpcErrorMessage)
+          })
+        } else void this.#mutations.enqueueExclusive(
           (signal) => this.#handle(socket, raw, signal),
           { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
         )
@@ -1674,11 +1699,36 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, invalidParams, "Connection client identity is already established")
         return
       }
-      this.#authenticatedActors.set(socket, {
-        kind: "client",
-        client: hello.client,
-        ...(hello.clientId ? { clientId: hello.clientId } : {}),
-      })
+      // A hello with no version comes from a client built before the field
+      // existed, and every one of those spoke 0.1.0. Pinning that literal keeps
+      // the compatibility check honest: once this daemon moves past 0.1.x, a
+      // versionless client is correctly judged incompatible rather than being
+      // waved through as whatever the daemon happens to speak.
+      const { clientProtocol, compatibility } = helloProtocolCompatibility(
+        protocolVersion,
+        hello.protocolVersion,
+      )
+      if (compatibility !== "compatible") {
+        // A refused handshake leaves the socket unauthenticated, so a client
+        // on another protocol version cannot fall through to other methods.
+        this.#authenticatedClients.delete(socket)
+        this.#error(
+          socket,
+          request.id,
+          protocolVersionMismatchErrorCode,
+          `This daemon speaks protocol ${protocolVersion}; the client speaks ${clientProtocol}`,
+        )
+        return
+      }
+      if (hello.client === "machine") {
+        this.#authenticatedActors.set(socket, { kind: "machine", machineId: hello.machineId })
+      } else {
+        this.#authenticatedActors.set(socket, {
+          kind: "client",
+          client: hello.client,
+          ...(hello.clientId ? { clientId: hello.clientId } : {}),
+        })
+      }
       this.#connectionIds.set(socket, randomUUID())
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
@@ -1686,7 +1736,7 @@ export class DomovoiDaemon {
     } else if (method === "device.claim") {
       // The one method a machine may reach before it has a credential, because
       // presenting the pairing code is how it gets one. It grants nothing else.
-      const params = rpcMethods[method].params.parse(request.params)
+      const params = paramsResult.data as RpcParams<"device.claim">
       if (!this.#pairing) {
         this.#error(socket, request.id, internalError, "Device pairing is unavailable")
         return
@@ -1705,6 +1755,16 @@ export class DomovoiDaemon {
           result: rpcMethods[method].result.parse(paired),
         })
       } catch (error) {
+        if (error instanceof DeviceLimitReachedError) {
+          this.#appendAudit({
+            actor: { kind: "daemon", component: "rpc" },
+            action: "device.claim",
+            outcome: "denied",
+            detail: error.message,
+          })
+          this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
+          return
+        }
         if (!(error instanceof PairingCodeError)) throw error
         // The reason is recorded for an operator but never returned: an
         // unauthenticated caller must not learn whether a code exists, has
@@ -2141,7 +2201,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "device.saveCredential") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"device.saveCredential">
         // Keeping another machine's credential is device management, so a
         // device credential must not reach it.
         if (this.#deviceCredentials.get(socket) !== undefined) {
@@ -2167,7 +2227,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.transfer") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.transfer">
         // Moving a session hands a worktree to another machine, so a device
         // credential must not reach it.
         if (this.#deviceCredentials.get(socket) !== undefined) {
@@ -2330,7 +2390,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "transfer.have") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"transfer.have">
         if (this.#deviceCredentials.get(socket) !== undefined) {
           this.#error(
             socket,
@@ -2350,7 +2410,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "transfer.fromRef") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"transfer.fromRef">
         // Taking a session writes a worktree here, which is machine management.
         if (this.#deviceCredentials.get(socket) !== undefined) {
           this.#error(
@@ -2385,7 +2445,8 @@ export class DomovoiDaemon {
 
       if (method === "transfer.begin" || method === "transfer.chunk") {
         // Accepting a session writes a worktree on this machine, which is
-        // machine management, so a device credential must not reach it.
+        // machine management, so a device credential must not reach it and only
+        // a peer daemon may ask.
         if (this.#deviceCredentials.get(socket) !== undefined) {
           this.#error(
             socket,
@@ -2395,13 +2456,23 @@ export class DomovoiDaemon {
           )
           return
         }
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires a machine connection",
+          )
+          return
+        }
         if (!this.#workspaceService.restoreSessionFromBundle) {
           this.#error(socket, request.id, internalError, "This machine cannot accept transfers")
           return
         }
 
         if (method === "transfer.begin") {
-          const params = rpcMethods[method].params.parse(request.params)
+          const params = paramsResult.data as RpcParams<"transfer.begin">
           if (this.#incomingTransfers.size >= maximumIncomingTransfers) {
             this.#error(socket, request.id, invalidParams, "Too many transfers are already arriving")
             return
@@ -2427,7 +2498,7 @@ export class DomovoiDaemon {
           return
         }
 
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"transfer.chunk">
         const incoming = this.#incomingTransfers.get(params.transferId)
         if (!incoming) {
           this.#error(socket, request.id, invalidParams, "That transfer is not arriving")
@@ -2482,7 +2553,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "device.machineCredential") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"device.machineCredential">
         // Handing out another machine's credential is device management, so a
         // device credential must not reach it.
         if (this.#deviceCredentials.get(socket) !== undefined) {
@@ -2517,7 +2588,6 @@ export class DomovoiDaemon {
       }
 
       if (method === "device.issueCode") {
-        rpcMethods[method].params.parse(request.params)
         // Opening a pairing enrols a new device, so it is device management and
         // a device credential must not reach it: otherwise one paired device
         // could mint codes and enrol more.
@@ -2548,7 +2618,11 @@ export class DomovoiDaemon {
         || method === "device.revoke"
         || method === "device.rotate"
       ) {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as
+          | RpcParams<"device.pair">
+          | RpcParams<"device.list">
+          | RpcParams<"device.revoke">
+          | RpcParams<"device.rotate">
         const devices = this.#store.devices
         if (!devices) {
           this.#error(socket, request.id, internalError, "Device pairing is unavailable")
@@ -2584,7 +2658,6 @@ export class DomovoiDaemon {
       }
 
       if (method === "fleet.list") {
-        rpcMethods[method].params.parse(request.params)
         this.#recordThisMachine()
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -2929,7 +3002,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "approval.resolve") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"approval.resolve">
         const actor = this.#authenticatedActors.get(socket)
         const connectionId = this.#connectionIds.get(socket)
         if (!actor || actor.kind !== "client" || !connectionId) {
@@ -3162,7 +3235,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "session.restartProviderThread") {
-        const params = rpcMethods[method].params.parse(request.params)
+        const params = paramsResult.data as RpcParams<"session.restartProviderThread">
         const authenticatedActor = this.#authenticatedActors.get(socket)
         const connectionId = this.#connectionIds.get(socket)
         if (!authenticatedActor || authenticatedActor.kind !== "client" || !connectionId) {
