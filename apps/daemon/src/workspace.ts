@@ -54,6 +54,7 @@ export type WorkspaceEvidence = {
 export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
+const maximumGitOutputBytes = 32 * 1_024 * 1_024
 
 export class SessionWorktreeExistsError extends Error {
   constructor() {
@@ -71,6 +72,7 @@ export class WorkspaceEvidenceUnstableError extends Error {
 
 export type GitWorkspaceServiceOptions = {
   afterEvidenceObservation?: (observation: "status") => void | Promise<void>
+  afterCheckpointStaging?: () => void | Promise<void>
 }
 
 export interface WorkspaceService {
@@ -144,6 +146,7 @@ async function git(
   signal?.throwIfAborted()
   const result = await execute("git", ["-C", repositoryPath, ...arguments_], {
     encoding: "utf8",
+    maxBuffer: maximumGitOutputBytes,
     signal,
   })
   return result.stdout.trim()
@@ -391,10 +394,12 @@ function parseNumstat(output: string): Map<string, {
 export class GitWorkspaceService implements WorkspaceService {
   readonly worktreeRoot: string
   readonly #afterEvidenceObservation?: GitWorkspaceServiceOptions["afterEvidenceObservation"]
+  readonly #afterCheckpointStaging?: GitWorkspaceServiceOptions["afterCheckpointStaging"]
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
     this.worktreeRoot = resolve(worktreeRoot)
     this.#afterEvidenceObservation = options.afterEvidenceObservation
+    this.#afterCheckpointStaging = options.afterCheckpointStaging
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
@@ -553,7 +558,15 @@ export class GitWorkspaceService implements WorkspaceService {
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
     await git(worktreePath, ["add", "--all"], signal)
-    const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+    await this.#afterCheckpointStaging?.()
+    let names: string
+    try {
+      names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+    } catch (error) {
+      // Everything is staged by now; a failed checkpoint must not leave it so.
+      await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
+      throw error
+    }
     const changedFiles = names.split("\0").filter(Boolean)
     if (changedFiles.length === 0) {
       const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)

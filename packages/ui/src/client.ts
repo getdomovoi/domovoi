@@ -655,6 +655,7 @@ export class DomovoiClient extends EventTarget {
     const generation = this.#connectionGeneration
     this.#reconnectTimer = this.#scheduler.setTimeout(() => {
       this.#reconnectTimer = undefined
+      this.dispatchEvent(new CustomEvent("reconnecting", { detail: { active: false } }))
       if (
         generation !== this.#connectionGeneration
         || !this.#shouldReconnect
@@ -663,12 +664,14 @@ export class DomovoiClient extends EventTarget {
       ) return
       void this.#open().catch(() => undefined)
     }, delayMs)
+    this.dispatchEvent(new CustomEvent("reconnecting", { detail: { active: true } }))
   }
 
   #clearReconnectTimer(): void {
     if (this.#reconnectTimer === undefined) return
     this.#scheduler.clearTimeout(this.#reconnectTimer)
     this.#reconnectTimer = undefined
+    this.dispatchEvent(new CustomEvent("reconnecting", { detail: { active: false } }))
   }
 
   #markAuthenticationRequired(message: string): void {
@@ -689,11 +692,16 @@ export class DomovoiClient extends EventTarget {
     }
   }
 
+  #reportProtocolError(reason: string): void {
+    this.dispatchEvent(new CustomEvent("protocol-error", { detail: { reason } }))
+  }
+
   #receive(raw: string): void {
     let input: unknown
     try {
       input = JSON.parse(raw)
     } catch {
+      this.#reportProtocolError("Daemon sent a message that is not valid JSON")
       return
     }
 
@@ -703,6 +711,10 @@ export class DomovoiClient extends EventTarget {
         const snapshot = workspaceSnapshotSchema.safeParse(notification.data.params)
         if (snapshot.success) {
           this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a workspace.changed notification this client could not parse",
+          )
         }
         return
       }
@@ -710,6 +722,10 @@ export class DomovoiClient extends EventTarget {
         const delta = workspaceDeltaSchema.safeParse(notification.data.params)
         if (delta.success) {
           this.dispatchEvent(new CustomEvent("workspace-delta", { detail: delta.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a workspace.delta notification this client could not parse",
+          )
         }
         return
       }
@@ -719,6 +735,10 @@ export class DomovoiClient extends EventTarget {
         )
         if (stopped.success) {
           this.dispatchEvent(new CustomEvent("emergency-stopped", { detail: stopped.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a system.emergencyStopped notification this client could not parse",
+          )
         }
         return
       }
@@ -726,6 +746,10 @@ export class DomovoiClient extends EventTarget {
         const output = terminalOutputNotificationSchema.safeParse(notification.data.params)
         if (output.success) {
           this.dispatchEvent(new CustomEvent("terminal-output", { detail: output.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a terminal.output notification this client could not parse",
+          )
         }
         return
       }
@@ -733,22 +757,63 @@ export class DomovoiClient extends EventTarget {
         const closed = terminalClosedNotificationSchema.safeParse(notification.data.params)
         if (closed.success) {
           this.dispatchEvent(new CustomEvent("terminal-closed", { detail: closed.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a terminal.closed notification this client could not parse",
+          )
         }
         return
       }
       if (notification.data.method === "terminal.ownership") {
-        const ownership = terminalOwnershipNotificationSchema.safeParse(notification.data.params)
+        const ownership = terminalOwnershipNotificationSchema.safeParse(
+          notification.data.params,
+        )
         if (ownership.success) {
           this.dispatchEvent(new CustomEvent("terminal-ownership", { detail: ownership.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a terminal.ownership notification this client could not parse",
+          )
         }
         return
       }
+      this.#reportProtocolError(
+        `Daemon sent a ${notification.data.method} notification this client does not recognize`,
+      )
+      return
     }
 
     const response = rpcResponseSchema.safeParse(input)
-    if (!response.success || typeof response.data.id !== "number") return
+    if (!response.success) {
+      const id = (input as { id?: unknown }).id
+      if (typeof id === "number") {
+        const pending = this.#pending.get(id)
+        if (pending) {
+          this.#pending.delete(id)
+          pending.cleanup()
+          pending.reject(new Error("Daemon returned a response this client could not parse"))
+        }
+        this.#reportProtocolError(
+          "Daemon sent an RPC response this client could not parse",
+        )
+      } else {
+        this.#reportProtocolError(
+          "Daemon sent a message this client could not classify",
+        )
+      }
+      return
+    }
+    if (typeof response.data.id !== "number") {
+      this.#reportProtocolError("Daemon sent an RPC response without a request id")
+      return
+    }
     const pending = this.#pending.get(response.data.id)
-    if (!pending) return
+    if (!pending) {
+      this.#reportProtocolError(
+        "Daemon sent a response for a request this client is not tracking",
+      )
+      return
+    }
     this.#pending.delete(response.data.id)
     pending.cleanup()
 

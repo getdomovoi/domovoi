@@ -1,4 +1,5 @@
 import { homedir } from "node:os"
+import { appendFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { randomBytes } from "node:crypto"
@@ -7,6 +8,7 @@ import { DomovoiDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
 import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
+import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   isAuthorizedRendererEvent,
   resolveRendererTarget,
@@ -72,8 +74,21 @@ const desktopNotifications = new DesktopNotificationController({
   },
 })
 
+function domovoiMainLogPath(): string {
+  return join(app.getPath("logs"), "domovoi-main.log")
+}
+
+function appendDomovoiMainLog(logPath: string, text: string): void {
+  appendFileSync(logPath, text)
+}
+
 async function ensureDaemon(): Promise<void> {
-  const daemon = new DomovoiDaemon({ host: "127.0.0.1", port: 47831, authToken: rpcToken })
+  const daemon = new DomovoiDaemon({
+    host: "127.0.0.1",
+    port: 47831,
+    authToken: rpcToken,
+    errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
+  })
   await ownedDaemon.start(daemon)
 }
 
@@ -120,6 +135,12 @@ function createWindow(): void {
   })
   startupMetrics.mark("window-created")
 
+  // A renderer that dies leaves an empty window, so it is reloaded rather
+  // than logged only. An intentional renderer exit must not come back.
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`Desktop renderer exited unexpectedly: ${details.reason} (${details.exitCode})`)
+    if (details.reason !== "clean-exit") mainWindow?.webContents.reload()
+  })
   if (launchSmoke) {
     mainWindow.webContents.on("console-message", (details) => {
       if (details.level === "error" || details.level === "warning") {
@@ -131,9 +152,6 @@ function createWindow(): void {
     })
     mainWindow.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
       if (isMainFrame) console.error(`Desktop renderer failed to load ${url}: ${code} ${description}`)
-    })
-    mainWindow.webContents.on("render-process-gone", (_event, details) => {
-      console.error(`Desktop renderer exited unexpectedly: ${details.reason} (${details.exitCode})`)
     })
   }
 
@@ -241,11 +259,13 @@ if (!hasSingleInstanceLock) {
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
-  }).catch(() => {
-    dialog.showErrorBox(
-      "Domovoi could not start",
-      "The local daemon did not start. Check Domovoi logs and try again.",
-    )
+  }).catch((error: unknown) => {
+    const detail = recordStartupFailure({
+      error,
+      logPath: domovoiMainLogPath(),
+      append: appendDomovoiMainLog,
+    })
+    dialog.showErrorBox("Domovoi could not start", detail)
     app.quit()
   })
 }

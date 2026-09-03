@@ -17,7 +17,10 @@ export class OwnedDaemonLifecycle {
   #stopping: Promise<void> | undefined
   #quitAllowed = false
 
-  constructor(private readonly errorSink: OwnedDaemonErrorSink = () => {}) {}
+  constructor(
+    private readonly errorSink: OwnedDaemonErrorSink = () => {},
+    private readonly stopTimeoutMs = 10_000,
+  ) {}
 
   start<T extends StoppableOwnedDaemon>(daemon: T): Promise<T> {
     const starting = startOwnedDaemon(daemon)
@@ -51,7 +54,17 @@ export class OwnedDaemonLifecycle {
     } catch {
       return
     }
-    await daemon?.stop()
+    await new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(resolve, this.stopTimeoutMs)
+      deadline.unref()
+      void (daemon?.stop() ?? Promise.resolve()).then(() => {
+        clearTimeout(deadline)
+        resolve()
+      }, (error: unknown) => {
+        clearTimeout(deadline)
+        reject(error)
+      })
+    })
   }
 }
 

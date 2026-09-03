@@ -72,6 +72,9 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     snapshot: null,
   }))
   const [connected, setConnected] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
+  const [protocolError, setProtocolError] = useState<string | null>(null)
+  const [authenticationRequired, setAuthenticationRequired] = useState<string | null>(null)
   const [emergencyStopPending, setEmergencyStopPending] = useState(false)
   const [emergencyStopOutcome, setEmergencyStopOutcome] = useState<SystemEmergencyStopResult | null>(null)
   const [emergencyStopError, setEmergencyStopError] = useState<string | null>(null)
@@ -101,6 +104,9 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     setEmergencyStopOutcome(null)
     setEmergencyStopError(null)
     setConnected(false)
+    setReconnecting(false)
+    setProtocolError(null)
+    setAuthenticationRequired(null)
     setWorkspace({ target, snapshot: null })
     const client = new DomovoiClient(url, kind, {
       ...(authToken ? { authToken } : {}),
@@ -132,11 +138,25 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const onConnected = () => {
       if (active) setConnected(true)
     }
+    const onReconnecting = (event: Event) => {
+      if (active) setReconnecting((event as CustomEvent<{ active: boolean }>).detail.active)
+    }
+    const onProtocolError = (event: Event) => {
+      if (active) setProtocolError((event as CustomEvent<{ reason: string }>).detail.reason)
+    }
+    const onAuthenticationRequired = (event: Event) => {
+      if (active) {
+        setAuthenticationRequired((event as CustomEvent<{ message: string }>).detail.message)
+      }
+    }
     client.addEventListener("snapshot", onSnapshot)
     client.addEventListener("workspace-delta", onDelta)
     client.addEventListener("emergency-stopped", onEmergencyStopped)
     client.addEventListener("connected", onConnected)
     client.addEventListener("disconnected", onDisconnected)
+    client.addEventListener("reconnecting", onReconnecting)
+    client.addEventListener("protocol-error", onProtocolError)
+    client.addEventListener("authentication-required", onAuthenticationRequired)
     client.connect().then(
       (next) => {
         if (!active) return
@@ -155,6 +175,9 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       client.removeEventListener("emergency-stopped", onEmergencyStopped)
       client.removeEventListener("connected", onConnected)
       client.removeEventListener("disconnected", onDisconnected)
+      client.removeEventListener("reconnecting", onReconnecting)
+      client.removeEventListener("protocol-error", onProtocolError)
+      client.removeEventListener("authentication-required", onAuthenticationRequired)
       client.disconnect()
       clientRef.current = null
     }
@@ -541,6 +564,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     activateSession,
     archiveSession,
     authorizeArtifact,
+    authenticationRequired,
     claimTerminal,
     closeTerminal,
     connected,
@@ -567,9 +591,11 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     pauseAll,
     pauseSession,
     queryAudit,
+    protocolError,
     readSkill,
     refreshProviders,
     reconnect,
+    reconnecting,
     restoreCheckpoint,
     restartProviderThread,
     resizeTerminal,
