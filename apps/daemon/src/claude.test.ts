@@ -395,6 +395,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     ["Error: 429 rate limit exceeded", "rate-limit"],
     ["Error: insufficient_quota", "quota-exhausted"],
     ["Error: model claude-opus-9 not found", "model-unavailable"],
+    ["Error: You have reached your maximum conversation length limit", "context-window-exceeded"],
   ])("forwards the Claude failure text %s so the daemon can classify it", async (text, kind) => {
     const { calls, factory } = factoryHarness()
     const ids: ClaudeMessageId[] = [

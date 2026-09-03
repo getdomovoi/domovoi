@@ -31,6 +31,7 @@ describe("provider failure classification", () => {
     ["authentication_failed", "authentication-expired", "sign-in"],
     ["429 rate limit exceeded", "rate-limit", "retry"],
     ["You've hit your weekly limit", "rate-limit", "retry"],
+    ["You have hit your weekly limit", "rate-limit", "retry"],
     ["insufficient_quota", "quota-exhausted", "check-quota"],
     ["Your org is out of usage · add funds to continue", "quota-exhausted", "check-quota"],
     ["model gpt-future not found", "model-unavailable", "change-model"],
@@ -45,8 +46,13 @@ describe("provider failure classification", () => {
     "You have reached your maximum conversation length limit",
     "You've reached your context limit",
     "You've reached your maximum conversation length limit",
-  ])("does not treat a context failure as a provider rate limit: %s", (detail) => {
-    expect(classifyProviderFailure(new Error(detail)).kind).not.toBe("rate-limit")
+  ])("classifies a context-window failure: %s", (detail) => {
+    expect(classifyProviderFailure(new Error(detail))).toEqual({
+      kind: "context-window-exceeded",
+      action: "shorten-context",
+      message: "Turn exceeded the model context window",
+      retryable: false,
+    })
   })
 
   it("never returns raw provider text or embedded secrets", () => {
