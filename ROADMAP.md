@@ -361,6 +361,18 @@ fleet.
 - [x] Offer the move from the client: a transfer dialog that names the target machine, shows the
   source and target preflight, chooses between the Git bundle and a named remote ref, and states
   what travels with the session and what does not
+  - The dialog ships and states what travels. What travels is less than a person would expect, so
+    read the line below before trusting this one.
+- [ ] Carry session state, not only Git bytes, across a machine transfer
+  - `transferBeginParams` in `packages/protocol/src/transfer-rpc.ts` carries the session id, the
+    source machine, the method, a digest, a byte count, and an optional `sinceCommit`. Nothing
+    else. The thread, artifacts, annotations, working plan, and usage ledger stay on the source
+    machine, so a transferred session arrives with its worktree and none of its history.
+  - This contradicts the checked line above it: the dialog names what travels, and a person
+    reading it reasonably expects their thread and artifacts on the other machine.
+  - Found on 2026-09-03 while deciding whether the working plan should travel. Adding one kind of
+    state alone would be worse than none, because the session would arrive looking complete.
+    Deliberately kept out of the working-plan work; it is a transfer-contract change of its own.
 - [x] Record every attempted move in the thread as a receipt that names the reason the daemon
   refused rather than a generic failure
 - [x] Add a Fleet surface listing machine platform, architecture, version, connection, health,
