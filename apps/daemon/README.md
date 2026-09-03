@@ -38,13 +38,31 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
-reuses a high-entropy credential at `~/.domovoi/daemon.token` with user-only permissions. Remote
+reuses a high-entropy credential at `~/.domovoi/daemon.token`. On POSIX, private state files are
+`0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
+state lives under `.domovoi` in the user profile directory and no additional ACL restriction is
+applied yet. Remote
 listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and
 `DOMOVOI_TLS_KEY_PATH`, which must be set together. The daemon terminates TLS itself and refuses
 to start a plaintext non-loopback listener.
 
-The bearer token protects RPC access. Health checks remain public and preview documents use their
-own short-lived signed capabilities.
+The bearer token protects RPC access. Health checks remain public. Preview documents require their
+own short-lived signed capabilities on every listener, loopback included; each capability is scoped
+to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
+retargeted request returns 404.
+
+## When state cannot reach disk
+
+The daemon writes the workspace snapshot after every change. A single failed write is retried on
+the next change. After three consecutive failures the daemon declares persistence unavailable and
+refuses mutating RPC methods with `daemonPersistenceUnavailableErrorCode` (`-32014`) instead of
+running on state nobody will get back. Every failure is still reported through the daemon error
+sink, and `system.emergencyStop` still reports a `persistence` failure in its bounded outcome.
+
+Read-only methods keep working, including `workspace.get`, so an operator can read the state that
+is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
+working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
+again as soon as one write succeeds, since each write stores the whole snapshot.
 
 ## Programmatic use
 

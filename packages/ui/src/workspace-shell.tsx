@@ -1999,6 +1999,7 @@ export function ArtifactDock({
     revision: number
     purpose: ArtifactAccess["purpose"]
     bridgeChannel?: string
+    parentOrigin?: string
   }) => Promise<ArtifactAccess>
   connected: boolean
   terminalControls: TerminalControls
@@ -2110,9 +2111,9 @@ export function ArtifactDock({
     setPreviewError("")
     const [target] = artifactAuthorizationTargets(previewAuthorizationKey)
     if (!target || !connected) return () => { active = false }
-    void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel }).then(
+    void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
       (access) => {
-        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access, window.location.origin))
+        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access))
       },
       (cause: unknown) => {
         if (!active) return
@@ -2140,7 +2141,7 @@ export function ArtifactDock({
             revision: target.revision,
             purpose: "preview",
           })
-          entries.push([target.id, artifactUrlFor(rpcUrl, access, window.location.origin)])
+          entries.push([target.id, artifactUrlFor(rpcUrl, access)])
         } catch {
           // Keep failed comparison stages sandboxed and blank.
         }
