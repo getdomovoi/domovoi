@@ -199,7 +199,6 @@ export const demoWorkspace: WorkspaceSnapshot = {
           id: "plan-step-migration",
           text: "Apply the migration on this machine's dev database",
           status: "in-progress",
-          blocker: { kind: "approval", approvalId: "approval-migrate" },
         },
         {
           id: "plan-step-tests",
