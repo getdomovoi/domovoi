@@ -11,7 +11,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent, AgentVisualContext } from "./agents.js"
+import type {
+  AgentAdapter,
+  AgentEvent,
+  AgentVisualContext,
+  AgentWorkingPlanStep,
+} from "./agents.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
@@ -468,6 +473,18 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       const block = asRecord(rawBlock)
       if (block?.type !== "tool_use" || typeof block.id !== "string" || typeof block.name !== "string") continue
       const input = asRecord(block.input) ?? {}
+      if (block.name === "TodoWrite") {
+        const steps = claudeTodoSteps(input.todos)
+        if (steps) {
+          this.#emit({
+            type: "plan-updated",
+            threadId: session.threadId,
+            turnId,
+            steps,
+          })
+        }
+        continue
+      }
       if (block.name === "Bash") {
         const command = typeof input.command === "string" ? input.command : "Bash"
         session.tools.set(block.id, { type: "command", command })
@@ -745,6 +762,21 @@ async function claudeContextOccupancy(
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+}
+
+function claudeTodoSteps(value: unknown): AgentWorkingPlanStep[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const steps: AgentWorkingPlanStep[] = []
+  for (const candidate of value) {
+    const todo = asRecord(candidate)
+    if (!todo || typeof todo.content !== "string") return undefined
+    const status = todo.status === "in_progress" ? "in-progress" : todo.status
+    if (status !== "pending" && status !== "in-progress" && status !== "completed") {
+      return undefined
+    }
+    steps.push({ text: todo.content, status })
+  }
+  return steps
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

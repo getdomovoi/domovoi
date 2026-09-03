@@ -859,4 +859,53 @@ describe("ClaudeAgentSdkAdapter", () => {
     }))
     await adapter.close()
   })
+
+  it("emits full structured plans from Claude TodoWrite", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const event = vi.fn()
+    adapter.onEvent(event)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Implement the fix",
+      runtime: runtime("build"),
+    })
+
+    calls[0]!.query.emit({
+      type: "assistant",
+      session_id: threadId,
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "tool-plan",
+          name: "TodoWrite",
+          input: {
+            todos: [
+              { content: "Inspect", status: "completed", activeForm: "Inspecting" },
+              { content: "Implement", status: "in_progress", activeForm: "Implementing" },
+              { content: "Verify", status: "pending", activeForm: "Verifying" },
+            ],
+          },
+        }],
+      },
+    })
+
+    await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
+      type: "plan-updated",
+      threadId,
+      turnId,
+      steps: [
+        { text: "Inspect", status: "completed" },
+        { text: "Implement", status: "in-progress" },
+        { text: "Verify", status: "pending" },
+      ],
+    }))
+    await adapter.close()
+  })
 })
