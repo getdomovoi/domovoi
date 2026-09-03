@@ -452,6 +452,27 @@ describe("workspace protocol", () => {
       sessionId: "session-1", artifactId: "preview-1", revision: 3,
       purpose: "print", bridgeChannel: "preview_channel_123456", client: "web",
     }).success).toBe(false)
+    for (const parentOrigin of ["https://app.domovoi.sh", "http://127.0.0.1:5178", "null"]) {
+      expect(artifactAuthorizeParamsSchema.parse({
+        sessionId: "session-1", artifactId: "preview-1", revision: 3,
+        purpose: "preview", bridgeChannel: "preview_channel_123456", parentOrigin, client: "web",
+      }).parentOrigin).toBe(parentOrigin)
+      expect(artifactAuthorizeResultSchema.parse({
+        sessionId: "session-1", artifactId: "preview-1", revision: 3,
+        purpose: "preview", bridgeChannel: "preview_channel_123456", parentOrigin,
+        expiresAt: 1_800_000_000, signature: "a".repeat(43),
+      }).parentOrigin).toBe(parentOrigin)
+    }
+    for (const parentOrigin of ["https://app.domovoi.sh/path", "javascript:alert(1)", "file://", ""]) {
+      expect(artifactAuthorizeParamsSchema.safeParse({
+        sessionId: "session-1", artifactId: "preview-1", revision: 3,
+        purpose: "preview", bridgeChannel: "preview_channel_123456", parentOrigin, client: "web",
+      }).success).toBe(false)
+    }
+    expect(artifactAuthorizeParamsSchema.safeParse({
+      sessionId: "session-1", artifactId: "preview-1", revision: 3,
+      purpose: "preview", parentOrigin: "https://app.domovoi.sh", client: "web",
+    }).success).toBe(false)
   })
 
   it("validates interactive terminal operations", () => {

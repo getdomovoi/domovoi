@@ -58,8 +58,9 @@ daemon terminates TLS itself and refuses a plaintext non-loopback listener. Set
 `DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. The browser client
 dials `ws://127.0.0.1:47831/rpc` by default; set the build-time Vite variable
 `VITE_DOMOVOI_RPC_URL`, read by `apps/web/src/main.tsx`, to point it at another daemon WebSocket
-URL. Remote preview documents use short-lived capabilities scoped to one artifact and annotation
-bridge channel.
+URL. Preview documents
+on every listener, loopback included, require short-lived signed capabilities scoped to one
+artifact revision, purpose, annotation bridge channel, and parent origin.
 
 ## Verify
 
@@ -90,5 +91,8 @@ the verified command set are summarized in [`AGENTS.md`](AGENTS.md).
 ## Licensing
 
 Domovoi is open-core. This repository contains the Apache-2.0-licensed daemon, protocol, clients,
-and local transports. Future hosted account, billing, relay, encrypted vault, and team-policy
-services may live outside this repository.
+and local transports. The daemon's Claude Code session adapter depends at runtime on the
+proprietary `@anthropic-ai/claude-agent-sdk`, installed from npm under Anthropic's terms rather
+than redistributed here; that exception is recorded in [`docs/licensing.md`](docs/licensing.md).
+Future hosted account, billing, relay, encrypted vault, and team-policy services may live outside
+this repository.
