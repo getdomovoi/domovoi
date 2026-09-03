@@ -59,6 +59,7 @@ function transferIo(overrides: { call?: TransferCall } = {}) {
       _sinceCommit?: string,
     ) => ({ path: bundlePath, commit: "d".repeat(40), incremental: false })),
     readBundle: vi.fn(async () => bundle),
+    removeBundle: vi.fn(async () => {}),
     recordReceipt: vi.fn((receipt: TransferReceipt) => { recorded.push(receipt) }),
     now: () => "2026-09-01T09:00:00.000Z",
   }
@@ -240,5 +241,44 @@ describe("sendSessionToMachine incremental", () => {
     await sendSessionToMachine({ session, sourceMachineId, target, client: "desktop", ...io })
 
     expect(bundled).toEqual([undefined])
+  })
+})
+
+describe("sendSessionToMachine bundle cleanup", () => {
+  it("removes the bundle once its bytes have been read", async () => {
+    const io = transferIo()
+    await sendSessionToMachine({ session, sourceMachineId, target, client: "desktop", ...io })
+    expect(io.removeBundle).toHaveBeenCalledWith("/worktrees/session-1.bundle")
+  })
+
+  it("removes the bundle when the target refuses it", async () => {
+    const io = transferIo()
+    io.call = vi.fn(async (method: string) => {
+      if (method === "transfer.have") return { commit: undefined }
+      if (method === "transfer.begin") throw new Error("refused: no room")
+      return {}
+    })
+    await sendSessionToMachine({ session, sourceMachineId, target, client: "desktop", ...io })
+    expect(io.removeBundle).toHaveBeenCalledWith("/worktrees/session-1.bundle")
+  })
+
+  it("removes the bundle even when reading it failed", async () => {
+    const io = transferIo()
+    io.readBundle = vi.fn(async () => { throw new Error("disk gone") })
+    await sendSessionToMachine({ session, sourceMachineId, target, client: "desktop", ...io })
+    expect(io.removeBundle).toHaveBeenCalledWith("/worktrees/session-1.bundle")
+  })
+
+  it("has nothing to remove when the preflight refused before bundling", async () => {
+    const io = transferIo()
+    await sendSessionToMachine({
+      session,
+      sourceMachineId,
+      target: { ...target, health: "unreachable" },
+      client: "desktop",
+      ...io,
+    })
+    expect(io.bundleSession).not.toHaveBeenCalled()
+    expect(io.removeBundle).not.toHaveBeenCalled()
   })
 })

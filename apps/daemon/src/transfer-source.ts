@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { rm } from "node:fs/promises"
 
 import {
   sourcePreflight,
@@ -121,6 +122,7 @@ export async function sendSessionToMachine(input: {
     sinceCommit?: string,
   ) => Promise<SessionBundle>
   readBundle: (bundlePath: string) => Promise<Buffer>
+  removeBundle?: (bundlePath: string) => Promise<void>
   recordReceipt: (receipt: TransferReceipt) => void
   now: () => string
 }): Promise<TransferOutcome> {
@@ -176,12 +178,19 @@ export async function sendSessionToMachine(input: {
       sessionId: input.session.id,
       client: input.client,
     }))
-    const bundle = await input.bundleSession(
-      worktreePath,
-      `${worktreePath}.bundle`,
-      held.commit,
-    )
-    const bytes = await input.readBundle(bundle.path)
+    // The bundle is a complete copy of the session's repository bytes written
+    // beside the worktree. It exists to be read once and sent, and it is
+    // removed as soon as it has been read, whatever happens afterwards, so a
+    // transfer never leaves the session's content lying on disk.
+    const bundlePath = `${worktreePath}.bundle`
+    const removeBundle = input.removeBundle ?? ((path: string) => rm(path, { force: true }))
+    let bytes: Buffer
+    try {
+      const bundle = await input.bundleSession(worktreePath, bundlePath, held.commit)
+      bytes = await input.readBundle(bundle.path)
+    } finally {
+      await removeBundle(bundlePath).catch(() => {})
+    }
     const digest = createHash("sha256").update(bytes).digest("hex")
 
     const begun = transferBeginResultSchema.parse(await input.call("transfer.begin", {
