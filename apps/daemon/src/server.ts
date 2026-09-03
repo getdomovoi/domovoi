@@ -1167,8 +1167,11 @@ export class DomovoiDaemon {
   ): boolean {
     if (!this.#auditLog || unauditedRpcMethods.has(method)) return true
     const values = params && typeof params === "object" ? params as Record<string, unknown> : {}
-    const actor: AuditActor = this.#authenticatedActors.get(socket)
-      ?? { kind: "daemon", component: "rpc" }
+    const authenticatedActor = this.#authenticatedActors.get(socket)
+    const connectionId = this.#connectionIds.get(socket)
+    const actor: AuditActor = authenticatedActor?.kind === "client" && connectionId
+      ? { ...authenticatedActor, connectionId }
+      : authenticatedActor ?? { kind: "daemon", component: "rpc" }
     const sessionId = this.#auditSessionId(values)
     const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId"]
       .map((key) => values[key])
