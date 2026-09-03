@@ -42,8 +42,9 @@ reuses a high-entropy credential at `~/.domovoi/daemon.token`. On POSIX, private
 `0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
 state lives under `.domovoi` in the user profile directory and no additional ACL restriction is
 applied yet. Remote
-listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. Use an encrypted outer transport such
-as a Tailscale tailnet or SSH tunnel. The daemon does not provide TLS itself.
+listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and
+`DOMOVOI_TLS_KEY_PATH`, which must be set together. The daemon terminates TLS itself and refuses
+to start a plaintext non-loopback listener.
 
 The bearer token protects RPC access. Health checks remain public and preview documents use their
 own short-lived signed capabilities.

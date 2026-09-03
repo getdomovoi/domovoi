@@ -7,8 +7,23 @@ type CapturedImage = {
   toPNG(): Uint8Array
 }
 
+type CaptureRect = { x: number; y: number; width: number; height: number }
+
 export type CaptureTarget = {
-  capturePage(rect: { x: number; y: number; width: number; height: number }): Promise<CapturedImage>
+  capturePage(rect: CaptureRect): Promise<CapturedImage>
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum = Number.MAX_SAFE_INTEGER): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum
+}
+
+function captureRect(value: unknown): value is CaptureRect {
+  if (!value || typeof value !== "object") return false
+  const rect = value as Record<string, unknown>
+  return boundedInteger(rect.x, 0)
+    && boundedInteger(rect.y, 0)
+    && boundedInteger(rect.width, 1, maximumCaptureDimension)
+    && boundedInteger(rect.height, 1, maximumCaptureDimension)
 }
 
 function validSize(size: { width: number; height: number }): boolean {
@@ -29,17 +44,9 @@ function validPng(bytes: Uint8Array): boolean {
 
 export async function captureAnnotationPng(
   target: CaptureTarget,
-  rect: { x: number; y: number; width: number; height: number },
+  rect: unknown,
 ): Promise<{ mimeType: "image/png"; width: number; height: number; data: string }> {
-  if (
-    ![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)
-    || rect.x < 0
-    || rect.y < 0
-    || rect.width < 1
-    || rect.height < 1
-    || rect.width > maximumCaptureDimension
-    || rect.height > maximumCaptureDimension
-  ) throw new Error("Invalid annotation capture bounds")
+  if (!captureRect(rect)) throw new Error("Invalid annotation capture bounds")
   let image = await target.capturePage(rect)
   let size = image.getSize()
   if (!validSize(size)) throw new Error("Invalid annotation capture result")
