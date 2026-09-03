@@ -20,6 +20,7 @@ import {
   PanelRightCloseIcon,
   PrinterIcon,
   SearchIcon,
+  Maximize2Icon,
   SendIcon,
   SettingsIcon,
   SquareIcon,
@@ -116,6 +117,8 @@ import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { connectMachineClient } from "./machine-client.js"
+import { collectFleetInventories } from "./fleet-inventories.js"
+import { openMachine } from "./open-machine.js"
 import { resolveMachineTarget } from "./machine-target.js"
 import {
   attachedMachineSwitch,
@@ -199,6 +202,7 @@ import {
   CommandPalette,
   type CommandPalettePlatform,
 } from "./command-palette"
+import { PromptEditorDialog } from "./prompt-editor"
 import { WorkspaceNotificationTracker } from "./desktop-notifications"
 import {
   copyDesktopText,
@@ -1188,6 +1192,7 @@ export function Thread({
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
+  const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
@@ -1495,9 +1500,23 @@ export function Thread({
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
+        <PromptEditorDialog
+          open={promptEditorOpen}
+          draft={prompt}
+          pending={pending}
+          sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
+          onOpenChange={setPromptEditorOpen}
+          onDraftChange={setPrompt}
+          onSend={() => {
+            setPromptEditorOpen(false)
+            void submitPrompt()
+          }}
+          projectLabel={snapshot.project?.name ?? "No project"}
+          {...(active.workspacePath ? { worktreeLabel: active.workspacePath.split(/[\\/]/u).at(-1) } : {})}
+        />
       </div>}
     </main>
   )
@@ -2896,6 +2915,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
   const [workspaceUi, setWorkspaceUi] = useState(() =>
@@ -3129,6 +3149,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     pauseAll: pauseActiveTurns,
     reconnect: reconnectDaemon,
     setSurface,
+    sessions: snapshot?.sessions ?? [],
+    machines: fleet,
+    skills,
+    activateSession: (sessionId) => {
+      setSurface("workspace")
+      activateVisibleSession(sessionId)
+    },
+    selectMachine: switchMachine,
+    openSkill: (skillId) => {
+      setRequestedSkillId(skillId)
+      setSurface("skills")
+    },
   })
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
@@ -3272,11 +3304,31 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setSkillsLoading(true)
     setSkillsError("")
     void Promise.all([listSkills(), getSkillInventory()]).then(
-      ([discovered, inventory]) => {
-        if (active) {
-          setSkills(discovered)
-          setSkillInventories([{ state: "available", inventory }])
-        }
+      async ([discovered, inventory]) => {
+        if (!active) return
+        setSkills(discovered)
+        // This machine answers first so the card is never empty while the
+        // fleet is still being asked.
+        setSkillInventories([{ state: "available", inventory }])
+        const sources = await collectFleetInventories({
+          local: inventory,
+          fleet,
+          open: async (machine) => {
+            const opened = await openMachine({
+              machine,
+              readCredential: async (id) => (await machineCredential({ machineId: id })).credential,
+              connect: ({ candidates, credential }) =>
+                connectMachineClient({ candidates, credential, kind: clientKind }),
+              wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+              attempts: 1,
+            })
+            return {
+              inventory: () => opened.client.getSkillInventory(),
+              close: () => opened.client.disconnect(),
+            }
+          },
+        })
+        if (active) setSkillInventories(sources)
       },
       (cause: unknown) => {
         if (active) {
@@ -3291,7 +3343,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       if (active) setSkillsLoading(false)
     })
     return () => { active = false }
-  }, [connected, getSkillInventory, listSkills, skillMachine, skillsRefresh, surface])
+  }, [
+    clientKind,
+    connected,
+    fleet,
+    getSkillInventory,
+    listSkills,
+    machineCredential,
+    skillMachine,
+    skillsRefresh,
+    surface,
+  ])
 
   useEffect(() => {
     const shell = shellRef.current
@@ -3343,6 +3405,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
+            requestedSkillId={requestedSkillId}
             projectId={snapshot.project?.id}
             enablements={snapshot.skillEnablements}
             onSetSkillEnabled={setSkillEnabled}
