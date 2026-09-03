@@ -11,6 +11,9 @@ export function classifyProviderFailure(error: unknown): ProviderFailure {
   if (/insufficient[_ -]?quota|quota exhausted|billing[_ -]?(?:quota|error)|out of (?:usage )?credits|out of usage.+add funds/i.test(detail)) {
     return failure("quota-exhausted", "check-quota", "Provider quota is exhausted", false)
   }
+  if (isContextWindowExceeded(detail)) {
+    return failure("context-window-exceeded", "shorten-context", "Turn exceeded the model context window", false)
+  }
   if (isRateLimit(detail)) {
     return failure("rate-limit", "retry", "Provider rate limit reached", true)
   }
@@ -23,11 +26,15 @@ export function classifyProviderFailure(error: unknown): ProviderFailure {
   return failure("unknown", "retry", "Provider request failed", true)
 }
 
+function isContextWindowExceeded(detail: string): boolean {
+  return /\bcontext[_ -]?(?:length|window)[_ -]?exceeded\b|\b(?:maximum )?(?:context|conversation)(?: window| length)? limit\b|\bmaximum context length\b|\bprompt is too long\b/i.test(detail)
+}
+
 function isRateLimit(detail: string): boolean {
   if (/\b429\b|\brate[_ -]?limit\b|\btoo many requests\b|\btokens?[- ]per[- ](?:minute|second) limit\b/i.test(detail)) {
     return true
   }
-  const claudeLimit = /you've (?:hit|reached) your(?: [\w-]+){0,4} limit/i.exec(detail)?.[0]
+  const claudeLimit = /you(?:'ve| have) (?:hit|reached) your(?: [\w-]+){0,4} limit/i.exec(detail)?.[0]
   return Boolean(claudeLimit && !/\b(?:context|conversation|input|output|length|tokens?)\b/i.test(claudeLimit))
 }
 
