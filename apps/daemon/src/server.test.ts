@@ -8035,6 +8035,7 @@ describe("DomovoiDaemon", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await identifyClient(socket)
     let requestId = 0
     const rpc = (method: string, params: Record<string, unknown>) => {
       const id = ++requestId
@@ -8085,6 +8086,43 @@ describe("DomovoiDaemon", () => {
     expect(codex.connect).not.toHaveBeenCalled()
     expect(codex.startThread).not.toHaveBeenCalled()
 
+    const initialPlan = await rpc("plan.edit", {
+      sessionId,
+      basedOnStructureRevision: 0,
+      baseSteps: [],
+      draftSteps: [{ text: "Inspect the repository" }],
+      client: "desktop",
+    })
+    expect(initialPlan).toMatchObject({
+      result: {
+        receipt: { disposition: "applied" },
+        snapshot: {
+          workingPlans: [expect.objectContaining({
+            sessionId,
+            structureRevision: 1,
+          })],
+        },
+      },
+    })
+    const conflictedPlan = await rpc("plan.edit", {
+      sessionId,
+      basedOnStructureRevision: 0,
+      baseSteps: [],
+      draftSteps: [{ text: "Keep this human draft through the handoff" }],
+      client: "desktop",
+    })
+    expect(conflictedPlan).toMatchObject({
+      result: {
+        receipt: { disposition: "conflicted" },
+        snapshot: {
+          workingPlans: [expect.objectContaining({
+            sessionId,
+            pendingEdit: expect.objectContaining({ status: "conflicted" }),
+          })],
+        },
+      },
+    })
+
     const handedOff = await rpc("session.setRuntime", {
       sessionId,
       runtime: {
@@ -8107,6 +8145,15 @@ describe("DomovoiDaemon", () => {
           kind: "system",
           body: "Handed off claude-code / claude-sonnet-4-6 to codex / gpt-5.6-sol.",
         })]),
+        workingPlans: [expect.objectContaining({
+          sessionId,
+          pendingEdit: expect.objectContaining({
+            status: "conflicted",
+            draftSteps: [expect.objectContaining({
+              text: "Keep this human draft through the handoff",
+            })],
+          }),
+        })],
       },
     })
     expect(workspaceService.checkpoint).toHaveBeenCalledWith(
@@ -8123,9 +8170,14 @@ describe("DomovoiDaemon", () => {
     await rpc("session.send", { sessionId, prompt: "Inspect the repository", client: "desktop" })
     expect(codex.startTurn).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "codex-thread",
-      prompt: expect.stringMatching(/<domovoi_handoff_context>[\s\S]*Inspect the repository/),
+      prompt: expect.stringMatching(
+        /<domovoi_working_plan>[\s\S]*<domovoi_handoff_context>[\s\S]*Inspect the repository/,
+      ),
       runtime: expect.objectContaining({ provider: "codex" }),
     }))
+    expect(codex.startTurn.mock.calls[0]![0].prompt).not.toContain(
+      "Keep this human draft through the handoff",
+    )
     expect(claude.startTurn).not.toHaveBeenCalled()
 
     await expect(rpc("session.setRuntime", {
