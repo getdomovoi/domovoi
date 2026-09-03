@@ -174,6 +174,8 @@ Every ledger entry is now merged.
     readout rather than for the alpha workflow.
 - [ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
+  - Written and verified on `feat/daemon-provider-limits`, tip `b63eda8`, but not merged. `main`
+    does not classify `context-window-exceeded`, so this line stays open until that branch lands.
   - A failure classifier exists, but the Claude adapter drops the failure reason and provider
     stderr is discarded, so authentication and rate-limit failures surface as unknown/retry.
 
@@ -182,14 +184,14 @@ Every ledger entry is now merged.
 - [x] Ask, Plan, Build manual, and Build auto controls
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
-- [ ] Stop translating a standing approval into provider-native persistence
+- [x] Stop translating a standing approval into provider-native persistence
   - `always-project` currently becomes `acceptForSession` in `apps/daemon/src/codex.ts`, `always`
     in `apps/daemon/src/opencode.ts`, and provider-suggested `updatedPermissions` in
     `apps/daemon/src/claude.ts`. The provider then answers later requests itself, where Domovoi
     cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the
     daemon must own every standing rule. This blocks the fingerprint work below, and it would also
     let a retired rule keep approving through the provider.
-- [ ] Key standing rules on a fingerprint of the resolved command rather than its text
+- [x] Key standing rules on a fingerprint of the resolved command rather than its text
   - A rule matches on `projectId` and the literal command, so it keeps approving a script whose
     body has since changed. The fingerprint should cover the normalized command, the
     project-relative directory, recursively expanded script bodies, lifecycle scripts such as
@@ -275,13 +277,13 @@ The desktop handoff specifies these; `main` does not implement them yet.
 
 - [ ] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
   Terminal, and Revoke actions
-  - Transport order, machine cards, pairing, revocation, and credential rotation ship in
-    `packages/ui/src/fleet-view.tsx`. The Use and Terminal actions on a machine card are the
-    remaining work.
+  - Transport order, machine cards, pairing, revocation, rotation, and the Use and Terminal card
+    actions all ship in `packages/ui/src/fleet-view.tsx`. The `UPDATE` badge for a machine running
+    an older daemon than the fleet is the remaining work.
 - [x] Settings shell: Appearance & window (System, Dark, and Light theme; window decoration with
   system fallback), Permissions & rules, External editor, and Notifications
 - [x] Cost and token readouts in the app bar and session header from `session.usage`
-- [ ] Context occupancy readout beside those totals
+- [x] Context occupancy readout beside those totals
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
     so a client shows the readout only when the provider reported the pair. No adapter populates
     them and no client reads them yet.
@@ -290,10 +292,17 @@ The desktop handoff specifies these; `main` does not implement them yet.
     has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
     code before the trust model exists is the wrong order.
 - [ ] Editable working plan with per-step state in the Plan tab
+  - Protocol and client ship: `workingPlans` on the snapshot, `plan.edit` and `plan.discardEdit`,
+    and a Plan tab that renders steps, marks a blocked step as waiting, shows queued and conflicted
+    edits with their draft, and edits, reorders, and discards. No adapter or daemon handler
+    populates a plan yet, so the card does not appear in a running session.
 - [x] Per-file diff review with revert in the Changes tab
 - [ ] Composer skill chip
-- [ ] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
+- [x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
   280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
+  - Sizes live as tokens in `packages/ui/src/styles.css` with a test comparing them against the
+    table in `DESIGN.md`, so drift fails in both directions. Claude Design settled the desktop
+    chrome as a 38px titlebar and a permanent 62px rail, with no horizontal 62px header.
 - [ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract
   lives in the repository rather than only in the project
 - [x] Port the live terminal-pane restyle from the current design revision
