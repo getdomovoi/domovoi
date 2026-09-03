@@ -32,6 +32,17 @@ import {
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
+  it("carries the authenticated connection on client audit actors", () => {
+    const actor = {
+      kind: "client",
+      client: "desktop",
+      clientId: "desktop-primary",
+      connectionId: "11111111-1111-4111-8111-111111111111",
+    } as const
+
+    expect(auditActorSchema.parse(actor)).toEqual(actor)
+  })
+
   it("strictly describes project switch confirmation", () => {
     const confirmation = {
       kind: "project-switch-confirmation",
@@ -415,6 +426,91 @@ describe("authenticated client identity", () => {
       .toEqual({ kind: "machine", machineId })
     expect(auditActorSchema.safeParse({ kind: "machine" }).success).toBe(false)
     expect(protocolVersionMismatchErrorCode).toBe(-32012)
+  })
+})
+
+describe("working plan RPC", () => {
+  const baseSteps = demoWorkspace.workingPlans[0]!.steps.map(({ id, text }) => ({ id, text }))
+  const draftSteps = [
+    baseSteps[1]!,
+    { text: "Add a server-assigned follow-up step" },
+    baseSteps[0]!,
+  ]
+  const receipt = {
+    id: "plan-receipt-edit-1",
+    editId: "plan-edit-1",
+    sessionId: "session-billing",
+    disposition: "queued",
+    basedOnStructureRevision: 3,
+    planRevision: 8,
+    structureRevision: 3,
+    client: "desktop",
+    connectionId: "11111111-1111-4111-8111-111111111111",
+    clientId: "desktop-primary",
+    createdAt: "2026-08-25T21:53:00.000Z",
+  } as const
+
+  it("accepts an attributed structural draft with server-assigned additions", () => {
+    expect(rpcMethods["plan.edit"].params.parse({
+      sessionId: "session-billing",
+      basedOnStructureRevision: 3,
+      baseSteps,
+      draftSteps,
+      replacesPendingEditId: "plan-edit-old",
+      client: "desktop",
+    })).toEqual({
+      sessionId: "session-billing",
+      basedOnStructureRevision: 3,
+      baseSteps,
+      draftSteps,
+      replacesPendingEditId: "plan-edit-old",
+      client: "desktop",
+    })
+    expect(rpcMethods["plan.edit"].result.parse({ snapshot: demoWorkspace, receipt })).toEqual({
+      snapshot: demoWorkspace,
+      receipt,
+    })
+  })
+
+  it("exposes explicit pending-draft discard", () => {
+    expect(rpcMethods["plan.discardEdit"].params.parse({
+      sessionId: "session-billing",
+      editId: "plan-edit-1",
+      client: "desktop",
+    })).toEqual({
+      sessionId: "session-billing",
+      editId: "plan-edit-1",
+      client: "desktop",
+    })
+    expect(rpcMethods["plan.discardEdit"].result.parse({
+      snapshot: demoWorkspace,
+      receipt: { ...receipt, disposition: "discarded" },
+    })).toMatchObject({ receipt: { disposition: "discarded" } })
+  })
+
+  it("bounds and de-duplicates edit drafts", () => {
+    const params = {
+      sessionId: "session-billing",
+      basedOnStructureRevision: 3,
+      baseSteps,
+      client: "desktop",
+    }
+    expect(rpcMethods["plan.edit"].params.safeParse({
+      ...params,
+      draftSteps: [baseSteps[0], baseSteps[0]],
+    }).success).toBe(false)
+    expect(rpcMethods["plan.edit"].params.safeParse({
+      ...params,
+      draftSteps: Array.from({ length: 17 }, (_, index) => ({
+        id: `step-${index}`,
+        text: "x".repeat(4_096),
+      })),
+    }).success).toBe(false)
+  })
+
+  it("classifies working-plan edits as durable mutations", () => {
+    expect(rpcMethodMutations["plan.edit"]).toBe("mutating")
+    expect(rpcMethodMutations["plan.discardEdit"]).toBe("mutating")
   })
 })
 

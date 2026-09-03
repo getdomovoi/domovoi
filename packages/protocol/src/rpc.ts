@@ -26,9 +26,15 @@ import {
   clientIdentityIdSchema,
   clientKindSchema,
   connectionIdSchema,
+  maximumWorkingPlanSteps,
+  maximumWorkingPlanTextLength,
+  pendingWorkingPlanEditSchema,
   providerModelsSchema,
   runtimeSchema,
   sessionStateSchema,
+  workingPlanClientAttributionSchema,
+  workingPlanStructureSchema,
+  workingPlanStructureStepSchema,
   workspaceSnapshotSchema,
 } from "./schema.js"
 import {
@@ -391,6 +397,7 @@ export const auditActorSchema = z.discriminatedUnion("kind", [
     kind: z.literal("client"),
     client: clientKindSchema,
     clientId: auditActorReferenceSchema.optional(),
+    connectionId: connectionIdSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal("provider"),
@@ -956,6 +963,76 @@ export const checkpointRestoreParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+export const workingPlanEditDraftStepSchema = z.object({
+  id: workingPlanStructureStepSchema.shape.id.optional(),
+  text: workingPlanStructureStepSchema.shape.text,
+}).strict()
+
+export const workingPlanEditDraftSchema = z.array(workingPlanEditDraftStepSchema)
+  .max(maximumWorkingPlanSteps)
+  .superRefine((steps, context) => {
+    const ids = new Set<string>()
+    let textLength = 0
+    steps.forEach((step, index) => {
+      if (step.id !== undefined) {
+        if (ids.has(step.id)) {
+          context.addIssue({
+            code: "custom",
+            path: [index, "id"],
+            message: "Working plan draft step IDs must be unique",
+          })
+        }
+        ids.add(step.id)
+      }
+      textLength += step.text.length
+    })
+    if (textLength > maximumWorkingPlanTextLength) {
+      context.addIssue({
+        code: "custom",
+        message: "Working plan draft text exceeds the aggregate limit",
+      })
+    }
+  })
+
+export const planEditParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  basedOnStructureRevision: z.number().int().positive(),
+  baseSteps: workingPlanStructureSchema,
+  draftSteps: workingPlanEditDraftSchema,
+  replacesPendingEditId: pendingWorkingPlanEditSchema.shape.id.optional(),
+  client: clientKindSchema,
+}).strict()
+
+export const planDiscardEditParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  editId: pendingWorkingPlanEditSchema.shape.id,
+  client: clientKindSchema,
+}).strict()
+
+export const planEditDispositionSchema = z.enum([
+  "applied",
+  "queued",
+  "conflicted",
+  "discarded",
+])
+
+export const planEditReceiptSchema = z.object({
+  id: z.string().trim().min(1).max(256),
+  editId: pendingWorkingPlanEditSchema.shape.id,
+  sessionId: z.string().min(1),
+  disposition: planEditDispositionSchema,
+  basedOnStructureRevision: z.number().int().positive(),
+  planRevision: z.number().int().positive(),
+  structureRevision: z.number().int().positive(),
+  ...workingPlanClientAttributionSchema.shape,
+  createdAt: z.string().datetime(),
+}).strict()
+
+export const planMutationResultSchema = z.object({
+  snapshot: workspaceSnapshotSchema,
+  receipt: planEditReceiptSchema,
+}).strict()
+
 export { canonicalBase64DecodedByteLength } from "./identifiers.js"
 
 export const annotationCreateParamsSchema = z.object({
@@ -1162,6 +1239,14 @@ export const rpcMethods = {
     params: annotationSetStatusParamsSchema,
     result: workspaceSnapshotSchema,
   },
+  "plan.edit": {
+    params: planEditParamsSchema,
+    result: planMutationResultSchema,
+  },
+  "plan.discardEdit": {
+    params: planDiscardEditParamsSchema,
+    result: planMutationResultSchema,
+  },
   "approval.resolve": {
     params: approvalResolveParamsSchema,
     result: workspaceSnapshotSchema,
@@ -1242,6 +1327,8 @@ export const rpcMethodMutations = {
   "annotation.create": "mutating",
   "annotation.reply": "mutating",
   "annotation.setStatus": "mutating",
+  "plan.edit": "mutating",
+  "plan.discardEdit": "mutating",
   "approval.resolve": "mutating",
   "session.setRuntime": "mutating",
   "session.restartProviderThread": "mutating",
@@ -1303,6 +1390,12 @@ export type AuditQueryParams = z.infer<typeof auditQueryParamsSchema>
 export type AuditQueryPage = z.infer<typeof auditQueryPageSchema>
 export type AuditExportParams = z.infer<typeof auditExportParamsSchema>
 export type AuditExportResult = z.infer<typeof auditExportResultSchema>
+export type WorkingPlanEditDraftStep = z.infer<typeof workingPlanEditDraftStepSchema>
+export type PlanEditParams = z.infer<typeof planEditParamsSchema>
+export type PlanDiscardEditParams = z.infer<typeof planDiscardEditParamsSchema>
+export type PlanEditDisposition = z.infer<typeof planEditDispositionSchema>
+export type PlanEditReceipt = z.infer<typeof planEditReceiptSchema>
+export type PlanMutationResult = z.infer<typeof planMutationResultSchema>
 export type SessionUsage = z.infer<typeof sessionUsageSchema>
 export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
 export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
