@@ -90,7 +90,12 @@ export function PermissionRuleSettings({ rules }: { rules: readonly ApprovalRule
                 ))}
               </ul>
               <p className="m-0 mt-3 border-t pt-3 text-[11px] leading-relaxed text-muted-foreground">
-                Matches command and package-script text only. Config, plugins, source files, and dependency binaries may still change.
+                {active.some((rule) => rule.status === "active" && rule.execution.record.coverage === "command-and-script-text")
+                  ? "Matches command and package-script text only. Config, plugins, source files, and dependency binaries may still change."
+                  : null}
+                {active.some((rule) => rule.status === "active" && rule.execution.record.coverage === "tool-and-workspace-scope")
+                  ? " A file-tool rule matches that tool anywhere inside the worktree, not one path."
+                  : null}
               </p>
             </>
           )}

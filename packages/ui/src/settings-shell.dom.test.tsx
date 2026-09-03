@@ -126,6 +126,32 @@ it("says what a rule match does not cover", async () => {
   expect(screen.getByText(/dependency binaries may still change/u)).toBeTruthy()
 })
 
+it("says a file-tool rule covers the worktree, not one path", async () => {
+  const fileRule: ApprovalRule = {
+    ...activeRule,
+    id: "rule-3",
+    command: "Edit",
+    execution: {
+      state: "resolved",
+      digest: `sha256:${"b".repeat(64)}`,
+      record: {
+        version: 1,
+        cwd: ".",
+        kind: "workspace-file-tool",
+        coverage: "tool-and-workspace-scope",
+        tool: "Edit",
+        scope: "workspace",
+      },
+    },
+  }
+  render(<SettingsShell {...shellProps()} approvalRules={[fileRule]} />)
+
+  await openPane("Permissions & rules")
+
+  expect(screen.getByText(/matches that tool anywhere inside the worktree/u)).toBeTruthy()
+  expect(screen.queryByText(/Matches command and package-script text only/u)).toBeNull()
+})
+
 it("announces a retired legacy rule before its approval card returns", async () => {
   render(<SettingsShell {...shellProps()} approvalRules={[activeRule, legacyRule]} />)
 
