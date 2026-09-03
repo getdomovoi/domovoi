@@ -346,7 +346,7 @@ td { color: var(--ink2); }
 </li>
 <li><a href="https://github.com/getdomovoi/domovoi/pull/100">#100</a> — <code>build: enforce workspace quality gates</code> — <code>MERGED</code>: closes audit concerns I1–I5 and adds the workspace lint gate. Before it, <code>pnpm lint</code> matched no package script and passed without linting anything.
 </li>
-<li><a href="https://github.com/getdomovoi/domovoi/pull/101">#101</a> — <code>perf: bound desktop alpha hot paths</code> — <code>MERGED</code>: offloads snapshot persistence to a worker that waits for a busy database and refuses work once it is gone, bounds RPC output, debounces history search, and backs off reconnects without retrying a device a machine has revoked.
+<li><a href="https://github.com/getdomovoi/domovoi/pull/101">#101</a> — <code>perf: bound desktop alpha hot paths</code> — <code>MERGED</code>: offloads snapshot persistence to a worker that waits for a busy database and is replaced once it is gone, bounds RPC output, debounces history search, and backs off reconnects without retrying a device a machine has revoked.
 </li>
 </ul>
 <p>Every ledger entry is now merged.</p>
@@ -369,6 +369,10 @@ td { color: var(--ink2); }
 <li>[x] Add a complete session history with filters for messages, tools, approvals, handoffs, checkpoints, annotations, and tests
 </li>
 <li>[x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
+</li>
+<li>[x] Review the worktree diff as unified text or as two split columns, with added, modified, and deleted counts beside the changed-file list
+</li>
+<li>[x] Revert one changed file from the Changes dock behind a confirmation, after the daemon has taken a recovery checkpoint and with a client-attributed receipt
 </li>
 <li>[x] Add session archive and deliberate cleanup without deleting the source repository
 </li>

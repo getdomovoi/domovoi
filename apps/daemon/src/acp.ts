@@ -5,6 +5,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
 import { classifyProviderFailure } from "./provider-failures.js"
+import { redactDurableText } from "./secret-redaction.js"
 import { normalizeUsage } from "./usage.js"
 
 export type AcpConfigOption = {
@@ -111,8 +112,8 @@ export class AcpAgentAdapter implements AgentAdapter {
       onPermission: (request) => this.#peer === peerState.current
         ? this.#requestPermission(request)
         : Promise.resolve({ cancelled: true }),
-      onDisconnect: () => {
-        if (peerState.current) this.#handleDisconnect(peerState.current)
+      onDisconnect: (reason) => {
+        if (peerState.current) this.#handleDisconnect(peerState.current, reason)
       },
     })
     peerState.current = peer
@@ -314,7 +315,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     }
   }
 
-  #handleDisconnect(peer: AcpPeer): void {
+  #handleDisconnect(peer: AcpPeer, reason?: string): void {
     if (this.#peer !== peer) return
     this.#peer = undefined
     if (this.#disconnected) return
@@ -322,7 +323,10 @@ export class AcpAgentAdapter implements AgentAdapter {
     this.#activeTurns.clear()
     for (const pending of this.#pendingPermissions.values()) pending.resolve({ cancelled: true })
     this.#pendingPermissions.clear()
-    this.#emit({ type: "provider-disconnected", reason: "Provider process exited unexpectedly" })
+    this.#emit({
+      type: "provider-disconnected",
+      reason: reason ? redactDurableText(reason).value : "Provider process exited unexpectedly",
+    })
   }
 
   #requirePeer(): AcpPeer {

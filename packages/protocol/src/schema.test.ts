@@ -54,6 +54,7 @@ import {
   workspaceSnapshotSchema,
   workspaceDeltaSchema,
   artifactSchema,
+  threadItemSchema,
 } from "./index.js"
 
 const skillSecurityMetadata = {
@@ -75,24 +76,31 @@ describe("workspace protocol", () => {
     }).success).toBe(false)
   })
   it("keeps preview variant metadata bounded and reference-only", () => {
+    const variant = { id: "a", groupId: "design-studio/onboarding", label: "Variant A", order: 0 }
     expect(artifactSchema.parse({
       id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview",
       revision: 2, path: "design-studio/onboarding/variant-a.html", mimeType: "text/html",
-      variant: { id: "a", groupId: "design-studio/onboarding", label: "Variant A", order: 0,
+      variant: { ...variant,
         thumbnail: { path: "design-studio/onboarding/variant-a.webp", mimeType: "image/webp", revision: 2 } },
-    }).variant?.id).toBe("a")
-    expect(artifactSchema.safeParse({
-      id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview", revision: 1,
-      variant: { id: "a", groupId: "g", label: "A", order: 0,
-        thumbnail: { path: "data:image/png;base64,AAA", mimeType: "image/png", revision: 1 } },
-    }).success).toBe(false)
-    for (const path of ["/tmp/a.png", "../a.png", "a\\b.png", "https://x/a.png", "a.png?token=x", "a.png#x", "./a.png"]) {
+    }).variant).toEqual(variant)
+    for (const invalid of [{ label: "x".repeat(121) }, { order: 1_024 }, { id: "" }]) {
       expect(artifactSchema.safeParse({
         id: "preview-a", sessionId: "session-a", title: "Variant A", type: "preview", revision: 1,
-        variant: { id: "a", groupId: "g", label: "A", order: 0,
-          thumbnail: { path, mimeType: "image/png", revision: 1 } },
-      }).success, path).toBe(false)
+        variant: { ...variant, ...invalid },
+      }).success, JSON.stringify(invalid)).toBe(false)
     }
+  })
+
+  it("carries command tool rows and still reads a retired file-change row", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    expect(threadItemSchema.safeParse({ ...tool, tool: "command" }).success).toBe(true)
+    // Nothing emits it, but a snapshot written before it was retired must still
+    // load rather than failing the daemon on startup.
+    expect(threadItemSchema.safeParse({ ...tool, tool: "file-change" }).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, tool: "invented" }).success).toBe(false)
   })
 
   it("defaults durable skill reviews for older snapshots", () => {
@@ -1118,5 +1126,20 @@ describe("workspace protocol", () => {
       checkpointId: "checkpoint-1",
       client: "desktop",
     }).checkpointId).toBe("checkpoint-1")
+  })
+})
+
+describe("persisted thread compatibility", () => {
+  it("still parses a tool item written before file-change was retired", () => {
+    const item = {
+      id: "item-legacy",
+      sessionId: "session-1",
+      kind: "tool" as const,
+      tool: "file-change" as const,
+      status: "completed" as const,
+      title: "Edit src/index.ts",
+      createdAt: new Date().toISOString(),
+    }
+    expect(threadItemSchema.parse(item)).toMatchObject({ tool: "file-change" })
   })
 })

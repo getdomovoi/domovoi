@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
+import type { AgentEvent } from "./agents.js"
 import { KiloSdkAdapter } from "./kilo.js"
 import { domovoiKiloConfig } from "./kilo-runtime.js"
 import {
@@ -376,6 +377,72 @@ describe("OpenCodeSdkAdapter", () => {
     await adapter.close()
   })
 
+  it("fails active turns and reports a disconnect when the event stream ends", async () => {
+    const { client, factory, stream } = harness()
+    const ids = ["turn-1", "turn-2"]
+    const adapter = new OpenCodeSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    stream.close()
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId: "turn-1",
+        turn: { id: "turn-1", status: "failed", error: "OpenCode event stream connection closed" },
+      },
+    }))
+    expect(events.filter((event) => event.type === "provider-disconnected")).toEqual([
+      { type: "provider-disconnected", reason: "OpenCode event stream connection closed" },
+    ])
+
+    const reopened = new EventStream()
+    client.event.subscribe.mockResolvedValueOnce({ stream: reopened })
+    await adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") })
+    expect(client.event.subscribe).toHaveBeenCalledTimes(2)
+    await expect(adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Try again",
+      runtime: runtime("build"),
+    })).resolves.toBe("turn-2")
+    reopened.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId: "turn-2", turn: { id: "turn-2", status: "completed" } },
+    }))
+    await adapter.close()
+  })
+
+  it("does not report a disconnect when Domovoi stops the last thread on a directory", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    await adapter.stopThread(threadId)
+    stream.close()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(client.session.abort).toHaveBeenCalledOnce()
+    expect(events).toEqual([])
+    await adapter.close()
+  })
+
   it("does not load a session after it is stopped during resume", async () => {
     const { client, factory } = harness()
     let resolveSession: ((result: { data: { id: string } }) => void) | undefined
@@ -446,6 +513,31 @@ describe("KiloSdkAdapter", () => {
     expect(server.close).toHaveBeenCalledOnce()
     await expect(adapter.connect()).rejects.toThrow("Kilo adapter closed")
     expect(factory).toHaveBeenCalledOnce()
+  })
+
+  it("reports a Kilo disconnect when the event stream ends", async () => {
+    const { factory, stream } = harness()
+    const adapter = new KiloSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const kiloRuntime = { ...runtime("build"), provider: "kilo" }
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: kiloRuntime })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Run tests", runtime: kiloRuntime })
+
+    stream.close()
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: "provider-disconnected",
+      reason: "Kilo event stream connection closed",
+    }))
+    expect(events).toContainEqual({
+      type: "turn-completed",
+      params: {
+        threadId,
+        turnId: "turn-1",
+        turn: { id: "turn-1", status: "failed", error: "Kilo event stream connection closed" },
+      },
+    })
+    await adapter.close()
   })
 
   it("starts a Kilo session with Domovoi runtime controls", async () => {
