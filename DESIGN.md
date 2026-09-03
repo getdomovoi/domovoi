@@ -85,6 +85,28 @@ machine, project, session, turn, artifact, and annotation. State remains consist
 clients, consequential decisions are attributed to their originating client, and smaller
 surfaces collapse information rather than silently removing it.
 
+## Design source revision
+
+`design/REVISIONS.json` records a SHA-256 and a byte count for every file in the handoff, so an
+unrecorded change to a signed file cannot pass unnoticed. `pnpm release:invariants` runs
+`node scripts/design-revision.mjs --check` and fails when the tree and the record disagree.
+
+This detects drift, not tampering. `pnpm design:revision` re-records whatever is on disk, so the
+check proves only that the tree matches what someone recorded on purpose, and a diff touching both
+`design/` and `REVISIONS.json` is what a reviewer should look at. Verifying the handoff against a
+signature from Claude Design would close that gap and is not something this record claims to do.
+
+Files under `design/` are never edited in this repository. When Claude Design publishes a new
+revision, replace the bundle from the project and run `pnpm design:revision` in the same change so
+the record moves with it.
+
+Known difference from the live project as of 2026-09-02: the desktop surface there restyles the
+terminal pane. Command rows carry a two pixel primary left edge over an eight percent primary wash
+with the prompt as a separate non-selectable span, failure rows sit in a ten percent destructive
+band using the danger foreground and dim ramps, summary rows use the strong token with the duration
+in muted foreground, blank lines become seven pixel spacers, the header and footer bars use the
+sidebar token, and the line height is 1.85. Everything else matches the tracked bundle.
+
 ## Colors
 
 Dark and light themes use the exact OKLCH ramps documented in the handoff. The primary violet
