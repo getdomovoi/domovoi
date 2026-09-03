@@ -163,6 +163,7 @@ import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell } from "./settings-shell"
+import { WorkspaceRail } from "./workspace-rail"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
   DesktopFirstRunDialog,
@@ -444,7 +445,7 @@ export function AppBar({
       ? emergencyStopAnnouncement(emergencyStopOutcome)
       : null
   return (
-    <header className="electron-drag flex h-[var(--shell-header)] shrink-0 items-center border-b bg-sidebar px-3">
+    <header className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center border-b bg-sidebar px-3">
       {ownsDecoration && bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />
@@ -2156,6 +2157,8 @@ export function ArtifactDock({
   onCollapse,
   collapseButtonRef,
   defaultTab,
+  tab,
+  onTabChange,
   rpcUrl,
   authorizeArtifact,
   connected,
@@ -2172,6 +2175,8 @@ export function ArtifactDock({
   onCollapse: () => void
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
+  tab?: string | undefined
+  onTabChange?: ((tab: string) => void) | undefined
   rpcUrl: string
   authorizeArtifact: (input: {
     sessionId: string
@@ -2271,7 +2276,12 @@ export function ArtifactDock({
   const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
   const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
-  const [activeTab, setActiveTab] = useState<string>(defaultTab)
+  const [uncontrolledTab, setUncontrolledTab] = useState<string>(defaultTab)
+  const activeTab = tab ?? uncontrolledTab
+  const setActiveTab = (next: string) => {
+    setUncontrolledTab(next)
+    onTabChange?.(next)
+  }
   const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
 
   useEffect(() => {
@@ -3169,6 +3179,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
+  const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
+  const openDockTab = (next: string) => {
+    setDockTab(next)
+    setDockCollapsed(false)
+  }
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
@@ -3599,7 +3614,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           onChangeCredential={onChangeCredential}
           onReconnect={reconnectDaemon}
         />
-        {snapshot && surface === "providers" ? (
+        {snapshot ? <div className="flex min-h-0 flex-1">
+          <WorkspaceRail surface={surface} dockTab={dockTab} machineName={snapshot.machine.name} onSelectSurface={setSurface} onSelectDockTab={openDockTab} />
+          {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
@@ -3608,7 +3625,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onNotificationsChange={(next: NotificationPreferences) => {
               setWorkspaceUi((current) => ({ ...current, notifications: next }))
             }}
-            onBack={() => setSurface("workspace")}
             onOpenFleet={() => setSurface("fleet")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
@@ -3629,13 +3645,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onWindowDecorationChange: changeWindowDecoration,
             } : {})}
           />
-        ) : snapshot && surface === "skills" ? (
+        ) : surface === "skills" ? (
           <SkillBrowser
             skills={skills}
             inventorySources={skillInventories}
             loading={skillsLoading}
             error={skillsError}
-            onBack={() => setSurface("workspace")}
             onOpenAudit={() => setSurface("audit")}
             onReadSkill={readSkill}
             requestedSkillId={requestedSkillId}
@@ -3649,28 +3664,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
-        ) : snapshot && surface === "fleet" ? (
+        ) : surface === "fleet" ? (
           <FleetView
             connected={connected}
             machines={fleet ?? [localMachineEntry(snapshot)]}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
             currentSessionCount={activeSessionCount(snapshot)}
-            onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
             onRotateDevice={rotateDevice}
             onPairMachine={pairMachine}
           />
-        ) : snapshot && surface === "audit" ? (
+        ) : surface === "audit" ? (
           <AuditLogView
             connected={connected}
-            onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onQuery={queryAudit}
             onExport={exportAudit}
           />
-        ) : snapshot ? (
+        ) : (
           <div className="flex min-h-0 flex-1">
             {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} expandButtonRef={sidebarExpandButtonRef} /> : null}
             <ResizablePanelGroup
@@ -3686,13 +3699,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>
-        ) : (
+          )}
+        </div> : (
           <main className="flex min-h-0 flex-1 bg-background">
             <Empty>
               <EmptyHeader>

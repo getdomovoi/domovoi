@@ -81,7 +81,6 @@ function renderFleet(overrides: {
       machines={overrides.machines ?? [local, studio]}
       currentMachineId={local.id}
       currentSessionCount={2}
-      onBack={() => {}}
       onOpenSkills={() => {}}
       onListDevices={onListDevices as never}
       onRevokeDevice={onRevokeDevice as never}

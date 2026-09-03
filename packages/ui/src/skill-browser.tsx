@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { ArrowLeftIcon, FileTextIcon, SearchIcon } from "lucide-react"
+import { FileTextIcon, SearchIcon } from "lucide-react"
 
 import type {
   SkillDocument,
@@ -129,7 +129,6 @@ export function SkillBrowser({
   inventorySources = [],
   loading,
   error,
-  onBack,
   onOpenAudit,
   onReadSkill,
   projectId,
@@ -143,7 +142,6 @@ export function SkillBrowser({
   inventorySources?: readonly SkillInventorySource[]
   loading: boolean
   error: string
-  onBack: () => void
   onOpenAudit: () => void
   onReadSkill: (id: string) => Promise<SkillDocument>
   requestedSkillId?: string | undefined
@@ -260,10 +258,6 @@ export function SkillBrowser({
   return (
     <div className="flex min-h-0 flex-1">
       <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <Button variant="ghost" className="mb-2 justify-start" onClick={onBack}>
-          <ArrowLeftIcon data-icon="inline-start" />
-          Workspace
-        </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
         <Button variant="secondary" className="justify-start">Skills</Button>
         <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
@@ -272,10 +266,6 @@ export function SkillBrowser({
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto w-full max-w-[740px] px-4 py-5 sm:px-8 sm:py-7">
           <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 sm:hidden">
-            <Button variant="ghost" className="min-h-11" onClick={onBack}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              Workspace
-            </Button>
             <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
           </nav>
           <div>

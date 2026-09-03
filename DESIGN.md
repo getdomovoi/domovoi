@@ -112,6 +112,13 @@ loses to both where they disagree.
 | Control height | 34px | unstated |
 | Touch target | 44px minimum | 44pt iOS, 48dp Android |
 
+Claude Design settled the desktop chrome on 2026-09-03 in `ui_kits/desktop/README.md` of the
+Domovoi Design System project. The desktop shell is a 38px titlebar carrying traffic lights, project,
+machine, version, and the pending count, and a separate 62px vertical rail carrying the mark, section
+switcher, settings, and avatar, which never collapses. There is no 62px horizontal header on desktop,
+so `--shell-header` does not apply to this surface. The tracked handoff file draws one unified 44px
+bar instead; the design system supersedes it.
+
 Other design-system rules that supersede the tracked handoff: theme scoping is `.theme-dark` and
 `.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
 literal named scale with compound paddings rather than a 4px grid; motion is `dv-pop-in`,

@@ -62,7 +62,6 @@ describe("Settings shell and provider pane", () => {
       approvalRules: [],
       notifications: defaultNotificationPreferences(),
       onNotificationsChange: vi.fn(),
-      onBack: vi.fn(),
       onOpenFleet: vi.fn(),
       onOpenSkills: vi.fn(),
       onOpenAudit: vi.fn(),
@@ -102,7 +101,6 @@ describe("Settings shell and provider pane", () => {
         approvalRules={[]}
         notifications={defaultNotificationPreferences()}
         onNotificationsChange={vi.fn()}
-        onBack={vi.fn()}
         onOpenFleet={vi.fn()}
         onOpenSkills={vi.fn()}
         onOpenAudit={vi.fn()}
