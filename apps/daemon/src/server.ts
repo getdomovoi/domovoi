@@ -11,15 +11,16 @@ import {
   type MachineCapability,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
+  daemonPersistenceUnavailableErrorCode,
   devicePairingLimitErrorCode,
   sourcePreflight,
   transferPreflight,
   type TransferReceipt,
   machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
+  isRefusedWithoutPersistence,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
-  maximumTerminalReplayCharacters,
   terminalOutputBatchDelayMilliseconds,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
@@ -104,7 +105,8 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
-import { permissionDecisionFor } from "./permission-policy.js"
+import { isFileToolCommand, permissionDecisionFor } from "./permission-policy.js"
+import { readPackageScripts } from "./package-scripts.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
@@ -123,6 +125,7 @@ import {
 import { testEvidence } from "./test-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
+import { TerminalReplayBuffer } from "./terminal-replay.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -156,6 +159,13 @@ const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
 export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
 export const maximumAuthenticationPayloadBytes = 4 * 1_024
+// One failed write is a transient disk or lock problem worth retrying. This many
+// consecutive failures means the daemon is running on state nobody will get back,
+// so it stops accepting work that would deepen the gap.
+export const persistenceFailureThreshold = 3
+export const persistenceUnavailableContext = "Domovoi can no longer persist state"
+export const persistenceUnavailableMessage =
+  "Daemon cannot persist state, so changes are refused"
 
 export function helloProtocolCompatibility(
   daemonProtocol: string,
@@ -181,6 +191,8 @@ const sessionResourceMethods = new Set([
   "session.revertFile",
   "session.restartProviderThread",
   "session.setRuntime",
+  "session.transfer",
+  "transfer.fromRef",
 ])
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
@@ -641,7 +653,7 @@ type ActiveTerminal = {
   rows: number
   shell: string
   cwd: string
-  buffer: string
+  replay: TerminalReplayBuffer
   // Redaction has to see across pty reads: a credential arrives split as often
   // as it arrives whole.
   redactor: TerminalOutputRedactor
@@ -649,7 +661,8 @@ type ActiveTerminal = {
   owner: TerminalOwner
   // Ownership is the connection that holds it. The owner's identity is
   // broadcast to every client, so a caller-supplied one authorizes nothing.
-  ownerSocket: WebSocket
+  // A released ownership waits for the next connection to re-claim it.
+  ownerSocket: WebSocket | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
   disposeData: () => void
@@ -664,6 +677,8 @@ export class DomovoiDaemon {
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
   #store: WorkspaceStore
+  #persistenceFailures = 0
+  #persistenceUnavailable = false
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -701,11 +716,13 @@ export class DomovoiDaemon {
   #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
+  #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
   #failedEmergencyThreads = new Set<string>()
   #inFlightProviderThreads = new Map<string, string>()
   #emergencyStopTail: Promise<unknown> = Promise.resolve()
+  #emergencyStopInProgress = false
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -960,6 +977,7 @@ export class DomovoiDaemon {
     })
     this.#websocket.on("connection", (socket, request) => {
       socket.once("close", () => this.#rpcOutbound.forget(socket))
+      socket.once("close", () => this.#releaseTerminalOwnership(socket))
       socket.on("error", (error: Error & { code?: string }) => {
         if (error.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
           this.#reportError("Domovoi WebSocket failed", error)
@@ -1246,9 +1264,8 @@ export class DomovoiDaemon {
     }))
     await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
-      const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
       await this.#persistSnapshot()
-      this.#broadcastNotification("workspace.changed", clientSnapshot)
+      this.#broadcastSnapshot()
     })
   }
 
@@ -1362,6 +1379,7 @@ export class DomovoiDaemon {
           approvalId?: unknown
           sessionId?: unknown
           terminalId?: unknown
+          transferId?: unknown
         }
       }
       if (typeof request.method !== "string") return undefined
@@ -1387,6 +1405,10 @@ export class DomovoiDaemon {
           (candidate) => candidate.id === request.params!.approvalId,
         )
         if (approval) return `session:${approval.sessionId}`
+      }
+      if (request.method === "transfer.chunk" && typeof request.params?.transferId === "string") {
+        const incoming = this.#incomingTransfers.get(request.params.transferId)
+        if (incoming) return `session:${incoming.sessionId}`
       }
       return undefined
     } catch {
@@ -1421,6 +1443,17 @@ export class DomovoiDaemon {
     } catch {
       return false
     }
+  }
+
+  #skillCatalogFor(projectPath: string | undefined): SkillCatalog {
+    if (this.#skillCatalog) return this.#skillCatalog
+    if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
+      this.#fileSkillCatalog = {
+        projectPath,
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath)),
+      }
+    }
+    return this.#fileSkillCatalog.catalog
   }
 
   async #ensureAgentConnected(provider = "codex"): Promise<AgentAdapter> {
@@ -1572,7 +1605,15 @@ export class DomovoiDaemon {
       const signature = requestUrl.searchParams.get("signature")
       authorized = Boolean(sessionId && revision && artifactAccessMatches(
         this.#artifactSigningSecret,
-        { sessionId, artifactId, revision, purpose, ...(bridgeChannel ? { bridgeChannel } : {}), expiresAt },
+        {
+          sessionId,
+          artifactId,
+          revision,
+          purpose,
+          ...(bridgeChannel ? { bridgeChannel } : {}),
+          ...(parentOrigin ? { parentOrigin } : {}),
+          expiresAt,
+        },
         signature,
       ))
     } catch {
@@ -1580,7 +1621,7 @@ export class DomovoiDaemon {
       response.end(JSON.stringify({ error: "not_found" }))
       return
     }
-    if (!canServeArtifacts(this.host, authorized) || (purpose !== "preview" && !authorized)) {
+    if (!authorized) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
       return
@@ -1599,7 +1640,8 @@ export class DomovoiDaemon {
       !artifact
       || artifact.mimeType !== "text/html"
       || !path
-      || (authorized && (artifact.sessionId !== sessionId || artifact.revision !== revision))
+      || artifact.sessionId !== sessionId
+      || artifact.revision !== revision
     ) {
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
@@ -1790,6 +1832,16 @@ export class DomovoiDaemon {
       return
     }
 
+    if (this.#persistenceUnavailable && isRefusedWithoutPersistence(method)) {
+      this.#error(
+        socket,
+        request.id,
+        daemonPersistenceUnavailableErrorCode,
+        persistenceUnavailableMessage,
+      )
+      return
+    }
+
     try {
       let changed = false
       let alreadyPersisted = false
@@ -1877,6 +1929,13 @@ export class DomovoiDaemon {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
+          } else if (existing.ownerSocket === undefined) {
+            existing.owner = { client: params.client, clientId: params.clientId }
+            existing.ownerSocket = socket
+            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+              terminalId: params.terminalId,
+              owner: existing.owner,
+            }))
           }
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -1888,7 +1947,7 @@ export class DomovoiDaemon {
               rows: existing.rows,
               shell: existing.shell,
               cwd: existing.cwd,
-              buffer: existing.buffer,
+              buffer: existing.replay.read(),
               owner: existing.owner,
             }),
           })
@@ -1917,7 +1976,7 @@ export class DomovoiDaemon {
           rows: params.rows,
           shell: process.process,
           cwd: session.workspacePath,
-          buffer: "",
+          replay: new TerminalReplayBuffer(),
           redactor: new TerminalOutputRedactor(),
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
@@ -1938,7 +1997,7 @@ export class DomovoiDaemon {
             // two reads is still caught.
             const emit = (text: string) => {
               if (!text) return
-              active.buffer = `${active.buffer}${text}`.slice(-maximumTerminalReplayCharacters)
+              active.replay.push(text)
               active.output.push(params.terminalId, text)
               // A read this large is a burst, and the tail redaction holds back
               // would otherwise leave it under the batcher's threshold, so a
@@ -1972,7 +2031,7 @@ export class DomovoiDaemon {
           if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
           const remainder = active.redactor.flush()
           if (remainder) {
-            active.buffer = `${active.buffer}${remainder}`.slice(-maximumTerminalReplayCharacters)
+            active.replay.push(remainder)
             active.output.push(params.terminalId, remainder)
           }
           active.output.flush(params.terminalId)
@@ -1997,7 +2056,7 @@ export class DomovoiDaemon {
             rows: params.rows,
             shell: process.process,
             cwd: session.workspacePath,
-            buffer: activeTerminal.buffer,
+            buffer: activeTerminal.replay.read(),
             owner: activeTerminal.owner,
           }),
         })
@@ -2106,6 +2165,7 @@ export class DomovoiDaemon {
             revision: params.revision,
             purpose: params.purpose,
             ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+            ...(params.parentOrigin ? { parentOrigin: params.parentOrigin } : {}),
             expiresAt,
             signature: signArtifactAccess(
               this.#artifactSigningSecret,
@@ -2115,6 +2175,7 @@ export class DomovoiDaemon {
                 revision: params.revision,
                 purpose: params.purpose,
                 ...(params.bridgeChannel ? { bridgeChannel: params.bridgeChannel } : {}),
+                ...(params.parentOrigin ? { parentOrigin: params.parentOrigin } : {}),
                 expiresAt,
               },
             ),
@@ -2171,9 +2232,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.list") {
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -2653,9 +2712,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         const machine = this.#snapshot.machine
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -2676,9 +2733,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.read") {
         const params = paramsResult.data as RpcParams<"skill.read">
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), this.#snapshot.project?.path),
-        )
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         try {
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -2704,9 +2759,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill review requires an identified client")
           return
         }
-        const catalog = this.#skillCatalog ?? new FileSkillCatalog(
-          skillRoots(homedir(), project.path),
-        )
+        const catalog = this.#skillCatalogFor(project.path)
         let current
         try {
           current = (await catalog.read(params.id)).skill
@@ -2743,6 +2796,7 @@ export class DomovoiDaemon {
           (candidate) => candidate.projectId !== project.id || candidate.skillId !== current.id,
         )
         this.#snapshot.skillEnablements.push(review)
+        this.#fileSkillCatalog?.catalog.invalidate()
         changed = true
       }
 
@@ -3289,7 +3343,13 @@ export class DomovoiDaemon {
             createdAt,
           })
           workspaceSnapshotSchema.parse(candidate)
-          this.#store.save(candidate)
+          try {
+            this.#store.save(candidate)
+          } catch (error) {
+            this.#persistenceFailed(error)
+            throw error
+          }
+          this.#persistenceSucceeded()
           this.#snapshot = candidate
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
@@ -3350,7 +3410,7 @@ export class DomovoiDaemon {
               socket,
               request.id,
               projectSwitchConfirmationErrorCode,
-              "Confirm session removal before switching projects",
+              "Confirm stopping this project's running work before switching",
               confirmation,
             )
             return
@@ -3359,8 +3419,10 @@ export class DomovoiDaemon {
           for (const session of this.#snapshot.sessions) {
             this.#flushCommandOutputStreams(session.id)
           }
-          await this.#cleanupSessions()
+          await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
+          if (this.#snapshot.project) await this.#persistSnapshot()
+          const restored = this.#store.loadProject?.(projectId)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -3368,13 +3430,13 @@ export class DomovoiDaemon {
             path: repository.root,
             branch: repository.branch,
           }
-          this.#snapshot.sessions = []
-          this.#snapshot.activeSessionId = null
-          this.#snapshot.approvals = []
-          this.#snapshot.approvalRules = []
-          this.#snapshot.thread = []
-          this.#snapshot.artifacts = []
-          this.#snapshot.annotations = []
+          this.#snapshot.sessions = restored?.sessions ?? []
+          this.#snapshot.activeSessionId = restored?.activeSessionId ?? null
+          this.#snapshot.approvals = restored?.approvals ?? []
+          this.#snapshot.approvalRules = restored?.approvalRules ?? []
+          this.#snapshot.thread = restored?.thread ?? []
+          this.#snapshot.artifacts = restored?.artifacts ?? []
+          this.#snapshot.annotations = restored?.annotations ?? []
           changed = true
         }
       }
@@ -3680,7 +3742,9 @@ export class DomovoiDaemon {
         try {
           if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
           else this.#store.save(candidate)
+          this.#persistenceSucceeded()
         } catch (error) {
+          this.#persistenceFailed(error)
           try {
             await withTimeout(
               agent.stopThread(providerThreadId),
@@ -3737,9 +3801,7 @@ export class DomovoiDaemon {
           this.#annotationVisualContext,
         )
         const prompt = await agentPromptWithSkills(
-          this.#skillCatalog ?? new FileSkillCatalog(
-            skillRoots(homedir(), this.#snapshot.project?.path),
-          ),
+          this.#skillCatalogFor(this.#snapshot.project?.path),
           this.#snapshot,
           preparedTurn.prompt,
           {
@@ -3754,6 +3816,10 @@ export class DomovoiDaemon {
         const providerThreadId = session.providerThreadId
         if (this.#failedEmergencyThreads.has(emergencyThread)) {
           this.#error(socket, request.id, invalidParams, "Provider thread requires recovery after emergency stop")
+          return
+        }
+        if (this.#emergencyStopInProgress) {
+          this.#error(socket, request.id, invalidParams, "Emergency stop is in progress")
           return
         }
         this.#emergencyBlockedThreads.delete(emergencyThread)
@@ -4076,12 +4142,12 @@ export class DomovoiDaemon {
         changed = true
       }
 
-      const clientSnapshot = changed
-        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
-        : workspaceSnapshotForClient(this.#snapshot)
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
+      const clientSnapshot = changed
+        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        : workspaceSnapshotForClient(this.#snapshot)
       const helloConnectionId = this.#connectionIds.get(socket)
       const result = method === "system.hello"
         ? {
@@ -4256,10 +4322,15 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
+      const buildAuto = session.runtime.permissionMode === "build" && session.runtime.auto
+      const packageScripts = buildAuto && event.command
+        ? readPackageScripts(event.cwd ?? session.workspacePath ?? project.path)
+        : undefined
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(event.command ? { command: event.command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
+        ...(packageScripts ? { packageScripts } : {}),
       })
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
@@ -4268,19 +4339,40 @@ export class DomovoiDaemon {
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret
           && rule.projectId === project.id
-          && rule.command === event.command,
+          && rule.command === event.command
+          && (!isFileToolCommand(event.command ?? "")
+            || (event.path !== undefined
+              && !event.blockedPath
+              && session.workspacePath !== undefined
+              && resolveInside(session.workspacePath, event.path) !== undefined)),
       )
+      // The outcome has to describe what actually happened: during a
+      // persistence lockout nothing is approved, so recording success would put
+      // a decision in the audit log that was never made.
+      const autoResolved = !this.#persistenceUnavailable
+        && !containsSecret
+        && (decision.action === "allow" || (decision.risk === "normal" && matchingRule))
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.approval-requested",
-        outcome: !containsSecret
-          && (decision.action === "allow" || (decision.risk === "normal" && matchingRule))
-          ? "succeeded"
-          : "started",
+        outcome: this.#persistenceUnavailable ? "denied" : autoResolved ? "succeeded" : "started",
         sessionId: session.id,
         projectId: project.id,
         ...(event.itemId ? { target: event.itemId } : {}),
       })
+      // Once state stops reaching disk the daemon can neither record an
+      // automatic approval nor accept a human one, because approval.resolve is
+      // itself refused. A card would be a question nobody can answer and the
+      // turn would hang, so the request is denied: nothing is approved that
+      // cannot be recorded, and the turn ends instead of stalling.
+      if (this.#persistenceUnavailable) {
+        this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+        this.#reportError(
+          persistenceUnavailableContext,
+          new Error(`Denied ${reasonCopy.value} because state cannot reach disk`),
+        )
+        return
+      }
       if (!containsSecret && decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else if (decision.risk === "normal" && matchingRule) {
@@ -4512,6 +4604,15 @@ export class DomovoiDaemon {
   }
 
   async #performEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+    this.#emergencyStopInProgress = true
+    try {
+      return await this.#runEmergencyStop(client)
+    } finally {
+      this.#emergencyStopInProgress = false
+    }
+  }
+
+  async #runEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
     const requestedAt = new Date().toISOString()
     const stopId = `stop-${randomUUID()}`
     const failures: SystemEmergencyStopResult["failures"] = []
@@ -5114,7 +5215,7 @@ export class DomovoiDaemon {
     terminal.disposeExit()
     const remainder = terminal.redactor.flush()
     if (remainder) {
-      terminal.buffer = `${terminal.buffer}${remainder}`.slice(-maximumTerminalReplayCharacters)
+      terminal.replay.push(remainder)
       terminal.output.push(terminalId, remainder)
     }
     terminal.output.flush(terminalId)
@@ -5122,6 +5223,12 @@ export class DomovoiDaemon {
     terminal.process.kill()
     this.#broadcastNotification("terminal.closed", { terminalId })
     return true
+  }
+
+  #releaseTerminalOwnership(socket: WebSocket): void {
+    for (const terminal of this.#terminals.values()) {
+      if (terminal.ownerSocket === socket) terminal.ownerSocket = undefined
+    }
   }
 
   #syncArtifactWatchers(): void {
@@ -5257,8 +5364,30 @@ export class DomovoiDaemon {
 
   async #persistSnapshot(): Promise<void> {
     this.#sessionHistory.invalidate()
-    if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
-    else this.#store.save(this.#snapshot)
+    try {
+      if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
+      else this.#store.save(this.#snapshot)
+    } catch (error) {
+      this.#persistenceFailed(error)
+      throw error
+    }
+    this.#persistenceSucceeded()
+  }
+
+  #persistenceFailed(error: unknown): void {
+    this.#persistenceFailures += 1
+    if (this.#persistenceUnavailable) return
+    if (this.#persistenceFailures < persistenceFailureThreshold) return
+    this.#persistenceUnavailable = true
+    this.#reportError(persistenceUnavailableContext, error)
+  }
+
+  // A snapshot is written whole rather than as a diff, so one later write that
+  // lands carries everything the failed ones did not. Recovery is therefore
+  // safe, and the daemon accepts changes again as soon as state reaches disk.
+  #persistenceSucceeded(): void {
+    this.#persistenceFailures = 0
+    this.#persistenceUnavailable = false
   }
 
   async #saveAgentState(broadcast = true): Promise<void> {
@@ -5266,11 +5395,8 @@ export class DomovoiDaemon {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
     }
-    const clientSnapshot = broadcast
-      ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
-      : undefined
     await this.#persistSnapshot()
-    if (clientSnapshot) this.#broadcastNotification("workspace.changed", clientSnapshot)
+    if (broadcast) this.#broadcastSnapshot()
   }
 
   async #quarantineProviderThread(
@@ -5300,9 +5426,8 @@ export class DomovoiDaemon {
       createdAt: session.updatedAt,
     })
     try {
-      const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
       await this.#persistSnapshot()
-      this.#broadcastNotification("workspace.changed", clientSnapshot)
+      this.#broadcastSnapshot()
     } finally {
       try {
         await withTimeout(
@@ -5316,41 +5441,78 @@ export class DomovoiDaemon {
     }
   }
 
-  async #cleanupSessions(): Promise<void> {
-    const errors: unknown[] = []
+  async #suspendProjectSessions(): Promise<void> {
+    const suspendedAt = new Date().toISOString()
+    const interruptedSessionIds = new Set<string>()
     for (const session of this.#snapshot.sessions) {
-      if (session.providerThreadId) {
-        try {
-          await withTimeout(
-            this.#agents.require(session.runtime.provider).stopThread(session.providerThreadId),
-            this.#agentTimeoutMs,
-            "Agent cleanup timed out",
-          )
-        } catch (error) {
-          errors.push(error)
-          this.#reportError("Domovoi could not stop a provider thread", error)
+      const threadId = session.providerThreadId
+      const turnId = session.activeTurnId
+      if (turnId) {
+        interruptedSessionIds.add(session.id)
+        if (threadId) {
+          try {
+            await withTimeout(
+              this.#agents.require(session.runtime.provider).interruptTurn(threadId, turnId),
+              this.#agentTimeoutMs,
+              "Project switch turn interrupt timed out",
+            )
+          } catch (error) {
+            this.#reportError("Domovoi could not interrupt a turn before switching projects", error)
+          }
         }
-        this.#loadedAgentThreads.delete(
-          providerThreadKey(session.runtime.provider, session.providerThreadId),
-        )
+        delete session.activeTurnId
+        if (session.state !== "archiving" && session.state !== "archived") {
+          session.state = "idle"
+        }
+        session.updatedAt = suspendedAt
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "system",
+          body: "Switching projects interrupted the active turn.",
+          detail: "Pending approval requests were expired. The worktree, session history, checkpoints, and artifacts were preserved. Reopen this project and send another message to continue with a new provider turn.",
+          createdAt: suspendedAt,
+        })
       }
-      if (session.workspacePath) {
-        try {
-          await this.#withAbortTimeout(
-            (signal) => this.#workspaceService.removeSessionWorkspace(
-              session.workspacePath!,
-              signal,
-            ),
-            this.#agentTimeoutMs,
-            "Session workspace cleanup timed out",
-          )
-        } catch (error) {
-          errors.push(error)
-          this.#reportError("Domovoi could not remove a session worktree", error)
-        }
+      if (!threadId) continue
+      try {
+        await withTimeout(
+          this.#agents.require(session.runtime.provider).stopThread(threadId),
+          this.#agentTimeoutMs,
+          "Project switch provider cleanup timed out",
+        )
+        this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
+      } catch (error) {
+        this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
+        const threadKey = providerThreadKey(session.runtime.provider, threadId)
+        this.#failedEmergencyThreads.add(threadKey)
+        this.#emergencyBlockedThreads.add(threadKey)
+        // Quarantine clears the thread id, which is right when a provider is
+        // known to be gone. This one refused to stop, so it may still be
+        // writing to the worktree: the id stays recorded so the restart guard
+        // refuses to start a second agent in the same files, and the session
+        // says why rather than looking idle.
+        session.state = "failed"
+        session.updatedAt = suspendedAt
+        this.#snapshot.approvals = this.#snapshot.approvals.filter(
+          (approval) => approval.sessionId !== session.id,
+        )
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "system",
+          body: "The provider thread did not stop when this project was closed.",
+          detail: "It may still be running against this worktree, so Domovoi will not start another agent here. Restart Domovoi to clear it, or archive the session.",
+          createdAt: suspendedAt,
+        })
+        continue
       }
     }
-    if (errors.length) throw new AggregateError(errors, "Domovoi could not clean up all sessions")
+    if (interruptedSessionIds.size > 0) {
+      this.#snapshot.approvals = this.#snapshot.approvals.filter(
+        (approval) => !interruptedSessionIds.has(approval.sessionId),
+      )
+    }
   }
 }
 
@@ -5388,10 +5550,6 @@ function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost"
 }
 
-export function canServeArtifacts(host: string, authorized = false): boolean {
-  return isLoopbackHost(host) || authorized
-}
-
 export function frameAncestorsFor(origins: Iterable<string>): string {
   const sources: string[] = []
   for (const origin of origins) {
@@ -5414,6 +5572,7 @@ export type ArtifactAccessScope = {
   revision: number
   purpose: ArtifactAccessPurpose
   bridgeChannel?: string
+  parentOrigin?: string
   expiresAt: number
 }
 
@@ -5424,6 +5583,7 @@ function artifactAccessPayload(scope: ArtifactAccessScope): string {
     scope.revision,
     scope.purpose,
     scope.bridgeChannel ?? null,
+    scope.parentOrigin ?? null,
     scope.expiresAt,
   ])
 }
@@ -5451,6 +5611,7 @@ export function artifactAccessMatches(
     || !Number.isSafeInteger(scope.expiresAt)
     || scope.expiresAt < now
     || (scope.bridgeChannel && scope.purpose !== "preview")
+    || (scope.parentOrigin && !scope.bridgeChannel)
     || typeof suppliedSignature !== "string"
   ) {
     return false

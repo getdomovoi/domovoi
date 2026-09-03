@@ -28,7 +28,9 @@ a package that resolves but cannot be imported fails the check.
 
 Outside CI a package manager that is not installed is skipped and named in the output. In CI a
 missing package manager is a failure, because that is where the distribution contract in this
-document is proven rather than assumed.
+document is proven rather than assumed. The Bun version CI installs is pinned by `bun-version` in
+`.github/workflows/ci.yml` and must be bumped by hand; Dependabot moves the action SHA but not that
+input.
 
 The daemon is not part of this check. Its production graph builds native modules, so a cold install
 per package manager on every CI run costs far more than it proves; its packaged contents are
@@ -79,3 +81,13 @@ GitHub Actions are pinned by full commit SHA, with the human-readable tag kept i
 comment. Tags and abbreviated SHAs are mutable references and are rejected by
 `pnpm release:invariants`, which reads every workflow in `.github/workflows` and every composite
 action in `.github/actions`. Container steps must carry a full `@sha256:` image digest.
+
+## Workspace overrides
+
+`pnpm-workspace.yaml` overrides `esbuild` to `0.28.2` for the whole workspace, so every consumer
+shares one copy. Two consumers declare ranges that exclude it: `electron-vite@4.0.1` wants
+`^0.25.5` and `tsup@8.5.1` wants `^0.27.0`, and `tsup` builds the `dist/` that the publishable
+packages ship. esbuild is pre-1.0, so a minor is a breaking change by its own versioning, and a
+toolchain failure after a dependency bump should be checked against this pin first. Remove the
+override once both `electron-vite` and `tsup` declare ranges that include `0.28`, then run
+`pnpm install --lockfile-only` so `pnpm-lock.yaml` drops the recorded override.

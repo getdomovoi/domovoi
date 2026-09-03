@@ -6,11 +6,16 @@ import {
   auditExportResultSchema,
   auditQueryPageSchema,
   auditQueryParamsSchema,
+  daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
   helloParamsSchema,
+  isMutatingRpcMethod,
+  isRefusedWithoutPersistence,
   maximumJsonValueDepth,
+  persistenceRecoveryRpcMethods,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
+  rpcMethodMutations,
   protocolVersionMismatchErrorCode,
   rpcMethods,
   rpcNotificationSchema,
@@ -22,6 +27,7 @@ import {
   sessionHistoryCategorySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
+  workspaceSnapshotSchema,
 } from "./index.js"
 
 describe("audit RPC contracts", () => {
@@ -855,6 +861,37 @@ describe("session.revertFile parameters", () => {
       force: true,
     }).success).toBe(false)
     expect(rpcMethods["session.revertFile"].result.safeParse(demoWorkspace).success).toBe(true)
+  })
+})
+
+describe("RPC method persistence classification", () => {
+  it("classifies every method exactly once as mutating or read-only", () => {
+    expect(Object.keys(rpcMethodMutations).sort()).toEqual(Object.keys(rpcMethods).sort())
+    for (const mutation of Object.values(rpcMethodMutations)) {
+      expect(["mutating", "read-only"]).toContain(mutation)
+    }
+  })
+
+  it("keeps workspace.get as a read-only snapshot and diagnostic method", () => {
+    expect(rpcMethods["workspace.get"].params.parse({})).toEqual({})
+    expect(rpcMethods["workspace.get"].result).toBe(workspaceSnapshotSchema)
+    expect(rpcMethods["workspace.get"].result.parse(demoWorkspace)).toMatchObject({
+      machine: { id: demoWorkspace.machine.id },
+    })
+    expect(rpcMethodMutations["workspace.get"]).toBe("read-only")
+    expect(isMutatingRpcMethod("workspace.get")).toBe(false)
+    expect(isRefusedWithoutPersistence("workspace.get")).toBe(false)
+  })
+
+  it("refuses mutating methods without persistence and keeps recovery methods reachable", () => {
+    expect(daemonPersistenceUnavailableErrorCode).toBe(-32014)
+    expect(isMutatingRpcMethod("session.send")).toBe(true)
+    expect(isRefusedWithoutPersistence("session.send")).toBe(true)
+    expect(isRefusedWithoutPersistence("system.hello")).toBe(false)
+    for (const method of persistenceRecoveryRpcMethods) {
+      expect(isMutatingRpcMethod(method)).toBe(true)
+      expect(isRefusedWithoutPersistence(method)).toBe(false)
+    }
   })
 })
 
