@@ -42,7 +42,7 @@ installed from npm under Anthropic's terms, the same way the Claude Code CLI is.
 exception requires one of:
 
 - driving the Claude Code adapter through the installed CLI over the Agent Client Protocol, as the
-  Codex and Cursor adapters already do, and dropping the SDK dependency;
+  Cursor and Grok adapters already do, and dropping the SDK dependency;
 - moving the SDK to an optional dependency loaded only when a user opts into that adapter, so the
   default install of the public daemon carries only permissive licenses; or
 - a written confirmation from Anthropic that redistribution inside an Apache-2.0 package is

@@ -647,7 +647,7 @@ describe("terminal RPC", () => {
     }
     await rpc("system.hello", {
       client: "desktop",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       clientId: "desktop-emergency",
       authToken: daemon.authToken,
     })
@@ -671,7 +671,7 @@ describe("terminal RPC", () => {
       method: "system.hello",
       params: {
         client: "tablet",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.1", protocolVersion: "0.1.0",
         clientId: "tablet-observer",
         authToken: daemon.authToken,
       },
@@ -982,12 +982,12 @@ describe("terminal RPC", () => {
     const intruder = await open()
     await owner.rpc("system.hello", {
       client: "desktop",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       clientId: "desktop-owner",
     })
     await intruder.rpc("system.hello", {
       client: "tablet",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       clientId: "tablet-intruder",
     })
 
