@@ -85,3 +85,11 @@ it("says nothing at all when a session has no plan", () => {
 
   expect(screen.queryByRole("list", { name: "Plan steps" })).toBeNull()
 })
+
+it("invites a first step instead of showing an empty list", () => {
+  render(<WorkingPlanCard plan={plan({ revision: 1, structureRevision: 0, steps: [] })} running={false} />)
+
+  expect(screen.queryByRole("list", { name: "Plan steps" })).toBeNull()
+  expect(screen.getByText(/no steps yet/iu)).toBeTruthy()
+  expect(screen.getByText("0 steps")).toBeTruthy()
+})
