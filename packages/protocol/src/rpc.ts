@@ -996,7 +996,7 @@ export const workingPlanEditDraftSchema = z.array(workingPlanEditDraftStepSchema
 
 export const planEditParamsSchema = z.object({
   sessionId: z.string().min(1),
-  basedOnStructureRevision: z.number().int().positive(),
+  basedOnStructureRevision: z.number().int().nonnegative(),
   baseSteps: workingPlanStructureSchema,
   draftSteps: workingPlanEditDraftSchema,
   replacesPendingEditId: pendingWorkingPlanEditSchema.shape.id.optional(),
@@ -1021,9 +1021,9 @@ export const planEditReceiptSchema = z.object({
   editId: pendingWorkingPlanEditSchema.shape.id,
   sessionId: z.string().min(1),
   disposition: planEditDispositionSchema,
-  basedOnStructureRevision: z.number().int().positive(),
+  basedOnStructureRevision: z.number().int().nonnegative(),
   planRevision: z.number().int().positive(),
-  structureRevision: z.number().int().positive(),
+  structureRevision: z.number().int().nonnegative(),
   ...workingPlanClientAttributionSchema.shape,
   createdAt: z.string().datetime(),
 }).strict()
