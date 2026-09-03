@@ -8031,7 +8031,7 @@ describe("DomovoiDaemon", () => {
       startThread: vi.fn(async () => threadId),
       resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}),
-      startTurn: vi.fn(async () => "turn"),
+      startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "turn"),
       steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
       resolveApproval: vi.fn(),
