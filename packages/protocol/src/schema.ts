@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
+import { providerPromptDeliverySchema } from "./prompt-delivery.js"
 
 import {
   annotationStatusSchema,
@@ -239,6 +240,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     sessionId: z.string().min(1),
     kind: z.literal("user"),
     body: z.string(),
+    providerPromptDelivery: providerPromptDeliverySchema.optional(),
     createdAt: z.string().datetime(),
   }),
   z.object({

@@ -64,6 +64,7 @@ import {
   toolStatusSchema,
 } from "./identifiers.js"
 import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
+import { maximumProviderPromptCodeUnits } from "./prompt-delivery.js"
 import {
   skillCapabilityManifestSchema,
   skillContentDigestSchema,
@@ -850,7 +851,7 @@ export const systemEmergencyStopResultSchema = z.object({
 
 export const systemEmergencyStoppedNotificationSchema = systemEmergencyStopResultSchema
 
-export const maximumSessionPromptCharacters = 262_144
+export const maximumSessionPromptCharacters = maximumProviderPromptCodeUnits
 
 export const approvalResolveParamsSchema = z
   .object({
