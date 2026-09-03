@@ -87,10 +87,25 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
   const cachedInputTokens = counter(
     usage.cache_read_input_tokens ?? usage.cachedInputTokens ?? cache?.read,
   )
-  const outputTokens = counter(usage.output_tokens ?? usage.outputTokens ?? usage.output)
-  const reasoningTokens = counter(
-    usage.reasoning_tokens ?? usage.reasoningTokens ?? usage.reasoning,
+  const reportedOutputTokens = counter(
+    usage.output_tokens ?? usage.outputTokens ?? usage.output,
   )
+  const embeddedReasoningTokens = counter(
+    usage.reasoning_output_tokens ?? usage.reasoningOutputTokens,
+  )
+  const reasoningTokens = counter(
+    usage.reasoning_tokens
+      ?? usage.reasoningTokens
+      ?? embeddedReasoningTokens
+      ?? usage.reasoning,
+  )
+  // Codex reports reasoningOutputTokens as a subset of outputTokens. The
+  // normalized counters are disjoint, so split that subset without changing
+  // the provider's total.
+  const outputTokens = reportedOutputTokens !== undefined
+    && embeddedReasoningTokens !== undefined
+    ? reportedOutputTokens - embeddedReasoningTokens
+    : reportedOutputTokens
   const totalTokens = counter(usage.total_tokens ?? usage.totalTokens ?? usage.total)
   const context = reportedContextOccupancy(
     root.context_tokens ?? root.contextTokens,

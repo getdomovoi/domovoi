@@ -836,8 +836,8 @@ describe("CodexAppServerAdapter", () => {
       usage: {
         inputTokens: 120_000,
         cachedInputTokens: 90_000,
-        outputTokens: 8_000,
-        reasoningTokens: 0,
+        outputTokens: 3_000,
+        reasoningTokens: 5_000,
         totalTokens: 128_000,
         contextTokens: 128_000,
         contextWindowTokens: 200_000,
