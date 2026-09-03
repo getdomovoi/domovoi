@@ -1,0 +1,42 @@
+/* Motion is functional: it tells you a surface opened, a value is live, or
+   something wants you. Nothing decorative, nothing bouncy, no parallax. */
+
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-instant: 90ms;
+  --dur-fast: 140ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --transition-control: background var(--dur-fast) var(--ease-in-out), border-color var(--dur-fast) var(--ease-in-out), color var(--dur-fast) var(--ease-in-out);
+}
+
+/* popover / menu entry */
+@keyframes dv-pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+/* something wants a decision */
+@keyframes dv-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in oklab, var(--warning) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); }
+}
+/* work in flight */
+@keyframes dv-sweep {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(360%); }
+}
+/* terminal caret */
+@keyframes dv-blink {
+  0%, 45%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,19 @@
+/* Three shadow steps and nothing else. Colour comes from the theme so light
+   mode gets a soft grey shadow instead of a black one. */
+
+:root {
+  --shadow-md: oklch(0 0 0 / 0.4);
+  --shadow-lg: oklch(0 0 0 / 0.55);
+  --shadow-xl: oklch(0 0 0 / 0.8);
+
+  --elev-popover: 0 14px 40px var(--shadow-lg);
+  --elev-menu: 0 10px 30px var(--shadow-md);
+  --elev-dialog: 0 30px 80px var(--shadow-xl);
+  --elev-window: 0 50px 150px var(--shadow-xl);
+}
+
+.theme-light {
+  --shadow-md: oklch(0.2 0.01 285 / 0.1);
+  --shadow-lg: oklch(0.2 0.01 285 / 0.16);
+  --shadow-xl: oklch(0.2 0.01 285 / 0.2);
+}
