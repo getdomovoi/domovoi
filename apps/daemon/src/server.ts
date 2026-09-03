@@ -106,8 +106,8 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
-import { isFileToolCommand, permissionDecisionFor } from "./permission-policy.js"
-import { readPackageScripts } from "./package-scripts.js"
+import { permissionDecisionFor } from "./permission-policy.js"
+import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
@@ -3152,6 +3152,70 @@ export class DomovoiDaemon {
           )
           return
         }
+        let resolvedApprovalExecution = approval.execution.state === "resolved"
+          ? approval.execution
+          : undefined
+        if (
+          params.decision !== "deny"
+          && params.decision !== "deny-explain"
+          && resolvedApprovalExecution?.record.kind === "shell"
+          && resolvedApprovalExecution.record.entries.some(
+            (entry) => entry.source.kind === "package-script",
+          )
+        ) {
+          const project = this.#snapshot.project
+          const workspaceRoot = session?.workspacePath ?? project?.path
+          const cwd = workspaceRoot === undefined
+            ? undefined
+            : resolvedApprovalExecution.record.cwd === "."
+              ? workspaceRoot
+              : join(workspaceRoot, resolvedApprovalExecution.record.cwd)
+          const currentExecution = workspaceRoot === undefined
+            ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
+            : await resolveExecution({
+                workspaceRoot,
+                command: approval.command,
+                ...(cwd === undefined ? {} : { cwd }),
+              })
+          if (
+            currentExecution.state !== "resolved"
+            || currentExecution.digest !== resolvedApprovalExecution.digest
+          ) {
+            approval.execution = currentExecution
+            const currentDecision = permissionDecisionFor({
+              runtime: session?.runtime ?? {
+                provider: "claude-code",
+                model: "unknown",
+                reasoning: "high",
+                permissionMode: approval.mode,
+                auto: false,
+              },
+              command: approval.command,
+              reason: approval.operation,
+              execution: currentExecution,
+            })
+            approval.risk = currentDecision.risk
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+            this.#error(
+              socket,
+              request.id,
+              invalidParams,
+              "The resolved command changed; review the updated approval before allowing it",
+            )
+            return
+          }
+          resolvedApprovalExecution = currentExecution
+        }
+        if (params.decision === "always-project" && !resolvedApprovalExecution) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Unresolved commands cannot create standing rules",
+          )
+          return
+        }
         if (approval.providerRequestId !== undefined && session) {
           this.#agents.require(session.runtime.provider)
             .resolveApproval(
@@ -3165,15 +3229,24 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, internalError, "Approval has no open project")
             return
           }
+          const ruleId = `rule-${approval.id}-${Date.now()}`
           this.#snapshot.approvalRules.push({
-            id: `rule-${approval.id}-${Date.now()}`,
+            id: ruleId,
             projectId: project.id,
             operation: approval.operation,
             command: approval.command,
+            status: "active",
+            execution: resolvedApprovalExecution!,
             createdBy: actor.client,
             createdByConnectionId: connectionId,
             createdAt: new Date().toISOString(),
           })
+          for (const inactiveRuleId of approval.reapproval?.inactiveRuleIds ?? []) {
+            const inactive = this.#snapshot.approvalRules.find(
+              (rule) => rule.id === inactiveRuleId && rule.status === "inactive",
+            )
+            if (inactive?.status === "inactive") inactive.replacedByRuleId = ruleId
+          }
         }
         this.#snapshot.thread.push({
           id: `receipt-${approval.id}-${Date.now()}`,
@@ -4409,30 +4482,41 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
-      const buildAuto = session.runtime.permissionMode === "build" && session.runtime.auto
-      const packageScripts = buildAuto && event.command
-        ? readPackageScripts(event.cwd ?? session.workspacePath ?? project.path)
-        : undefined
+      const execution = await resolveExecution({
+        workspaceRoot: session.workspacePath ?? project.path,
+        cwd: event.cwd ?? session.workspacePath ?? project.path,
+        ...(event.command === undefined ? {} : { command: event.command }),
+        ...(event.path === undefined ? {} : { filePath: event.path }),
+        ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
+      })
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(event.command ? { command: event.command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
-        ...(packageScripts ? { packageScripts } : {}),
+        execution,
       })
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
       const directoryCopy = redactDurableText(event.cwd ?? session.workspacePath ?? project.path)
-      const containsSecret = commandCopy.redacted || reasonCopy.redacted || directoryCopy.redacted
+      const containsSecret = commandCopy.redacted
+        || reasonCopy.redacted
+        || directoryCopy.redacted
+        || (execution.state === "unresolved" && execution.reason === "sensitive-content")
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret
+          && execution.state === "resolved"
+          && rule.status === "active"
           && rule.projectId === project.id
-          && rule.command === event.command
-          && (!isFileToolCommand(event.command ?? "")
-            || (event.path !== undefined
-              && !event.blockedPath
-              && session.workspacePath !== undefined
-              && resolveInside(session.workspacePath, event.path) !== undefined)),
+          && rule.execution.digest === execution.digest,
       )
+      const inactiveRuleIds = this.#snapshot.approvalRules.flatMap((rule) => (
+        rule.status === "inactive"
+        && rule.inactiveReason === "legacy-text-only"
+        && rule.projectId === project.id
+        && rule.command === event.command
+          ? [rule.id]
+          : []
+      ))
       // The outcome has to describe what actually happened: during a
       // persistence lockout nothing is approved, so recording success would put
       // a decision in the audit log that was never made.
@@ -4481,6 +4565,10 @@ export class DomovoiDaemon {
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,
           requestedAt: createdAt,
+          execution,
+          ...(inactiveRuleIds.length === 0 ? {} : {
+            reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
+          }),
         })
         session.state = "waiting"
       }
