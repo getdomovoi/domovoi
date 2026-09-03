@@ -13,7 +13,7 @@ type RendererWebContents = {
   readonly mainFrame: RendererFrame
 }
 
-type RendererIpcEvent = {
+export type RendererIpcEvent = {
   readonly sender: unknown
   readonly senderFrame: RendererFrame | null
 }

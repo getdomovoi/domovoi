@@ -261,6 +261,67 @@ describe("FileSkillCatalog", () => {
     expect(skills[0]).toMatchObject({ name: "plan-preview", scope: "user" })
     expect(skills[0]!.path).toBe(join(await realpath(userRoot), "plan-preview", "SKILL.md"))
   })
+
+  it("serves the same listing while no skill root changes", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-cache-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    await skill(root, "alpha", "name: alpha\ndescription: Alpha instructions.")
+    const catalog = new FileSkillCatalog([{ path: root, scope: "user", source: "domovoi" }])
+
+    const first = await catalog.list()
+    const second = await catalog.list()
+
+    expect(second).toBe(first)
+    expect(first.map((entry) => entry.name)).toEqual(["alpha"])
+  })
+
+  it("walks again once a skill root directory changes", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-cache-invalidated-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    await skill(root, "alpha", "name: alpha\ndescription: Alpha instructions.")
+    const catalog = new FileSkillCatalog([{ path: root, scope: "user", source: "domovoi" }])
+    const first = await catalog.list()
+
+    await skill(root, "beta", "name: beta\ndescription: Beta instructions.")
+    const second = await catalog.list()
+
+    expect(second).not.toBe(first)
+    expect(second.map((entry) => entry.name)).toEqual(["alpha", "beta"])
+  })
+
+  it("reads the current file content even when the listing is cached", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-cache-read-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    await skill(root, "alpha", "name: alpha\ndescription: Alpha instructions.")
+    const catalog = new FileSkillCatalog([{ path: root, scope: "user", source: "domovoi" }])
+    const [summary] = await catalog.list()
+
+    await writeFile(
+      join(root, "alpha", "SKILL.md"),
+      "---\nname: alpha\ndescription: Alpha instructions.\n---\n\n# Revised instructions\n",
+    )
+    const document = await catalog.read(summary!.id)
+
+    expect(document.content).toContain("# Revised instructions")
+  })
+
+  it("drops its cached listing on demand", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-cache-invalidate-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    await skill(root, "alpha", "name: alpha\ndescription: Alpha instructions.")
+    const catalog = new FileSkillCatalog([{ path: root, scope: "user", source: "domovoi" }])
+    const first = await catalog.list()
+
+    catalog.invalidate()
+    const second = await catalog.list()
+
+    expect(second).not.toBe(first)
+    expect(second).toEqual(first)
+  })
 })
 
 describe("FileSkillCatalog manual review trust", () => {
