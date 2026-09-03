@@ -6255,6 +6255,15 @@ describe("DomovoiDaemon", () => {
     expect(refusedRestart).toMatchObject({
       error: { message: "Session already has a live provider thread" },
     })
+    const refusedSend = await rpc("session.send", {
+      sessionId: restored.id as string,
+      prompt: "Continue in the preserved worktree",
+      client: "desktop",
+    })
+    expect(refusedSend).toMatchObject({
+      error: { message: "Provider thread requires recovery after emergency stop" },
+    })
+    expect(agent.startTurn).toHaveBeenCalledTimes(1)
     socket.close()
   })
 

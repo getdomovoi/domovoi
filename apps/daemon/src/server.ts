@@ -5177,6 +5177,9 @@ export class DomovoiDaemon {
         this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
       } catch (error) {
         this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
+        const threadKey = providerThreadKey(session.runtime.provider, threadId)
+        this.#failedEmergencyThreads.add(threadKey)
+        this.#emergencyBlockedThreads.add(threadKey)
         // Quarantine clears the thread id, which is right when a provider is
         // known to be gone. This one refused to stop, so it may still be
         // writing to the worktree: the id stays recorded so the restart guard
