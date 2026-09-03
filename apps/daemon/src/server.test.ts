@@ -4,7 +4,7 @@ import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import WebSocket from "ws"
@@ -70,6 +70,7 @@ import type { AuditLog } from "./audit-log.js"
 import type { ProviderSecretStatus } from "./provider-secrets.js"
 import type { ArtifactWatcherOptions } from "./artifact-watcher.js"
 import { maximumPrintableArtifactDepth } from "./print-artifact.js"
+import { resolveExecution } from "./execution-resolution.js"
 
 const skillSecurityMetadata = {
   manifest: { version: 1 as const, capabilities: [] },
@@ -1483,6 +1484,7 @@ describe("DomovoiDaemon", () => {
       checkpoint: session.baseCommit ?? "unavailable",
       providerRequestId: 91,
       requestedAt: new Date().toISOString(),
+      execution: snapshot.approvals[0]!.execution,
     }, {
       id: "approval-before-restart-2",
       sessionId: session.id,
@@ -1499,6 +1501,7 @@ describe("DomovoiDaemon", () => {
       checkpoint: session.baseCommit ?? "unavailable",
       providerRequestId: 92,
       requestedAt: new Date().toISOString(),
+      execution: snapshot.approvals[0]!.execution,
     }]
     const archived = snapshot.sessions[1]!
     archived.state = "archived"
@@ -1722,6 +1725,7 @@ describe("DomovoiDaemon", () => {
       estimatedDuration: "Unknown",
       checkpoint: session.baseCommit ?? "unavailable",
       providerRequestId: 91,
+      execution: demoWorkspace.approvals[0]!.execution,
       requestedAt: new Date().toISOString(),
     }]
     const store = {
@@ -5368,11 +5372,25 @@ describe("DomovoiDaemon", () => {
   })
 
   it("records a project-scoped rule for standing approval", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-standing-rule-"))
+    scratchDirectories.push(workspacePath)
+    await writeFile(join(workspacePath, "package.json"), JSON.stringify({
+      scripts: { test: "vitest run" },
+    }))
     const snapshot = structuredClone(demoWorkspace)
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.operation = "Run the test suite"
     snapshot.approvals[0]!.command = "pnpm test"
+    snapshot.approvals[0]!.directory = workspacePath
     snapshot.approvals[0]!.providerRequestId = 91
+    snapshot.sessions[0]!.workspacePath = workspacePath
+    const execution = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: "pnpm test",
+    })
+    expect(execution.state).toBe("resolved")
+    snapshot.approvals[0]!.execution = execution
     const agent = {
       connect: vi.fn(async () => {}),
       listModels: vi.fn(async () => codexModels()),
@@ -5425,6 +5443,11 @@ describe("DomovoiDaemon", () => {
             projectId: "project-acme-api",
             operation: "Run the test suite",
             command: "pnpm test",
+            status: "active",
+            execution: expect.objectContaining({
+              state: "resolved",
+              digest: execution.state === "resolved" ? execution.digest : "unreachable",
+            }),
             createdBy: "desktop",
           }),
         ],
@@ -5439,6 +5462,219 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
+    socket.close()
+  })
+
+  it("rejects a standing approval when its resolved script changed before the click", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stale-standing-rule-"))
+    scratchDirectories.push(workspacePath)
+    const manifestPath = join(workspacePath, "package.json")
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run" } }))
+    const snapshot = structuredClone(demoWorkspace)
+    const approval = snapshot.approvals[0]!
+    approval.risk = "normal"
+    approval.operation = "Run the test suite"
+    approval.command = "pnpm test"
+    approval.directory = workspacePath
+    approval.providerRequestId = 92
+    snapshot.sessions[0]!.workspacePath = workspacePath
+    approval.execution = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: approval.command,
+    })
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { "claude-code": agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id === 2) resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "approval.resolve",
+      params: { approvalId: approval.id, decision: "always-project", client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "The resolved command changed; review the updated approval before allowing it",
+      },
+    })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    expect(snapshot.approvalRules).toEqual([])
+    socket.close()
+  })
+
+  it("reuses a standing rule only while its resolved execution digest matches", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-rule-digest-"))
+    scratchDirectories.push(workspacePath)
+    const manifestPath = join(workspacePath, "package.json")
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run" } }))
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code", model: "sonnet", reasoning: "high",
+      permissionMode: "build", auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-rule-digest"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    const execution = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: "pnpm test",
+    })
+    expect(execution.state).toBe("resolved")
+    snapshot.approvalRules.push({
+      id: "rule-test-digest",
+      projectId: snapshot.project!.id,
+      operation: "Run tests",
+      command: "pnpm test",
+      status: "active",
+      execution: execution as Extract<typeof execution, { state: "resolved" }>,
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    }, {
+      id: "legacy-rule-test-digest",
+      projectId: snapshot.project!.id,
+      operation: "Run tests",
+      command: "pnpm test",
+      status: "inactive",
+      inactiveReason: "legacy-text-only",
+      inactivatedAt: new Date().toISOString(),
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    })
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-rule-digest"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agents: { "claude-code": agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Run tests",
+      client: "desktop",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 41,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-digest",
+      reason: "Run tests",
+      command: "pnpm   test",
+      cwd: workspacePath,
+    })
+    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(41, "allow-once"))
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
+    listener!({
+      type: "approval-requested",
+      requestId: 42,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-digest",
+      reason: "Run tests",
+      command: "pnpm test",
+      cwd: workspacePath,
+    })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(42, expect.anything())
+    expect(current).toMatchObject({
+      result: {
+        approvals: [expect.objectContaining({
+          providerRequestId: 42,
+          execution: expect.objectContaining({ state: "resolved" }),
+          reapproval: {
+            reason: "legacy-text-only",
+            inactiveRuleIds: ["legacy-rule-test-digest"],
+          },
+        })],
+      },
+    })
+    const pendingDigest = (current.result as {
+      approvals: Array<{ execution: { state: string; digest?: string } }>
+    }).approvals[0]!.execution.digest
+    expect(pendingDigest).not.toBe(execution.state === "resolved" ? execution.digest : undefined)
+    const approvalId = (current.result as { approvals: Array<{ id: string }> }).approvals[0]!.id
+    const reapproved = await rpc("approval.resolve", {
+      approvalId,
+      decision: "always-project",
+      client: "desktop",
+    })
+    const rules = (reapproved.result as {
+      approvalRules: Array<{ id: string; status: string; replacedByRuleId?: string }>
+    }).approvalRules
+    const replacement = rules.find((rule) => rule.status === "active" && rule.id !== "rule-test-digest")
+    expect(replacement).toBeDefined()
+    expect(rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "legacy-rule-test-digest",
+        status: "inactive",
+        replacedByRuleId: replacement!.id,
+      }),
+    ]))
+    expect(agent.resolveApproval).toHaveBeenCalledWith(42, "allow-once")
     socket.close()
   })
 
@@ -8829,6 +9065,11 @@ describe("DomovoiDaemon", () => {
       projectId: snapshot.project!.id,
       operation: "Install skill",
       command: skillInstallCommand,
+      status: "active",
+      execution: snapshot.approvals[0]!.execution as Extract<
+        typeof snapshot.approvals[number]["execution"],
+        { state: "resolved" }
+      >,
       createdBy: "desktop",
       createdAt: new Date().toISOString(),
     })
@@ -8970,6 +9211,8 @@ describe("DomovoiDaemon", () => {
   })
 
   it("scopes a standing file-tool rule to the session worktree", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-rule-scope-"))
+    scratchDirectories.push(workspacePath)
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.runtime = {
@@ -8980,15 +9223,24 @@ describe("DomovoiDaemon", () => {
       auto: false,
     }
     session.state = "idle"
-    session.workspacePath = "/worktrees/rule-scope"
+    session.workspacePath = workspacePath
     session.providerThreadId = "thread-rule-scope"
     delete session.activeTurnId
     snapshot.approvals = []
+    const execution = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: "Edit",
+      filePath: join(workspacePath, "src/index.ts"),
+    })
+    expect(execution.state).toBe("resolved")
     snapshot.approvalRules.push({
       id: "rule-edit",
       projectId: snapshot.project!.id,
       operation: "Edit a file",
       command: "Edit",
+      status: "active",
+      execution: execution as Extract<typeof execution, { state: "resolved" }>,
       createdBy: "desktop",
       createdAt: new Date().toISOString(),
     })
@@ -9056,7 +9308,7 @@ describe("DomovoiDaemon", () => {
       turnId: "turn-rule-scope",
       reason: "Edit a file",
       command: "Edit",
-      path: "/worktrees/rule-scope/src/index.ts",
+      path: join(workspacePath, "src/index.ts"),
     })
     listener!({
       type: "approval-requested",
@@ -9065,7 +9317,7 @@ describe("DomovoiDaemon", () => {
       turnId: "turn-rule-scope",
       reason: "Edit a file",
       command: "Edit",
-      path: "/outside-worktree/package.json",
+      path: join(dirname(workspacePath), "outside-worktree/package.json"),
     })
     listener!({
       type: "approval-requested",
@@ -9074,8 +9326,8 @@ describe("DomovoiDaemon", () => {
       turnId: "turn-rule-scope",
       reason: "Edit a file",
       command: "Edit",
-      path: "/worktrees/rule-scope/src/index.ts",
-      blockedPath: "/worktrees/rule-scope/src/index.ts",
+      path: join(workspacePath, "src/index.ts"),
+      blockedPath: join(workspacePath, "src/index.ts"),
     })
     listener!({
       type: "approval-requested",
