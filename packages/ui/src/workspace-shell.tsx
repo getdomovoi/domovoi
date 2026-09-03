@@ -71,6 +71,7 @@ import {
 } from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
+import { WorkspaceConnectionStatus } from "./connection-status"
 import {
   Card,
   CardAction,
@@ -2820,6 +2821,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribeTerminal,
     terminalClientId,
     writeTerminal,
+    authenticationRequired,
+    protocolError,
+    reconnecting,
   } = useWorkspace(activeRpcUrl, clientKind, activeRpcToken)
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,
@@ -3305,15 +3309,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
-        {!connected ? (
-          <div role="status" aria-live="polite" aria-atomic="true" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]">
-            <span aria-hidden="true" data-status-dot="" className="size-2 shrink-0 rounded-full bg-destructive" />
-            <span className="min-w-0 flex-1 break-words">{connectionError ? `Reconnect failed: ${connectionError}` : snapshot ? `Lost the daemon on ${snapshot.machine.name}. Existing session state remains on that machine.` : "Cannot reach the daemon. Workspace state is waiting for a verified response."}</span>
-            <span className="ml-auto font-machine text-[10px] text-[var(--danger-dim)]">retrying</span>
-            {onChangeCredential ? <Button variant="outline" size="sm" onClick={onChangeCredential}>Change credential</Button> : null}
-            <Button variant="destructive" size="sm" onClick={reconnectDaemon}>Reconnect now</Button>
-          </div>
-        ) : null}
+        <WorkspaceConnectionStatus
+          connected={connected}
+          reconnecting={reconnecting}
+          authenticationRequired={authenticationRequired}
+          protocolError={protocolError}
+          connectionError={connectionError}
+          machineName={snapshot?.machine.name}
+          onChangeCredential={onChangeCredential}
+          onReconnect={reconnectDaemon}
+        />
         {snapshot && surface === "providers" ? (
           <ProviderSettings
             providers={snapshot.machine.providers}

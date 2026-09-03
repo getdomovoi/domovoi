@@ -133,6 +133,91 @@ describe("DomovoiClient", () => {
     await expect(confirmed).resolves.toEqual(demoWorkspace)
     client.disconnect()
   })
+
+  it("reports a protocol error when a notification fails schema validation", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    socket.receive({ jsonrpc: "2.0", method: "workspace.changed", params: { nonsense: true } })
+
+    expect(protocolErrors).toEqual([
+      "Daemon sent a workspace.changed notification this client could not parse",
+    ])
+    client.disconnect()
+  })
+
+  it("reports a protocol error for a notification method it does not recognize", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    socket.receive({ jsonrpc: "2.0", method: "workspace.invented", params: {} })
+
+    expect(protocolErrors).toEqual([
+      "Daemon sent a workspace.invented notification this client does not recognize",
+    ])
+    client.disconnect()
+  })
+
+  it("rejects a pending request immediately when its response cannot be parsed", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    const listing = client.listModels("codex")
+    socket.receive({ id: 2, result: [] })
+
+    await expect(listing).rejects.toThrow(
+      "Daemon returned a response this client could not parse",
+    )
+    expect(protocolErrors).toContain("Daemon sent an RPC response this client could not parse")
+    client.disconnect()
+  })
+
+  it("announces a scheduled reconnect and clears it once the timer fires", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const states: boolean[] = []
+    client.addEventListener("reconnecting", (event) => {
+      states.push((event as CustomEvent<{ active: boolean }>).detail.active)
+    })
+
+    socket.drop(1006)
+    expect(states).toEqual([true])
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    await scheduler.runNext()
+    expect(states).toEqual([true, false])
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    client.disconnect()
+  })
   const NativeWebSocket = globalThis.WebSocket
 
   beforeEach(() => {
