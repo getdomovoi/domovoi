@@ -25,6 +25,12 @@ export const sourceRefusalSchema = z.enum([
 ])
 
 export type SourceRefusal = z.infer<typeof sourceRefusalSchema>
+
+export const sourceRefusalMessage: Record<SourceRefusal, string> = {
+  "session-turn-active": "This session is mid turn, so it cannot move until the turn settles",
+  "session-archived": "This session is archived, so there is nothing left to move",
+  "session-has-no-worktree": "This session has no worktree, so there is nothing to move",
+}
 export type TransferMethod = z.infer<typeof transferMethodSchema>
 export type TransferStep = z.infer<typeof transferStepSchema>
 

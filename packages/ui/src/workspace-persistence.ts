@@ -2,9 +2,9 @@ import { isDesktopExternalEditor, type DesktopExternalEditor } from "./desktop-p
 
 export const workspaceUiStorageKey = "domovoi.workspace-ui"
 
-export type WorkspaceSurface = "workspace" | "providers" | "skills" | "audit"
+export type WorkspaceSurface = "workspace" | "providers" | "skills" | "fleet" | "audit"
 
-const surfaces = new Set<WorkspaceSurface>(["workspace", "providers", "skills", "audit"])
+const surfaces = new Set<WorkspaceSurface>(["workspace", "providers", "skills", "fleet", "audit"])
 const layoutKeys = new Set(["sidebar.dock", "sidebar.rail", "rail.dock", "rail.rail"])
 const panelIds = new Set(["sessions", "thread", "dock"])
 
