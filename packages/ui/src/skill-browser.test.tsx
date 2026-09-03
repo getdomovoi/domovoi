@@ -60,6 +60,7 @@ describe("skill browser", () => {
         projectId="project-acme-api"
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
+        onReviewSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -99,6 +100,7 @@ describe("skill browser", () => {
           reviewedBy: { client: "desktop", clientId: "desktop-one" },
         }]}
         onSetSkillEnabled={vi.fn()}
+        onReviewSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -132,6 +134,7 @@ describe("skill browser", () => {
         projectId="project-acme-api"
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
+        onReviewSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -167,6 +170,7 @@ describe("skill browser", () => {
         projectId="project-acme-api"
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
+        onReviewSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )

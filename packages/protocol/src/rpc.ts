@@ -64,7 +64,9 @@ import {
   skillDocumentSchema,
   skillIdSchema,
   skillInventorySchema,
+  skillReviewDecisionSchema,
   skillSummariesSchema,
+  skillSummarySchema,
 } from "./skills.js"
 
 export const requestIdSchema = z.union([
@@ -1105,6 +1107,14 @@ export const rpcMethods = {
     }).strict(),
     result: workspaceSnapshotSchema,
   },
+  "skill.review": {
+    params: z.object({
+      id: skillIdSchema,
+      contentDigest: skillContentDigestSchema,
+      decision: skillReviewDecisionSchema,
+    }).strict(),
+    result: skillSummarySchema,
+  },
   "runtime.models": {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
@@ -1208,6 +1218,7 @@ export const rpcMethodMutations = {
   "system.pauseAll": "mutating",
   "system.emergencyStop": "mutating",
   "skill.setEnabled": "mutating",
+  "skill.review": "mutating",
   "provider.refresh": "mutating",
   "annotation.create": "mutating",
   "annotation.reply": "mutating",
