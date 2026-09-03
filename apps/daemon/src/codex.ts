@@ -89,7 +89,7 @@ export class StdioCodexTransport implements CodexTransport {
     const lines = createInterface({ input: this.#child.stdout })
     lines.on("line", (line) => {
       try {
-        const message = JSON.parse(line) as JsonRpcMessage
+        const message = requireJsonRpcMessage(JSON.parse(line))
         for (const listener of this.#messageListeners) listener(message)
       } catch {
         this.#emitError(new Error("Codex app-server emitted invalid JSONL"))
@@ -213,8 +213,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       approvalPolicy: policy.approvalPolicy,
       sandbox,
       serviceName: "domovoi",
-    }) as { thread?: { id?: string } }
-    const threadId = result.thread?.id
+    })
+    const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
     return threadId
   }
@@ -231,30 +231,16 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
       if (pageCount >= 50) break
       pageCount += 1
-      const result = await this.#request("model/list", {
+      const page = requireModelPage(await this.#request("model/list", {
         includeHidden: false,
         limit: 100,
         ...(cursor ? { cursor } : {}),
-      }) as {
-        data?: Array<{
-          id?: string
-          model?: string
-          displayName?: string
-          description?: string
-          hidden?: boolean
-          supportedReasoningEfforts?: Array<{ reasoningEffort?: string }>
-          defaultReasoningEffort?: string
-          isDefault?: boolean
-        }>
-        nextCursor?: string | null
-      }
-      for (const candidate of result.data ?? []) {
-        const id = candidate.model ?? candidate.id
+      }))
+      for (const candidate of page.data) {
+        const id = candidate.id
         if (!id || candidate.hidden) continue
         const displayName = candidate.displayName?.trim() || id
         const supportedReasoningEfforts = (candidate.supportedReasoningEfforts ?? [])
-          .map((option) => option.reasoningEffort)
-          .filter((effort): effort is string => typeof effort === "string")
           .map((effort) => effort.trim())
           .filter((effort) => effort.length > 0)
         const requestedDefault = candidate.defaultReasoningEffort?.trim()
@@ -277,7 +263,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
           isDefault: candidate.isDefault ?? false,
         })
       }
-      cursor = result.nextCursor ?? null
+      cursor = page.nextCursor
     } while (cursor)
     return models
   }
@@ -291,10 +277,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
     cwd: string
     runtime: Runtime
   }): Promise<void> {
-    const result = await this.#request("thread/resume", { threadId }) as {
-      thread?: { id?: string }
-    }
-    if (result.thread?.id !== threadId) {
+    const result = await this.#request("thread/resume", { threadId })
+    if (nestedId(result, "thread") !== threadId) {
       throw new Error("Codex did not resume the requested thread")
     }
   }
@@ -308,8 +292,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       threadId,
       expectedTurnId: turnId,
       input: [{ type: "text", text: prompt }],
-    }) as { turnId?: string }
-    if (result.turnId !== turnId) throw new Error("Codex steered a different turn")
+    })
+    if (asRecord(result)?.turnId !== turnId) throw new Error("Codex steered a different turn")
   }
 
   async startTurn({
@@ -331,8 +315,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       model: runtime.model,
       effort: runtime.reasoning,
       ...policy,
-    }) as { turn?: { id?: string } }
-    const turnId = result.turn?.id
+    })
+    const turnId = nestedId(result, "turn")
     if (!turnId) throw new Error("Codex did not return a turn id")
     return turnId
   }
@@ -496,4 +480,116 @@ function captureStderrTail(stream: Readable): () => string {
     if (tail.length > STDERR_TAIL_BYTES) tail = tail.subarray(tail.length - STDERR_TAIL_BYTES)
   })
   return () => tail.toString("utf8").trim()
+}
+
+type CodexModel = {
+  id: string | null | undefined
+  displayName: string | null | undefined
+  description: string | null | undefined
+  hidden: boolean | null | undefined
+  supportedReasoningEfforts: string[] | null | undefined
+  defaultReasoningEffort: string | null | undefined
+  isDefault: boolean | null | undefined
+}
+
+type CodexModelPage = {
+  data: CodexModel[]
+  nextCursor: string | null
+}
+
+function requireJsonRpcMessage(value: unknown): JsonRpcMessage {
+  const message = asRecord(value)
+  if (!message) throw new Error("Codex app-server emitted invalid JSONL")
+  const params = asRecord(message.params)
+  const error = asRecord(message.error)
+  return {
+    ...(typeof message.id === "number" ? { id: message.id } : {}),
+    ...(typeof message.method === "string" ? { method: message.method } : {}),
+    ...(params ? { params } : {}),
+    ...("result" in message ? { result: message.result } : {}),
+    ...(isNullish(message.error)
+      ? {}
+      : {
+          error: {
+            ...(typeof error?.code === "number" ? { code: error.code } : {}),
+            ...(typeof error?.message === "string" ? { message: error.message } : {}),
+          },
+        }),
+  }
+}
+
+function requireModelPage(value: unknown): CodexModelPage {
+  const page = asRecord(value)
+  if (
+    !page
+    || (!isNullish(page.data) && !Array.isArray(page.data))
+    || !isOptionalString(page.nextCursor)
+  ) throw new Error("Codex did not return a model list")
+  const data: CodexModel[] = []
+  for (const candidate of page.data ?? []) {
+    const model = parseCodexModel(candidate)
+    if (model) data.push(model)
+  }
+  return { data, nextCursor: page.nextCursor ?? null }
+}
+
+function parseCodexModel(value: unknown): CodexModel | undefined {
+  const model = asRecord(value)
+  const supportedReasoningEfforts = isNullish(model?.supportedReasoningEfforts)
+    ? undefined
+    : parseReasoningEfforts(model.supportedReasoningEfforts)
+  if (
+    !model
+    || !isOptionalString(model.id)
+    || !isOptionalString(model.model)
+    || !isOptionalString(model.displayName)
+    || !isOptionalString(model.description)
+    || !isOptionalBoolean(model.hidden)
+    || (!isNullish(model.supportedReasoningEfforts) && !supportedReasoningEfforts)
+    || !isOptionalString(model.defaultReasoningEffort)
+    || !isOptionalBoolean(model.isDefault)
+  ) return undefined
+  return {
+    id: model.model ?? model.id,
+    displayName: model.displayName,
+    description: model.description,
+    hidden: model.hidden,
+    supportedReasoningEfforts,
+    defaultReasoningEffort: model.defaultReasoningEffort,
+    isDefault: model.isDefault,
+  }
+}
+
+function parseReasoningEfforts(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const efforts: string[] = []
+  for (const candidate of value) {
+    const option = asRecord(candidate)
+    if (!option) return undefined
+    if (typeof option.reasoningEffort === "string") efforts.push(option.reasoningEffort)
+  }
+  return efforts
+}
+
+function nestedId(value: unknown, key: "thread" | "turn"): string | undefined {
+  const id = asRecord(asRecord(value)?.[key])?.id
+  return typeof id === "string" ? id : undefined
+}
+
+function isOptionalString(value: unknown): value is string | null | undefined {
+  return isNullish(value) || typeof value === "string"
+}
+
+function isOptionalBoolean(value: unknown): value is boolean | null | undefined {
+  return isNullish(value) || typeof value === "boolean"
+}
+
+function isNullish(value: unknown): value is null | undefined {
+  return value === null || value === undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }

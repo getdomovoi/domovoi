@@ -47,7 +47,17 @@ import {
   pairedDeviceSchema,
 } from "./devices.js"
 import { fleetSnapshotSchema } from "./fleet.js"
-import { previewBridgeChannelSchema } from "./preview-bridge.js"
+import {
+  annotationStatusSchema,
+  canonicalBase64DecodedByteLength,
+  commitShaSchema,
+  credentialSchema,
+  forkRequestIdSchema,
+  machineIdSchema,
+  toolKindSchema,
+  toolStatusSchema,
+} from "./identifiers.js"
+import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
 import {
   skillCapabilityManifestSchema,
   skillContentDigestSchema,
@@ -65,6 +75,9 @@ export const daemonAuthenticationErrorCode = -32001 as const
 export const daemonShuttingDownErrorCode = -32002 as const
 export const machineCredentialMissingErrorCode = -32011 as const
 export const projectSwitchConfirmationErrorCode = -32010 as const
+export const protocolVersionMismatchErrorCode = -32012 as const
+export const devicePairingLimitErrorCode = -32013 as const
+export const daemonPersistenceUnavailableErrorCode = -32014 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -237,8 +250,8 @@ const historyEntryBase = {
 }
 
 const historyToolFields = {
-  tool: z.enum(["command", "file-change"]),
-  status: z.enum(["running", "completed", "failed", "declined"]),
+  tool: toolKindSchema,
+  status: toolStatusSchema,
   title: z.string(),
   output: z.string().optional(),
 }
@@ -277,7 +290,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     ...historyEntryBase,
     category: z.literal("checkpoints"),
     label: z.string(),
-    commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+    commit: commitShaSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,
@@ -287,7 +300,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     body: z.string(),
     origin: clientKindSchema,
     artifactId: streamedIdSchema.optional(),
-    status: z.enum(["open", "resolved"]).optional(),
+    status: annotationStatusSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,
@@ -383,6 +396,10 @@ export const auditActorSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("daemon"),
     component: auditActorReferenceSchema.optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("machine"),
+    machineId: machineIdSchema,
   }).strict(),
 ])
 export const auditEntrySchema = z.object({
@@ -552,7 +569,7 @@ export const changedFileEvidenceSchema = z.object({
 })
 
 export const workspaceEvidenceSchema = z.object({
-  baseCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  baseCommit: commitShaSchema,
   diff: z.string().max(maximumSessionEvidenceDiffLength),
   diffTruncated: z.boolean(),
   totalChangedFiles: z.number().int().nonnegative(),
@@ -655,12 +672,33 @@ export const sessionEvidenceSchema = z.object({
   tests: testEvidenceSchema,
 }).strict()
 
-export const helloParamsSchema = z.object({
+// The protocol version every client spoke before the handshake carried one.
+// It is a fixed historical fact, not the daemon's current version, so a
+// versionless client stays correctly classified once this daemon moves on.
+export const versionlessClientProtocol = "0.1.0" as const
+
+const protocolVersionPatternSchema = z.string().regex(/^\d+\.\d+\.\d+$/, "Protocol version must be a three-part semver")
+
+const clientHelloParamsSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema.optional(),
-  clientVersion: z.string().min(1),
+  clientVersion: z.string().min(1).max(64),
+  protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: z.string().min(1).optional(),
-})
+}).strict()
+
+const machineHelloParamsSchema = z.object({
+  client: z.literal("machine"),
+  machineId: machineIdSchema,
+  clientVersion: z.string().min(1).max(64),
+  protocolVersion: protocolVersionPatternSchema.optional(),
+  authToken: z.string().min(1).optional(),
+}).strict()
+
+export const helloParamsSchema = z.discriminatedUnion("client", [
+  clientHelloParamsSchema,
+  machineHelloParamsSchema,
+])
 
 export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
   connectionId: connectionIdSchema.optional(),
@@ -674,10 +712,14 @@ export const artifactAuthorizeParamsSchema = z.object({
   revision: z.number().int().positive(),
   purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
+  parentOrigin: previewParentOriginSchema.optional(),
   client: clientKindSchema,
 }).strict().superRefine((value, context) => {
   if (value.bridgeChannel && value.purpose !== "preview") {
     context.addIssue({ code: "custom", path: ["bridgeChannel"], message: "Only preview access may use the bridge" })
+  }
+  if (value.parentOrigin && !value.bridgeChannel) {
+    context.addIssue({ code: "custom", path: ["parentOrigin"], message: "Only bridged preview access names a parent origin" })
   }
 })
 
@@ -687,17 +729,17 @@ export const artifactAuthorizeResultSchema = z.object({
   revision: z.number().int().positive(),
   purpose: artifactAccessPurposeSchema,
   bridgeChannel: previewBridgeChannelSchema.optional(),
+  parentOrigin: previewParentOriginSchema.optional(),
   expiresAt: z.number().int().positive(),
-  signature: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  signature: credentialSchema,
 }).strict()
 
 const terminalIdSchema = z.string().min(1).max(128)
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
-const terminalClientIdSchema = z.string().min(8).max(128)
 
 export const terminalOwnerSchema = z.object({
   client: clientKindSchema,
-  clientId: terminalClientIdSchema,
+  clientId: clientIdentityIdSchema,
 })
 
 const terminalClientIdentitySchema = terminalOwnerSchema
@@ -798,11 +840,13 @@ export const systemEmergencyStopResultSchema = z.object({
 
 export const systemEmergencyStoppedNotificationSchema = systemEmergencyStopResultSchema
 
+export const maximumSessionPromptCharacters = 262_144
+
 export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
     decision: approvalDecisionSchema,
-    explanation: z.string().trim().min(1).optional(),
+    explanation: z.string().trim().min(1).max(4_096).optional(),
   })
   .superRefine((params, context) => {
     if (params.decision === "deny-explain" && !params.explanation) {
@@ -827,18 +871,18 @@ export const sessionRestartProviderThreadParamsSchema = z.object({
 }).strict()
 
 export const runtimeModelsParamsSchema = z.object({
-  provider: z.string().trim().min(1),
+  provider: z.string().trim().min(1).max(64),
   client: clientKindSchema,
 })
 
 export const projectOpenParamsSchema = z.object({
-  path: z.string().min(1),
+  path: z.string().min(1).max(4_096),
   client: clientKindSchema,
   confirmation: projectSwitchConfirmationSchema.optional(),
 }).strict()
 
 export const sessionCreateParamsSchema = z.object({
-  title: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(512),
   runtime: runtimeSchema,
   client: clientKindSchema,
 })
@@ -846,7 +890,7 @@ export const sessionCreateParamsSchema = z.object({
 export const sessionForkParamsSchema = z.object({
   sessionId: z.string().min(1),
   checkpointId: z.string().min(1),
-  requestId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/),
+  requestId: forkRequestIdSchema,
   runtime: runtimeSchema,
   client: clientKindSchema,
 })
@@ -872,13 +916,13 @@ export const sessionArchiveParamsSchema = z.object({
 
 export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
-  prompt: z.string().trim().min(1),
+  prompt: z.string().trim().min(1).max(maximumSessionPromptCharacters),
   client: clientKindSchema,
 })
 
 export const checkpointCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
-  label: z.string().trim().min(1).optional(),
+  label: z.string().trim().min(1).max(512).optional(),
   client: clientKindSchema,
 })
 
@@ -888,26 +932,14 @@ export const checkpointRestoreParamsSchema = z.object({
   client: clientKindSchema,
 })
 
-const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
-const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-export function canonicalBase64DecodedByteLength(value: string): number | undefined {
-  if (value.length === 0 || value.length % 4 !== 0 || !canonicalBase64Pattern.test(value)) return undefined
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
-  const significantIndex = value.length - padding - 1
-  const trailingValue = base64Alphabet.indexOf(value[significantIndex] ?? "")
-  if (trailingValue < 0 || (padding === 2 && (trailingValue & 0x0f) !== 0) || (padding === 1 && (trailingValue & 0x03) !== 0)) {
-    return undefined
-  }
-  return (value.length / 4) * 3 - padding
-}
+export { canonicalBase64DecodedByteLength } from "./identifiers.js"
 
 export const annotationCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
   artifactId: z.string().min(1),
   variantId: z.string().min(1).optional(),
   anchor: annotationAnchorSchema,
-  body: z.string().trim().min(1),
+  body: z.string().trim().min(1).max(8_192),
   visualContextUpload: z.object({
     artifactRevision: z.number().int().positive(),
     mimeType: z.literal("image/png"),
@@ -926,13 +958,13 @@ export const annotationCreateParamsSchema = z.object({
 
 export const annotationReplyParamsSchema = z.object({
   annotationId: z.string().min(1),
-  body: z.string().trim().min(1),
+  body: z.string().trim().min(1).max(8_192),
   client: clientKindSchema,
 })
 
 export const annotationSetStatusParamsSchema = z.object({
   annotationId: z.string().min(1),
-  status: z.enum(["open", "resolved"]),
+  status: annotationStatusSchema,
   client: clientKindSchema,
 })
 
@@ -1028,12 +1060,15 @@ export const rpcMethods = {
     params: systemEmergencyStopParamsSchema,
     result: systemEmergencyStopResultSchema,
   },
-  "workspace.get": { params: z.object({}), result: workspaceSnapshotSchema },
+  // A diagnostic and test-harness read. Clients receive the same snapshot from
+  // `system.hello` on every connection and resync through it after a reconnect,
+  // so a client with no call to this method is behaving normally, not missing one.
+  "workspace.get": { params: z.object({}).strict(), result: workspaceSnapshotSchema },
   "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
-  "skill.list": { params: z.object({}), result: skillSummariesSchema },
+  "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
   "skill.inventory": { params: z.object({}).strict(), result: skillInventorySchema },
   "skill.read": {
     params: z.object({ id: skillIdSchema }),
@@ -1057,7 +1092,7 @@ export const rpcMethods = {
     result: workspaceSnapshotSchema,
   },
   "provider.secret.list": {
-    params: z.object({}),
+    params: z.object({}).strict(),
     result: providerSecretStatusesSchema,
   },
   "session.usage": {
@@ -1106,6 +1141,85 @@ export const rpcMethods = {
 } as const
 
 export type RpcMethod = keyof typeof rpcMethods
+
+export type RpcMethodMutation = "mutating" | "read-only"
+
+// A method is mutating when handling it is expected to change state the daemon
+// must write to disk. A method that only reads, or that changes live process
+// state a restart would discard anyway, is read-only. The distinction is stated
+// here rather than inferred by each implementation, because a daemon that can no
+// longer persist refuses mutating methods and must answer read-only ones.
+export const rpcMethodMutations = {
+  "system.hello": "read-only",
+  "workspace.get": "read-only",
+  "artifact.authorize": "read-only",
+  "terminal.create": "read-only",
+  "terminal.claim": "read-only",
+  "terminal.input": "read-only",
+  "terminal.resize": "read-only",
+  "terminal.close": "read-only",
+  "fleet.list": "read-only",
+  "transfer.have": "read-only",
+  "device.machineCredential": "read-only",
+  "device.list": "read-only",
+  "session.evidence": "read-only",
+  "session.history": "read-only",
+  "session.usage": "read-only",
+  "audit.query": "read-only",
+  "audit.export": "read-only",
+  "skill.list": "read-only",
+  "skill.inventory": "read-only",
+  "skill.read": "read-only",
+  "runtime.models": "read-only",
+  "provider.secret.list": "read-only",
+  "device.pair": "mutating",
+  "device.claim": "mutating",
+  "device.issueCode": "mutating",
+  "device.saveCredential": "mutating",
+  "device.revoke": "mutating",
+  "device.rotate": "mutating",
+  "session.transfer": "mutating",
+  "transfer.fromRef": "mutating",
+  "transfer.begin": "mutating",
+  "transfer.chunk": "mutating",
+  "system.pauseAll": "mutating",
+  "system.emergencyStop": "mutating",
+  "skill.setEnabled": "mutating",
+  "provider.refresh": "mutating",
+  "annotation.create": "mutating",
+  "annotation.reply": "mutating",
+  "annotation.setStatus": "mutating",
+  "approval.resolve": "mutating",
+  "session.setRuntime": "mutating",
+  "session.restartProviderThread": "mutating",
+  "project.open": "mutating",
+  "session.activate": "mutating",
+  "session.pause": "mutating",
+  "session.archive": "mutating",
+  "session.create": "mutating",
+  "session.fork": "mutating",
+  "session.send": "mutating",
+  "checkpoint.create": "mutating",
+  "checkpoint.restore": "mutating",
+} as const satisfies Record<RpcMethod, RpcMethodMutation>
+
+// Mutating methods that stay reachable while persistence is unavailable,
+// because they exist to reduce what an unpersisted daemon is still doing.
+export const persistenceRecoveryRpcMethods = [
+  "system.pauseAll",
+  "session.pause",
+  "system.emergencyStop",
+] as const satisfies readonly RpcMethod[]
+
+export function isMutatingRpcMethod(method: RpcMethod): boolean {
+  return rpcMethodMutations[method] === "mutating"
+}
+
+export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
+  if (!isMutatingRpcMethod(method)) return false
+  return !(persistenceRecoveryRpcMethods as readonly RpcMethod[]).includes(method)
+}
+
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
 export type RpcRequest = z.infer<typeof rpcRequestSchema>

@@ -3,9 +3,12 @@ import { once } from "node:events"
 import { WebSocketServer } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { demoWorkspace } from "@getdomovoi/protocol"
+
 import { openMachineSocket } from "./machine-socket.js"
 
 const servers: WebSocketServer[] = []
+const peerMachineId = `machine-${"a".repeat(32)}`
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
@@ -35,12 +38,13 @@ async function machineServer(handler: (message: Record<string, unknown>) => unkn
 describe("openMachineSocket", () => {
   it("says hello with the credential before anything else", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
       return { state: "receiving" }
     })
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     await connection.call("transfer.begin", { sessionId: "session-1" })
@@ -48,19 +52,41 @@ describe("openMachineSocket", () => {
 
     expect(machine.seen[0]).toMatchObject({
       method: "system.hello",
-      params: { authToken: "n".repeat(43) },
+      params: {
+        client: "machine",
+        machineId: peerMachineId,
+        clientVersion: "0.0.1",
+        protocolVersion: "0.1.0",
+        authToken: "n".repeat(43),
+      },
     })
     expect(machine.seen[1]).toMatchObject({ method: "transfer.begin" })
   })
 
+  it("refuses a machine that speaks another protocol version", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") {
+        return { ...structuredClone(demoWorkspace), protocolVersion: "9.9.9" }
+      }
+      return { state: "receiving" }
+    })
+
+    await expect(openMachineSocket({
+      endpoint: machine.endpoint,
+      machineId: peerMachineId,
+      credential: "n".repeat(43),
+    })).rejects.toThrow("That machine speaks protocol 9.9.9, this daemon speaks 0.1.0")
+  })
+
   it("answers each call with the reply that carries its id", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
       return { echoed: message.id }
     })
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     const [first, second] = await Promise.all([
@@ -80,7 +106,7 @@ describe("openMachineSocket", () => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number; method?: string }
         if (message.method === "system.hello") {
-          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { machine: {} } }))
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: structuredClone(demoWorkspace) }))
           return
         }
         socket.send(JSON.stringify({
@@ -95,6 +121,7 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
 
@@ -111,7 +138,7 @@ describe("openMachineSocket", () => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number; method?: string }
         if (message.method === "system.hello") {
-          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { machine: {} } }))
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: structuredClone(demoWorkspace) }))
           return
         }
         socket.close()
@@ -122,6 +149,7 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
 
@@ -132,18 +160,20 @@ describe("openMachineSocket", () => {
   it("refuses a plaintext endpoint that leaves this machine", async () => {
     await expect(openMachineSocket({
       endpoint: "ws://studio.tailnet:47831/rpc",
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })).rejects.toThrow("Refusing to authenticate over an unencrypted connection")
   })
 
   it("refuses a call once the connection is closed", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
       return { state: "receiving" }
     })
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     connection.close()
@@ -154,12 +184,13 @@ describe("openMachineSocket", () => {
 
   it("gives up on a call the machine never answers", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
       return undefined
     })
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
       callTimeoutMs: 100,
     })
@@ -171,12 +202,13 @@ describe("openMachineSocket", () => {
 
   it("refuses more calls than it will keep waiting for", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
       return undefined
     })
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
       callTimeoutMs: 5_000,
       maximumPendingCalls: 2,
@@ -194,13 +226,14 @@ describe("openMachineSocket", () => {
 
   it("stops waiting when the transfer is cancelled", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return { machine: { id: "machine-x" } }
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
       return undefined
     })
     const cancelled = new AbortController()
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     const call = connection.call("transfer.chunk", {}, cancelled.signal)
@@ -220,6 +253,7 @@ describe("openMachineSocket", () => {
 
     const opening = openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
       signal: cancelled.signal,
     })
@@ -240,6 +274,7 @@ describe("openMachineSocket", () => {
     const fired: (() => void)[] = []
     const opening = openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
+      machineId: peerMachineId,
       credential: "n".repeat(43),
       scheduler: {
         setTimeout: (callback: () => void) => {

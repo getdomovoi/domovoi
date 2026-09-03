@@ -187,6 +187,33 @@ describe("StdioCodexTransport", () => {
     expect(error).not.toHaveBeenCalled()
   })
 
+  it("narrows app-server lines to JSON-RPC messages and rejects non-object lines", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const message = vi.fn()
+    const error = vi.fn()
+    transport.onMessage(message)
+    transport.onError(error)
+
+    child.stdout.write(`${JSON.stringify({
+      id: 2,
+      method: 5,
+      params: "not-an-object",
+      result: { ok: true },
+    })}\n`)
+    child.stdout.write("[]\n")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(message).toHaveBeenCalledTimes(1)
+    expect(message).toHaveBeenCalledWith({ id: 2, result: { ok: true } })
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Codex app-server emitted invalid JSONL",
+    }))
+  })
+
   it("escalates a stuck close and resolves after the grace period", async () => {
     vi.useFakeTimers()
     try {
@@ -523,6 +550,82 @@ describe("CodexAppServerAdapter", () => {
       }),
     ])
     expect(transport.sent.filter((message) => message.method === "model/list")).toHaveLength(2)
+    await adapter.close()
+  })
+
+  it("skips malformed model rows instead of failing the whole listing", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const listing = adapter.listModels()
+    transport.receive({
+      id: 2,
+      result: {
+        data: [
+          { model: 5, displayName: "Numeric id" },
+          { model: "bad-display", displayName: 7 },
+          { model: "bad-effort", defaultReasoningEffort: 3 },
+          { model: "bad-efforts", supportedReasoningEfforts: [null] },
+          { model: "bad-flag", isDefault: "yes" },
+          {
+            model: "good",
+            displayName: "Good",
+            description: "Kept",
+            supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+            defaultReasoningEffort: "high",
+            isDefault: false,
+          },
+        ],
+        nextCursor: null,
+      },
+    })
+
+    await expect(listing).resolves.toEqual([{
+      provider: "codex",
+      id: "good",
+      displayName: "Good",
+      description: "Kept",
+      supportedReasoningEfforts: ["high"],
+      defaultReasoningEffort: "high",
+      isDefault: false,
+    }])
+    await adapter.close()
+  })
+
+  it("rejects thread and turn results without string identifiers", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
+    transport.receive({ id: 2, result: { thread: { id: 7 } } })
+    await expect(starting).rejects.toThrow("Codex did not return a thread id")
+
+    const turning = adapter.startTurn({
+      threadId: "thread-1",
+      cwd: "/worktree",
+      prompt: "Run the tests",
+      runtime: runtime("build", false),
+    })
+    transport.receive({ id: 3, result: { turn: { id: ["turn-1"] } } })
+    await expect(turning).rejects.toThrow("Codex did not return a turn id")
+
+    const resuming = adapter.resumeThread({
+      threadId: "7",
+      cwd: "/worktree",
+      runtime: runtime("build", false),
+    })
+    transport.receive({ id: 4, result: null })
+    await expect(resuming).rejects.toThrow("Codex did not resume the requested thread")
+
+    const steering = adapter.steerTurn("thread-1", "turn-1", "Focus on the failing test")
+    transport.receive({ id: 5, result: "turn-1" })
+    await expect(steering).rejects.toThrow("Codex steered a different turn")
     await adapter.close()
   })
 

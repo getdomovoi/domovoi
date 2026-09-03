@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream"
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
 import { describe, expect, it, vi } from "vitest"
 
+import { AcpAgentAdapter } from "./acp.js"
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
 import { mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
 import { classifyProviderFailure } from "./provider-failures.js"
@@ -269,6 +270,60 @@ describe("ACP stdio mapping", () => {
     expect(child.kill).toHaveBeenCalledOnce()
     expect(onDisconnect).not.toHaveBeenCalled()
     await expect(peer.startSession("/repo")).rejects.toThrow("not initialized")
+  })
+
+  it("terminates a child that finishes spawning after close() and rejects initialization", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const onDisconnect = vi.fn()
+    const peer = new StdioAcpPeer({
+      definition: CURSOR_ACP_PROVIDER,
+      handlers: {
+        onUpdate: vi.fn(),
+        onPermission: vi.fn(),
+        onDisconnect,
+      },
+      spawnProcess: () => child as unknown as ChildProcessWithoutNullStreams,
+    })
+
+    const initializing = peer.initialize()
+    await peer.close()
+    expect(child.kill).not.toHaveBeenCalled()
+    child.emit("spawn")
+
+    await expect(initializing).rejects.toThrow("closed during initialization")
+    expect(child.kill).toHaveBeenCalledOnce()
+    expect(child.stdout.readableFlowing).toBeNull()
+    expect(onDisconnect).not.toHaveBeenCalled()
+    await expect(peer.startSession("/repo")).rejects.toThrow("not initialized")
+  })
+
+  it("kills the provider CLI when the adapter resets while its peer is still spawning", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0",
+      id,
+      result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const adapter = new AcpAgentAdapter({
+      definition: CURSOR_ACP_PROVIDER,
+      createPeer: (handlers) => new StdioAcpPeer({
+        definition: CURSOR_ACP_PROVIDER,
+        handlers,
+        spawnProcess: () => child as unknown as ChildProcessWithoutNullStreams,
+      }),
+      listModels: async () => [],
+    })
+
+    const staleConnection = adapter.connect()
+    await adapter.resetConnection()
+    child.emit("spawn")
+
+    await expect(staleConnection).rejects.toThrow()
+    expect(child.kill).toHaveBeenCalledOnce()
+    expect(child.stdout.readableFlowing).toBeNull()
   })
 
   it("maps advertised session modes and grouped config values", () => {

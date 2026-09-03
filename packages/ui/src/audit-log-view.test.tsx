@@ -56,6 +56,8 @@ describe("audit log view", () => {
     expect(auditActorLabel({ kind: "provider", provider: "codex", providerThreadId: "thread-1" }))
       .toBe("codex · thread-1")
     expect(auditActorLabel({ kind: "daemon", component: "rpc" })).toBe("daemon · rpc")
+    expect(auditActorLabel({ kind: "machine", machineId: `machine-${"b".repeat(32)}` }))
+      .toBe(`machine · machine-${"b".repeat(32)}`)
   })
 
   it("builds a filesystem-safe deterministic export name", () => {

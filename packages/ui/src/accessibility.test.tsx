@@ -175,8 +175,8 @@ describe("shared workspace accessibility contract", () => {
 
 describe("adaptive accessibility styles", () => {
   it("meets AA contrast for small metadata and warning text in both themes", () => {
-    const lightBackground: Oklch = [0.995, 0.001, 285]
-    const darkBackground: Oklch = [0.165, 0.005, 285]
+    const lightBackground = styles.match(/:root[\s\S]*?--background:\s*oklch\(([^)]+)\)/)?.[1]
+    const darkBackground = styles.match(/\.dark\s*\{[\s\S]*?--background:\s*oklch\(([^)]+)\)/)?.[1]
     const lightFaint = styles.match(/:root[\s\S]*?--faint:\s*oklch\(([^)]+)\)/)?.[1]
     const darkFaint = styles.match(/\.dark\s*\{[\s\S]*?--faint:\s*oklch\(([^)]+)\)/)?.[1]
     const lightWarnForeground = styles.match(/:root[\s\S]*?--warn-fg:\s*oklch\(([^)]+)\)/)?.[1]
@@ -188,19 +188,49 @@ describe("adaptive accessibility styles", () => {
       return value!.trim().split(/\s+/u).map(Number) as unknown as Oklch
     }
 
-    expect(contrast(lightBackground, parse(lightFaint))).toBeGreaterThanOrEqual(4.5)
-    expect(contrast(darkBackground, parse(darkFaint))).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(parse(lightBackground), parse(lightFaint))).toBeGreaterThanOrEqual(4.5)
+    expect(contrast(parse(darkBackground), parse(darkFaint))).toBeGreaterThanOrEqual(4.5)
     expect(contrast(parse(lightWarnForeground), parse(lightWarnBackground))).toBeGreaterThanOrEqual(4.5)
     expect(contrast(parse(darkWarnForeground), parse(darkWarnBackground))).toBeGreaterThanOrEqual(4.5)
   })
 
   it("provides intentional reduced-motion and forced-colors alternatives", () => {
+    const block = (selector: string): string => {
+      const start = styles.indexOf(selector)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const open = styles.indexOf("{", start)
+      let depth = 0
+      for (let index = open; index < styles.length; index += 1) {
+        const character = styles[index]
+        if (character === "{") depth += 1
+        else if (character === "}") {
+          depth -= 1
+          if (depth === 0) return styles.slice(open + 1, index)
+        }
+      }
+      throw new Error(`styles.css never closes the ${selector} block`)
+    }
+
     expect(styles).toContain("--danger-bg: oklch")
     expect(styles).toContain("--danger-fg: oklch")
-    expect(styles).toContain("@media (prefers-reduced-motion: reduce)")
-    expect(styles).toContain("--tw-enter-scale: 1")
-    expect(styles).toContain("--tw-exit-translate-y: 0")
-    expect(styles).toContain("@media (forced-colors: active)")
-    expect(styles).toContain("outline-color: Highlight")
+
+    const reducedMotion = block("@media (prefers-reduced-motion: reduce)")
+    for (const declaration of [
+      "--tw-enter-scale: 1",
+      "--tw-exit-translate-y: 0",
+      "animation-duration: 80ms",
+      "transition-duration: 80ms",
+    ]) {
+      expect(reducedMotion).toContain(declaration)
+    }
+
+    const forcedColors = block("@media (forced-colors: active)")
+    for (const declaration of [
+      "outline: 2px solid Highlight !important",
+      "outline-color: Highlight",
+      "outline-offset: 2px",
+    ]) {
+      expect(forcedColors).toContain(declaration)
+    }
   })
 })

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { isAbsolute, resolve } from "node:path"
 
 import {
   query,
@@ -349,6 +350,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const requestId = ++this.#nextApprovalId
     const command = typeof input.command === "string" ? input.command : toolName
     const reason = context.title ?? context.description ?? context.decisionReason
+    const filePath = typeof input.file_path === "string" ? input.file_path.trim() : undefined
     this.#emit({
       type: "approval-requested",
       requestId,
@@ -357,6 +359,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       itemId: context.toolUseID,
       command,
       cwd: context.blockedPath ?? cwd,
+      ...(filePath ? { path: isAbsolute(filePath) ? filePath : resolve(cwd, filePath) } : {}),
+      ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
     })
     return new Promise((resolve) => {
