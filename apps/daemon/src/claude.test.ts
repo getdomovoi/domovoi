@@ -1,3 +1,5 @@
+import { resolve } from "node:path"
+
 import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
@@ -331,7 +333,10 @@ describe("ClaudeAgentSdkAdapter", () => {
       itemId: "tool-write-relative",
       command: "Write",
       cwd: "/worktree",
-      path: "/worktree/src/generated.ts",
+      // A relative tool path is resolved against the thread cwd, and resolve()
+      // anchors a bare posix root to the current drive on Windows, so the
+      // expectation has to be computed the same way rather than hardcoded.
+      path: resolve("/worktree", "src/generated.ts"),
       reason: "Write a generated file",
     })))
     adapter.resolveApproval(2, "deny")
