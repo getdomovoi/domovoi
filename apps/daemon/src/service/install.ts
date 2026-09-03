@@ -28,7 +28,7 @@ export type ServiceTarget = {
   environment?: ServiceEnvironment
 }
 
-export type CapturedRun = { code: number; stdout: string }
+export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   write: (path: string, contents: string) => Promise<void>
@@ -49,6 +49,33 @@ export type ServiceStatus = {
 // expression that contains a control character is itself hard to review.
 function hasForbiddenCharacter(value: string): boolean {
   return value.includes("\"") || [...value].some((character) => character < " ")
+}
+
+function failureText(error: unknown): string {
+  const failure = error as { message?: unknown; stderr?: unknown; stdout?: unknown } | null
+  return [failure?.message, failure?.stderr, failure?.stdout]
+    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+    .join("\n")
+}
+
+function isMissingServiceFailure(platform: string, error: unknown): boolean {
+  const detail = failureText(error)
+  if (platform === "linux") {
+    return /^Unit not loaded$/i.test(detail)
+      || /unit(?: file)?\s+domovoid\.service.*(?:not loaded|not found|does not exist|could not be found)/i.test(detail)
+  }
+  if (platform === "darwin") {
+    return /(?:could not find|no such) service.*sh\.domovoi\.domovoid/i.test(detail)
+  }
+  if (platform === "win32") {
+    return /(?:cannot find the (?:file|task) specified|task.*does not exist)/i.test(detail)
+  }
+  return false
+}
+
+function captureFailure(command: string, result: CapturedRun): Error {
+  const detail = result.stderr?.trim()
+  return new Error(detail || `${command} exited with code ${result.code}`)
 }
 
 function assertHome(home: string | undefined): string {
@@ -231,9 +258,12 @@ export async function removeService(
   for (const { command, args } of plan.commands) {
     try {
       await effects.run(command, args)
-    } catch {
+    } catch (error) {
       // A manager that refuses to stop a service it does not know about must
-      // not keep the file from going away.
+      // not keep the file from going away. Every other failure must preserve
+      // the unit: deleting it while a live manager still owns the service
+      // strands a process and falsely reports a successful removal.
+      if (!isMissingServiceFailure(target.platform, error)) throw error
     }
   }
   if (plan.kind === "file" && (await effects.exists(plan.path))) await effects.remove(plan.path)
@@ -248,6 +278,7 @@ export async function serviceStatus(
     const path = unitPath(target.home)
     const installed = await effects.exists(path)
     const active = await effects.capture("systemctl", ["--user", "is-active", unitFile])
+    if (![0, 3, 4].includes(active.code)) throw captureFailure("systemctl", active)
     const state = active.stdout.trim() === "" ? "unknown" : active.stdout.trim()
     return {
       installed,
@@ -263,6 +294,9 @@ export async function serviceStatus(
       "print",
       `gui/${assertUid(target.uid)}/${agentLabel}`,
     ])
+    if (printed.code !== 0 && !isMissingServiceFailure("darwin", printed)) {
+      throw captureFailure("launchctl", printed)
+    }
     return {
       installed,
       running: printed.code === 0,
@@ -274,6 +308,9 @@ export async function serviceStatus(
 
   if (target.platform === "win32") {
     const query = await effects.capture("schtasks", ["/query", "/tn", displayName, "/fo", "list"])
+    if (query.code !== 0 && !isMissingServiceFailure("win32", query)) {
+      throw captureFailure("schtasks", query)
+    }
     const running = /status:\s*running/i.test(query.stdout)
     return {
       installed: query.code === 0,
@@ -372,10 +409,14 @@ export function nodeServiceEffects(): ServiceEffects {
     capture: async (command, args) => {
       const { execFile } = await import("node:child_process")
       return new Promise<CapturedRun>((resolve) => {
-        execFile(command, args, (error, stdout) => {
+        execFile(command, args, (error, stdout, stderr) => {
           const failure = error as (Error & { code?: unknown }) | null
           const code = typeof failure?.code === "number" ? failure.code : failure ? 1 : 0
-          resolve({ code, stdout: stdout.toString() })
+          resolve({
+            code,
+            stdout: stdout.toString(),
+            stderr: stderr.toString() || failure?.message || "",
+          })
         })
       })
     },
