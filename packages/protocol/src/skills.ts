@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { clientIdentityIdSchema, clientKindSchema } from "./identifiers.js"
+
 export const skillScopeSchema = z.enum(["user", "project", "system"])
 export const skillSourceSchema = z.enum(["domovoi", "agents", "kilo", "claude", "codex"])
 export const skillIdSchema = z.string().regex(/^skill-[a-f0-9]{12}$/)
@@ -159,8 +161,6 @@ export function skillInventoryEntryFromSummary(skill: SkillSummary): SkillInvent
   })
 }
 
-const skillReviewClientSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
-
 export const skillEnablementReviewSchema = z.object({
   projectId: z.string().trim().min(1).max(512),
   skillId: skillIdSchema,
@@ -169,8 +169,8 @@ export const skillEnablementReviewSchema = z.object({
   manifest: skillCapabilityManifestSchema,
   reviewedAt: z.string().datetime({ offset: true }),
   reviewedBy: z.object({
-    client: skillReviewClientSchema,
-    clientId: z.string().trim().min(1).max(128).optional(),
+    client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
   }).strict(),
 }).strict()
 

@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { commitShaSchema, machineIdSchema } from "./identifiers.js"
 import { clientKindSchema } from "./schema.js"
 import { transferMethodSchema } from "./transfer.js"
 import {
@@ -16,21 +17,21 @@ export const transferIdSchema = z.string().regex(/^transfer-[0-9a-f]{32}$/)
 // transfer it will not take rather than discovering that halfway through.
 export const transferBeginParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
-  sourceMachineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+  sourceMachineId: machineIdSchema,
   method: transferMethodSchema,
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   totalBytes: z.number().int().min(1).max(maximumTransferBytes),
   client: clientKindSchema,
   // Named when the bundle starts from a commit the target reported holding, so
   // a move carries what is missing rather than the whole history again.
-  sinceCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  sinceCommit: commitShaSchema.optional(),
 }).strict()
 
 export const transferBeginResultSchema = z.object({
   transferId: transferIdSchema,
   // What the target already has for this session, if anything. A source can
   // bundle from it instead of from the beginning.
-  haveCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  haveCommit: commitShaSchema.optional(),
 }).strict()
 
 // Asked before a bundle is built: what does the target already have for this
@@ -41,7 +42,7 @@ export const transferHaveParamsSchema = z.object({
 }).strict()
 
 export const transferHaveResultSchema = z.object({
-  commit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  commit: commitShaSchema.optional(),
 }).strict()
 
 export const transferChunkParamsSchema = transferChunkSchema.extend({
@@ -56,7 +57,7 @@ export const transferChunkResultSchema = z.discriminatedUnion("state", [
   z.object({
     state: z.literal("restored"),
     workspacePath: z.string().min(1),
-    checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
+    checkpointCommit: commitShaSchema,
   }).strict(),
   z.object({
     state: z.literal("refused"),
