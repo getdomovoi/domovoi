@@ -520,6 +520,89 @@ describe("GitWorkspaceService", () => {
       .resolves.toMatchObject({ totalChangedFiles: 1 })
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
+
+  it("reads evidence and checkpoints a worktree whose status exceeds Node's default output buffer", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-large-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    const names = Array.from(
+      { length: 7_200 },
+      (_, index) => `untracked-${String(index).padStart(5, "0")}-${"x".repeat(144)}`,
+    )
+    const statusBytes = names.reduce((total, name) => total + Buffer.byteLength(`? ${name}\0`), 0)
+    expect(statusBytes).toBeGreaterThan(1_024 * 1_024)
+    for (let start = 0; start < names.length; start += 500) {
+      await Promise.all(
+        names.slice(start, start + 500).map((name) => writeFile(join(repositoryPath, name), "")),
+      )
+    }
+
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    await expect(service.evidence(repositoryPath)).resolves.toMatchObject({
+      totalChangedFiles: names.length,
+      filesTruncated: true,
+    })
+    const checkpoint = await service.checkpoint(repositoryPath, "large")
+    expect(checkpoint.changedFiles).toHaveLength(names.length)
+    expect((await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(checkpoint.commit)
+  })
+
+  it("restores the index when a checkpoint fails after staging", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-rollback-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C",
+      repositoryPath,
+      "-c",
+      "user.name=Test User",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ])
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+    await rm(join(repositoryPath, "remove.txt"))
+    await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")
+    const observe = async () => ({
+      head: (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim(),
+      staged: (await execute("git", ["-C", repositoryPath, "diff", "--cached", "--name-only"])).stdout,
+      status: (await execute("git", ["-C", repositoryPath, "status", "--porcelain"])).stdout,
+      tracked: await readFile(join(repositoryPath, "tracked.txt"), "utf8"),
+      fresh: await readFile(join(repositoryPath, "fresh.txt"), "utf8"),
+    })
+    const before = await observe()
+    expect(before.staged).toBe("")
+
+    const controller = new AbortController()
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterCheckpointStaging: () => controller.abort(new Error("checkpoint timed out")),
+    })
+    await expect(service.checkpoint(repositoryPath, "interrupted", controller.signal))
+      .rejects.toThrow("checkpoint timed out")
+
+    expect(await observe()).toEqual(before)
+  })
 })
 
 describe("GitWorkspaceService session bundles", () => {

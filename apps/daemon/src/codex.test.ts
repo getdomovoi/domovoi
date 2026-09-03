@@ -13,6 +13,7 @@ import {
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
+import { classifyProviderFailure } from "./provider-failures.js"
 
 class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -134,6 +135,43 @@ describe("StdioCodexTransport", () => {
     expect(error).toHaveBeenCalledWith(expect.objectContaining({
       message: "Codex app-server exited with code 1",
     }))
+  })
+
+  it("carries the child's final stderr into the exit error", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.stderr.write("token=super-secret\nNot logged in\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("exit", 1, null)
+
+    expect(error).toHaveBeenCalledTimes(1)
+    const message = (error.mock.calls[0]?.[0] as Error).message
+    expect(message).toBe("Codex app-server exited with code 1: token=[REDACTED]\nNot logged in")
+    expect(classifyProviderFailure(new Error(message)).kind).toBe("authentication-expired")
+  })
+
+  it("keeps only the last 16 KiB of stderr in the exit error", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.stderr.write(`${"x".repeat(20_000)}\n`)
+    child.stderr.write("Not logged in\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("exit", null, "SIGABRT")
+
+    const message = (error.mock.calls[0]?.[0] as Error).message
+    expect(message.startsWith("Codex app-server exited from signal SIGABRT: ")).toBe(true)
+    expect(message.endsWith("Not logged in")).toBe(true)
+    expect(message.length).toBeLessThanOrEqual(16_384 + "Codex app-server exited from signal SIGABRT: ".length)
   })
 
   it("does not report an intentional child exit", async () => {

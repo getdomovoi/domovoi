@@ -137,6 +137,7 @@ export function SkillBrowser({
   onSetSkillEnabled,
   onReviewSkill,
   onRetry,
+  requestedSkillId,
 }: {
   skills: readonly SkillSummary[]
   inventorySources?: readonly SkillInventorySource[]
@@ -145,6 +146,7 @@ export function SkillBrowser({
   onBack: () => void
   onOpenAudit: () => void
   onReadSkill: (id: string) => Promise<SkillDocument>
+  requestedSkillId?: string | undefined
   projectId: string | undefined
   enablements: readonly SkillEnablementReview[]
   onSetSkillEnabled: (input: {
@@ -175,6 +177,14 @@ export function SkillBrowser({
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
+  // The launcher names a skill before this pane has rendered, so the request
+  // is honoured once the skill it names has been discovered.
+  useEffect(() => {
+    if (requestedSkillId && skills.some((skill) => skill.id === requestedSkillId)) {
+      setSelectedId(requestedSkillId)
+    }
+  }, [requestedSkillId, skills])
+
   const selected = skills.find((skill) => skill.id === selectedId) ?? filtered[0] ?? skills[0]
   const selectedReview = selected && projectId
     ? enablements.find((review) => review.projectId === projectId && review.skillId === selected.id)
@@ -418,7 +428,7 @@ export function SkillBrowser({
                     <p className="m-0 text-[11px] text-muted-foreground">Unknown until this machine inventory is fetched.</p>
                   )}
                   {inventorySources.length === 1 ? (
-                    <p className="m-0 text-[10.5px] text-muted-foreground">Other machines remain unknown until their daemon inventory is provided.</p>
+                    <p className="m-0 text-[10.5px] text-muted-foreground">No other paired machine reports the skills capability.</p>
                   ) : null}
                 </CardContent>
               </Card>
