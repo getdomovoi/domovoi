@@ -47,6 +47,23 @@ describe("captureAnnotationPng", () => {
     }, { x: 0, y: 0, width: 320, height: 120 })).rejects.toThrow("Annotation capture exceeds byte limit")
   })
 
+  it("rejects bounds that are not a rect object before reading them", async () => {
+    const capturePage = vi.fn()
+    for (const rect of [
+      null,
+      undefined,
+      "rect",
+      42,
+      [0, 0, 320, 120],
+      { x: 0, y: 0, width: 320 },
+      { x: 0, y: 0, width: 320, height: "120" },
+      { x: 0, y: 0, width: 320, height: 2049 },
+    ]) {
+      await expect(captureAnnotationPng({ capturePage }, rect)).rejects.toThrow("Invalid annotation capture bounds")
+    }
+    expect(capturePage).not.toHaveBeenCalled()
+  })
+
   it("downscales HiDPI physical captures without upscaling", async () => {
     const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(24)])
     const resize = vi.fn(({ width, height }: { width: number; height: number }) => ({

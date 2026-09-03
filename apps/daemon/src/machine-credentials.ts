@@ -1,7 +1,7 @@
 import { createRequire } from "node:module"
 
-const machineIdPattern = /^machine-[0-9a-f]{32}$/
-const credentialPattern = /^[A-Za-z0-9_-]{43}$/
+import { credentialSchema, machineIdSchema } from "@getdomovoi/protocol"
+
 const keychainService = "domovoi.machine-credential"
 // The index lives in the keychain beside the credentials, so the daemon still
 // knows which machines it holds after a restart.
@@ -52,7 +52,7 @@ export class MachineCredentialStore implements MachineCredentials {
       // Anything but a machine identity means the index is not ours to trust,
       // so it is discarded rather than partly believed.
       const identities = parsed.filter(
-        (id): id is string => typeof id === "string" && machineIdPattern.test(id),
+        (id): id is string => typeof id === "string" && machineIdSchema.safeParse(id).success,
       )
       return identities.length === parsed.length ? identities : []
     } catch {
@@ -70,7 +70,7 @@ export class MachineCredentialStore implements MachineCredentials {
 
   save(machineId: string, credential: string): void {
     requireMachineId(machineId)
-    if (!credentialPattern.test(credential)) throw new Error("Machine credential is malformed")
+    if (!credentialSchema.safeParse(credential).success) throw new Error("Machine credential is malformed")
     try {
       this.#keyring.set(machineId, credential)
     } catch {
@@ -104,7 +104,7 @@ export class MachineCredentialStore implements MachineCredentials {
 }
 
 function requireMachineId(machineId: string): void {
-  if (!machineIdPattern.test(machineId)) throw new Error("Machine identity is malformed")
+  if (!machineIdSchema.safeParse(machineId).success) throw new Error("Machine identity is malformed")
 }
 
 type KeyringEntry = {

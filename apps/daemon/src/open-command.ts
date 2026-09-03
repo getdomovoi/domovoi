@@ -8,7 +8,7 @@ export type OpenCommandDependencies = {
   stderr: (text: string) => void
 }
 
-const usage = "Usage: domovoi open [path]\n"
+const usage = "Usage: domovoid open [path]\n"
 
 export async function runOpenCommand(
   args: readonly string[],
