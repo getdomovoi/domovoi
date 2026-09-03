@@ -30,6 +30,9 @@ describe("agentPromptWithHandoff", () => {
       handoff: "Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6.",
       worktree: "/home/david/.domovoi/worktrees/session-billing",
     })
+    expect(JSON.parse(serialized!).artifacts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "plan" }),
+    ]))
     expect(serialized!.length).toBeLessThanOrEqual(24_000)
   })
 

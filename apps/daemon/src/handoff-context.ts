@@ -36,8 +36,12 @@ export function agentPromptWithHandoff(
     .filter((item) => item.kind === "user" || item.kind === "assistant" || item.kind === "system")
     .slice(-maximumThreadItems)
     .map((item) => ({ kind: item.kind, body: truncate(item.body, 2_000) }))
+  const hasWorkingPlan = snapshot.workingPlans.some((plan) => plan.sessionId === sessionId)
   const artifacts = snapshot.artifacts
     .filter((artifact) => artifact.sessionId === sessionId)
+    // Structured plan state is delivered separately. Replaying an older plan
+    // artifact beside it would give the next provider two competing plans.
+    .filter((artifact) => !hasWorkingPlan || artifact.type !== "plan")
     .map((artifact) => ({
       id: artifact.id,
       title: artifact.title,

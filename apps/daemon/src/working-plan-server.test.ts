@@ -51,7 +51,13 @@ async function startedDaemon(
     close: vi.fn(),
   } satisfies WorkspaceStore
   const audit = auditLog()
-  const daemon = new DomovoiDaemon({ port: 0, store, agents, auditLog: audit.log })
+  const daemon = new DomovoiDaemon({
+    port: 0,
+    store,
+    agents,
+    auditLog: audit.log,
+    artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+  })
   running.push(daemon)
   const address = await daemon.start()
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
@@ -245,6 +251,13 @@ describe("working plan RPC", () => {
         { id: "step-inspect", text: "Inspect", status: "in-progress" },
         { id: "step-implement", text: "Implement", status: "pending" },
       ],
+      providerSync: {
+        provider: "claude-code",
+        model: "sonnet-4.6",
+        providerThreadId: "thread-provider-plan",
+        structureRevision: 1,
+        deliveredAt: "2026-09-03T19:00:00.000Z",
+      },
       createdAt: "2026-09-03T19:00:00.000Z",
       updatedAt: "2026-09-03T19:00:00.000Z",
     }]
@@ -389,6 +402,150 @@ describe("working plan RPC", () => {
       revision: 2,
       content: "# Working plan\n\n1. Inspect\n2. Run TOKEN=[REDACTED]\n",
     })
+    context.socket.close()
+  })
+
+  it("applies and delivers a queued edit only after the next turn starts", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/plan-boundary"
+    session.providerThreadId = "thread-plan-boundary"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = [{
+      sessionId: session.id,
+      revision: 2,
+      structureRevision: 1,
+      steps: [
+        { id: "step-inspect", text: "Inspect", status: "completed" },
+        { id: "step-implement", text: "Implement", status: "pending" },
+      ],
+      providerSync: {
+        provider: "claude-code",
+        model: "sonnet-4.6",
+        providerThreadId: "thread-plan-boundary",
+        structureRevision: 1,
+        deliveredAt: "2026-09-03T19:00:00.000Z",
+      },
+      pendingEdit: {
+        id: "edit-plan-boundary",
+        basedOnStructureRevision: 1,
+        baseSteps: [
+          { id: "step-inspect", text: "Inspect" },
+          { id: "step-implement", text: "Implement" },
+        ],
+        draftSteps: [
+          { id: "step-inspect", text: "Inspect" },
+          { id: "step-implement", text: "Implement carefully" },
+        ],
+        status: "queued",
+        submittedAt: "2026-09-03T19:30:00.000Z",
+        submittedBy: {
+          client: "desktop",
+          clientId: "desktop-plan-author",
+          connectionId: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:30:00.000Z",
+    }]
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    snapshot.artifacts.push({
+      id: `plan-${session.id}`,
+      sessionId: session.id,
+      title: "Working plan",
+      type: "plan",
+      revision: 1,
+      mimeType: "text/markdown",
+      content: "# Working plan\n\n1. Inspect\n2. Implement\n",
+    })
+    const startTurn = vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => (
+      "turn-plan-boundary"
+    ))
+    startTurn.mockRejectedValueOnce(new Error("provider rejected the turn"))
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      startTurn,
+      steerTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { "claude-code": agent })
+
+    const refused = await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue",
+      client: "desktop",
+    })
+    expect(refused).toMatchObject({ error: { code: -32603 } })
+    expect(context.durable().workingPlans[0]).toMatchObject({
+      revision: 2,
+      structureRevision: 1,
+      pendingEdit: { id: "edit-plan-boundary", status: "queued" },
+    })
+    expect(context.durable().artifacts.find(
+      (artifact) => artifact.id === `plan-${session.id}`,
+    )?.revision).toBe(1)
+
+    const response = await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue",
+      client: "desktop",
+    })
+
+    expect(response).not.toHaveProperty("error")
+    expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-plan-boundary",
+      prompt: expect.stringContaining('"text":"Implement carefully"'),
+    }))
+    const sentPrompt = agent.startTurn.mock.calls[1]![0].prompt
+    expect(sentPrompt).toContain("<domovoi_working_plan>")
+    expect(sentPrompt).not.toContain('"draftSteps"')
+    expect(sentPrompt).toContain("Continue")
+    expect(response.result.workingPlans[0]).toMatchObject({
+      revision: 4,
+      structureRevision: 2,
+      steps: [
+        { id: "step-inspect", text: "Inspect", status: "completed" },
+        { id: "step-implement", text: "Implement carefully", status: "pending" },
+      ],
+      providerSync: {
+        provider: "claude-code",
+        model: "sonnet-4.6",
+        providerThreadId: "thread-plan-boundary",
+        structureRevision: 2,
+        deliveredAt: expect.any(String),
+      },
+    })
+    expect(response.result.workingPlans[0]).not.toHaveProperty("pendingEdit")
+    expect(response.result.artifacts.find(
+      (artifact) => artifact.id === `plan-${session.id}`,
+    )).toMatchObject({
+      revision: 2,
+      content: "# Working plan\n\n1. Inspect\n2. Implement carefully\n",
+    })
+    expect(context.audit).toHaveBeenCalledWith(expect.objectContaining({
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "desktop-plan-author",
+        connectionId: "11111111-1111-4111-8111-111111111111",
+      },
+      action: "plan.edit-finalized",
+      outcome: "succeeded",
+      target: "edit-plan-boundary",
+      detail: expect.stringContaining("structure=2"),
+    }))
     context.socket.close()
   })
 })

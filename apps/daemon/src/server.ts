@@ -143,10 +143,14 @@ import {
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
 import {
+  agentPromptWithWorkingPlan,
   discardPendingWorkingPlanEdit,
+  finalizePendingWorkingPlanEdit,
+  markWorkingPlanDelivered,
   submitWorkingPlanEdit,
   syncWorkingPlanArtifact,
   updateWorkingPlanFromProvider,
+  workingPlanNeedsProviderDelivery,
   WorkingPlanMutationError,
 } from "./working-plan.js"
 
@@ -4157,10 +4161,33 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, violation)
           return
         }
+        const currentPlanIndex = this.#snapshot.workingPlans.findIndex(
+          (plan) => plan.sessionId === session.id,
+        )
+        const currentPlan = currentPlanIndex === -1
+          ? undefined
+          : this.#snapshot.workingPlans[currentPlanIndex]
+        const boundaryMutation = !session.activeTurnId
+          && currentPlan?.pendingEdit?.status === "queued"
+          ? finalizePendingWorkingPlanEdit(currentPlan, new Date().toISOString())
+          : undefined
+        const boundaryPlan = boundaryMutation?.plan ?? currentPlan
+        const providerTarget = {
+          provider: session.runtime.provider,
+          model: session.runtime.model,
+          providerThreadId: session.providerThreadId,
+        }
+        const deliversPlan = !session.activeTurnId
+          && boundaryPlan !== undefined
+          && workingPlanNeedsProviderDelivery(boundaryPlan, providerTarget)
+        const handoffPrompt = agentPromptWithHandoff(this.#snapshot, session.id, params.prompt)
+        const turnPrompt = deliversPlan
+          ? agentPromptWithWorkingPlan(boundaryPlan, handoffPrompt)
+          : handoffPrompt
         const preparedTurn = await prepareAnnotationTurn(
           this.#snapshot,
           session.id,
-          agentPromptWithHandoff(this.#snapshot, session.id, params.prompt),
+          turnPrompt,
           registeredAgent.capabilities,
           this.#annotationVisualContext,
         )
@@ -4270,6 +4297,56 @@ export class DomovoiDaemon {
         if (!currentSession) {
           this.#error(socket, request.id, invalidParams, "Session no longer exists")
           return
+        }
+        if (boundaryPlan) {
+          let committedPlan = boundaryPlan
+          if (deliversPlan) {
+            committedPlan = markWorkingPlanDelivered(boundaryPlan, providerTarget, createdAt)
+            this.#appendAudit({
+              actor: { kind: "daemon", component: "working-plan" },
+              action: "provider.plan-delivered",
+              outcome: "succeeded",
+              sessionId: currentSession.id,
+              ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+              target: currentSession.id,
+              detail: [
+                `provider=${providerTarget.provider}`,
+                `model=${providerTarget.model}`,
+                `revision=${committedPlan.revision}`,
+                `structure=${committedPlan.structureRevision}`,
+              ].join(" "),
+            })
+          }
+          if (currentPlanIndex === -1) this.#snapshot.workingPlans.push(committedPlan)
+          else this.#snapshot.workingPlans[currentPlanIndex] = committedPlan
+          if (boundaryMutation?.structureChanged) {
+            syncWorkingPlanArtifact(
+              this.#snapshot.artifacts,
+              this.#snapshot.annotations,
+              committedPlan,
+              true,
+            )
+          }
+          if (boundaryMutation?.disposition) {
+            const submittedBy = currentPlan?.pendingEdit?.submittedBy
+            this.#appendAudit({
+              actor: submittedBy
+                ? { kind: "client", ...submittedBy }
+                : { kind: "daemon", component: "working-plan" },
+              action: "plan.edit-finalized",
+              outcome: boundaryMutation.disposition === "applied" ? "succeeded" : "failed",
+              sessionId: currentSession.id,
+              ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+              ...(currentPlan?.pendingEdit?.id
+                ? { target: currentPlan.pendingEdit.id }
+                : {}),
+              detail: [
+                `disposition=${boundaryMutation.disposition}`,
+                `revision=${committedPlan.revision}`,
+                `structure=${committedPlan.structureRevision}`,
+              ].join(" "),
+            })
+          }
         }
         this.#snapshot.thread.push({
           id: `user-${randomUUID()}`,
