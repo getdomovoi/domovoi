@@ -15,7 +15,7 @@ overrides:
 
 catalog:
   "@vitest/coverage-v8": ^4.1.11
-  typescript: ^5.9.2
+  typescript: ^7.0.2
   vite: ^8.2.2
   vitest: ^4.1.11
   zod: ^4.4.3
