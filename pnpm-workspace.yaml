@@ -2,16 +2,15 @@ packages:
   - apps/*
   - packages/*
 
-onlyBuiltDependencies:
-  - electron
-  - esbuild
-
 allowBuilds:
   electron: true
   esbuild: true
   node-pty: true
 
 overrides:
+  # Pins every consumer to one esbuild copy. electron-vite 4.0.1 declares ^0.25.5 and
+  # tsup 8.5.1 declares ^0.27.0, so neither admits 0.28.x. Remove the override once both
+  # declare ranges that include 0.28.
   esbuild: 0.28.2
 
 catalog:

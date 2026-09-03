@@ -8,6 +8,8 @@ updates:
       day: monday
       time: "09:00"
       timezone: America/Boise
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       production-minor-and-patch:
@@ -28,6 +30,8 @@ updates:
       day: monday
       time: "09:30"
       timezone: America/Boise
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       actions-minor-and-patch:
