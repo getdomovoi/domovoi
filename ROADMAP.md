@@ -172,12 +172,12 @@ Every ledger entry is now merged.
   - Deferred past the alpha on 2026-09-03. Per-session totals already ship; a windowed sum adds
     timestamp migration, window semantics, an aggregation RPC, and client work for an analytics
     readout rather than for the alpha workflow.
-- [ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
+- [x] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
-  - Written and verified on `feat/daemon-provider-limits`, tip `b63eda8`, but not merged. `main`
-    does not classify `context-window-exceeded`, so this line stays open until that branch lands.
-  - A failure classifier exists, but the Claude adapter drops the failure reason and provider
-    stderr is discarded, so authentication and rate-limit failures surface as unknown/retry.
+  - The Claude adapter keeps a bounded, redacted tail of provider stderr and preserves the
+    reported error, so each condition reaches a client as its own classified failure rather than
+    unknown/retry. Outgrowing the context window is its own `context-window-exceeded` kind, which
+    is not retryable, so no client offers a retry that cannot succeed.
 
 ### Permissions and auditability
 
@@ -300,6 +300,17 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - A person's unaccepted draft never reaches a provider: only canonical steps are delivered.
 - [x] Per-file diff review with revert in the Changes tab
 - [ ] Composer skill chip
+  - Waiting on the prompt composer's budget decision. The chip has to state what actually reached
+    the provider, so whether a selected skill can be dropped silently decides what the chip can
+    honestly claim. Design position agreed on 2026-09-03: a turn selection is a subset of what the
+    project has already reviewed and enabled, never a second path to running unreviewed code.
+- [ ] Give the prompt composer a total budget and a documented drop order
+  - `apps/daemon/src/prompt-composer.ts` now assembles skills, annotations, working plan, handoff,
+    and user text in one place, and `apps/daemon/src/prompt-composition.golden.test.ts` pins all
+    sixteen section combinations byte for byte. Each section still truncates against its own limit
+    with no knowledge of the others, so five sections that each pass can still compose a prompt
+    none of them thought was too large. This is a deliberate behaviour change and needs its own
+    tests; do not fold it into a refactor.
 - [x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
   280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
   - Sizes live as tokens in `packages/ui/src/styles.css` with a test comparing them against the
@@ -312,11 +323,11 @@ The desktop handoff specifies these; `main` does not implement them yet.
     per-line treatment, a prompt span and a left-border highlight for command, pass, and fail rows,
     is not ported and should not be: the pane renders a real PTY through xterm, so classifying a
     line as a command or a failure would invent structure the stream does not carry.
-- [ ] Rework the Changes dock as per-file accordions from the current design revision
-  - The same live revision that restyled the terminal also replaced the file list plus separate
-    diff body with expandable per-file rows carrying a caret, a hunk header, and inline diff lines,
-    plus an Expand all control. Found on 2026-09-03 by diffing the live desktop file against the
-    tracked handoff; it is a design change nobody had recorded.
+- [x] Rework the Changes dock as per-file accordions from the current design revision
+  - Each file row opens its own diff, with Expand all and Collapse all on the section. The
+    protocol carries one worktree diff rather than a diff per file, so the client partitions that
+    text on its `diff --git` headers. A file with nothing to show says why, naming a truncated
+    transport bound or a binary file, rather than opening empty.
 - [x] Prompt-editor modal with prose and Markdown modes, inserts, and draft statistics
 
 ## Goal 2: add private machine-fleet operation
