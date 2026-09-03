@@ -4,7 +4,7 @@ import { afterEach, expect, it } from "vitest"
 
 import type { SessionUsage } from "@getdomovoi/protocol"
 
-import { AppBar, SessionUsageSummary } from "./workspace-shell.js"
+import { AppBar, SessionUsageFooter, SessionUsageSummary } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -95,4 +95,26 @@ it("leaves the app bar readout out until a session reports usage", () => {
   render(<AppBar {...appBarProps()} usage={null} />)
 
   expect(screen.queryByRole("button", { name: /tokens/u })).toBeNull()
+})
+
+it("puts cost and context in the inspector footer", () => {
+  render(<SessionUsageFooter usage={usage({ contextTokens: 128_000, contextWindowTokens: 200_000 })} />)
+
+  const footer = screen.getByRole("status", { name: "Session cost and context" })
+  expect(footer.textContent).toContain("128k ctx")
+  expect(footer.textContent).toContain("$0.00")
+  expect(screen.getByTitle("128k of 200k context tokens")).toBeTruthy()
+})
+
+it("shows cost alone until a provider reports the context window", () => {
+  render(<SessionUsageFooter usage={usage()} />)
+
+  const footer = screen.getByRole("status", { name: "Session cost and context" })
+  expect(footer.textContent).not.toContain("ctx")
+})
+
+it("stays out of the footer entirely when no turn has been recorded", () => {
+  render(<SessionUsageFooter usage={null} />)
+
+  expect(screen.queryByRole("status", { name: "Session cost and context" })).toBeNull()
 })

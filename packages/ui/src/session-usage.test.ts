@@ -4,6 +4,8 @@ import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   formatTokenCount,
+  sessionContextReadout,
+  sessionContextShare,
   sessionUsageFetchKey,
   formatUsageCost,
   sessionUsageCostNote,
@@ -74,4 +76,17 @@ describe("session usage refresh", () => {
     expect(sessionUsageFetchKey(snapshot("turn-7"))).toBe("session-1:turn-7")
     expect(sessionUsageFetchKey(snapshot(null))).not.toBe(sessionUsageFetchKey(snapshot("turn-7")))
   })
+})
+
+it("reads context out only when the provider reported both numbers", () => {
+  expect(sessionContextReadout({ contextTokens: 128_000, contextWindowTokens: 200_000 })).toBe("128k ctx")
+  expect(sessionContextReadout({ contextTokens: 128_000 })).toBeUndefined()
+  expect(sessionContextReadout({ contextWindowTokens: 200_000 })).toBeUndefined()
+  expect(sessionContextReadout({})).toBeUndefined()
+})
+
+it("names the window the occupancy was measured against", () => {
+  expect(sessionContextShare({ contextTokens: 128_000, contextWindowTokens: 200_000 }))
+    .toBe("128k of 200k context tokens")
+  expect(sessionContextShare({ contextTokens: 128_000 })).toBeUndefined()
 })
