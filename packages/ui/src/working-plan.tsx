@@ -54,7 +54,6 @@ export function WorkingPlanCard({
   if (!plan) return null
   const stepCount = plan.steps.length
   const baseSteps = plan.steps.map((step) => ({ id: step.id, text: step.text }))
-  const draft = edit?.draft ?? null
   const editing = edit !== null
   const canEdit = Boolean(onEditPlan) && !readOnly
   const canDiscard = Boolean(onDiscardEdit) && !readOnly
