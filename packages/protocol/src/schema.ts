@@ -391,7 +391,7 @@ export const workingPlanClientAttributionSchema = z.object({
 
 export const pendingWorkingPlanEditSchema = z.object({
   id: workingPlanReferenceSchema,
-  basedOnStructureRevision: z.number().int().positive(),
+  basedOnStructureRevision: z.number().int().nonnegative(),
   baseSteps: workingPlanStructureSchema,
   draftSteps: workingPlanStructureSchema,
   status: z.enum(["queued", "conflicted"]),
@@ -403,7 +403,7 @@ export const workingPlanProviderSyncSchema = z.object({
   provider: z.string().trim().min(1).max(64),
   model: z.string().trim().min(1).max(256),
   providerThreadId: workingPlanReferenceSchema,
-  structureRevision: z.number().int().positive(),
+  structureRevision: z.number().int().nonnegative(),
   deliveredAt: z.string().datetime(),
 }).strict()
 
@@ -420,13 +420,20 @@ function sameWorkingPlanStructure(
 export const workingPlanSchema = z.object({
   sessionId: workingPlanReferenceSchema,
   revision: z.number().int().positive(),
-  structureRevision: z.number().int().positive(),
+  structureRevision: z.number().int().nonnegative(),
   steps: workingPlanStepsSchema,
   providerSync: workingPlanProviderSyncSchema.optional(),
   pendingEdit: pendingWorkingPlanEditSchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 }).strict().superRefine((plan, context) => {
+  if (plan.structureRevision === 0 && plan.steps.length > 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["structureRevision"],
+      message: "The initial working plan structure must be empty",
+    })
+  }
   if (plan.revision < plan.structureRevision) {
     context.addIssue({
       code: "custom",

@@ -470,6 +470,13 @@ describe("working plan RPC", () => {
       snapshot: demoWorkspace,
       receipt,
     })
+    expect(rpcMethods["plan.edit"].params.safeParse({
+      sessionId: "session-onboarding",
+      basedOnStructureRevision: 0,
+      baseSteps: [],
+      draftSteps: [{ text: "Inspect the empty state" }],
+      client: "desktop",
+    }).success).toBe(true)
   })
 
   it("exposes explicit pending-draft discard", () => {

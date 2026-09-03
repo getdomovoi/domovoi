@@ -201,6 +201,34 @@ describe("workspace protocol", () => {
     }).success).toBe(false)
   })
 
+  it("represents a first human-authored plan queued behind an active turn", () => {
+    const initial: WorkingPlan = {
+      sessionId: "session-onboarding",
+      revision: 1,
+      structureRevision: 0,
+      steps: [],
+      pendingEdit: {
+        id: "plan-edit-first",
+        basedOnStructureRevision: 0,
+        baseSteps: [],
+        draftSteps: [{ id: "plan-step-first", text: "Inspect the empty state" }],
+        status: "queued",
+        submittedAt: "2026-08-25T21:51:00.000Z",
+        submittedBy: {
+          client: "desktop",
+          connectionId: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+      createdAt: "2026-08-25T21:51:00.000Z",
+      updatedAt: "2026-08-25T21:51:00.000Z",
+    }
+
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [...demoWorkspace.workingPlans, initial],
+    }).success).toBe(true)
+  })
+
   it.each([
     ["plan revision", (plan: WorkingPlan) => {
       plan.revision = plan.structureRevision - 1
