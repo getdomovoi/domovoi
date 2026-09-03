@@ -520,6 +520,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     expect((completed!.params.turn as { error: string }).error).toContain(safeStderr)
     expect(JSON.stringify(completed)).not.toContain("provider-secret")
     expect(providerTurnCompletion(completed!.params)).toEqual({ failed: true, failure })
+    expect(calls[0]!.query.getContextUsage).not.toHaveBeenCalled()
     await adapter.close()
   })
 
