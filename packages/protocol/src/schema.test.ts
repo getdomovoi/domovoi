@@ -86,13 +86,16 @@ describe("workspace protocol", () => {
     }
   })
 
-  it("only carries command tool rows in the thread", () => {
+  it("carries command tool rows and still reads a retired file-change row", () => {
     const tool = {
       id: "tool-1", sessionId: "session-a", kind: "tool", status: "completed",
       title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
     }
     expect(threadItemSchema.safeParse({ ...tool, tool: "command" }).success).toBe(true)
-    expect(threadItemSchema.safeParse({ ...tool, tool: "file-change" }).success).toBe(false)
+    // Nothing emits it, but a snapshot written before it was retired must still
+    // load rather than failing the daemon on startup.
+    expect(threadItemSchema.safeParse({ ...tool, tool: "file-change" }).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, tool: "invented" }).success).toBe(false)
   })
 
   it("defaults durable skill reviews for older snapshots", () => {
@@ -983,5 +986,20 @@ describe("workspace protocol", () => {
       checkpointId: "checkpoint-1",
       client: "desktop",
     }).checkpointId).toBe("checkpoint-1")
+  })
+})
+
+describe("persisted thread compatibility", () => {
+  it("still parses a tool item written before file-change was retired", () => {
+    const item = {
+      id: "item-legacy",
+      sessionId: "session-1",
+      kind: "tool" as const,
+      tool: "file-change" as const,
+      status: "completed" as const,
+      title: "Edit src/index.ts",
+      createdAt: new Date().toISOString(),
+    }
+    expect(threadItemSchema.parse(item)).toMatchObject({ tool: "file-change" })
   })
 })

@@ -238,7 +238,10 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("tool"),
-    tool: z.enum(["command"]),
+    // Nothing emits "file-change" any more, but a snapshot written before it was
+    // retired still carries it, and narrowing the enum would make that snapshot
+    // fail to parse on startup. Accepted on read, never produced.
+    tool: z.enum(["command", "file-change"]),
     status: z.enum(["running", "completed", "failed", "declined"]),
     title: z.string(),
     output: z.string().optional(),
