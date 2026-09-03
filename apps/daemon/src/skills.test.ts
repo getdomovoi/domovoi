@@ -358,3 +358,15 @@ describe("skillRoots", () => {
     ]))
   })
 })
+
+describe("skillRoots project scope", () => {
+  it("adds the project's own roots only when a project is open", () => {
+    const withoutProject = skillRoots("/home/dl")
+    const withProject = skillRoots("/home/dl", "/src/acme-api")
+    expect(withoutProject.some((root) => root.scope === "project")).toBe(false)
+    // Every catalog the daemon builds has to pass the project path, or a skill
+    // living in the repository is invisible to the UI and to the agent.
+    expect(withProject.filter((root) => root.scope === "project").map((root) => root.path))
+      .toContain("/src/acme-api/.domovoi/skills")
+  })
+})
