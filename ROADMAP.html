@@ -413,6 +413,8 @@ td { color: var(--ink2); }
 <ul>
 <li>Only OS-keychain key storage ships; <code>docs/provider-capabilities.md</code> lists no direct adapter.
 </li>
+<li>Deferred past the alpha on 2026-09-03. <code>PRODUCT.md</code> line 41 commits to subscription-backed provider CLIs first, so this is not alpha scope.
+</li>
 </ul>
 </li>
 <li>[x] Token and cost telemetry normalized per turn, session, provider, and model
@@ -422,6 +424,8 @@ td { color: var(--ink2); }
 <li>[ ] Usage totals across sessions over a time window, such as a today total in the app bar
 <ul>
 <li>The daemon usage ledger records no turn timestamp, so a windowed sum needs a schema change before any client can show one honestly.
+</li>
+<li>Deferred past the alpha on 2026-09-03. Per-session totals already ship; a windowed sum adds timestamp migration, window semantics, an aggregation RPC, and client work for an analytics readout rather than for the alpha workflow.
 </li>
 </ul>
 </li>
@@ -444,11 +448,15 @@ td { color: var(--ink2); }
 <ul>
 <li>A rule matches on <code>projectId</code> and the literal command, so it keeps approving a script whose body has since changed. The fingerprint should cover the normalized command, the project-relative directory, recursively expanded script bodies, lifecycle scripts such as <code>pretest</code>, and the validated runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the approval and rule schemas.
 </li>
+<li>Decided 2026-09-03: existing text-only rules stop matching but are kept. They stay visible and auditable as inactive rules and need explicit reapproval. They are never deleted and never keep approving anything silently. A rule going inactive has to be legible to the person who granted it, so that a returning approval prompt reads as a deliberate revocation rather than a bug.
+</li>
 </ul>
 </li>
 <li>[ ] Enforce hard gates that Build auto cannot bypass
 <ul>
-<li>Build auto still auto-allows secret reads through Git: <code>git show HEAD:.env</code>, <code>git diff -- .env</code>, <code>git log -p -- .env</code>, <code>git diff --no-index</code>, and <code>.env.*</code> variants.
+<li>The recorded defect is fixed. <code>f137506</code> gates secret reads through Git, and <code>apps/daemon/src/permission-policy.ts</code> checks hard-gate patterns and skill installs before any Build-auto allowance. Do not redo that work.
+</li>
+<li>This line stays open for the general claim, not the recorded example. Coverage today is a pattern list plus the skill-install check, and the tests at <code>apps/daemon/src/permission-policy.test.ts</code> and <code>apps/daemon/src/server.test.ts</code> cover examples rather than the invariant. Closing it needs a test asserting that no Build-auto path returns <code>allow</code> while a hard-gate pattern matches, including recursively resolved commands.
 </li>
 </ul>
 </li>
@@ -492,7 +500,9 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Verify skill signatures and produce a trusted state
 <ul>
-<li>Cryptographic signatures are still only <code>unverified</code>, <code>unsigned</code>, or <code>invalid</code>; trust currently comes only from manual review of an exact content digest. Blocked on unresolved decision 2.
+<li>Cryptographic signatures are still only <code>unverified</code>, <code>unsigned</code>, or <code>invalid</code>; trust currently comes only from manual review of an exact content digest.
+</li>
+<li>Deferred past the alpha on 2026-09-03. Verification needs a signer registry, trust roots, revocation, and key custody decided first. The alpha position is manual digest-bound review plus exclusion from Build auto.
 </li>
 </ul>
 </li>
@@ -546,16 +556,30 @@ td { color: var(--ink2); }
 <p>The desktop handoff specifies these; <code>main</code> does not implement them yet.</p>
 <ul>
 <li>[ ] Fleet screen with transport order, machine cards, version and <code>UPDATE</code> state, and Use, Terminal, and Revoke actions
+<ul>
+<li>Transport order, machine cards, pairing, revocation, and credential rotation ship in <code>packages/ui/src/fleet-view.tsx</code>. The Use and Terminal actions on a machine card are the remaining work.
 </li>
-<li>[ ] Settings shell: Appearance &amp; window (System, Dark, and Light theme; window decoration with system fallback), Permissions &amp; rules, External editor, and Notifications
+</ul>
 </li>
-<li>[ ] Cost and context readouts in the app bar and session header from <code>session.usage</code>
+<li>[x] Settings shell: Appearance &amp; window (System, Dark, and Light theme; window decoration with system fallback), Permissions &amp; rules, External editor, and Notifications
+</li>
+<li>[x] Cost and token readouts in the app bar and session header from <code>session.usage</code>
+</li>
+<li>[ ] Context occupancy readout beside those totals
+<ul>
+<li><code>sessionUsageSchema</code> carries <code>contextTokens</code> and <code>contextWindowTokens</code>, and both are optional so a client shows the readout only when the provider reported the pair. No adapter populates them and no client reads them yet.
+</li>
+</ul>
 </li>
 <li>[ ] Add-skill flow with declared-capability review and install scope
+<ul>
+<li>Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary code before the trust model exists is the wrong order.
+</li>
+</ul>
 </li>
 <li>[ ] Editable working plan with per-step state in the Plan tab
 </li>
-<li>[ ] Per-file diff review with revert in the Changes tab
+<li>[x] Per-file diff review with revert in the Changes tab
 </li>
 <li>[ ] Composer skill chip
 </li>
@@ -575,9 +599,9 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add device pairing, revocation, and credential rotation to the daemon and protocol
 </li>
-<li>[ ] Expose device revocation and rotation in a client or <code>domovoid</code> command
+<li>[x] Expose device revocation and rotation in a client or <code>domovoid</code> command
 <ul>
-<li><code>device.revoke</code> and <code>device.rotate</code> have no caller outside the daemon and its tests.
+<li><code>packages/ui/src/client.ts</code> calls <code>device.revoke</code> and <code>device.rotate</code>, and the Fleet surface drives both. This duplicates the checked entry below it under paired-device management.
 </li>
 </ul>
 </li>
@@ -623,9 +647,9 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote ref workflow
 </li>
-<li>[ ] Transfer dialog in the client with preflight, method, and what travels, calling <code>session.transfer</code>
+<li>[x] Transfer dialog in the client with preflight, method, and what travels, calling <code>session.transfer</code>
 <ul>
-<li><code>session.transfer</code> has no client caller; the machine chip only re-attaches to another daemon.
+<li><code>packages/ui/src/transfer-session-dialog.tsx</code> is wired into the workspace shell and <code>packages/ui/src/client.ts</code> calls <code>session.transfer</code>. This duplicates the checked entry below it that describes the same dialog.
 </li>
 </ul>
 </li>
@@ -840,7 +864,7 @@ td { color: var(--ink2); }
 <ol>
 <li><strong>Provider handoff disclosure:</strong> required pre-switch loss disclosure, safe-boundary behavior, and the warning difference between switch and fork.
 </li>
-<li><strong>Skill signature authority:</strong> choose the trusted signer registry, revocation source, and key custody model. Current <code>.sig</code> declarations are content-digest-bound but are not cryptographically verified, so a signature alone never grants trust. Manual review is the interim trust path: a person reviews an exact content digest on one machine, the daemon records that decision with the reviewing client, and the skill becomes trusted only while its content digest still matches. Any content change drops it back to untrusted. Cryptographic verification is still blocked on this decision, and an invalid signature stays blocked regardless of review.
+<li><strong>Skill signature authority:</strong> choose the trusted signer registry, revocation source, and key custody model. Current <code>.sig</code> declarations are content-digest-bound but are not cryptographically verified, so a signature alone never grants trust. Manual review is the interim trust path: a person reviews an exact content digest on one machine, the daemon records that decision with the reviewing client, and the skill becomes trusted only while its content digest still matches. Any content change drops it back to untrusted. Cryptographic verification is still blocked on this decision, and an invalid signature stays blocked regardless of review. Deferred past the alpha on 2026-09-03: manual digest-bound review plus exclusion from Build auto is the alpha position, so the registry, revocation source, and custody model can be settled after it.
 </li>
 <li><strong>Build auto execution boundary:</strong> whether Build auto authorizes repository-controlled code to run unattended inside a containment boundary. An allowlisted runner executes files the repository owns, so a standing rule for <code>pnpm test</code> whose body stays <code>vitest run</code> still permits a changed <code>vitest.config.ts</code>, setup file, plugin, or test file to run with the daemon user's permissions, and no command pattern can see that. If the answer is yes, bounded has to mean bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no, every package manager command is a hard gate and Build auto is narrower than this roadmap describes.
 </li>

@@ -161,12 +161,17 @@ Every ledger entry is now merged.
 - [x] OS-keychain storage for direct provider API keys and other secrets
 - [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
   - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
+  - Deferred past the alpha on 2026-09-03. `PRODUCT.md` line 41 commits to subscription-backed
+    provider CLIs first, so this is not alpha scope.
 - [x] Token and cost telemetry normalized per turn, session, provider, and model
 - [x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown
   and an explicit count of turns the provider reported no cost for
 - [ ] Usage totals across sessions over a time window, such as a today total in the app bar
   - The daemon usage ledger records no turn timestamp, so a windowed sum needs a schema change
     before any client can show one honestly.
+  - Deferred past the alpha on 2026-09-03. Per-session totals already ship; a windowed sum adds
+    timestamp migration, window semantics, an aggregation RPC, and client work for an analytics
+    readout rather than for the alpha workflow.
 - [ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
   - A failure classifier exists, but the Claude adapter drops the failure reason and provider
@@ -184,9 +189,19 @@ Every ledger entry is now merged.
     `pretest`, and the validated runner arguments. A command whose resolution is ambiguous stays
     reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the
     approval and rule schemas.
+  - Decided 2026-09-03: existing text-only rules stop matching but are kept. They stay visible and
+    auditable as inactive rules and need explicit reapproval. They are never deleted and never keep
+    approving anything silently. A rule going inactive has to be legible to the person who granted
+    it, so that a returning approval prompt reads as a deliberate revocation rather than a bug.
 - [ ] Enforce hard gates that Build auto cannot bypass
-  - Build auto still auto-allows secret reads through Git: `git show HEAD:.env`, `git diff -- .env`,
-    `git log -p -- .env`, `git diff --no-index`, and `.env.*` variants.
+  - The recorded defect is fixed. `f137506` gates secret reads through Git, and
+    `apps/daemon/src/permission-policy.ts` checks hard-gate patterns and skill installs before any
+    Build-auto allowance. Do not redo that work.
+  - This line stays open for the general claim, not the recorded example. Coverage today is a
+    pattern list plus the skill-install check, and the tests at
+    `apps/daemon/src/permission-policy.test.ts` and `apps/daemon/src/server.test.ts` cover examples
+    rather than the invariant. Closing it needs a test asserting that no Build-auto path returns
+    `allow` while a hard-gate pattern matches, including recursively resolved commands.
 - [x] Add a searchable audit log with redaction and export
 - [x] Add command-level secret redaction before persistence or display
 - [x] Add a global emergency stop that cancels all active tools and providers, not only UI state
@@ -213,7 +228,10 @@ Every ledger entry is now merged.
   the reviewing client in the audit log
 - [ ] Verify skill signatures and produce a trusted state
   - Cryptographic signatures are still only `unverified`, `unsigned`, or `invalid`; trust currently
-    comes only from manual review of an exact content digest. Blocked on unresolved decision 2.
+    comes only from manual review of an exact content digest.
+  - Deferred past the alpha on 2026-09-03. Verification needs a signer registry, trust roots,
+    revocation, and key custody decided first. The alpha position is manual digest-bound review
+    plus exclusion from Build auto.
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
@@ -246,12 +264,22 @@ The desktop handoff specifies these; `main` does not implement them yet.
 
 - [ ] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
   Terminal, and Revoke actions
-- [ ] Settings shell: Appearance & window (System, Dark, and Light theme; window decoration with
+  - Transport order, machine cards, pairing, revocation, and credential rotation ship in
+    `packages/ui/src/fleet-view.tsx`. The Use and Terminal actions on a machine card are the
+    remaining work.
+- [x] Settings shell: Appearance & window (System, Dark, and Light theme; window decoration with
   system fallback), Permissions & rules, External editor, and Notifications
-- [ ] Cost and context readouts in the app bar and session header from `session.usage`
+- [x] Cost and token readouts in the app bar and session header from `session.usage`
+- [ ] Context occupancy readout beside those totals
+  - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
+    so a client shows the readout only when the provider reported the pair. No adapter populates
+    them and no client reads them yet.
 - [ ] Add-skill flow with declared-capability review and install scope
+  - Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol
+    has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
+    code before the trust model exists is the wrong order.
 - [ ] Editable working plan with per-step state in the Plan tab
-- [ ] Per-file diff review with revert in the Changes tab
+- [x] Per-file diff review with revert in the Changes tab
 - [ ] Composer skill chip
 - [ ] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
   280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
@@ -268,8 +296,9 @@ fleet.
 - [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
-- [ ] Expose device revocation and rotation in a client or `domovoid` command
-  - `device.revoke` and `device.rotate` have no caller outside the daemon and its tests.
+- [x] Expose device revocation and rotation in a client or `domovoid` command
+  - `packages/ui/src/client.ts` calls `device.revoke` and `device.rotate`, and the Fleet surface
+    drives both. This duplicates the checked entry below it under paired-device management.
 - [x] Add a fleet registry and machine selector to the shared protocol and UI
 - [x] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
@@ -294,9 +323,11 @@ fleet.
 - [x] Add checkpointed machine transfer with live source and target preflight
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
-- [ ] Transfer dialog in the client with preflight, method, and what travels, calling
+- [x] Transfer dialog in the client with preflight, method, and what travels, calling
   `session.transfer`
-  - `session.transfer` has no client caller; the machine chip only re-attaches to another daemon.
+  - `packages/ui/src/transfer-session-dialog.tsx` is wired into the workspace shell and
+    `packages/ui/src/client.ts` calls `session.transfer`. This duplicates the checked entry below
+    it that describes the same dialog.
 - [x] Record transfer receipts and retain the source recovery checkpoint
 - [x] Offer the move from the client: a transfer dialog that names the target machine, shows the
   source and target preflight, chooses between the Git bundle and a named remote ref, and states
@@ -454,6 +485,9 @@ dependent work starts.
    that decision with the reviewing client, and the skill becomes trusted only while its content
    digest still matches. Any content change drops it back to untrusted. Cryptographic verification
    is still blocked on this decision, and an invalid signature stays blocked regardless of review.
+   Deferred past the alpha on 2026-09-03: manual digest-bound review plus exclusion from Build auto
+   is the alpha position, so the registry, revocation source, and custody model can be settled
+   after it.
 3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
    run unattended inside a containment boundary. An allowlisted runner executes files the
    repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits
