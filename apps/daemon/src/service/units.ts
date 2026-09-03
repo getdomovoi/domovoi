@@ -1,23 +1,39 @@
+export type ServiceEnvironment = Readonly<Record<string, string>>
+
+export type ServiceUnitInput = {
+  execPath: string
+  environment?: ServiceEnvironment
+}
+
 const label = "sh.domovoi.domovoid"
 const description = "Domovoi execution daemon"
 const secretName = /TOKEN|SECRET|KEY|PASSWORD|PASSPHRASE|CREDENTIAL/i
-const forbidden = /["\u0000-\u001f]/
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 // Both service files this writes are read by a unix service manager, so an
 // absolute path here is a posix one.
-function assertExecutable(execPath) {
+// A quote or a control character would let a value break out of the file or
+// command it is written into. Checked by code point because a regular
+// expression that contains a control character is itself hard to review.
+function hasForbiddenCharacter(value: string): boolean {
+  return value.includes("\"") || [...value].some((character) => character < " ")
+}
+
+function assertExecutable(execPath: string): string {
   if (typeof execPath !== "string" || execPath === "") {
     throw new Error("the service needs an absolute path to domovoid")
   }
-  if (forbidden.test(execPath)) {
+  if (hasForbiddenCharacter(execPath)) {
     throw new Error("a service exec path cannot contain quotes, newlines, or control characters")
   }
   if (!execPath.startsWith("/")) throw new Error(`${execPath} is not an absolute path to domovoid`)
   return execPath
 }
 
-function assertNoSecrets(environment, { names = false } = {}) {
+function assertNoSecrets(
+  environment: ServiceEnvironment,
+  { names = false }: { names?: boolean } = {},
+): ServiceEnvironment {
   for (const [key, value] of Object.entries(environment)) {
     if (names && !environmentName.test(key)) {
       throw new Error(`${JSON.stringify(key)} is not an environment name systemd would pass on`)
@@ -25,22 +41,24 @@ function assertNoSecrets(environment, { names = false } = {}) {
     if (secretName.test(key)) {
       throw new Error(`${key} looks like a secret, and a service file is not where a secret is kept`)
     }
-    if (forbidden.test(key) || forbidden.test(String(value))) {
+    if (hasForbiddenCharacter(key) || hasForbiddenCharacter(String(value))) {
       throw new Error("a service environment value cannot contain quotes, newlines, or control characters")
     }
   }
   return environment
 }
 
-function systemdArgument(value) {
+function systemdArgument(value: string): string {
   return /\s/.test(value) ? `"${value}"` : value
 }
 
-function escapeXml(value) {
-  return value.replace(/[<>&]/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[character])
+const escapes: Record<string, string> = { "<": "&lt;", ">": "&gt;", "&": "&amp;" }
+
+function escapeXml(value: string): string {
+  return value.replace(/[<>&]/g, (character) => escapes[character] ?? character)
 }
 
-export function systemdUnit({ execPath, environment = {} }) {
+export function systemdUnit({ execPath, environment = {} }: ServiceUnitInput): string {
   assertExecutable(execPath)
   assertNoSecrets(environment, { names: true })
 
@@ -63,7 +81,7 @@ export function systemdUnit({ execPath, environment = {} }) {
   ].join("\n")
 }
 
-export function launchdPlist({ execPath, environment = {} }) {
+export function launchdPlist({ execPath, environment = {} }: ServiceUnitInput): string {
   assertExecutable(execPath)
   assertNoSecrets(environment)
 

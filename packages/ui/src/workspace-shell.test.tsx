@@ -673,6 +673,7 @@ describe("archived annotation controls", () => {
         onCreateAnnotation={vi.fn()}
         onLoadSessionHistory={vi.fn()}
         onLoadSessionEvidence={vi.fn()}
+        onRevertSessionFile={vi.fn()}
       />,
     )
     expect(dock).not.toContain(">Annotate</button>")

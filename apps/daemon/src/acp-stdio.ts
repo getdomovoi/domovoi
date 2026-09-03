@@ -28,6 +28,7 @@ import type { AcpProviderDefinition } from "./acp-providers.js"
 type ProcessSpawner = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams
 const ACP_CLOSE_GRACE_MS = 1_000
 const ACP_FORCE_CLOSE_MS = 1_000
+const STDERR_TAIL_BYTES = 16_384
 
 export class StdioAcpPeer implements AcpPeer {
   readonly #definition: AcpProviderDefinition
@@ -56,13 +57,15 @@ export class StdioAcpPeer implements AcpPeer {
       throw new Error(`${this.#definition.id} ACP peer was closed during initialization`)
     }
     this.#process = process
-    process.stderr.resume()
-    process.once("exit", () => {
+    const stderrTail = captureStderrTail(process.stderr)
+    process.once("exit", (code, signal) => {
       if (this.#process !== process) return
       this.#process = undefined
       this.#connection = undefined
       this.#capabilities = undefined
-      if (!this.#closing) this.#handlers.onDisconnect()
+      if (!this.#closing) {
+        this.#handlers.onDisconnect(exitReason(this.#definition.id, code, signal, stderrTail()))
+      }
     })
     try {
       const stream = ndJsonStream(
@@ -275,6 +278,27 @@ function spawned(process: ChildProcessWithoutNullStreams): Promise<ChildProcessW
     process.once("spawn", () => resolve(process))
     process.once("error", reject)
   })
+}
+
+function captureStderrTail(stream: Readable): () => string {
+  let tail = Buffer.alloc(0)
+  stream.on("data", (chunk: Buffer) => {
+    tail = Buffer.concat([tail, chunk])
+    if (tail.length > STDERR_TAIL_BYTES) tail = tail.subarray(tail.length - STDERR_TAIL_BYTES)
+  })
+  return () => tail.toString("utf8").trim()
+}
+
+function exitReason(
+  id: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderr: string,
+): string {
+  const exit = code !== null
+    ? `${id} exited with code ${code}`
+    : `${id} exited from signal ${signal ?? "unknown"}`
+  return stderr ? `${exit}: ${stderr}` : exit
 }
 
 function isMissingCommand(error: unknown): boolean {
