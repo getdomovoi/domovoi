@@ -356,13 +356,15 @@ describe("JSON-RPC envelopes", () => {
     }).success).toBe(false)
   })
 
-  it("only carries command tool rows in session history", () => {
+  it("carries command tool rows and a retired file-change row into history", () => {
     const entry = {
       id: "history-1", sourceId: "tool-1", sessionId: "session-a", category: "tools",
       status: "completed", title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
     }
     expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "command" }).success).toBe(true)
-    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "file-change" }).success).toBe(false)
+    // A stored snapshot can still hold it, so history has to page it out.
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "file-change" }).success).toBe(true)
+    expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "invented" }).success).toBe(false)
   })
 
   it("registers archive as a typed session mutation", () => {
