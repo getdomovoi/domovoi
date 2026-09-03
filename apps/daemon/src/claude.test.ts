@@ -255,6 +255,65 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
+  it("completes the turn when Claude context usage does not answer", async () => {
+    vi.useFakeTimers()
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    try {
+      const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({
+        threadId,
+        cwd: "/worktree",
+        prompt: "Run tests",
+        runtime: runtime("build"),
+      })
+      calls[0]!.query.getContextUsage.mockImplementationOnce(
+        () => new Promise<unknown>(() => undefined),
+      )
+
+      calls[0]!.query.emit({
+        type: "result",
+        subtype: "success",
+        session_id: threadId,
+        is_error: false,
+        usage: { input_tokens: 8, output_tokens: 2 },
+      })
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(events).toContainEqual({
+        type: "usage",
+        threadId,
+        turnId,
+        usage: {
+          inputTokens: 8,
+          cachedInputTokens: 0,
+          outputTokens: 2,
+          reasoningTokens: 0,
+          totalTokens: 10,
+          costSource: "unavailable",
+        },
+      })
+      expect(events).toContainEqual({
+        type: "turn-completed",
+        params: {
+          threadId,
+          turnId,
+          turn: { id: turnId, status: "completed" },
+        },
+      })
+      expect(events.map((event) => event.type)).toEqual(["usage", "turn-completed"])
+    } finally {
+      await adapter.close()
+      vi.useRealTimers()
+    }
+  })
+
   it("fails the active turn and reopens the session when the Claude stream ends without a result", async () => {
     const { calls, factory } = factoryHarness()
     const ids: ClaudeMessageId[] = [

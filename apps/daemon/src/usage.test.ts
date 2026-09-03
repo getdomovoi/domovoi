@@ -140,7 +140,7 @@ describe("provider usage telemetry", () => {
     })).toThrow("mixed currencies")
   })
 
-  it("returns current context occupancy without aggregating or crossing runtimes", () => {
+  it("keeps context within one turn but never carries it into another runtime or turn", () => {
     const ledger = new UsageLedger()
     ledger.record({
       sessionId: "session-1",
