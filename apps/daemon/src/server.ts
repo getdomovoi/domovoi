@@ -144,6 +144,8 @@ import {
 } from "./secret-redaction.js"
 import {
   agentPromptWithWorkingPlan,
+  blockWorkingPlanForApproval,
+  clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
   finalizePendingWorkingPlanEdit,
   markWorkingPlanDelivered,
@@ -3470,8 +3472,9 @@ export class DomovoiDaemon {
             : {}),
           createdAt: new Date().toISOString(),
         })
-        this.#snapshot.approvals = this.#snapshot.approvals.filter(
-          (approval) => approval.id !== params.approvalId,
+        this.#removeApprovals(
+          (candidate) => candidate.id === params.approvalId,
+          new Date().toISOString(),
         )
         if (session) {
           session.state = params.decision === "deny" || params.decision === "deny-explain"
@@ -3804,6 +3807,7 @@ export class DomovoiDaemon {
           this.#snapshot.approvalRules = restored?.approvalRules ?? []
           this.#snapshot.thread = restored?.thread ?? []
           this.#snapshot.artifacts = restored?.artifacts ?? []
+          this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
           changed = true
         }
@@ -4878,7 +4882,7 @@ export class DomovoiDaemon {
       } else if (decision.risk === "normal" && matchingRule) {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else {
-        this.#snapshot.approvals.push({
+        const approval: WorkspaceSnapshot["approvals"][number] = {
           id: `approval-${randomUUID()}`,
           sessionId: session.id,
           risk: containsSecret ? "hard-gate" : decision.risk,
@@ -4898,7 +4902,25 @@ export class DomovoiDaemon {
           ...(inactiveRuleIds.length === 0 ? {} : {
             reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
           }),
-        })
+        }
+        this.#snapshot.approvals.push(approval)
+        const blocked = blockWorkingPlanForApproval(
+          this.#snapshot.workingPlans,
+          session.id,
+          approval.id,
+          createdAt,
+        )
+        this.#snapshot.workingPlans = blocked.plans
+        if (blocked.changed) {
+          this.#appendAudit({
+            actor: { kind: "daemon", component: "working-plan" },
+            action: "plan.blocked-by-approval",
+            outcome: "started",
+            sessionId: session.id,
+            projectId: project.id,
+            target: approval.id,
+          })
+        }
         session.state = "waiting"
       }
     }
@@ -5075,11 +5097,49 @@ export class DomovoiDaemon {
       changed = true
     }
     if (affectedSessionIds.size > 0) {
-      this.#snapshot.approvals = this.#snapshot.approvals.filter(
-        (approval) => !affectedSessionIds.has(approval.sessionId),
+      this.#removeApprovals(
+        (approval) => affectedSessionIds.has(approval.sessionId),
+        createdAt,
       )
     }
     if (changed) await this.#flushAgentState()
+  }
+
+  #removeApprovals(
+    predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
+    updatedAt: string,
+  ): WorkspaceSnapshot["approvals"] {
+    const removed = this.#snapshot.approvals.filter(predicate)
+    if (removed.length === 0) return []
+    const removedIds = new Set(removed.map((approval) => approval.id))
+    const blockedIds = new Set(this.#snapshot.workingPlans.flatMap((plan) =>
+      plan.steps.flatMap((step) => (
+        step.blocker && removedIds.has(step.blocker.approvalId)
+          ? [step.blocker.approvalId]
+          : []
+      )),
+    ))
+    this.#snapshot.approvals = this.#snapshot.approvals.filter(
+      (approval) => !removedIds.has(approval.id),
+    )
+    const cleared = clearWorkingPlanApprovalBlockers(
+      this.#snapshot.workingPlans,
+      removedIds,
+      updatedAt,
+    )
+    this.#snapshot.workingPlans = cleared.plans
+    for (const approval of removed) {
+      if (!blockedIds.has(approval.id)) continue
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "working-plan" },
+        action: "plan.approval-blocker-cleared",
+        outcome: "succeeded",
+        sessionId: approval.sessionId,
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        target: approval.id,
+      })
+    }
+    return removed
   }
 
   #providerEpoch(provider: string): number {
@@ -5187,7 +5247,7 @@ export class DomovoiDaemon {
         })
       }
     }
-    this.#snapshot.approvals = []
+    this.#removeApprovals(() => true, requestedAt)
 
     let turnsStopped = 0
     let providersReset = 0
@@ -5390,8 +5450,9 @@ export class DomovoiDaemon {
       if (result.status === "fulfilled") {
         session.state = "idle"
         delete session.activeTurnId
-        this.#snapshot.approvals = this.#snapshot.approvals.filter(
-          (approval) => approval.sessionId !== session.id,
+        this.#removeApprovals(
+          (approval) => approval.sessionId === session.id,
+          createdAt,
         )
         this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
@@ -5472,9 +5533,15 @@ export class DomovoiDaemon {
       })
     }
 
+    const expiredApprovalIds = new Set(expiredApprovals.map((approval) => approval.id))
     candidate.approvals = candidate.approvals.filter(
-      (approval) => !interruptedSessionIds.has(approval.sessionId),
+      (approval) => !expiredApprovalIds.has(approval.id),
     )
+    candidate.workingPlans = clearWorkingPlanApprovalBlockers(
+      candidate.workingPlans,
+      expiredApprovalIds,
+      recoveredAt,
+    ).plans
 
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)
@@ -5540,6 +5607,7 @@ export class DomovoiDaemon {
         this.#reportError(`Domovoi could not deny archive approval ${approval.id}`, error)
         continue
       }
+      const deniedAt = new Date().toISOString()
       this.#snapshot.thread.push({
         id: `receipt-${approval.id}-${Date.now()}`,
         sessionId,
@@ -5549,11 +5617,9 @@ export class DomovoiDaemon {
         checkpoint: approval.checkpoint,
         client: client ?? "cli",
         explanation: "Session archived",
-        createdAt: new Date().toISOString(),
+        createdAt: deniedAt,
       })
-      this.#snapshot.approvals = this.#snapshot.approvals.filter(
-        (candidate) => candidate.id !== approval.id,
-      )
+      this.#removeApprovals((candidate) => candidate.id === approval.id, deniedAt)
       await this.#saveAgentState(false)
     }
 
@@ -5593,6 +5659,7 @@ export class DomovoiDaemon {
     }
 
     if (!session.providerThreadId && unresolvedApprovalIds.size > 0) {
+      const deniedAt = new Date().toISOString()
       for (const approval of approvals.filter(({ id }) => unresolvedApprovalIds.has(id))) {
         this.#snapshot.thread.push({
           id: `receipt-${approval.id}-${Date.now()}`,
@@ -5603,12 +5670,10 @@ export class DomovoiDaemon {
           checkpoint: approval.checkpoint,
           client: client ?? "cli",
           explanation: "Session archived after provider cleanup",
-          createdAt: new Date().toISOString(),
+          createdAt: deniedAt,
         })
       }
-      this.#snapshot.approvals = this.#snapshot.approvals.filter(
-        ({ id }) => !unresolvedApprovalIds.has(id),
-      )
+      this.#removeApprovals(({ id }) => unresolvedApprovalIds.has(id), deniedAt)
       await this.#saveAgentState(false)
     }
 
@@ -5951,8 +6016,9 @@ export class DomovoiDaemon {
     session.state = "failed"
     session.updatedAt = new Date().toISOString()
     this.#loadedAgentThreads.delete(providerThreadKey(provider, threadId))
-    this.#snapshot.approvals = this.#snapshot.approvals.filter(
-      (approval) => approval.sessionId !== session.id,
+    this.#removeApprovals(
+      (approval) => approval.sessionId === session.id,
+      session.updatedAt,
     )
     this.#snapshot.thread.push({
       id: `system-${randomUUID()}`,
@@ -6031,8 +6097,9 @@ export class DomovoiDaemon {
         // says why rather than looking idle.
         session.state = "failed"
         session.updatedAt = suspendedAt
-        this.#snapshot.approvals = this.#snapshot.approvals.filter(
-          (approval) => approval.sessionId !== session.id,
+        this.#removeApprovals(
+          (approval) => approval.sessionId === session.id,
+          suspendedAt,
         )
         this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
@@ -6046,8 +6113,9 @@ export class DomovoiDaemon {
       }
     }
     if (interruptedSessionIds.size > 0) {
-      this.#snapshot.approvals = this.#snapshot.approvals.filter(
-        (approval) => !interruptedSessionIds.has(approval.sessionId),
+      this.#removeApprovals(
+        (approval) => interruptedSessionIds.has(approval.sessionId),
+        suspendedAt,
       )
     }
   }

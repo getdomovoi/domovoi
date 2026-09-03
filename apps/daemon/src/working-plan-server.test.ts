@@ -368,6 +368,31 @@ describe("working plan RPC", () => {
     expect(JSON.stringify(context.audit.mock.calls)).not.toContain("provider-plan-secret")
 
     emit!({
+      type: "approval-requested",
+      requestId: 42,
+      threadId: "thread-provider-plan",
+      turnId: "turn-provider-plan",
+      itemId: "tool-provider-plan",
+      command: "git push origin main",
+      reason: "Publish the completed change",
+    })
+    await vi.waitFor(() => expect(context.durable().approvals).toHaveLength(1))
+    const approvalId = context.durable().approvals[0]!.id
+    expect(context.durable().workingPlans[0]!.steps[1]!.blocker).toEqual({
+      kind: "approval",
+      approvalId,
+    })
+
+    const resolved = await context.rpc("approval.resolve", {
+      approvalId,
+      decision: "deny",
+      client: "desktop",
+    })
+    expect(resolved).not.toHaveProperty("error")
+    expect(resolved.result.workingPlans[0]!.steps[1]!.blocker).toBeUndefined()
+    expect(agent.resolveApproval).toHaveBeenCalledWith(42, "deny")
+
+    emit!({
       type: "plan-updated",
       threadId: "thread-provider-plan",
       turnId: "turn-provider-plan",
@@ -377,7 +402,7 @@ describe("working plan RPC", () => {
       ],
     })
     await vi.waitFor(() => expect(context.durable().workingPlans[0]).toMatchObject({
-      revision: 4,
+      revision: 6,
       structureRevision: 2,
       steps: [
         expect.objectContaining({ status: "completed" }),
