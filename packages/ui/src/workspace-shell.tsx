@@ -2181,6 +2181,8 @@ export function ArtifactDock({
   collapseButtonRef,
   defaultTab,
   usage,
+  onEditPlan,
+  onDiscardPlanEdit,
   tab,
   onTabChange,
   rpcUrl,
@@ -2200,6 +2202,12 @@ export function ArtifactDock({
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   usage?: SessionUsage | null | undefined
+  onEditPlan?: ((edit: {
+    basedOnStructureRevision: number
+    baseSteps: { id: string, text: string }[]
+    draftSteps: { id?: string, text: string }[]
+  }) => Promise<void>) | undefined
+  onDiscardPlanEdit?: ((editId: string) => Promise<void>) | undefined
   tab?: string | undefined
   onTabChange?: ((tab: string) => void) | undefined
   rpcUrl: string
@@ -2668,7 +2676,12 @@ export function ArtifactDock({
           {workingPlan ? (
             <ScrollArea className="h-full">
               <div className="p-3">
-                <WorkingPlanCard plan={workingPlan} running={planRunning} />
+                <WorkingPlanCard
+                  plan={workingPlan}
+                  running={planRunning}
+                  {...(onEditPlan ? { onEditPlan } : {})}
+                  {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
+                />
               </div>
             </ScrollArea>
           ) : plan?.content ? (
@@ -3039,6 +3052,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     reconnect,
     restoreCheckpoint,
     revertSessionFile,
+    editPlan,
+    discardPlanEdit,
     restartProviderThread,
     resizeTerminal,
     resolveApproval,
@@ -3748,7 +3763,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>

@@ -261,6 +261,28 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     updateSnapshotFrom(client, await client.revertSessionFile(sessionId, path))
   }, [updateSnapshotFrom])
 
+  const editPlan = useCallback(async (
+    sessionId: string,
+    edit: {
+      basedOnStructureRevision: number
+      baseSteps: { id: string, text: string }[]
+      draftSteps: { id?: string, text: string }[]
+      replacesPendingEditId?: string
+    },
+  ) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    const { snapshot } = await client.editPlan({ sessionId, ...edit })
+    updateSnapshotFrom(client, snapshot)
+  }, [updateSnapshotFrom])
+
+  const discardPlanEdit = useCallback(async (sessionId: string, editId: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    const { snapshot } = await client.discardPlanEdit({ sessionId, editId })
+    updateSnapshotFrom(client, snapshot)
+  }, [updateSnapshotFrom])
+
   const pauseAll = useCallback(async () => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -648,6 +670,8 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     reconnecting,
     restoreCheckpoint,
     revertSessionFile,
+    editPlan,
+    discardPlanEdit,
     restartProviderThread,
     resizeTerminal,
     replyToAnnotation,

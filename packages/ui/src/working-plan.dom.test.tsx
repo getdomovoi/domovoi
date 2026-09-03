@@ -1,6 +1,7 @@
 import type { WorkingPlan } from "@getdomovoi/protocol"
 import { cleanup, render, screen, within } from "@testing-library/react"
-import { afterEach, expect, it } from "vitest"
+import userEvent from "@testing-library/user-event"
+import { afterEach, expect, it, vi } from "vitest"
 
 import { WorkingPlanCard } from "./working-plan.js"
 
@@ -92,4 +93,76 @@ it("invites a first step instead of showing an empty list", () => {
   expect(screen.queryByRole("list", { name: "Plan steps" })).toBeNull()
   expect(screen.getByText(/no steps yet/iu)).toBeTruthy()
   expect(screen.getByText("0 steps")).toBeTruthy()
+})
+
+it("sends the whole structure it edited, against the revision it was based on", async () => {
+  const onEdit = vi.fn(async () => {})
+  render(<WorkingPlanCard plan={plan()} running={false} onEditPlan={onEdit} />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Edit plan" }))
+  const first = screen.getByRole("textbox", { name: "Step 1" })
+  await userEvent.clear(first)
+  await userEvent.type(first, "Add a replay table with a unique claim")
+  await userEvent.click(screen.getByRole("button", { name: "Save plan" }))
+
+  expect(onEdit).toHaveBeenCalledWith({
+    basedOnStructureRevision: 2,
+    baseSteps: [
+      { id: "step-1", text: "Add a replay table" },
+      { id: "step-2", text: "Claim before side effects" },
+      { id: "step-3", text: "Apply the migration" },
+      { id: "step-4", text: "Assert exactly-once delivery" },
+    ],
+    draftSteps: [
+      { id: "step-1", text: "Add a replay table with a unique claim" },
+      { id: "step-2", text: "Claim before side effects" },
+      { id: "step-3", text: "Apply the migration" },
+      { id: "step-4", text: "Assert exactly-once delivery" },
+    ],
+  })
+})
+
+it("adds a step without an id so the daemon assigns one", async () => {
+  const onEdit = vi.fn(async () => {})
+  render(<WorkingPlanCard plan={plan({ revision: 1, structureRevision: 0, steps: [] })} running={false} onEditPlan={onEdit} />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Edit plan" }))
+  await userEvent.click(screen.getByRole("button", { name: "Add step" }))
+  await userEvent.type(screen.getByRole("textbox", { name: "Step 1" }), "Write the first step")
+  await userEvent.click(screen.getByRole("button", { name: "Save plan" }))
+
+  expect(onEdit).toHaveBeenCalledWith({
+    basedOnStructureRevision: 0,
+    baseSteps: [],
+    draftSteps: [{ text: "Write the first step" }],
+  })
+})
+
+it("discards a conflicted edit by its id", async () => {
+  const onDiscard = vi.fn(async () => {})
+  render(<WorkingPlanCard
+    plan={plan({
+      pendingEdit: {
+        id: "edit-1",
+        basedOnStructureRevision: 1,
+        baseSteps: [{ id: "step-1", text: "Add a replay table" }],
+        draftSteps: [{ id: "step-1", text: "Add a replay table with a unique claim" }],
+        status: "conflicted",
+        submittedAt: "2026-09-03T10:31:00.000Z",
+        submittedBy: { client: "web", connectionId: "connection-2" },
+      },
+    })}
+    running={false}
+    onDiscardEdit={onDiscard}
+  />)
+
+  await userEvent.click(screen.getByRole("button", { name: "Discard edit" }))
+
+  expect(onDiscard).toHaveBeenCalledWith("edit-1")
+})
+
+it("offers no editing to a client that cannot edit", () => {
+  render(<WorkingPlanCard plan={plan()} running={false} />)
+
+  expect(screen.queryByRole("button", { name: "Edit plan" })).toBeNull()
 })

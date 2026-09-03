@@ -395,6 +395,26 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  editPlan(
+    params: {
+      sessionId: string
+      basedOnStructureRevision: number
+      baseSteps: RpcParams<"plan.edit">["baseSteps"]
+      draftSteps: RpcParams<"plan.edit">["draftSteps"]
+      replacesPendingEditId?: string
+    },
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"plan.edit">> {
+    return this.request("plan.edit", { ...params, client: this.kind }, options)
+  }
+
+  discardPlanEdit(
+    params: { sessionId: string, editId: string },
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"plan.discardEdit">> {
+    return this.request("plan.discardEdit", { ...params, client: this.kind }, options)
+  }
+
   activateSession(sessionId: string): Promise<WorkspaceSnapshot> {
     return this.request("session.activate", { sessionId, client: this.kind })
   }
