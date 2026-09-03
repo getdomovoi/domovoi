@@ -33,12 +33,14 @@ export function MachineSwitcher({
   currentSessionCount,
   onPairMachine,
   onSelectMachine,
+  onTransferSession,
 }: {
   machines: FleetMachine[]
   currentMachineId: string
   currentSessionCount: number
   onPairMachine?: (() => void) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
+  onTransferSession?: ((machineId: string) => void) | undefined
 }) {
   const current = machines.find((machine) => machine.id === currentMachineId)
   const others = machines.filter((machine) => machine.id !== currentMachineId)
@@ -87,6 +89,32 @@ export function MachineSwitcher({
             </DropdownMenuItem>
           )
         })}
+        {onTransferSession && others.length > 0 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Move this session to</DropdownMenuLabel>
+            {others.map((machine) => {
+              const selection = machineSelection(machine)
+              return (
+                <DropdownMenuItem
+                  key={`transfer-${machine.id}`}
+                  disabled={!selection.selectable}
+                  className="flex-col items-start gap-0.5"
+                  {...(selection.selectable
+                    ? { onSelect: () => onTransferSession(machine.id) }
+                    : {})}
+                >
+                  <span className="font-medium text-strong">
+                    Move this session to {machine.label}
+                  </span>
+                  {selection.selectable ? null : (
+                    <span className="font-machine text-[10px] text-faint">{selection.reason}</span>
+                  )}
+                </DropdownMenuItem>
+              )
+            })}
+          </>
+        ) : null}
         <DropdownMenuSeparator />
         {onPairMachine ? (
           <DropdownMenuItem onSelect={() => onPairMachine()}>+ Pair a machine</DropdownMenuItem>
