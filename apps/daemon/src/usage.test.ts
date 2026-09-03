@@ -173,7 +173,7 @@ describe("provider usage telemetry", () => {
       threadId: "thread-1",
     })).toMatchObject({ contextTokens: 90_000, contextWindowTokens: 200_000 })
     for (const active of [
-      { provider: "claude-code", model: "gpt-5.6-sol", threadId: "thread-1" },
+      { provider: "claude-code", model: "claude-opus-5", threadId: "claude-thread-1" },
       { provider: "codex", model: "gpt-5.5", threadId: "thread-1" },
       { provider: "codex", model: "gpt-5.6-sol", threadId: "thread-2" },
     ]) {
