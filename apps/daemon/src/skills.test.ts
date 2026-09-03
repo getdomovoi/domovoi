@@ -366,7 +366,9 @@ describe("skillRoots project scope", () => {
     expect(withoutProject.some((root) => root.scope === "project")).toBe(false)
     // Every catalog the daemon builds has to pass the project path, or a skill
     // living in the repository is invisible to the UI and to the agent.
+    // skillRoots builds paths with join, which uses backslashes on Windows, so
+    // the expectation is built the same way rather than written as posix.
     expect(withProject.filter((root) => root.scope === "project").map((root) => root.path))
-      .toContain("/src/acme-api/.domovoi/skills")
+      .toContain(join("/src/acme-api", ".domovoi", "skills"))
   })
 })
