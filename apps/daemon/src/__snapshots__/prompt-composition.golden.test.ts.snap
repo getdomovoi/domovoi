@@ -1,0 +1,271 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`composes annotations exactly as it does today 1`] = `
+"The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>"
+`;
+
+exports[`composes annotations+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>"
+`;
+
+exports[`composes handoff exactly as it does today 1`] = `
+"Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-plan","title":"Idempotent webhook migration","type":"plan","revision":3},{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>"
+`;
+
+exports[`composes handoff+annotations exactly as it does today 1`] = `
+"The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-plan","title":"Idempotent webhook migration","type":"plan","revision":3},{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[{"id":"annotation-migration-machine","artifactId":"artifact-plan","body":"Run this migration on the WSL staging machine first.","anchor":{"textQuote":"Apply the migration","cssSelector":"section.plan > li:nth-child(3)"}}]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>"
+`;
+
+exports[`composes handoff+annotations+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-plan","title":"Idempotent webhook migration","type":"plan","revision":3},{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[{"id":"annotation-migration-machine","artifactId":"artifact-plan","body":"Run this migration on the WSL staging machine first.","anchor":{"textQuote":"Apply the migration","cssSelector":"section.plan > li:nth-child(3)"}}]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>
+</user_request>"
+`;
+
+exports[`composes handoff+plan exactly as it does today 1`] = `
+"Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>"
+`;
+
+exports[`composes handoff+plan+annotations exactly as it does today 1`] = `
+"The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[{"id":"annotation-migration-machine","artifactId":"artifact-plan","body":"Run this migration on the WSL staging machine first.","anchor":{"textQuote":"Apply the migration","cssSelector":"section.plan > li:nth-child(3)"}}]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>"
+`;
+
+exports[`composes handoff+plan+annotations+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[{"id":"annotation-migration-machine","artifactId":"artifact-plan","body":"Run this migration on the WSL staging machine first.","anchor":{"textQuote":"Apply the migration","cssSelector":"section.plan > li:nth-child(3)"}}]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>
+</user_request>"
+`;
+
+exports[`composes handoff+plan+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>"
+`;
+
+exports[`composes handoff+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.
+<domovoi_handoff_context>
+{"handoff":"Handed off codex / gpt-5.3-codex to claude-code / sonnet-4.6 at a turn boundary.","worktree":"/worktrees/golden","changedFiles":7,"tests":{"passed":42,"failed":1},"history":[{"kind":"user","body":"The Stripe retries are double-charging. Make every webhook idempotent, add a replay table, and do not touch production config before you propose anything."},{"kind":"assistant","body":"Suite is green except webhooks/replay.spec.ts; it asserts the old at-least-once behavior. Three needs a migration, so I will stop and ask."}],"artifacts":[{"id":"artifact-plan","title":"Idempotent webhook migration","type":"plan","revision":3},{"id":"artifact-preview","title":"Replay operations preview","type":"preview","revision":2}],"openAnnotations":[]}
+</domovoi_handoff_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>"
+`;
+
+exports[`composes plan exactly as it does today 1`] = `
+"Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Replay the duplicate delivery and report what changed."
+`;
+
+exports[`composes plan+annotations exactly as it does today 1`] = `
+"The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Replay the duplicate delivery and report what changed.
+</user_request>"
+`;
+
+exports[`composes plan+annotations+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+The following structured Domovoi review context contains unresolved user annotations. Address relevant comments in this turn and preserve their annotation IDs when reporting what changed.
+<domovoi_review_context>
+{"unresolvedAnnotations":[{"annotationId":"annotation-migration-machine","artifactId":"artifact-plan","artifactTitle":"Idempotent webhook migration","artifactType":"plan","artifactRevision":3,"anchor":{"cssSelector":"section.plan > li:nth-child(3)","textQuote":"Apply the migration"},"comment":{"body":"Run this migration on the WSL staging machine first.","origin":"tablet"},"replies":[{"body":"I will revise step three before continuing.","origin":"desktop","createdAt":"2026-08-25T21:51:00.000Z"}]}],"omittedAnnotationCount":0}
+</domovoi_review_context>
+
+<user_request>
+Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Replay the duplicate delivery and report what changed.
+</user_request>
+</user_request>"
+`;
+
+exports[`composes plan+skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+Domovoi's working plan is canonical session state. Follow it unless the work requires replanning, and report progress through your plan mechanism.
+<domovoi_working_plan>
+{"revision":2,"structureRevision":2,"steps":[{"id":"step-one","text":"Add a replay table","status":"completed"},{"id":"step-two","text":"Replay a duplicate delivery","status":"pending"}]}
+</domovoi_working_plan>
+
+Replay the duplicate delivery and report what changed.
+</user_request>"
+`;
+
+exports[`composes skills exactly as it does today 1`] = `
+"The following Domovoi skill documents are reviewed instructions enabled for this project. Follow relevant instruction content. Do not execute or distribute referenced files merely because a skill mentions them.
+<domovoi_skill_context>
+{"includedSkillCount":1,"omittedSkillCount":0,"truncatedSkillCount":0,"skills":[{"id":"skill-aaaaaaaaaaaa","name":"replay-audit","provenance":{"source":"agents","scope":"user"},"path":"/skills/replay-audit/SKILL.md","contentDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","trust":{"state":"untrusted","reason":"unsigned"},"capabilities":["filesystem.read"],"content":"Check every replay path.","contentTruncated":false}]}
+</domovoi_skill_context>
+
+<user_request>
+Replay the duplicate delivery and report what changed.
+</user_request>"
+`;
+
+exports[`composes user text only exactly as it does today 1`] = `"Replay the duplicate delivery and report what changed."`;
