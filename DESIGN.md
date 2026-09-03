@@ -112,12 +112,12 @@ loses to both where they disagree.
 | Control height | 34px | unstated |
 | Touch target | 44px minimum | 44pt iOS, 48dp Android |
 
-The titlebar and header rows are unresolved against the desktop design file. `Domovoi Desktop.dc.html`
-draws one unified 44px bar that carries the project switcher, machine chip, permission mode, and
-approvals, with the macOS traffic lights inset into it, and it has no second header row. The shell
-implements that 44px bar. Until Claude Design says whether the desktop shell splits into a 38px
-titlebar above a 62px header, the app bar stays at 44px and `--shell-titlebar` and `--shell-header`
-are recorded but unused.
+Claude Design settled the desktop chrome on 2026-09-03 in `ui_kits/desktop/README.md` of the
+Domovoi Design System project. The desktop shell is a 38px titlebar carrying traffic lights, project,
+machine, version, and the pending count, and a separate 62px vertical rail carrying the mark, section
+switcher, settings, and avatar, which never collapses. There is no 62px horizontal header on desktop,
+so `--shell-header` does not apply to this surface. The tracked handoff file draws one unified 44px
+bar instead; the design system supersedes it.
 
 Other design-system rules that supersede the tracked handoff: theme scoping is `.theme-dark` and
 `.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
