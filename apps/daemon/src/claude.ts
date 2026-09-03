@@ -96,6 +96,7 @@ export type ClaudeQueryOptions = {
 export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
   initializationResult(): Promise<unknown>
   supportedModels(): Promise<unknown>
+  getContextUsage(): Promise<unknown>
   setModel(model?: string): Promise<void>
   setPermissionMode(mode: ClaudePermissionMode): Promise<void>
   applyFlagSettings(settings: { effortLevel?: typeof claudeEfforts[number] | null }): Promise<void>
@@ -371,7 +372,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   }
 
   async #consume(session: Session): Promise<void> {
-    for await (const message of session.query) this.#receive(session, message)
+    for await (const message of session.query) await this.#receive(session, message)
   }
 
   #endSession(session: Session, reason: string): void {
@@ -390,7 +391,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     })
   }
 
-  #receive(session: Session, message: ClaudeSdkMessage): void {
+  async #receive(session: Session, message: ClaudeSdkMessage): Promise<void> {
     const turnId = session.activeTurnId
     if (!turnId) return
     if (message.type === "stream_event") {
@@ -415,9 +416,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return
     }
     if (message.type === "result") {
-      const usage = normalizeProviderUsage(message)
-      if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
       const failed = message.is_error === true || message.subtype !== "success"
+      const context = failed ? {} : await claudeContextOccupancy(session.query)
+      const usage = normalizeProviderUsage({ ...message, ...context })
+      if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
       const error = failed ? resultError(message) : undefined
       this.#emit({
         type: "turn-completed",
@@ -653,6 +655,20 @@ function resultError(message: ClaudeSdkMessage): string {
     : []
   const subtype = message.subtype && message.subtype !== "success" ? message.subtype : ""
   return [subtype, errors.join("; ")].filter(Boolean).join(": ")
+}
+
+async function claudeContextOccupancy(
+  query: ClaudeQuery,
+): Promise<{ contextTokens?: unknown; contextWindowTokens?: unknown }> {
+  try {
+    const report = asRecord(await query.getContextUsage())
+    return {
+      contextTokens: report?.totalTokens,
+      contextWindowTokens: report?.rawMaxTokens,
+    }
+  } catch {
+    return {}
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

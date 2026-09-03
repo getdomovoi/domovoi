@@ -1902,14 +1902,22 @@ export class DomovoiDaemon {
       }
       if (method === "session.usage") {
         const params = paramsResult.data as RpcParams<"session.usage">
-        if (!this.#snapshot.sessions.some((session) => session.id === params.sessionId)) {
+        const session = this.#snapshot.sessions.find((session) => session.id === params.sessionId)
+        if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
+        }
+        const activeUsageContext = {
+          provider: session.runtime.provider,
+          model: session.runtime.model,
+          ...(session.providerThreadId ? { threadId: session.providerThreadId } : {}),
         }
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(this.#usageLedger.session(params.sessionId)),
+          result: rpcMethods[method].result.parse(
+            this.#usageLedger.session(params.sessionId, activeUsageContext),
+          ),
         })
         return
       }
@@ -4365,6 +4373,7 @@ export class DomovoiDaemon {
         this.#usageLedger.record({
           sessionId: session.id,
           turnId: event.turnId,
+          threadId: event.threadId,
           provider,
           model: session.runtime.model,
           usage: event.usage,

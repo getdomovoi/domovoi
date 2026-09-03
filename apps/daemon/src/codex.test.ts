@@ -758,4 +758,56 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.sent.at(-1)).toEqual({ id: 41, result: { decision: "accept" } })
     await adapter.close()
   })
+
+  it("emits current context from Codex token-usage notifications", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        tokenUsage: {
+          total: {
+            totalTokens: 510_000,
+            inputTokens: 480_000,
+            cachedInputTokens: 300_000,
+            outputTokens: 30_000,
+            reasoningOutputTokens: 20_000,
+          },
+          last: {
+            totalTokens: 128_000,
+            inputTokens: 120_000,
+            cachedInputTokens: 90_000,
+            outputTokens: 8_000,
+            reasoningOutputTokens: 5_000,
+          },
+          modelContextWindow: 200_000,
+        },
+      },
+    })
+
+    expect(event).toHaveBeenCalledWith({
+      type: "usage",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      usage: {
+        inputTokens: 120_000,
+        cachedInputTokens: 90_000,
+        outputTokens: 8_000,
+        reasoningTokens: 0,
+        totalTokens: 128_000,
+        contextTokens: 128_000,
+        contextWindowTokens: 200_000,
+        costSource: "unavailable",
+      },
+    })
+    await adapter.close()
+  })
 })

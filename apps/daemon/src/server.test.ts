@@ -830,6 +830,67 @@ describe("DomovoiDaemon", () => {
     reopened.close()
   })
 
+  it("reads context occupancy only for the active provider runtime and thread", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "codex"
+    session.runtime.model = "gpt-5.6-sol"
+    session.providerThreadId = "thread-current"
+    const result = {
+      sessionId: session.id,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+      costMicros: 0,
+      reportedCostTurns: 0,
+      unavailableCostTurns: 0,
+      byRuntime: [],
+    }
+    const usage = vi.fn(() => result)
+    const store = {
+      snapshot: structuredClone(snapshot),
+      load() { return structuredClone(this.snapshot) },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: {},
+      usageLedger: { record: vi.fn(), session: usage, close: vi.fn() },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: string }
+        if (message.id === "usage-current") resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "usage-current",
+      method: "session.usage",
+      params: { sessionId: session.id },
+    }))
+
+    await expect(response).resolves.toMatchObject({ result })
+    expect(usage).toHaveBeenCalledWith(session.id, {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      threadId: "thread-current",
+    })
+    socket.close()
+  })
+
   it("reports usage persistence failures without dropping later provider events", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!

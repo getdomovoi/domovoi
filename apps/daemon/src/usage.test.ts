@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import { describe, expect, it } from "vitest"
 
@@ -35,6 +36,19 @@ describe("provider usage telemetry", () => {
       totalTokens: 14,
       costSource: "unavailable",
     })
+  })
+
+  it("keeps context occupancy only when the provider reports a valid pair", () => {
+    expect(normalizeUsage({
+      contextTokens: 128_000,
+      contextWindowTokens: 200_000,
+    })).toMatchObject({ contextTokens: 128_000, contextWindowTokens: 200_000 })
+    expect(normalizeUsage({ contextTokens: 128_000 })).not.toHaveProperty("contextTokens")
+    expect(normalizeUsage({ contextWindowTokens: 200_000 })).not.toHaveProperty("contextWindowTokens")
+    expect(normalizeUsage({
+      contextTokens: 200_001,
+      contextWindowTokens: 200_000,
+    })).not.toHaveProperty("contextTokens")
   })
 
   it("preserves provider-reported aggregate tokens without inventing a breakdown", () => {
@@ -126,6 +140,62 @@ describe("provider usage telemetry", () => {
     })).toThrow("mixed currencies")
   })
 
+  it("returns current context occupancy without aggregating or crossing runtimes", () => {
+    const ledger = new UsageLedger()
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      threadId: "thread-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ contextTokens: 150_000, contextWindowTokens: 200_000 }),
+    })
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-2",
+      threadId: "thread-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ contextTokens: 90_000, contextWindowTokens: 200_000 }),
+    })
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-2",
+      threadId: "thread-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 4, outputTokens: 2 }),
+    })
+
+    expect(ledger.session("session-1", {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      threadId: "thread-1",
+    })).toMatchObject({ contextTokens: 90_000, contextWindowTokens: 200_000 })
+    for (const active of [
+      { provider: "claude-code", model: "gpt-5.6-sol", threadId: "thread-1" },
+      { provider: "codex", model: "gpt-5.5", threadId: "thread-1" },
+      { provider: "codex", model: "gpt-5.6-sol", threadId: "thread-2" },
+    ]) {
+      expect(ledger.session("session-1", active)).not.toHaveProperty("contextTokens")
+    }
+
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-3",
+      threadId: "thread-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 4, outputTokens: 2 }),
+    })
+    expect(ledger.session("session-1", {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      threadId: "thread-1",
+    })).not.toHaveProperty("contextTokens")
+    ledger.close()
+  })
+
   it.skipIf(process.platform === "win32")("keeps usage telemetry readable only by the owner", async () => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-permissions-"))
     const path = join(directory, "usage.sqlite")
@@ -149,21 +219,77 @@ describe("provider usage telemetry", () => {
       first.record({
         sessionId: "session-1",
         turnId: "turn-1",
+        threadId: "thread-1",
         provider: "grok",
         model: "grok-code-fast-1",
-        usage: normalizeUsage({ totalTokens: 120, cost: { amount: 0.03, currency: "USD" } }),
+        usage: normalizeUsage({
+          totalTokens: 120,
+          contextTokens: 64_000,
+          contextWindowTokens: 128_000,
+          cost: { amount: 0.03, currency: "USD" },
+        }),
       })
       first.close()
 
       const reopened = new UsageLedger(path)
-      expect(reopened.session("session-1")).toMatchObject({
+      expect(reopened.session("session-1", {
+        provider: "grok",
+        model: "grok-code-fast-1",
+        threadId: "thread-1",
+      })).toMatchObject({
         totalTokens: 120,
+        contextTokens: 64_000,
+        contextWindowTokens: 128_000,
         costMicros: 30_000,
         currency: "USD",
         reportedCostTurns: 1,
         byRuntime: [{ provider: "grok", model: "grok-code-fast-1", turns: 1 }],
       })
       reopened.close()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("adds context occupancy columns to an existing usage database", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-migration-"))
+    const path = join(directory, "state.sqlite")
+    try {
+      const legacy = new DatabaseSync(path)
+      legacy.exec(`
+        CREATE TABLE provider_usage (
+          session_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          input_tokens INTEGER NOT NULL,
+          cached_input_tokens INTEGER NOT NULL,
+          output_tokens INTEGER NOT NULL,
+          reasoning_tokens INTEGER NOT NULL,
+          total_tokens INTEGER NOT NULL,
+          cost_source TEXT NOT NULL,
+          cost_micros INTEGER,
+          currency TEXT,
+          PRIMARY KEY (session_id, turn_id)
+        );
+      `)
+      legacy.close()
+
+      const ledger = new UsageLedger(path)
+      ledger.record({
+        sessionId: "session-1",
+        turnId: "turn-1",
+        threadId: "thread-1",
+        provider: "claude-code",
+        model: "sonnet",
+        usage: normalizeUsage({ contextTokens: 32_000, contextWindowTokens: 200_000 }),
+      })
+      expect(ledger.session("session-1", {
+        provider: "claude-code",
+        model: "sonnet",
+        threadId: "thread-1",
+      })).toMatchObject({ contextTokens: 32_000, contextWindowTokens: 200_000 })
+      ledger.close()
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

@@ -327,7 +327,7 @@ describe("AcpAgentAdapter", () => {
     expect(events.filter((event) => event.type === "provider-disconnected")).toHaveLength(1)
   })
 
-  it("emits ACP aggregate usage without inventing a token breakdown", async () => {
+  it("emits ACP-reported context without inventing a token breakdown", async () => {
     const { adapter, peer } = createHarness()
     const events: AgentEvent[] = []
     peer.prompt.mockImplementation(() => new Promise(() => {}))
@@ -352,6 +352,8 @@ describe("AcpAgentAdapter", () => {
         outputTokens: 0,
         reasoningTokens: 0,
         totalTokens: 100,
+        contextTokens: 100,
+        contextWindowTokens: 10_000,
         costMicros: 10_000,
         currency: "USD",
         costSource: "provider-reported",
