@@ -486,11 +486,13 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Show provenance, scope, exact path, metadata, and source
 </li>
-<li>[x] Define capability manifests, content digests, and the signature and trust state model
+<li>[x] Define capability manifests, content digests, signature state, and trust state
+</li>
+<li>[x] Add a manual-review trust path that binds trust to the reviewed content digest and records the reviewing client in the audit log
 </li>
 <li>[ ] Verify skill signatures and produce a trusted state
 <ul>
-<li>The catalog only emits <code>unverified</code>, <code>unsigned</code>, or <code>invalid</code> signatures and <code>untrusted</code> or <code>blocked</code> trust, so Build auto rejects every skill. Blocked on unresolved decision 2.
+<li>Cryptographic signatures are still only <code>unverified</code>, <code>unsigned</code>, or <code>invalid</code>; trust currently comes only from manual review of an exact content digest. Blocked on unresolved decision 2.
 </li>
 </ul>
 </li>
@@ -629,6 +631,14 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Record transfer receipts and retain the source recovery checkpoint
 </li>
+<li>[x] Offer the move from the client: a transfer dialog that names the target machine, shows the source and target preflight, chooses between the Git bundle and a named remote ref, and states what travels with the session and what does not
+</li>
+<li>[x] Record every attempted move in the thread as a receipt that names the reason the daemon refused rather than a generic failure
+</li>
+<li>[x] Add a Fleet surface listing machine platform, architecture, version, connection, health, capabilities, session count for this machine, and the transport order the dialer would use
+</li>
+<li>[x] Manage paired devices from the Fleet surface, with revocation behind a confirmation and credential rotation that shows the new credential once
+</li>
 </ul>
 <p>Completion proof:</p>
 <ul>
@@ -640,7 +650,11 @@ td { color: var(--ink2); }
 </li>
 <li>revoked devices lose access promptly;
 </li>
-<li>interrupted transfers recover without losing either worktree.
+<li>interrupted transfers recover without losing either worktree;
+</li>
+<li>a session can be moved to another paired machine from the client, and a refused move names the reason the daemon gave;
+</li>
+<li>paired devices can be revoked and rotated from the client without reaching for a terminal.
 </li>
 </ul>
 <h2 id="goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</h2>
@@ -818,7 +832,7 @@ td { color: var(--ink2); }
 <ol>
 <li><strong>Provider handoff disclosure:</strong> required pre-switch loss disclosure, safe-boundary behavior, and the warning difference between switch and fork.
 </li>
-<li><strong>Skill signature authority:</strong> choose the trusted signer registry, revocation source, and key custody model. Current <code>.sig</code> declarations are content-digest-bound but are not cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
+<li><strong>Skill signature authority:</strong> choose the trusted signer registry, revocation source, and key custody model. Current <code>.sig</code> declarations are content-digest-bound but are not cryptographically verified, so a signature alone never grants trust. Manual review is the interim trust path: a person reviews an exact content digest on one machine, the daemon records that decision with the reviewing client, and the skill becomes trusted only while its content digest still matches. Any content change drops it back to untrusted. Cryptographic verification is still blocked on this decision, and an invalid signature stays blocked regardless of review.
 </li>
 <li><strong>Build auto execution boundary:</strong> whether Build auto authorizes repository-controlled code to run unattended inside a containment boundary. An allowlisted runner executes files the repository owns, so a standing rule for <code>pnpm test</code> whose body stays <code>vitest run</code> still permits a changed <code>vitest.config.ts</code>, setup file, plugin, or test file to run with the daemon user's permissions, and no command pattern can see that. If the answer is yes, bounded has to mean bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no, every package manager command is a hard gate and Build auto is narrower than this roadmap describes.
 </li>

@@ -1,0 +1,35 @@
+/* Minimal resets. Consumers link styles.css and get these. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: var(--primary); text-decoration: none; }
+a:hover { color: color-mix(in oklab, var(--primary) 82%, var(--foreground)); }
+
+code, kbd, pre, samp { font-family: var(--font-mono); }
+
+::selection {
+  background: color-mix(in oklab, var(--primary) 30%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+input::placeholder,
+textarea::placeholder { color: var(--faint); }

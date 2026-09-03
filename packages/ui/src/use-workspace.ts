@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferResult } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { openClaimConnection } from "./claim-socket"
@@ -385,6 +385,14 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return next
   }, [updateSnapshotFrom])
 
+  const reviewSkill = useCallback(async (
+    params: RpcParams<"skill.review">,
+  ): Promise<SkillSummary> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.reviewSkill(params)
+  }, [])
+
   const queryAudit = useCallback(async (
     params: AuditQueryParams,
     options?: DomovoiRequestOptions,
@@ -416,6 +424,43 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.listFleet(options)
+  }, [])
+
+  // Moving a session lands on the target machine, so the answer is returned to
+  // the caller rather than folded into this machine's snapshot.
+  const transferSession = useCallback(async (
+    params: Omit<SessionTransferParams, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<SessionTransferResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.transferSession(params, options)
+  }, [])
+
+  const listDevices = useCallback(async (
+    options?: DomovoiRequestOptions,
+  ): Promise<DevicesResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.listDevices(options)
+  }, [])
+
+  const revokeDevice = useCallback(async (
+    params: { deviceId: string },
+    options?: DomovoiRequestOptions,
+  ) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.revokeDevice(params, options)
+  }, [])
+
+  const rotateDevice = useCallback(async (
+    params: { deviceId: string },
+    options?: DomovoiRequestOptions,
+  ): Promise<DevicePairResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.rotateDevice(params, options)
   }, [])
 
   // Pairing reaches two machines: the one being paired answers the claim and
@@ -587,6 +632,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     loadSessionHistory,
     loadSessionEvidence,
     listFleet,
+    listDevices,
     machineCredential,
     listModels,
     listProviderSecrets,
@@ -609,9 +655,13 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     sendMessage,
     sessionUsage,
     setSkillEnabled,
+    reviewSkill,
     setAnnotationStatus,
     setRuntime,
     snapshot,
+    revokeDevice,
+    rotateDevice,
+    transferSession,
     subscribeTerminal,
     terminalClientId: clientIdRef.current,
     writeTerminal,

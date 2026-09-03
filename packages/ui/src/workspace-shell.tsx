@@ -47,6 +47,8 @@ import type {
   SessionHistoryCategory,
   SessionHistoryPage,
   SessionSummary,
+  SessionTransferParams,
+  SessionTransferResult,
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
@@ -57,7 +59,7 @@ import type {
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
-import { boundedClientThread, protocolVersion } from "@getdomovoi/protocol"
+import { boundedClientThread, protocolVersion, sessionTransferRefusalMessage } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -129,6 +131,7 @@ import {
   type MachineSwitchState,
 } from "./machine-switch-state.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
+import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
@@ -157,6 +160,7 @@ import {
 } from "./session-usage"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
+import { FleetView } from "./fleet-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
 import {
   DesktopFirstRunDialog,
@@ -1234,6 +1238,7 @@ export function Thread({
   onOpenExternal,
   onPairMachine,
   onSelectMachine,
+  onTransferSession,
   externalEditor = "system",
   usage = null,
 }: {
@@ -1260,6 +1265,9 @@ export function Thread({
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
+  onTransferSession?: ((
+    params: Omit<SessionTransferParams, "client">,
+  ) => Promise<SessionTransferResult>) | undefined
   externalEditor?: DesktopExternalEditor | undefined
   usage?: SessionUsage | null | undefined
 }) {
@@ -1270,6 +1278,8 @@ export function Thread({
   const [prompt, setPrompt] = useState("")
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
+  const [transferTargetId, setTransferTargetId] = useState<string | null>(null)
+  const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
@@ -1303,6 +1313,14 @@ export function Thread({
       </main>
     )
   }
+
+  const machines = fleet ?? [localMachineEntry(snapshot)]
+  const sourceMachine = machines.find(
+    (machine) => machine.id === (currentMachineId ?? snapshot.machine.id),
+  ) ?? localMachineEntry(snapshot)
+  const transferTarget = transferTargetId
+    ? machines.find((machine) => machine.id === transferTargetId)
+    : undefined
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
@@ -1521,6 +1539,16 @@ export function Thread({
             }
             return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
+          {transferReceipt ? (
+            <Alert
+              data-testid="session-transfer-receipt"
+              className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"
+            >
+              <CheckIcon />
+              <AlertTitle>{sessionTransferReceiptText(transferReceipt).title}</AlertTitle>
+              <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
+            </Alert>
+          ) : null}
           {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
@@ -1558,11 +1586,12 @@ export function Thread({
           <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <MachineSwitcher
-                machines={fleet ?? [localMachineEntry(snapshot)]}
+                machines={machines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
                 currentSessionCount={activeSessionCount(snapshot)}
                 onPairMachine={onPairMachine ? () => setPairingMachine(true) : undefined}
                 {...(onSelectMachine ? { onSelectMachine } : {})}
+                {...(onTransferSession ? { onTransferSession: setTransferTargetId } : {})}
               />
               {onPairMachine ? (
                 <PairMachineDialog
@@ -1570,6 +1599,25 @@ export function Thread({
                   onOpenChange={setPairingMachine}
                   onClaim={onPairMachine}
                   onPaired={() => setPairingMachine(false)}
+                />
+              ) : null}
+              {onTransferSession && transferTarget ? (
+                <TransferSessionDialog
+                  open
+                  onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
+                  session={active}
+                  source={sourceMachine}
+                  target={transferTarget}
+                  onTransfer={onTransferSession}
+                  onTransferred={(machineId) => {
+                    setTransferTargetId(null)
+                    onSelectMachine?.(machineId)
+                  }}
+                  onOutcome={(result) => setTransferReceipt({
+                    targetLabel: transferTarget.label,
+                    sourceLabel: sourceMachine.label,
+                    result,
+                  })}
                 />
               ) : null}
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
@@ -1597,6 +1645,32 @@ export function Thread({
       </div>}
     </main>
   )
+}
+
+export type SessionTransferReceipt = {
+  targetLabel: string
+  sourceLabel: string
+  result: SessionTransferResult
+}
+
+// A move is recorded in the thread whichever way it went, and a refusal says
+// what the daemon refused it for rather than a generic failure.
+export function sessionTransferReceiptText(receipt: SessionTransferReceipt): {
+  title: string
+  detail: string
+} {
+  if (receipt.result.outcome === "succeeded") {
+    return {
+      title: `Session moved to ${receipt.targetLabel}`,
+      detail: `Checkpoint ${receipt.result.checkpointCommit.slice(0, 12)} · ${receipt.sourceLabel} keeps a recovery checkpoint`,
+    }
+  }
+  return {
+    title: `Session did not move to ${receipt.targetLabel}`,
+    detail: receipt.result.outcome === "refused"
+      ? sessionTransferRefusalMessage(receipt.result.reason)
+      : `The transfer did not finish and the session stayed on ${receipt.sourceLabel}`,
+  }
 }
 
 // The handoff's machine menu reports active sessions, so sessions that are
@@ -2893,6 +2967,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     forkSession,
     getSkillInventory,
     createTerminal,
+    listDevices,
     listFleet,
     listModels,
     listProviderSecrets,
@@ -2914,6 +2989,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     resizeTerminal,
     resolveApproval,
     replyToAnnotation,
+    revokeDevice,
+    rotateDevice,
+    reviewSkill,
     sendMessage,
     sessionUsage,
     setSkillEnabled,
@@ -2922,6 +3000,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     snapshot,
     subscribeTerminal,
     terminalClientId,
+    transferSession,
     writeTerminal,
     authenticationRequired,
     protocolError,
@@ -3549,7 +3628,25 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             projectId={snapshot.project?.id}
             enablements={snapshot.skillEnablements}
             onSetSkillEnabled={setSkillEnabled}
+            onReviewSkill={async (input) => {
+              const reviewed = await reviewSkill(input)
+              setSkillsRefresh((current) => current + 1)
+              return reviewed
+            }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
+          />
+        ) : snapshot && surface === "fleet" ? (
+          <FleetView
+            connected={connected}
+            machines={fleet ?? [localMachineEntry(snapshot)]}
+            currentMachineId={attached?.machineId ?? snapshot.machine.id}
+            currentSessionCount={activeSessionCount(snapshot)}
+            onBack={() => setSurface("workspace")}
+            onOpenSkills={() => setSurface("skills")}
+            onListDevices={listDevices}
+            onRevokeDevice={revokeDevice}
+            onRotateDevice={rotateDevice}
+            onPairMachine={pairMachine}
           />
         ) : snapshot && surface === "audit" ? (
           <AuditLogView
@@ -3576,7 +3673,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}

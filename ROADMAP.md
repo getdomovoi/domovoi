@@ -208,10 +208,12 @@ Every ledger entry is now merged.
 
 - [x] Discover and deduplicate local skills
 - [x] Show provenance, scope, exact path, metadata, and source
-- [x] Define capability manifests, content digests, and the signature and trust state model
+- [x] Define capability manifests, content digests, signature state, and trust state
+- [x] Add a manual-review trust path that binds trust to the reviewed content digest and records
+  the reviewing client in the audit log
 - [ ] Verify skill signatures and produce a trusted state
-  - The catalog only emits `unverified`, `unsigned`, or `invalid` signatures and `untrusted` or
-    `blocked` trust, so Build auto rejects every skill. Blocked on unresolved decision 2.
+  - Cryptographic signatures are still only `unverified`, `unsigned`, or `invalid`; trust currently
+    comes only from manual review of an exact content digest. Blocked on unresolved decision 2.
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
@@ -296,6 +298,15 @@ fleet.
   `session.transfer`
   - `session.transfer` has no client caller; the machine chip only re-attaches to another daemon.
 - [x] Record transfer receipts and retain the source recovery checkpoint
+- [x] Offer the move from the client: a transfer dialog that names the target machine, shows the
+  source and target preflight, chooses between the Git bundle and a named remote ref, and states
+  what travels with the session and what does not
+- [x] Record every attempted move in the thread as a receipt that names the reason the daemon
+  refused rather than a generic failure
+- [x] Add a Fleet surface listing machine platform, architecture, version, connection, health,
+  capabilities, session count for this machine, and the transport order the dialer would use
+- [x] Manage paired devices from the Fleet surface, with revocation behind a confirmation and
+  credential rotation that shows the new credential once
 
 Completion proof:
 
@@ -304,7 +315,10 @@ Completion proof:
   by unit tests that stub `wsl.exe`;
 - repository bytes never flow through a filesystem sync layer;
 - revoked devices lose access promptly;
-- interrupted transfers recover without losing either worktree.
+- interrupted transfers recover without losing either worktree;
+- a session can be moved to another paired machine from the client, and a refused move names the
+  reason the daemon gave;
+- paired devices can be revoked and rotated from the client without reaching for a terminal.
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
@@ -429,15 +443,19 @@ dependent work starts.
    and the warning difference between switch and fork.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
    custody model. Current `.sig` declarations are content-digest-bound but are not
-   cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
+   cryptographically verified, so a signature alone never grants trust. Manual review is the
+   interim trust path: a person reviews an exact content digest on one machine, the daemon records
+   that decision with the reviewing client, and the skill becomes trusted only while its content
+   digest still matches. Any content change drops it back to untrusted. Cryptographic verification
+   is still blocked on this decision, and an invalid signature stays blocked regardless of review.
 3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
    run unattended inside a containment boundary. An allowlisted runner executes files the
    repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits
    a changed `vitest.config.ts`, setup file, plugin, or test file to run with the daemon user's
    permissions, and no command pattern can see that. If the answer is yes, bounded has to mean
    bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
-   every package manager command is a hard gate and Build auto is narrower than this roadmap
-   describes.
+    every package manager command is a hard gate and Build auto is narrower than this roadmap
+    describes.
 4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
 5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the

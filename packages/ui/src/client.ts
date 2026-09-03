@@ -22,6 +22,8 @@ import {
   type AuditExportParams,
   type AuditExportResult,
   type DeviceMachineCredentialParams,
+  type DevicePairResult,
+  type DevicesResult,
   type FleetSnapshot,
   type DeviceMachineCredentialResult,
   type DeviceSaveCredentialParams,
@@ -36,6 +38,8 @@ import {
   type Runtime,
   type SessionEvidence,
   type SessionHistoryPage,
+  type SessionTransferParams,
+  type SessionTransferResult,
   type SkillDocument,
   type SkillInventory,
   type SkillSummary,
@@ -606,6 +610,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("skill.setEnabled", params)
   }
 
+  reviewSkill(params: RpcParams<"skill.review">): Promise<SkillSummary> {
+    return this.request("skill.review", params)
+  }
+
   queryAudit(
     params: AuditQueryParams,
     options?: DomovoiRequestOptions,
@@ -615,6 +623,33 @@ export class DomovoiClient extends EventTarget {
 
   listFleet(options?: DomovoiRequestOptions): Promise<FleetSnapshot> {
     return this.request("fleet.list", {}, options)
+  }
+
+  // Moving a session is one request that either lands, is refused with a
+  // reason, or fails. The caller renders whichever came back.
+  transferSession(
+    params: Omit<SessionTransferParams, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<SessionTransferResult> {
+    return this.request("session.transfer", { ...params, client: this.kind }, options)
+  }
+
+  listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {
+    return this.request("device.list", {}, options)
+  }
+
+  revokeDevice(
+    params: { deviceId: string },
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"device.revoke">> {
+    return this.request("device.revoke", { ...params, client: this.kind }, options)
+  }
+
+  rotateDevice(
+    params: { deviceId: string },
+    options?: DomovoiRequestOptions,
+  ): Promise<DevicePairResult> {
+    return this.request("device.rotate", { ...params, client: this.kind }, options)
   }
 
   machineCredential(
