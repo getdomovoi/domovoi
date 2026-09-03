@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
+import { chmod, link, mkdir, open, readFile, rm, stat } from "node:fs/promises"
 import { dirname } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -59,7 +59,7 @@ async function readMachineIdentity(path: string): Promise<MachineIdentity | unde
   return parseMachineIdentity(contents)
 }
 
-async function publishMachineIdentity(
+export async function publishMachineIdentity(
   path: string,
   identity: MachineIdentity,
 ): Promise<MachineIdentity> {
@@ -73,19 +73,30 @@ async function publishMachineIdentity(
       await handle.close()
     }
     try {
-      await rename(temporaryPath, path)
+      // A hard link publishes the already-synced bytes without replacing an
+      // identity another start won first. Every overlapping publisher either
+      // creates this name or adopts the one that already owns it.
+      await link(temporaryPath, path)
+      return identity
     } catch (error) {
-      // Windows refuses to rename over a path another start still holds open.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
       const published = await readMachineIdentity(path)
       if (published) return published
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error
+      // An empty identity predates this claim and represents an interrupted
+      // initialization. The initialization lock serializes its replacement.
       await rm(path, { force: true })
-      await rename(temporaryPath, path)
+      try {
+        await link(temporaryPath, path)
+        return identity
+      } catch (retryError) {
+        if ((retryError as NodeJS.ErrnoException).code !== "EEXIST") throw retryError
+        const concurrent = await readMachineIdentity(path)
+        if (concurrent) return concurrent
+        throw retryError
+      }
     }
-    return identity
-  } catch (error) {
+  } finally {
     await rm(temporaryPath, { force: true })
-    throw error
   }
 }
 

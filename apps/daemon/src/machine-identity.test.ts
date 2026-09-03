@@ -5,7 +5,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { loadOrCreateMachineIdentity } from "./machine-identity.js"
+import { loadOrCreateMachineIdentity, publishMachineIdentity } from "./machine-identity.js"
 
 const scratchDirectories: string[] = []
 
@@ -103,6 +103,21 @@ describe("loadOrCreateMachineIdentity", () => {
     expect(new Set(identities.map((identity) => identity.id)).size).toBe(1)
     const stored = JSON.parse(await readFile(identityPath, "utf8")) as { id: string }
     expect(stored.id).toBe(identities[0]!.id)
+  })
+
+  it("publishes one winner without overwriting it when claims overlap", async () => {
+    const identityPath = join(await scratch(), "machine.json")
+    const candidates = Array.from({ length: 8 }, (_, index) => ({
+      id: `machine-${index.toString(16).padStart(32, "0")}`,
+      label: `candidate-${index}`,
+    }))
+
+    const published = await Promise.all(candidates.map(
+      (identity) => publishMachineIdentity(identityPath, identity),
+    ))
+
+    expect(new Set(published.map((identity) => identity.id)).size).toBe(1)
+    expect(JSON.parse(await readFile(identityPath, "utf8"))).toEqual(published[0])
   })
 
   it("waits for the identity published by the start that claimed initialization", async () => {
