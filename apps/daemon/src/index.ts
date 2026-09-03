@@ -11,6 +11,7 @@ import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
+import { installShutdownHandlers } from "./shutdown.js"
 import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
@@ -261,14 +262,12 @@ async function main() {
     : undefined
   if (published) await publishEndpointFile({ home: homedir(), ...published })
 
-  const shutdown = async () => {
-    await removeEndpointFile(homedir(), published)
-    await daemon.stop()
-    process.exit(0)
-  }
-
-  process.on("SIGINT", shutdown)
-  process.on("SIGTERM", shutdown)
+  installShutdownHandlers({
+    removeEndpointFile: () => removeEndpointFile(homedir(), published),
+    stopDaemon: () => daemon.stop(),
+    exit: (code) => process.exit(code),
+    writeStderr: (text) => process.stderr.write(text),
+  })
 }
 
 await main()
