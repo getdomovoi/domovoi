@@ -1319,6 +1319,55 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("asks the daemon for session token and cost totals", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const usage = client.sessionUsage("session-1")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "session.usage",
+      params: { sessionId: "session-1" },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessionId: "session-1",
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningTokens: 0,
+        totalTokens: 1200,
+        costMicros: 4500,
+        currency: "USD",
+        reportedCostTurns: 1,
+        unavailableCostTurns: 2,
+        byRuntime: [{
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300,
+          reasoningTokens: 0,
+          totalTokens: 1200,
+          costMicros: 4500,
+          currency: "USD",
+          turns: 3,
+        }],
+      },
+    })
+    await expect(usage).resolves.toMatchObject({
+      totalTokens: 1200,
+      reportedCostTurns: 1,
+      unavailableCostTurns: 2,
+    })
+    client.disconnect()
+  })
+
   it("reads skill source by discovered ID", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
     const initial = client.connect()
@@ -1600,5 +1649,135 @@ describe("DomovoiClient machine credentials", () => {
       machineId: `machine-${"c".repeat(32)}`,
       credential: "n".repeat(43),
     })
+  })
+})
+
+describe("DomovoiClient session transfer and devices", () => {
+  const NativeWebSocket = globalThis.WebSocket
+
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = NativeWebSocket
+  })
+
+  async function connected() {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    return { client, socket }
+  }
+
+  it("moves a session with a bundle by default", async () => {
+    const { client, socket } = await connected()
+
+    const moving = client.transferSession({
+      sessionId: "session-billing",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      method: "git-bundle",
+    })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: {
+        outcome: "succeeded",
+        workspacePath: "/worktrees/session-billing",
+        checkpointCommit: "c".repeat(40),
+      },
+    })
+
+    await expect(moving).resolves.toEqual({
+      outcome: "succeeded",
+      workspacePath: "/worktrees/session-billing",
+      checkpointCommit: "c".repeat(40),
+    })
+    expect(sent.method).toBe("session.transfer")
+    expect(sent.params).toEqual({
+      sessionId: "session-billing",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      method: "git-bundle",
+      client: "web",
+    })
+    client.disconnect()
+  })
+
+  it("moves a session over a named remote when asked to", async () => {
+    const { client, socket } = await connected()
+
+    const moving = client.transferSession({
+      sessionId: "session-billing",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      method: "remote-ref",
+      remote: "origin",
+    })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { outcome: "refused", reason: "target-unreachable" } })
+
+    await expect(moving).resolves.toEqual({ outcome: "refused", reason: "target-unreachable" })
+    expect(sent.params).toEqual({
+      sessionId: "session-billing",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      method: "remote-ref",
+      remote: "origin",
+      client: "web",
+    })
+    client.disconnect()
+  })
+
+  it("lists paired devices through the daemon", async () => {
+    const { client, socket } = await connected()
+
+    const listing = client.listDevices()
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { devices: [] } })
+
+    await expect(listing).resolves.toEqual({ devices: [] })
+    expect(sent.method).toBe("device.list")
+    expect(sent.params).toEqual({})
+    client.disconnect()
+  })
+
+  it("revokes a paired device through the daemon", async () => {
+    const { client, socket } = await connected()
+    const device = {
+      id: `device-${"d".repeat(32)}`,
+      label: "studio-ipad",
+      pairedAt: "2026-08-31T12:00:00.000Z",
+      revokedAt: "2026-09-01T12:00:00.000Z",
+    }
+
+    const revoking = client.revokeDevice({ deviceId: device.id })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { device } })
+
+    await expect(revoking).resolves.toEqual({ device })
+    expect(sent.method).toBe("device.revoke")
+    expect(sent.params).toEqual({ deviceId: device.id, client: "web" })
+    client.disconnect()
+  })
+
+  it("rotates a paired device credential through the daemon", async () => {
+    const { client, socket } = await connected()
+    const device = {
+      id: `device-${"e".repeat(32)}`,
+      label: "studio-ipad",
+      pairedAt: "2026-08-31T12:00:00.000Z",
+    }
+
+    const rotating = client.rotateDevice({ deviceId: device.id })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { device, token: "f".repeat(43) } })
+
+    await expect(rotating).resolves.toEqual({ device, token: "f".repeat(43) })
+    expect(sent.method).toBe("device.rotate")
+    expect(sent.params).toEqual({ deviceId: device.id, client: "web" })
+    client.disconnect()
   })
 })

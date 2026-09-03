@@ -1,0 +1,134 @@
+/* Domovoi colour system.
+
+   Contract: the shadcn/ui token set, plus four documented Domovoi extensions
+   (--success, --warning, --info, --faint) and the semantic state ramps the
+   approval, offline and handoff surfaces need.
+
+   Every value is oklch. Dark is the default; light is the same contract inverted,
+   not a re-skin. Scope with .theme-dark / .theme-light on a wrapper, or let
+   :root take the dark default. */
+
+:root,
+.theme-dark {
+  color-scheme: dark;
+
+  /* --- shadcn core --- */
+  --background: oklch(0.165 0.005 285);
+  --foreground: oklch(0.96 0.003 285);
+  --card: oklch(0.205 0.006 285);
+  --card-foreground: oklch(0.96 0.003 285);
+  --popover: oklch(0.205 0.006 285);
+  --popover-foreground: oklch(0.96 0.003 285);
+  --primary: oklch(0.72 0.17 275);
+  --primary-foreground: oklch(0.17 0.03 275);
+  --secondary: oklch(0.235 0.006 285);
+  --secondary-foreground: oklch(0.89 0.003 285);
+  --muted: oklch(0.265 0.007 285);
+  --muted-foreground: oklch(0.66 0.01 285);
+  --accent: oklch(0.235 0.006 285);
+  --accent-foreground: oklch(0.96 0.003 285);
+  --destructive: oklch(0.63 0.19 25);
+  --destructive-foreground: oklch(0.98 0.01 25);
+  --border: oklch(0.305 0.008 285);
+  --input: oklch(0.305 0.008 285);
+  --ring: oklch(0.72 0.17 275);
+  --sidebar: oklch(0.185 0.005 285);
+  --sidebar-foreground: oklch(0.89 0.003 285);
+  --sidebar-border: oklch(0.305 0.008 285);
+
+  /* --- Domovoi extensions --- */
+  --success: oklch(0.75 0.14 158);
+  --success-foreground: oklch(0.17 0.03 158);
+  --warning: oklch(0.79 0.13 62);
+  --warning-foreground: oklch(0.2 0.04 62);
+  --info: oklch(0.72 0.1 240);
+  --info-foreground: oklch(0.17 0.03 240);
+
+  /* third neutral text step, below --muted-foreground. machine metadata lives here */
+  --faint: oklch(0.53 0.01 285);
+  /* second foreground step, above --muted-foreground. sidebar labels, secondary titles */
+  --strong: oklch(0.89 0.003 285);
+  /* terminal, diff and code surfaces. always recedes from --background */
+  --code: oklch(0.145 0.004 285);
+  /* the desk the app window sits on. only used behind a chrome frame */
+  --desk: oklch(0.11 0.004 285);
+  /* modal scrim */
+  --overlay: oklch(0.11 0.004 285 / 0.78);
+
+  /* --- state ramps: pending approval (warning) --- */
+  --warn-bg: oklch(0.235 0.045 62);
+  --warn-bg-deep: oklch(0.19 0.03 62);
+  --warn-border: oklch(0.38 0.08 62);
+  --warn-fg: oklch(0.94 0.05 68);
+  --warn-dim: oklch(0.76 0.07 62);
+
+  /* --- state ramps: failure and offline (destructive) --- */
+  --danger-bg: oklch(0.28 0.08 25);
+  --danger-border: oklch(0.4 0.11 25);
+  --danger-fg: oklch(0.93 0.04 25);
+  --danger-dim: oklch(0.78 0.06 25);
+  --danger-on: oklch(0.24 0.07 25);
+
+  /* --- state ramps: handoff and notice (info) --- */
+  --info-bg: oklch(0.22 0.02 240);
+  --info-border: oklch(0.32 0.05 240);
+  --info-fg: oklch(0.86 0.05 240);
+  --info-dim: oklch(0.8 0.08 240);
+}
+
+.theme-light {
+  color-scheme: light;
+
+  --background: oklch(0.995 0.001 285);
+  --foreground: oklch(0.22 0.01 285);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.01 285);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.01 285);
+  --primary: oklch(0.52 0.2 275);
+  --primary-foreground: oklch(0.99 0.005 275);
+  --secondary: oklch(0.955 0.004 285);
+  --secondary-foreground: oklch(0.33 0.011 285);
+  --muted: oklch(0.935 0.005 285);
+  --muted-foreground: oklch(0.5 0.012 285);
+  --accent: oklch(0.955 0.004 285);
+  --accent-foreground: oklch(0.22 0.01 285);
+  --destructive: oklch(0.55 0.2 25);
+  --destructive-foreground: oklch(0.99 0.01 25);
+  --border: oklch(0.9 0.006 285);
+  --input: oklch(0.9 0.006 285);
+  --ring: oklch(0.52 0.2 275);
+  --sidebar: oklch(0.975 0.003 285);
+  --sidebar-foreground: oklch(0.33 0.011 285);
+  --sidebar-border: oklch(0.9 0.006 285);
+
+  --success: oklch(0.52 0.13 158);
+  --success-foreground: oklch(0.99 0.01 158);
+  --warning: oklch(0.6 0.13 62);
+  --warning-foreground: oklch(0.99 0.01 62);
+  --info: oklch(0.52 0.14 240);
+  --info-foreground: oklch(0.99 0.01 240);
+
+  --faint: oklch(0.63 0.011 285);
+  --strong: oklch(0.33 0.011 285);
+  --code: oklch(0.972 0.003 285);
+  --desk: oklch(0.925 0.005 285);
+  --overlay: oklch(0.3 0.01 285 / 0.38);
+
+  --warn-bg: oklch(0.975 0.025 85);
+  --warn-bg-deep: oklch(0.945 0.045 85);
+  --warn-border: oklch(0.86 0.09 75);
+  --warn-fg: oklch(0.38 0.09 62);
+  --warn-dim: oklch(0.52 0.09 62);
+
+  --danger-bg: oklch(0.965 0.02 25);
+  --danger-border: oklch(0.87 0.07 25);
+  --danger-fg: oklch(0.42 0.14 25);
+  --danger-dim: oklch(0.54 0.14 25);
+  --danger-on: oklch(0.99 0.01 25);
+
+  --info-bg: oklch(0.965 0.02 240);
+  --info-border: oklch(0.87 0.05 240);
+  --info-fg: oklch(0.36 0.1 240);
+  --info-dim: oklch(0.48 0.11 240);
+}

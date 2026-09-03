@@ -25,6 +25,12 @@ export const transferStreamRefusalSchema = z.enum([
 ])
 
 export type TransferStreamRefusal = z.infer<typeof transferStreamRefusalSchema>
+
+export const transferStreamRefusalMessage: Record<TransferStreamRefusal, string> = {
+  "chunk-out-of-order": "The transferred repository bytes arrived out of order, so the move was rejected",
+  "transfer-too-large": "This session carries more than a transfer can send, so the move was rejected",
+  "digest-mismatch": "The transferred repository bytes did not match their digest, so the move was rejected",
+}
 export type TransferChunk = z.infer<typeof transferChunkSchema>
 
 export type TransferAcceptance =

@@ -15,6 +15,7 @@ import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
 import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
 import { SqliteFleetRegistry, type FleetRegistry } from "./fleet-registry.js"
+import { SqliteSkillReviews, type SkillReviews } from "./skill-reviews.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
 
 type StoredWorkspace = {
@@ -64,6 +65,7 @@ export interface WorkspaceStore {
   readonly devices?: DeviceRegistry
   readonly fleet?: FleetRegistry
   readonly transferReceipts?: TransferReceipts
+  readonly skillReviews?: SkillReviews
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
   loadProject?(projectId: string): ProjectWorkspaceState | undefined
@@ -411,6 +413,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly devices: SqliteDeviceRegistry
   readonly fleet: SqliteFleetRegistry
   readonly transferReceipts: SqliteTransferReceipts
+  readonly skillReviews: SqliteSkillReviews
   readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
   #writer: WorkspaceWriter | undefined
@@ -445,6 +448,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.devices = new SqliteDeviceRegistry(this.#database)
     this.fleet = new SqliteFleetRegistry(this.#database)
     this.transferReceipts = new SqliteTransferReceipts(this.#database)
+    this.skillReviews = new SqliteSkillReviews(this.#database)
 
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")

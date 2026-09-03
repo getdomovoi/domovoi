@@ -84,6 +84,42 @@ describe("audit RPC contracts", () => {
       manifest: { version: 1, capabilities: ["filesystem.read"] },
     })).toEqual(expect.objectContaining({ enabled: true }))
   })
+
+  it("binds a manual trust review to the exact reviewed content digest", () => {
+    expect(rpcMethods["skill.review"].params.parse({
+      id: "skill-111111111111",
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      decision: "trust",
+    })).toEqual({
+      id: "skill-111111111111",
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      decision: "trust",
+    })
+    expect(rpcMethods["skill.review"].params.safeParse({
+      id: "skill-111111111111",
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      decision: "verify-signature",
+    }).success).toBe(false)
+    expect(rpcMethods["skill.review"].params.safeParse({
+      id: "skill-111111111111",
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      decision: "revoke",
+      authority: "someone-else",
+    }).success).toBe(false)
+    expect(rpcMethods["skill.review"].result.safeParse({
+      id: "skill-111111111111",
+      name: "repo-audit",
+      description: "Audit a repository.",
+      path: "/home/dev/.agents/skills/repo-audit/SKILL.md",
+      scope: "user",
+      source: "agents",
+      manifest: { version: 1, capabilities: [] },
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      signature: { state: "unsigned" },
+      trust: { state: "trusted", reason: "manual-review", authority: "manual review · desktop" },
+    }).success).toBe(true)
+  })
+
   const entry = {
     id: "audit-1",
     occurredAt: "2026-08-29T12:00:00.000Z",

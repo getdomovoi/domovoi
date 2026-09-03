@@ -47,8 +47,11 @@ import type {
   SessionHistoryCategory,
   SessionHistoryPage,
   SessionSummary,
+  SessionTransferParams,
+  SessionTransferResult,
   SkillSummary,
   SkillInventorySource,
+  SessionUsage,
   SystemEmergencyStopResult,
   ThreadItem,
   WorkspaceSnapshot,
@@ -56,7 +59,7 @@ import type {
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
 } from "@getdomovoi/protocol"
-import { boundedClientThread, protocolVersion } from "@getdomovoi/protocol"
+import { boundedClientThread, protocolVersion, sessionTransferRefusalMessage } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -128,6 +131,7 @@ import {
   type MachineSwitchState,
 } from "./machine-switch-state.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
+import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
@@ -148,8 +152,15 @@ import {
 } from "./preview-bridge"
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
+import {
+  formatTokenCount,
+  sessionUsageCostNote,
+  sessionUsageFetchKey,
+  sessionUsageReportedCost,
+} from "./session-usage"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
+import { FleetView } from "./fleet-view"
 import { ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
 import {
   DesktopFirstRunDialog,
@@ -202,6 +213,7 @@ import {
   CommandPalette,
   type CommandPalettePlatform,
 } from "./command-palette"
+import { useAppearanceTheme, type WorkspaceTheme } from "./appearance"
 import { PromptEditorDialog } from "./prompt-editor"
 import { WorkspaceNotificationTracker } from "./desktop-notifications"
 import {
@@ -212,6 +224,7 @@ import {
   openProjectFromDesktop,
   type DesktopExternalEditor,
   type DesktopWindowBridge,
+  type WorkspaceWindowDecoration,
 } from "./desktop-platform"
 
 const TerminalPane = lazy(async () => {
@@ -401,6 +414,7 @@ export function AppBar({
   emergencyStopOutcome,
   emergencyStopError,
   bridge,
+  windowDecoration = "domovoi",
   onOpenProject,
   onPauseAll,
   onOpenCommands,
@@ -412,11 +426,13 @@ export function AppBar({
   emergencyStopOutcome: SystemEmergencyStopResult | null
   emergencyStopError: string | null
   bridge?: DesktopWindowBridge | undefined
+  windowDecoration?: WorkspaceWindowDecoration | undefined
   onOpenProject: () => void
   onPauseAll: () => void
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
 }) {
+  const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
     ? `Pause all failed: ${emergencyStopError}`
     : emergencyStopOutcome
@@ -424,7 +440,7 @@ export function AppBar({
       : null
   return (
     <header className="electron-drag flex h-11 shrink-0 items-center border-b bg-sidebar px-3">
-      {bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
+      {ownsDecoration && bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
@@ -475,8 +491,70 @@ export function AppBar({
           </span>
         ) : null}
       </div>
-      {bridge ? <WindowControls bridge={bridge} /> : null}
+      {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
+  )
+}
+
+export function SessionUsageSummary({ usage }: { usage: SessionUsage | null }) {
+  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
+  const cost = sessionUsageReportedCost(usage)
+  const note = sessionUsageCostNote(usage)
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="sm" className="font-machine text-[10px] text-faint">
+          {formatTokenCount(usage.totalTokens)} tokens
+          <span aria-hidden="true">·</span>
+          {cost ?? "cost unavailable"}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-[320px]">
+        <DropdownMenuLabel>Session usage</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Input</span>
+            <span className="font-machine">{formatTokenCount(usage.inputTokens)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Cached input</span>
+            <span className="font-machine">{formatTokenCount(usage.cachedInputTokens)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Output</span>
+            <span className="font-machine">{formatTokenCount(usage.outputTokens)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Reasoning</span>
+            <span className="font-machine">{formatTokenCount(usage.reasoningTokens)}</span>
+          </div>
+        </div>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>By provider and model</DropdownMenuLabel>
+        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
+          {usage.byRuntime.length === 0 ? (
+            <span className="text-muted-foreground">No recorded turns yet.</span>
+          ) : usage.byRuntime.map((runtime) => (
+            <div key={`${runtime.provider}/${runtime.model}`} className="flex items-start justify-between gap-3">
+              <span className="flex min-w-0 flex-col">
+                <span className="font-medium">{providerDisplayName(runtime.provider)}</span>
+                <span className="truncate font-machine text-[9.5px] text-faint">{runtime.model}</span>
+              </span>
+              <span className="flex shrink-0 flex-col items-end font-machine text-[9.5px]">
+                <span>{formatTokenCount(runtime.totalTokens)} tokens</span>
+                <span className="text-faint">{runtime.turns === 1 ? "1 turn" : `${runtime.turns} turns`}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+        {note ? <>
+          <DropdownMenuSeparator />
+          <p className="m-0 px-2 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">{note}</p>
+        </> : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1160,7 +1238,9 @@ export function Thread({
   onOpenExternal,
   onPairMachine,
   onSelectMachine,
+  onTransferSession,
   externalEditor = "system",
+  usage = null,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -1185,7 +1265,11 @@ export function Thread({
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
+  onTransferSession?: ((
+    params: Omit<SessionTransferParams, "client">,
+  ) => Promise<SessionTransferResult>) | undefined
   externalEditor?: DesktopExternalEditor | undefined
+  usage?: SessionUsage | null | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
@@ -1194,6 +1278,8 @@ export function Thread({
   const [prompt, setPrompt] = useState("")
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
+  const [transferTargetId, setTransferTargetId] = useState<string | null>(null)
+  const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
@@ -1227,6 +1313,14 @@ export function Thread({
       </main>
     )
   }
+
+  const machines = fleet ?? [localMachineEntry(snapshot)]
+  const sourceMachine = machines.find(
+    (machine) => machine.id === (currentMachineId ?? snapshot.machine.id),
+  ) ?? localMachineEntry(snapshot)
+  const transferTarget = transferTargetId
+    ? machines.find((machine) => machine.id === transferTargetId)
+    : undefined
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
@@ -1382,6 +1476,7 @@ export function Thread({
             <span>{active.changedFiles} files</span>
             <span className="text-success">{active.testsPassed} pass</span>
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
+            <SessionUsageSummary usage={usage} />
           </div>
         </div>
         {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : (
@@ -1444,6 +1539,16 @@ export function Thread({
             }
             return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
+          {transferReceipt ? (
+            <Alert
+              data-testid="session-transfer-receipt"
+              className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"
+            >
+              <CheckIcon />
+              <AlertTitle>{sessionTransferReceiptText(transferReceipt).title}</AlertTitle>
+              <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
+            </Alert>
+          ) : null}
           {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
@@ -1481,11 +1586,12 @@ export function Thread({
           <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <MachineSwitcher
-                machines={fleet ?? [localMachineEntry(snapshot)]}
+                machines={machines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
                 currentSessionCount={activeSessionCount(snapshot)}
                 onPairMachine={onPairMachine ? () => setPairingMachine(true) : undefined}
                 {...(onSelectMachine ? { onSelectMachine } : {})}
+                {...(onTransferSession ? { onTransferSession: setTransferTargetId } : {})}
               />
               {onPairMachine ? (
                 <PairMachineDialog
@@ -1493,6 +1599,25 @@ export function Thread({
                   onOpenChange={setPairingMachine}
                   onClaim={onPairMachine}
                   onPaired={() => setPairingMachine(false)}
+                />
+              ) : null}
+              {onTransferSession && transferTarget ? (
+                <TransferSessionDialog
+                  open
+                  onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
+                  session={active}
+                  source={sourceMachine}
+                  target={transferTarget}
+                  onTransfer={onTransferSession}
+                  onTransferred={(machineId) => {
+                    setTransferTargetId(null)
+                    onSelectMachine?.(machineId)
+                  }}
+                  onOutcome={(result) => setTransferReceipt({
+                    targetLabel: transferTarget.label,
+                    sourceLabel: sourceMachine.label,
+                    result,
+                  })}
                 />
               ) : null}
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
@@ -1520,6 +1645,32 @@ export function Thread({
       </div>}
     </main>
   )
+}
+
+export type SessionTransferReceipt = {
+  targetLabel: string
+  sourceLabel: string
+  result: SessionTransferResult
+}
+
+// A move is recorded in the thread whichever way it went, and a refusal says
+// what the daemon refused it for rather than a generic failure.
+export function sessionTransferReceiptText(receipt: SessionTransferReceipt): {
+  title: string
+  detail: string
+} {
+  if (receipt.result.outcome === "succeeded") {
+    return {
+      title: `Session moved to ${receipt.targetLabel}`,
+      detail: `Checkpoint ${receipt.result.checkpointCommit.slice(0, 12)} · ${receipt.sourceLabel} keeps a recovery checkpoint`,
+    }
+  }
+  return {
+    title: `Session did not move to ${receipt.targetLabel}`,
+    detail: receipt.result.outcome === "refused"
+      ? sessionTransferRefusalMessage(receipt.result.reason)
+      : `The transfer did not finish and the session stayed on ${receipt.sourceLabel}`,
+  }
 }
 
 // The handoff's machine menu reports active sessions, so sessions that are
@@ -2816,6 +2967,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     forkSession,
     getSkillInventory,
     createTerminal,
+    listDevices,
     listFleet,
     listModels,
     listProviderSecrets,
@@ -2837,13 +2989,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     resizeTerminal,
     resolveApproval,
     replyToAnnotation,
+    revokeDevice,
+    rotateDevice,
+    reviewSkill,
     sendMessage,
+    sessionUsage,
     setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
     snapshot,
     subscribeTerminal,
     terminalClientId,
+    transferSession,
     writeTerminal,
     authenticationRequired,
     protocolError,
@@ -2947,7 +3104,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       error: "",
     }
   })
-  const { dockCollapsed, externalEditor, layouts, sidebarCollapsed, surface } = workspaceUi
+  const {
+    dockCollapsed,
+    externalEditor,
+    layouts,
+    sidebarCollapsed,
+    surface,
+    theme,
+    windowDecoration,
+  } = workspaceUi
+  const [activeWindowDecoration, setActiveWindowDecoration] = useState<WorkspaceWindowDecoration>("domovoi")
+  useAppearanceTheme(theme)
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
   const setSidebarCollapsed = (collapsed: boolean) => {
@@ -2968,6 +3135,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       restoreFocusAfterUpdate(collapsed ? dockExpandButtonRef : dockCollapseButtonRef)
     }
   }
+  const changeWindowDecoration = (decoration: WorkspaceWindowDecoration) => {
+    setWorkspaceUi((current) => ({ ...current, windowDecoration: decoration }))
+    if (!windowBridge) return
+    setWorkspaceError("")
+    void windowBridge.setWindowDecoration(decoration).then((saved) => {
+      if (!saved) setWorkspaceError("The window decoration preference could not be saved")
+    }, (cause: unknown) => {
+      setWorkspaceError(
+        cause instanceof Error ? cause.message : "The window decoration preference could not be saved",
+      )
+    })
+  }
   const setSurface = (nextSurface: WorkspaceSurface) => {
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
@@ -2982,6 +3161,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
+  const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
@@ -3167,12 +3347,37 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setSurface("skills")
     },
   })
+  const usageSessionId = snapshot?.activeSessionId ?? null
+  const usageFetchKey = sessionUsageFetchKey(snapshot)
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
   useEffect(() => {
     notificationTrackerRef.current = new WorkspaceNotificationTracker()
   }, [clientKind, rpcUrl])
+
+  useEffect(() => {
+    if (!windowBridge) return
+    let active = true
+    void windowBridge.getWindowDecoration().then((decoration) => {
+      if (active) setActiveWindowDecoration(decoration)
+    }, () => {})
+    return () => { active = false }
+  }, [windowBridge])
+
+  useEffect(() => {
+    if (!connected || !usageFetchKey || !usageSessionId) {
+      setActiveSessionUsage(null)
+      return
+    }
+    let active = true
+    void sessionUsage(usageSessionId).then((next) => {
+      if (active) setActiveSessionUsage(next)
+    }, () => {
+      if (active) setActiveSessionUsage(null)
+    })
+    return () => { active = false }
+  }, [connected, sessionUsage, usageFetchKey, usageSessionId])
 
   useEffect(() => {
     if (!firstRunEnabled || !snapshot) return
@@ -3375,7 +3580,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
@@ -3393,12 +3598,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onBack={() => setSurface("workspace")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
+            theme={theme}
+            onThemeChange={(next: WorkspaceTheme) => {
+              setWorkspaceUi((current) => ({ ...current, theme: next }))
+            }}
             {...(firstRunEnabled ? { onResetFirstRun: resetFirstRun } : {})}
             {...(windowBridge ? {
               externalEditor,
               onExternalEditorChange: (editor: DesktopExternalEditor) => {
                 setWorkspaceUi((current) => ({ ...current, externalEditor: editor }))
               },
+            } : {})}
+            {...(windowBridge ? {
+              windowDecoration,
+              activeWindowDecoration,
+              onWindowDecorationChange: changeWindowDecoration,
             } : {})}
           />
         ) : snapshot && surface === "skills" ? (
@@ -3414,7 +3628,25 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             projectId={snapshot.project?.id}
             enablements={snapshot.skillEnablements}
             onSetSkillEnabled={setSkillEnabled}
+            onReviewSkill={async (input) => {
+              const reviewed = await reviewSkill(input)
+              setSkillsRefresh((current) => current + 1)
+              return reviewed
+            }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
+          />
+        ) : snapshot && surface === "fleet" ? (
+          <FleetView
+            connected={connected}
+            machines={fleet ?? [localMachineEntry(snapshot)]}
+            currentMachineId={attached?.machineId ?? snapshot.machine.id}
+            currentSessionCount={activeSessionCount(snapshot)}
+            onBack={() => setSurface("workspace")}
+            onOpenSkills={() => setSurface("skills")}
+            onListDevices={listDevices}
+            onRevokeDevice={revokeDevice}
+            onRotateDevice={rotateDevice}
+            onPairMachine={pairMachine}
           />
         ) : snapshot && surface === "audit" ? (
           <AuditLogView
@@ -3441,7 +3673,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize="20" minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} externalEditor={externalEditor} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize="32" minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}

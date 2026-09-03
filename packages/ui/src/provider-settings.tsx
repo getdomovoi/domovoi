@@ -9,11 +9,15 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { workspaceThemeLabel, type WorkspaceTheme } from "./appearance.js"
 import {
   desktopExternalActionLabel,
   isDesktopExternalEditor,
+  workspaceWindowDecorationLabel,
   type DesktopExternalEditor,
+  type WorkspaceWindowDecoration,
 } from "./desktop-platform.js"
+import { cn } from "./lib/utils"
 import { providerDisplayName, providerStatusLabel } from "./runtime.js"
 
 export type ProviderSecretStatus = {
@@ -29,14 +33,22 @@ type ProviderSettingsProps = {
   onOpenSkills: () => void
   onOpenAudit: () => void
   onResetFirstRun?: () => void
+  theme: WorkspaceTheme
+  onThemeChange: (theme: WorkspaceTheme) => void
 } & (
   | {
     externalEditor: DesktopExternalEditor
     onExternalEditorChange: (editor: DesktopExternalEditor) => void
+    windowDecoration: WorkspaceWindowDecoration
+    activeWindowDecoration: WorkspaceWindowDecoration
+    onWindowDecorationChange: (decoration: WorkspaceWindowDecoration) => void
   }
   | {
     externalEditor?: undefined
     onExternalEditorChange?: undefined
+    windowDecoration?: undefined
+    activeWindowDecoration?: undefined
+    onWindowDecorationChange?: undefined
   }
 )
 
@@ -44,19 +56,31 @@ export function ProviderSettings({
   providers,
   secrets,
   externalEditor,
+  theme,
+  windowDecoration,
+  activeWindowDecoration,
   onBack,
   onOpenSkills,
   onOpenAudit,
   onResetFirstRun,
   onExternalEditorChange,
+  onThemeChange,
+  onWindowDecorationChange,
 }: ProviderSettingsProps) {
-  const [section, setSection] = useState<"providers" | "external-editor">("providers")
+  const [section, setSection] = useState<"providers" | "external-editor" | "appearance">("providers")
   const editorCapability = externalEditor !== undefined && onExternalEditorChange !== undefined
     ? { editor: externalEditor, onChange: onExternalEditorChange }
     : undefined
+  const decorationCapability = windowDecoration !== undefined
+    && activeWindowDecoration !== undefined
+    && onWindowDecorationChange !== undefined
+    ? { decoration: windowDecoration, active: activeWindowDecoration, onChange: onWindowDecorationChange }
+    : undefined
   const activeSection = section === "external-editor" && editorCapability
     ? "external-editor"
-    : "providers"
+    : section === "appearance"
+      ? "appearance"
+      : "providers"
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -67,6 +91,7 @@ export function ProviderSettings({
         </Button>
         <div className="px-2 py-2 text-base font-semibold">Settings</div>
         <Button variant={activeSection === "providers" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("providers")}>Providers</Button>
+        <Button variant={activeSection === "appearance" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("appearance")}>Appearance</Button>
         {onResetFirstRun ? <Button variant="ghost" className="justify-start" onClick={onResetFirstRun}>First-run setup</Button> : null}
         {editorCapability ? <Button variant={activeSection === "external-editor" ? "secondary" : "ghost"} className="justify-start" onClick={() => setSection("external-editor")}>External editor</Button> : null}
         <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
@@ -81,6 +106,7 @@ export function ProviderSettings({
               Workspace
             </Button>
             <Button variant="ghost" className="min-h-11" onClick={() => setSection("providers")}>Providers</Button>
+            <Button variant="ghost" className="min-h-11" onClick={() => setSection("appearance")}>Appearance</Button>
             {onResetFirstRun ? <Button variant="ghost" className="min-h-11" onClick={onResetFirstRun}>First-run setup</Button> : null}
             {editorCapability ? <Button variant="ghost" className="min-h-11" onClick={() => setSection("external-editor")}>External editor</Button> : null}
             <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
@@ -89,6 +115,16 @@ export function ProviderSettings({
 
           {activeSection === "external-editor" && editorCapability ? (
             <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
+          ) : activeSection === "appearance" ? (
+            <AppearanceSettings
+              theme={theme}
+              onThemeChange={onThemeChange}
+              {...(decorationCapability ? {
+                windowDecoration: decorationCapability.decoration,
+                activeWindowDecoration: decorationCapability.active,
+                onWindowDecorationChange: decorationCapability.onChange,
+              } : {})}
+            />
           ) : <>
           <h1 className="m-0 text-[17px] font-semibold">Providers on this machine</h1>
           <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
@@ -155,6 +191,147 @@ export function ProviderSettings({
         </main>
       </ScrollArea>
     </div>
+  )
+}
+
+const themeOptions: readonly {
+  value: WorkspaceTheme
+  description: string
+  preview: { shell: string; panel: string; accent: string }
+}[] = [
+  {
+    value: "system",
+    description: "Follows the operating system and changes with it while Domovoi runs.",
+    preview: { shell: "#3a3a40", panel: "#d8d8dc", accent: "#7c6cf5" },
+  },
+  {
+    value: "dark",
+    description: "Always uses the dark palette.",
+    preview: { shell: "#19191b", panel: "#2b2b30", accent: "#9c8cff" },
+  },
+  {
+    value: "light",
+    description: "Always uses the light palette.",
+    preview: { shell: "#f6f6f8", panel: "#ffffff", accent: "#5945d8" },
+  },
+]
+
+const windowDecorationOptions: readonly {
+  value: WorkspaceWindowDecoration
+  description: string
+}[] = [
+  { value: "domovoi", description: "Domovoi draws the title bar and its own window controls." },
+  { value: "system", description: "The operating system draws the window frame and controls." },
+]
+
+export function AppearanceSettings({
+  theme,
+  windowDecoration,
+  activeWindowDecoration,
+  onThemeChange,
+  onWindowDecorationChange,
+}: {
+  theme: WorkspaceTheme
+  onThemeChange: (theme: WorkspaceTheme) => void
+} & (
+  | {
+    windowDecoration: WorkspaceWindowDecoration
+    activeWindowDecoration: WorkspaceWindowDecoration
+    onWindowDecorationChange: (decoration: WorkspaceWindowDecoration) => void
+  }
+  | {
+    windowDecoration?: undefined
+    activeWindowDecoration?: undefined
+    onWindowDecorationChange?: undefined
+  }
+)) {
+  const decorationPending = windowDecoration !== undefined
+    && activeWindowDecoration !== undefined
+    && windowDecoration !== activeWindowDecoration
+
+  return (
+    <>
+      <h1 className="m-0 text-[17px] font-semibold">Appearance and window</h1>
+      <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
+        These preferences stay on this client. They are never sent to the execution machine.
+      </p>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Theme</CardTitle>
+          <CardDescription>System follows the operating system setting live.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div role="radiogroup" aria-label="Theme" className="grid gap-3 sm:grid-cols-3">
+            {themeOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={theme === option.value}
+                onClick={() => onThemeChange(option.value)}
+                className={cn(
+                  "flex min-h-11 flex-col gap-2 rounded-lg border p-3 text-left transition-colors",
+                  theme === option.value ? "border-primary bg-accent" : "hover:bg-accent/60",
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className="flex h-12 overflow-hidden rounded-md border"
+                  style={{ background: option.preview.shell }}
+                >
+                  <span className="m-1.5 w-3 rounded-sm" style={{ background: option.preview.accent }} />
+                  <span className="my-1.5 mr-1.5 flex-1 rounded-sm" style={{ background: option.preview.panel }} />
+                </span>
+                <span className="font-medium">{workspaceThemeLabel(option.value)}</span>
+                <span className="text-[11px] leading-relaxed text-muted-foreground">
+                  {option.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {windowDecoration !== undefined && onWindowDecorationChange ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Window decoration</CardTitle>
+            <CardDescription>
+              Restart Domovoi to apply a decoration change. The running window keeps its current frame.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div role="radiogroup" aria-label="Window decoration" className="grid gap-3 sm:grid-cols-2">
+              {windowDecorationOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={windowDecoration === option.value}
+                  onClick={() => onWindowDecorationChange(option.value)}
+                  className={cn(
+                    "flex min-h-11 flex-col gap-1 rounded-lg border p-3 text-left transition-colors",
+                    windowDecoration === option.value ? "border-primary bg-accent" : "hover:bg-accent/60",
+                  )}
+                >
+                  <span className="font-medium">{workspaceWindowDecorationLabel(option.value)}</span>
+                  <span className="text-[11px] leading-relaxed text-muted-foreground">
+                    {option.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {decorationPending && activeWindowDecoration !== undefined ? (
+              <p role="status" className="m-0 text-[11.5px] leading-relaxed text-warning">
+                This window still uses the {workspaceWindowDecorationLabel(activeWindowDecoration)} decoration.
+                Restart Domovoi to switch to {workspaceWindowDecorationLabel(windowDecoration)}.
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+    </>
   )
 }
 
