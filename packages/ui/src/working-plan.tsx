@@ -40,6 +40,11 @@ export function WorkingPlanCard({
         <span className="font-machine text-[9.5px] text-faint">revision {plan.revision}</span>
       </div>
 
+      {stepCount === 0 ? (
+        <p className="m-0 px-3.5 py-3 text-[11.5px] leading-relaxed text-muted-foreground">
+          No steps yet. The agent adds them as it plans, and you can write the first one yourself.
+        </p>
+      ) : (
       <ul aria-label="Plan steps" className="m-0 flex list-none flex-col p-0">
         {plan.steps.map((step, index) => {
           const state = stepStateLabel(step)
@@ -80,6 +85,7 @@ export function WorkingPlanCard({
           )
         })}
       </ul>
+      )}
 
       {plan.pendingEdit ? (
         <>
