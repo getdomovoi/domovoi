@@ -314,6 +314,19 @@ describe("provider usage telemetry", () => {
     })
     expect(normalizeProviderUsage({ usage: { totalTokens: 145 } })).toMatchObject({ totalTokens: 145 })
     expect(normalizeProviderUsage({ tokens: { total: 146 } })).toMatchObject({ totalTokens: 146 })
+    expect(normalizeProviderUsage({
+      usage: {
+        inputTokens: 120,
+        outputTokens: 8,
+        reasoningOutputTokens: 5,
+        totalTokens: 128,
+      },
+    })).toMatchObject({
+      inputTokens: 120,
+      outputTokens: 3,
+      reasoningTokens: 5,
+      totalTokens: 128,
+    })
     expect(() => normalizeProviderUsage({ usage: { input_tokens: 10, total_tokens: 9 } })).toThrow(
       "at least as large as known tokens",
     )
