@@ -1,5 +1,7 @@
 import { WebSocket } from "ws"
 
+import { protocolVersion, systemHelloResultSchema } from "@getdomovoi/protocol"
+
 import type { MachineConnection } from "./machine-dial.js"
 
 export const defaultMachineHandshakeTimeoutMs = 15_000
@@ -19,6 +21,14 @@ function refusesPlaintext(endpoint: string): boolean {
   }
 }
 
+// A handshake that fails the snapshot schema is usually a version step, and the
+// version it names is the one this dialer has to report.
+function spokenProtocolVersion(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const spoken = (value as Record<string, unknown>).protocolVersion
+  return typeof spoken === "string" ? spoken : undefined
+}
+
 type PendingCall = {
   resolve: (result: unknown) => void
   reject: (error: Error) => void
@@ -29,6 +39,7 @@ type PendingCall = {
 // workspace client.
 export function openMachineSocket(input: {
   endpoint: string
+  machineId: string
   credential: string
   handshakeTimeoutMs?: number
   callTimeoutMs?: number
@@ -154,13 +165,26 @@ export function openMachineSocket(input: {
 
     socket.on("open", () => {
       // The credential is presented once, in the handshake, before any transfer
-      // call is made.
+      // call is made, and the peer's answer is checked before this daemon says
+      // anything else to it.
       send("system.hello", {
-        client: "desktop",
+        client: "machine",
+        machineId: input.machineId,
         clientVersion: "0.0.1",
+        protocolVersion,
         authToken: input.credential,
       }).then(
-        () => {
+        (result: unknown) => {
+          const snapshot = systemHelloResultSchema.safeParse(result)
+          if (!snapshot.success) {
+            const spoken = spokenProtocolVersion(result)
+            scheduler.clearTimeout(handshake)
+            reject(spoken === undefined
+              ? new Error("That machine answered the handshake with an invalid result")
+              : new Error(`That machine speaks protocol ${spoken}, this daemon speaks ${protocolVersion}`))
+            socket.close()
+            return
+          }
           ready = true
           scheduler.clearTimeout(handshake)
           resolve({
