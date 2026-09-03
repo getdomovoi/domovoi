@@ -12,6 +12,7 @@ import {
 
 import {
   agentPromptWithWorkingPlan,
+  blockWorkingPlanForApproval,
   clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
   finalizePendingWorkingPlanEdit,
@@ -421,17 +422,12 @@ describe("human working-plan edits", () => {
     ])
   })
 
-  it("discards only the named draft and clears approval blockers atomically", () => {
+  it("binds only an unambiguous active step and clears approval blockers atomically", () => {
     const current = plan({
       revision: 3,
       steps: [
         { id: "step-inspect", text: "Inspect the handler", status: "completed" },
-        {
-          id: "step-test",
-          text: "Add a regression test",
-          status: "in-progress",
-          blocker: { kind: "approval", approvalId: "approval-a" },
-        },
+        { id: "step-test", text: "Add a regression test", status: "in-progress" },
       ],
       pendingEdit: {
         id: "edit-a",
@@ -456,12 +452,38 @@ describe("human working-plan edits", () => {
     expect(discarded.receipt.disposition).toBe("discarded")
     expect(discarded.plan.pendingEdit).toBeUndefined()
 
-    const cleared = clearWorkingPlanApprovalBlockers(
+    const blocked = blockWorkingPlanForApproval(
       [discarded.plan],
+      "session-a",
+      "approval-a",
+      nextAt,
+    )
+    expect(blocked.changed).toBe(true)
+    expect(blocked.plans[0]!.steps[1]!.blocker).toEqual({
+      kind: "approval",
+      approvalId: "approval-a",
+    })
+
+    const cleared = clearWorkingPlanApprovalBlockers(
+      blocked.plans,
       new Set(["approval-a"]),
       nextAt,
     )
     expect(cleared.changedSessionIds).toEqual(["session-a"])
     expect(cleared.plans[0]!.steps[1]!.blocker).toBeUndefined()
+
+    const ambiguous = blockWorkingPlanForApproval(
+      [plan({
+        steps: [
+          { id: "step-a", text: "First", status: "in-progress" },
+          { id: "step-b", text: "Second", status: "in-progress" },
+        ],
+      })],
+      "session-a",
+      "approval-b",
+      nextAt,
+    )
+    expect(ambiguous.changed).toBe(false)
+    expect(ambiguous.plans[0]!.steps.every((step) => step.blocker === undefined)).toBe(true)
   })
 })

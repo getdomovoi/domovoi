@@ -386,6 +386,37 @@ export function discardPendingWorkingPlanEdit(
   return { plan, receipt }
 }
 
+export function blockWorkingPlanForApproval(
+  plans: WorkingPlan[],
+  sessionId: string,
+  approvalId: string,
+  updatedAt: string,
+): { plans: WorkingPlan[], changed: boolean } {
+  const planIndex = plans.findIndex((plan) => plan.sessionId === sessionId)
+  if (planIndex === -1) return { plans, changed: false }
+  const plan = plans[planIndex]!
+  const activeIndexes = plan.steps.flatMap((step, index) => (
+    step.status === "in-progress" ? [index] : []
+  ))
+  if (activeIndexes.length !== 1) return { plans, changed: false }
+  const stepIndex = activeIndexes[0]!
+  if (plan.steps[stepIndex]!.blocker) return { plans, changed: false }
+
+  const steps = [...plan.steps]
+  steps[stepIndex] = {
+    ...steps[stepIndex]!,
+    blocker: { kind: "approval", approvalId },
+  }
+  const next = [...plans]
+  next[planIndex] = workingPlanSchema.parse({
+    ...plan,
+    revision: plan.revision + 1,
+    steps,
+    updatedAt,
+  })
+  return { plans: next, changed: true }
+}
+
 export function clearWorkingPlanApprovalBlockers(
   plans: WorkingPlan[],
   approvalIds: ReadonlySet<string>,
