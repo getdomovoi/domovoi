@@ -1564,6 +1564,34 @@ describe("DomovoiDaemon", () => {
       requestedAt: new Date().toISOString(),
       execution: snapshot.approvals[0]!.execution,
     }]
+    snapshot.workingPlans = [{
+      sessionId: session.id,
+      revision: 2,
+      structureRevision: 1,
+      steps: [{
+        id: "step-before-restart",
+        text: "Finish the interrupted turn",
+        status: "in-progress",
+        blocker: { kind: "approval", approvalId: "approval-before-restart" },
+      }],
+      pendingEdit: {
+        id: "edit-before-restart",
+        basedOnStructureRevision: 0,
+        baseSteps: [],
+        draftSteps: [{
+          id: "step-after-restart",
+          text: "Keep the human recovery note",
+        }],
+        status: "conflicted",
+        submittedAt: "2026-08-30T11:55:00.000Z",
+        submittedBy: {
+          client: "desktop",
+          connectionId: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+      createdAt: "2026-08-30T11:50:00.000Z",
+      updatedAt: "2026-08-30T11:55:00.000Z",
+    }]
     const archived = snapshot.sessions[1]!
     archived.state = "archived"
     archived.archiveRequestedAt = "2026-08-30T12:00:00.000Z"
@@ -1643,6 +1671,20 @@ describe("DomovoiDaemon", () => {
     expect(recovered.sessions.find(({ id }) => id === session.id)).not.toHaveProperty("activeTurnId")
     expect(recovered.sessions.find(({ id }) => id === archived.id)).toEqual(archivedBefore)
     expect(recovered.approvals).toEqual([])
+    expect(recovered.workingPlans).toEqual([
+      expect.objectContaining({
+        sessionId: session.id,
+        revision: 3,
+        steps: [expect.not.objectContaining({ blocker: expect.anything() })],
+        pendingEdit: expect.objectContaining({
+          id: "edit-before-restart",
+          status: "conflicted",
+          draftSteps: [expect.objectContaining({
+            text: "Keep the human recovery note",
+          })],
+        }),
+      }),
+    ])
     expect(recovered.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({
         sessionId: session.id,
@@ -9485,6 +9527,9 @@ describe("DomovoiDaemon", () => {
       { ...snapshot.approvals[0]!, id: "approval-billing", sessionId: session.id, providerRequestId: 11 },
       { ...snapshot.approvals[0]!, id: "approval-other", sessionId: snapshot.sessions[1]!.id, providerRequestId: 12 },
     ]
+    const workingPlanBefore = structuredClone(snapshot.workingPlans.find(
+      (plan) => plan.sessionId === session.id,
+    ))
     const activateTurns = deferLiveTurns(snapshot)
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
@@ -9575,6 +9620,9 @@ describe("DomovoiDaemon", () => {
     expect(agent.stopThread).toHaveBeenCalledWith("thread-billing")
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "deny")
     expect(store.snapshot.approvals).toEqual([expect.objectContaining({ id: "approval-other" })])
+    expect(store.snapshot.workingPlans.find(
+      (plan) => plan.sessionId === session.id,
+    )).toEqual(workingPlanBefore)
     expect(terminalProcesses.get(sessionWorkspacePath)?.kill).toHaveBeenCalledOnce()
     expect(terminalProcesses.get(otherWorkspacePath)?.kill).not.toHaveBeenCalled()
     expect(workspaceService.checkpoint).toHaveBeenCalledWith(sessionWorkspacePath, "before session archive", expect.any(AbortSignal))
@@ -9643,6 +9691,9 @@ describe("DomovoiDaemon", () => {
     running.push(recovered)
     await recovered.start()
     expect(store.snapshot.sessions[0]).toMatchObject({ state: "archived", archiveCheckpoint: "d".repeat(40) })
+    expect(store.snapshot.workingPlans.find(
+      (plan) => plan.sessionId === session.id,
+    )).toEqual(workingPlanBefore)
     expect(store.snapshot.sessions[0]).not.toHaveProperty("workspacePath")
     expect(agent.stopThread).toHaveBeenCalledTimes(2)
   })
