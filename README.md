@@ -88,5 +88,8 @@ the verified command set are summarized in [`AGENTS.md`](AGENTS.md).
 ## Licensing
 
 Domovoi is open-core. This repository contains the Apache-2.0-licensed daemon, protocol, clients,
-and local transports. Future hosted account, billing, relay, encrypted vault, and team-policy
-services may live outside this repository.
+and local transports. The daemon's Claude Code session adapter depends at runtime on the
+proprietary `@anthropic-ai/claude-agent-sdk`, installed from npm under Anthropic's terms rather
+than redistributed here; that exception is recorded in [`docs/licensing.md`](docs/licensing.md).
+Future hosted account, billing, relay, encrypted vault, and team-policy services may live outside
+this repository.

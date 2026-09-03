@@ -587,7 +587,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Authenticate every connection even inside a tailnet
 </li>
-<li>[x] Bootstrap <code>domovoid</code> through a version-pinned, checksummed install script
+<li>[x] Bootstrap <code>domovoid</code> through a version-pinned install script that checks the archive against a caller-supplied SHA-256 and the <code>SHA256SUMS</code> the release publishes; signature verification is tracked under signed GitHub Release artifacts
 </li>
 <li>[x] Install and supervise the daemon for the user who asked, through a systemd user unit, a launchd agent, and a Windows logon task
 <ul>
