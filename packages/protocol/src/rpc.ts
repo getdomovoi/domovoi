@@ -64,7 +64,9 @@ import {
   skillDocumentSchema,
   skillIdSchema,
   skillInventorySchema,
+  skillReviewDecisionSchema,
   skillSummariesSchema,
+  skillSummarySchema,
 } from "./skills.js"
 
 export const requestIdSchema = z.union([
@@ -1105,6 +1107,14 @@ export const rpcMethods = {
     }).strict(),
     result: workspaceSnapshotSchema,
   },
+  "skill.review": {
+    params: z.object({
+      id: skillIdSchema,
+      contentDigest: skillContentDigestSchema,
+      decision: skillReviewDecisionSchema,
+    }).strict(),
+    result: skillSummarySchema,
+  },
   "runtime.models": {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
@@ -1208,6 +1218,7 @@ export const rpcMethodMutations = {
   "system.pauseAll": "mutating",
   "system.emergencyStop": "mutating",
   "skill.setEnabled": "mutating",
+  "skill.review": "mutating",
   "provider.refresh": "mutating",
   "annotation.create": "mutating",
   "annotation.reply": "mutating",
@@ -1273,6 +1284,7 @@ export type AuditQueryParams = z.infer<typeof auditQueryParamsSchema>
 export type AuditQueryPage = z.infer<typeof auditQueryPageSchema>
 export type AuditExportParams = z.infer<typeof auditExportParamsSchema>
 export type AuditExportResult = z.infer<typeof auditExportResultSchema>
+export type SessionUsage = z.infer<typeof sessionUsageSchema>
 export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
 export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
 export type TestRunEvidence = z.infer<typeof testRunEvidenceSchema>

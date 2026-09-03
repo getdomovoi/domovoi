@@ -61,6 +61,8 @@ describe("ProviderSettings", () => {
       onBack: vi.fn(),
       onOpenSkills: vi.fn(),
       onOpenAudit: vi.fn(),
+      theme: "dark" as const,
+      onThemeChange: vi.fn(),
     }
     const webMarkup = renderToStaticMarkup(<ProviderSettings {...shared} />)
     const desktopMarkup = renderToStaticMarkup(
@@ -68,6 +70,9 @@ describe("ProviderSettings", () => {
         {...shared}
         externalEditor="cursor"
         onExternalEditorChange={vi.fn()}
+        windowDecoration="domovoi"
+        activeWindowDecoration="domovoi"
+        onWindowDecorationChange={vi.fn()}
         onResetFirstRun={vi.fn()}
       />,
     )
@@ -92,8 +97,13 @@ describe("ProviderSettings", () => {
         onBack={vi.fn()}
         onOpenSkills={vi.fn()}
         onOpenAudit={vi.fn()}
+        theme="dark"
+        onThemeChange={vi.fn()}
         externalEditor="cursor"
         onExternalEditorChange={vi.fn()}
+        windowDecoration="domovoi"
+        activeWindowDecoration="domovoi"
+        onWindowDecorationChange={vi.fn()}
         onResetFirstRun={vi.fn()}
       />,
     )

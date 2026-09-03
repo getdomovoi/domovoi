@@ -44,6 +44,35 @@ describe("createDesktopWindowBridge", () => {
     expect(target.invoke).not.toHaveBeenCalledWith("domovoi:clipboard-write", expect.anything())
   })
 
+  it("reports the running window decoration and refuses unknown values", async () => {
+    const decorations: unknown[] = ["system", "gnome"]
+    const target = {
+      invoke: vi.fn(async () => decorations.shift()),
+      send: vi.fn(),
+      on: vi.fn(),
+      removeListener: vi.fn(),
+    } satisfies IpcRendererAdapter
+    const bridge = createDesktopWindowBridge(target, "linux")
+
+    await expect(bridge.getWindowDecoration()).resolves.toBe("system")
+    await expect(bridge.getWindowDecoration()).rejects.toThrow(
+      "Desktop returned an invalid window decoration",
+    )
+  })
+
+  it("validates a window decoration before persisting it", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "linux")
+
+    await expect(bridge.setWindowDecoration("system")).resolves.toBe(true)
+    expect(target.invoke).toHaveBeenCalledWith("domovoi:window-decoration-set", "system")
+
+    await expect(
+      bridge.setWindowDecoration("gnome" as never),
+    ).rejects.toThrow("Window decoration is invalid")
+    expect(target.invoke).toHaveBeenCalledTimes(1)
+  })
+
   it("validates annotation capture replies before they reach the renderer", async () => {
     const target = ipc()
     const bridge = createDesktopWindowBridge(target, "linux")
