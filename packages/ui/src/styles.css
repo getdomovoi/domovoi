@@ -105,6 +105,13 @@
   --danger-fg: oklch(0.42 0.14 25);
   --danger-dim: oklch(0.54 0.14 25);
   --radius: 0.65rem;
+  --shell-rail: 62px;
+  --shell-sidebar: 240px;
+  --shell-thread: 760px;
+  --shell-inspector: 280px;
+  --shell-titlebar: 38px;
+  --shell-header: 62px;
+  --shell-control: 34px;
   --shadow-md: 0 10px 30px oklch(0.2 0.01 285 / 0.1);
   --shadow-lg: 0 18px 48px oklch(0.2 0.01 285 / 0.16);
   --shadow-xl: 0 26px 72px oklch(0.2 0.01 285 / 0.2);
