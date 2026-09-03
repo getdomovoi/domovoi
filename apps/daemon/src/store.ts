@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url"
 import { Worker } from "node:worker_threads"
 
 import {
+  executionResolutionSchema,
   protocolVersion,
+  resolvedExecutionSchema,
   workspaceSnapshotSchema,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -126,53 +128,96 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function migrateStoredWorkspace(value: unknown): {
   snapshot: WorkspaceSnapshot
   repaired: boolean
+  inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }>
 } {
-  if (!isRecord(value) || !isRecord(value.machine) || !isRecord(value.project)) {
-    return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false)
+  if (!isRecord(value)) {
+    return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false, [])
   }
-  const machineId = value.machine.id
-  const storedMachineId = value.project.machineId
-  if (
-    typeof machineId !== "string"
-    || machineId.length === 0
-    || typeof storedMachineId !== "string"
-    || storedMachineId === machineId
-  ) return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(value), false)
-
   const migrated = structuredClone(value)
-  const project = migrated.project as Record<string, unknown>
-  project.machineId = machineId
-  const projectId = project.id
-  const sessions = Array.isArray(migrated.sessions) ? migrated.sessions : []
-  const validSessions = sessions.filter((session): session is Record<string, unknown> =>
-    isRecord(session)
-    && typeof session.id === "string"
-    && session.id.length > 0
-    && session.projectId === projectId
-  )
-  const activeSession = validSessions.find((session) => session.id === migrated.activeSessionId)
-  const receiptSession = activeSession ?? validSessions[0]
-  if (receiptSession && Array.isArray(migrated.thread)) {
-    migrated.thread.push({
-      id: `system-machine-reference-${randomUUID()}`,
-      sessionId: receiptSession.id,
-      kind: "system",
-      body: "Stored project machine reference repaired",
-      detail: `Updated project.machineId from ${storedMachineId} to ${machineId} while preserving project state.`,
-      createdAt: new Date().toISOString(),
-    })
+  let repaired = false
+  const inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }> = []
+  if (Array.isArray(migrated.approvals)) {
+    for (const approval of migrated.approvals) {
+      if (!isRecord(approval) || executionResolutionSchema.safeParse(approval.execution).success) continue
+      approval.execution = { state: "unresolved", reason: "unsupported-syntax" }
+      repaired = true
+    }
   }
-  return finalizeStoredWorkspace(workspaceSnapshotSchema.parse(migrated), true)
+  if (Array.isArray(migrated.approvalRules)) {
+    for (const rule of migrated.approvalRules) {
+      if (!isRecord(rule)) continue
+      const legacyTextOnly = rule.status === undefined
+      const unsupportedRecord = rule.status === "active"
+        && !resolvedExecutionSchema.safeParse(rule.execution).success
+      if (!legacyTextOnly && !unsupportedRecord) continue
+      const inactivatedAt = new Date().toISOString()
+      rule.status = "inactive"
+      rule.inactiveReason = legacyTextOnly ? "legacy-text-only" : "unsupported-record-version"
+      rule.inactivatedAt = inactivatedAt
+      delete rule.execution
+      delete rule.replacedByRuleId
+      repaired = true
+      if (typeof rule.id === "string" && typeof rule.projectId === "string") {
+        inactivatedRules.push({ id: rule.id, projectId: rule.projectId, inactivatedAt })
+      }
+    }
+  }
+
+  if (isRecord(migrated.machine) && isRecord(migrated.project)) {
+    const machineId = migrated.machine.id
+    const storedMachineId = migrated.project.machineId
+    if (
+      typeof machineId === "string"
+      && machineId.length > 0
+      && typeof storedMachineId === "string"
+      && storedMachineId !== machineId
+    ) {
+      const project = migrated.project
+      project.machineId = machineId
+      const projectId = project.id
+      const sessions = Array.isArray(migrated.sessions) ? migrated.sessions : []
+      const validSessions = sessions.filter((session): session is Record<string, unknown> =>
+        isRecord(session)
+        && typeof session.id === "string"
+        && session.id.length > 0
+        && session.projectId === projectId
+      )
+      const activeSession = validSessions.find((session) => session.id === migrated.activeSessionId)
+      const receiptSession = activeSession ?? validSessions[0]
+      if (receiptSession && Array.isArray(migrated.thread)) {
+        migrated.thread.push({
+          id: `system-machine-reference-${randomUUID()}`,
+          sessionId: receiptSession.id,
+          kind: "system",
+          body: "Stored project machine reference repaired",
+          detail: `Updated project.machineId from ${storedMachineId} to ${machineId} while preserving project state.`,
+          createdAt: new Date().toISOString(),
+        })
+      }
+      repaired = true
+    }
+  }
+  return finalizeStoredWorkspace(
+    workspaceSnapshotSchema.parse(migrated),
+    repaired,
+    inactivatedRules,
+  )
 }
 
 function finalizeStoredWorkspace(
   snapshot: WorkspaceSnapshot,
   repaired: boolean,
-): { snapshot: WorkspaceSnapshot; repaired: boolean } {
+  inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }>,
+): {
+  snapshot: WorkspaceSnapshot
+  repaired: boolean
+  inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }>
+} {
   const sanitized = redactWorkspaceCopies(snapshot)
   return {
     snapshot: sanitized,
     repaired: repaired || JSON.stringify(sanitized) !== JSON.stringify(snapshot),
+    inactivatedRules,
   }
 }
 
@@ -475,7 +520,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.recovery = recovery
     if (recovery) this.save(recoveredWorkspace(initial, recovery))
     else if (!existing) this.save(initial)
-    else if (migratedExisting?.repaired) this.save(migratedExisting.snapshot)
+    else if (migratedExisting?.repaired) {
+      this.save(migratedExisting.snapshot)
+      this.#recordRuleInactivations(migratedExisting.inactivatedRules)
+    }
     else if (isLegacySeed) this.save(initial)
     else if (existingSnapshot) this.#seedProjectRow(existingSnapshot)
     this.#restrictFilePermissions()
@@ -490,6 +538,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     if (migrated.repaired) {
       try {
         this.save(migrated.snapshot)
+        this.#recordRuleInactivations(migrated.inactivatedRules)
       } catch {
         return migrated.snapshot
       }
@@ -573,6 +622,22 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         .run(state.project.id, JSON.stringify(state), updatedAt)
     }
     this.#restrictFilePermissions()
+  }
+
+  #recordRuleInactivations(
+    rules: ReadonlyArray<{ id: string; projectId: string; inactivatedAt: string }>,
+  ): void {
+    for (const rule of rules) {
+      this.auditLog.append({
+        occurredAt: rule.inactivatedAt,
+        actor: { kind: "daemon", component: "workspace-migration" },
+        action: "approval-rule.inactivated",
+        outcome: "succeeded",
+        projectId: rule.projectId,
+        target: rule.id,
+        detail: "Legacy standing approval requires explicit reapproval with a resolved execution fingerprint.",
+      })
+    }
   }
 
   close(): void | Promise<void> {
