@@ -133,18 +133,21 @@ describe("permissionDecisionFor", () => {
 
   it.each([
     ["pnpm test", { test: "vitest run" }],
+    ["pnpm test", { test: "vitest run --config attacker-controlled.ts" }],
     ["pnpm run test -- --reporter=json", { test: "vitest run" }],
     ["npm run lint", { lint: "eslint ." }],
     ["yarn typecheck", { typecheck: "tsc --noEmit" }],
     ["bun run check", { check: "pnpm run inner", inner: "biome check ." }],
+    ["pnpm build", { build: "esbuild src.ts --outfile=../../outside.js" }],
+    ["pnpm format", { format: "prettier --write ../../notes.txt" }],
   ] as const)(
-    "auto-allows a Build-auto script whose resolved body is bounded: %s",
+    "reviews a Build-auto script whose runner executes repository-controlled input: %s",
     (command, packageScripts) => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "allow", risk: "normal" })
+      })).toEqual({ action: "review", risk: "normal" })
     },
   )
 
@@ -217,13 +220,13 @@ describe("permissionDecisionFor", () => {
     ["pnpm test", { test: "npx -y vitest run" }],
     ["pnpm test", { test: "pnpm exec tsc --noEmit" }],
   ] as const)(
-    "still allows a plain wrapper around a bounded runner: %s",
+    "reviews a wrapper around a repository-controlled runner: %s",
     (command, packageScripts) => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "allow", risk: "normal" })
+      })).toEqual({ action: "review", risk: "normal" })
     },
   )
 
