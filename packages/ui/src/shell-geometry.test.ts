@@ -49,6 +49,13 @@ it("opens the sidebar and inspector at their design-system widths", () => {
   expect(`${panelDefault("dock")}px`).toBe(design["--shell-inspector"])
 })
 
+it("sizes the default control from the design-system control height", () => {
+  const button = readFileSync(join(import.meta.dirname, "components", "ui", "button.tsx"), "utf8")
+  const sizes = button.slice(button.indexOf("size: {"))
+
+  expect(sizes).toContain("h-[var(--shell-control)]")
+})
+
 it("keeps the shell geometry tokens equal to the design system", () => {
   const design = designGeometry()
 
