@@ -149,6 +149,11 @@ describe("workspace UI persistence", () => {
     expect(loadWorkspaceUiState(memoryStorage(raw))).toEqual(defaultWorkspaceUiState())
   })
 
+  it("restores the fleet surface", () => {
+    const raw = JSON.stringify({ ...defaultWorkspaceUiState(), surface: "fleet" })
+    expect(loadWorkspaceUiState(memoryStorage(raw)).surface).toBe("fleet")
+  })
+
   it("survives unavailable browser storage", () => {
     const storage = {
       getItem: vi.fn(() => { throw new DOMException("blocked") }),

@@ -176,6 +176,18 @@ export const skillEnablementReviewSchema = z.object({
 
 export const skillEnablementReviewsSchema = z.array(skillEnablementReviewSchema).max(2_048)
 
+export const skillReviewDecisionSchema = z.enum(["trust", "revoke"])
+
+export const skillManualReviewSchema = z.object({
+  skillId: skillIdSchema,
+  contentDigest: skillContentDigestSchema,
+  reviewedAt: z.string().datetime({ offset: true }),
+  reviewedBy: z.object({
+    client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
+  }).strict(),
+}).strict()
+
 export type SkillScope = z.infer<typeof skillScopeSchema>
 export type SkillSource = z.infer<typeof skillSourceSchema>
 export type SkillCapability = z.infer<typeof skillCapabilitySchema>
@@ -185,6 +197,8 @@ export type SkillTrust = z.infer<typeof skillTrustSchema>
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 export type SkillDocument = z.infer<typeof skillDocumentSchema>
 export type SkillEnablementReview = z.infer<typeof skillEnablementReviewSchema>
+export type SkillReviewDecision = z.infer<typeof skillReviewDecisionSchema>
+export type SkillManualReview = z.infer<typeof skillManualReviewSchema>
 export type SkillInventorySignature = z.infer<typeof skillInventorySignatureSchema>
 export type SkillInventoryTrust = z.infer<typeof skillInventoryTrustSchema>
 export type SkillInventoryEntry = z.infer<typeof skillInventoryEntrySchema>

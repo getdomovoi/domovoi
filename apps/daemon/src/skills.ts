@@ -18,6 +18,8 @@ import {
   type SkillTrust,
 } from "@getdomovoi/protocol"
 
+import type { SkillReviews } from "./skill-reviews.js"
+
 const maxSkillFileBytes = 128 * 1_024
 const maxSignatureFileBytes = 4 * 1_024
 const maxSkillDepth = 4
@@ -41,12 +43,18 @@ export class SkillNotFoundError extends Error {
   }
 }
 
+export function manualReviewAuthority(review: { reviewedBy: { client: string } }): string {
+  return `manual review · ${review.reviewedBy.client}`
+}
+
 export class FileSkillCatalog implements SkillCatalog {
   readonly #roots: readonly SkillRoot[]
+  readonly #reviews: Pick<SkillReviews, "find"> | undefined
   #listing: { key: string; skills: Promise<SkillSummary[]> } | undefined
 
-  constructor(roots: readonly SkillRoot[]) {
+  constructor(roots: readonly SkillRoot[], reviews?: Pick<SkillReviews, "find">) {
     this.#roots = roots
+    this.#reviews = reviews
   }
 
   invalidate(): void {
@@ -77,7 +85,7 @@ export class FileSkillCatalog implements SkillCatalog {
       }, contentDigest, await skillSignatureMetadata(skill.path, contentDigest))
       if (!currentSkill) throw new SkillNotFoundError()
       return skillDocumentSchema.parse({
-        skill: currentSkill,
+        skill: this.#withManualReview(currentSkill),
         content,
       })
     } catch (error) {
@@ -103,11 +111,24 @@ export class FileSkillCatalog implements SkillCatalog {
   async #listingKey(): Promise<string> {
     const parts: string[] = []
     for (const root of this.#roots) {
-      try {
-        const metadata = await stat(root.path)
-        parts.push(`${root.path}:${metadata.mtimeMs}`)
-      } catch {
+      const rootPath = await canonicalDirectory(root.path)
+      if (!rootPath) {
         parts.push(`${root.path}:missing`)
+        continue
+      }
+      const files = await skillFiles(rootPath, root.scope)
+      parts.push(`${root.path}:${rootPath}`)
+      for (const path of files.sort()) {
+        for (const candidate of [path, `${path}.sig`]) {
+          try {
+            const metadata = await stat(candidate, { bigint: true })
+            parts.push(
+              `${candidate}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`,
+            )
+          } catch {
+            parts.push(`${candidate}:missing`)
+          }
+        }
       }
     }
     return parts.join("|")
@@ -132,12 +153,26 @@ export class FileSkillCatalog implements SkillCatalog {
         if (seenFiles.has(canonicalPath)) continue
         seenFiles.add(canonicalPath)
         const skill = await readSkill(path, root)
-        if (skill) skills.push(skill)
+        if (skill) skills.push(this.#withManualReview(skill))
       }
     }
     return skills.sort((left, right) =>
       left.name.localeCompare(right.name) || left.path.localeCompare(right.path),
     )
+  }
+
+  #withManualReview(skill: SkillSummary): SkillSummary {
+    if (!this.#reviews || skill.trust.state !== "untrusted") return skill
+    const review = this.#reviews.find(skill.id, skill.contentDigest)
+    if (!review) return skill
+    return {
+      ...skill,
+      trust: {
+        state: "trusted",
+        reason: "manual-review",
+        authority: manualReviewAuthority(review),
+      },
+    }
   }
 }
 

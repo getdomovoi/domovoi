@@ -1,0 +1,41 @@
+/* Not a 4/8 grid. The surfaces use a small set of literal paddings that
+   repeat; these are those values, named for where they are used. */
+
+:root {
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 14px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 24px;
+  --space-10: 28px;
+  --space-12: 34px;
+  --space-16: 44px;
+  --space-20: 60px;
+  --space-24: 80px;
+  --space-32: 100px;
+
+  /* the recurring compound paddings, kept literal */
+  --pad-row: 9px 12px;        /* list row, menu item */
+  --pad-card: 18px 20px;      /* content card */
+  --pad-card-lg: 26px 28px;   /* marketing card */
+  --pad-chip: 5px 11px;       /* pill, provider chip */
+  --pad-button: 8px 15px;     /* default button */
+  --pad-input: 10px 13px;     /* text input, composer */
+  --pad-section: 100px 30px;  /* marketing section block */
+
+  /* fixed chrome */
+  --h-titlebar: 38px;
+  --h-header: 62px;
+  --h-row: 34px;
+  --h-control: 34px;
+  --h-tap: 44px;              /* mobile minimum */
+  --w-rail: 62px;
+  --w-sidebar: 240px;
+  --w-inspector: 280px;
+  --w-content: 1080px;
+}

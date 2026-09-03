@@ -13,6 +13,21 @@ import {
   visibleWorkspaceSnapshot,
 } from "./use-workspace"
 
+function FleetActionProbe() {
+  const { transferSession, listDevices, revokeDevice, rotateDevice } = useWorkspace(
+    "ws://127.0.0.1:47831/rpc",
+    "web",
+  )
+  return (
+    <span>
+      {typeof transferSession === "function" ? " · can move a session" : ""}
+      {typeof listDevices === "function" ? " · can list devices" : ""}
+      {typeof revokeDevice === "function" ? " · can revoke a device" : ""}
+      {typeof rotateDevice === "function" ? " · can rotate a device" : ""}
+    </span>
+  )
+}
+
 function SnapshotProbe() {
   const {
     authenticationRequired,
@@ -56,6 +71,14 @@ describe("useWorkspace", () => {
     expect(markup).toContain("protocol healthy")
     expect(markup).toContain("credential accepted")
     expect(markup).toContain("not retrying")
+  })
+
+  it("exposes moving a session and managing paired devices", () => {
+    const markup = renderToStaticMarkup(<FleetActionProbe />)
+    expect(markup).toContain("can move a session")
+    expect(markup).toContain("can list devices")
+    expect(markup).toContain("can revoke a device")
+    expect(markup).toContain("can rotate a device")
   })
 
   it("does not expose a snapshot owned by another connection target", () => {

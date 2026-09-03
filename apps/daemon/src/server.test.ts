@@ -59,7 +59,8 @@ import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { internalRpcErrorMessage } from "./rpc-errors.js"
 import { maximumPairedDevices } from "./device-registry.js"
-import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
+import { SqliteSkillReviews } from "./skill-reviews.js"
+import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import {
   FileRevertIncompleteError,
   WorkspaceEvidenceUnstableError,
@@ -4918,6 +4919,48 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("discovers skills from the currently open project", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "domovoi-project-skill-"))
+    scratchDirectories.push(projectRoot)
+    const skillDirectory = join(projectRoot, ".domovoi", "skills", "project-only")
+    await mkdir(skillDirectory, { recursive: true })
+    await writeFile(join(skillDirectory, "SKILL.md"), [
+      "---",
+      "name: project-only",
+      "description: Instructions owned by this project.",
+      "---",
+      "",
+      "# Project instructions",
+      "",
+    ].join("\n"))
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.project!.path = projectRoot
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agents: {},
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>))
+    })
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "skill.list", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      result: expect.arrayContaining([
+        expect.objectContaining({ name: "project-only", scope: "project", source: "domovoi" }),
+      ]),
+    })
+    socket.close()
+  })
+
   it("persists exact project skill reviews and audits the client", async () => {
     const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
     let currentSkill: SkillSummary = {
@@ -5045,6 +5088,106 @@ describe("DomovoiDaemon", () => {
       projectId: demoWorkspace.project!.id,
       target: currentSkill.id,
       detail: expect.stringMatching(/^enabled=(true|false) digest=sha256:/),
+    }))
+    socket.close()
+  })
+
+  it("trusts a manually reviewed skill digest and audits the reviewing client", async () => {
+    const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-manual-review-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    const directory = join(root, "repo-audit")
+    await mkdir(directory, { recursive: true })
+    await writeFile(
+      join(directory, "SKILL.md"),
+      "---\nname: repo-audit\ndescription: Audit a repository.\n---\n\n# Instructions\n",
+    )
+    const reviews = new SqliteSkillReviews(new DatabaseSync(":memory:"))
+    const skillCatalog = new FileSkillCatalog(
+      [{ path: root, scope: "user", source: "domovoi" }],
+      reviews,
+    )
+    const discovered = (await skillCatalog.list())[0]!
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => structuredClone(demoWorkspace),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      auditLog,
+      skillCatalog,
+      skillReviews: reviews,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-reviewer",
+      clientVersion: "0.0.1",
+    })
+
+    expect(await rpc(2, "skill.review", {
+      id: discovered.id,
+      contentDigest: discovered.contentDigest,
+      decision: "trust",
+    })).toMatchObject({
+      result: {
+        id: discovered.id,
+        trust: { state: "trusted", reason: "manual-review", authority: "manual review · desktop" },
+      },
+    })
+    expect(reviews.find(discovered.id, discovered.contentDigest)).toMatchObject({
+      reviewedBy: { client: "desktop", clientId: "desktop-reviewer" },
+    })
+    expect((await rpc(3, "skill.list", {})).result).toMatchObject([
+      { id: discovered.id, trust: { state: "trusted", reason: "manual-review" } },
+    ])
+    await expect(rpc(4, "skill.review", {
+      id: discovered.id,
+      contentDigest: `sha256:${"b".repeat(64)}`,
+      decision: "trust",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Skill content changed; review it again" },
+    })
+    await expect(rpc(5, "skill.review", {
+      id: "skill-000000000000",
+      contentDigest: discovered.contentDigest,
+      decision: "trust",
+    })).resolves.toMatchObject({ error: { code: -32602, message: "Skill not found" } })
+    expect(await rpc(6, "skill.review", {
+      id: discovered.id,
+      contentDigest: discovered.contentDigest,
+      decision: "revoke",
+    })).toMatchObject({
+      result: { id: discovered.id, trust: { state: "untrusted", reason: "unsigned" } },
+    })
+    expect(reviews.find(discovered.id, discovered.contentDigest)).toBeUndefined()
+
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { kind: "client", client: "desktop", clientId: "desktop-reviewer" },
+      action: "skill.review",
+      target: discovered.id,
+      detail: `decision=trust digest=${discovered.contentDigest}`,
+    }))
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "skill.review",
+      detail: `decision=revoke digest=${discovered.contentDigest}`,
     }))
     socket.close()
   })
