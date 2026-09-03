@@ -42,6 +42,7 @@ export type ProjectWorkspaceState = {
   approvalRules: WorkspaceSnapshot["approvalRules"]
   thread: WorkspaceSnapshot["thread"]
   artifacts: WorkspaceSnapshot["artifacts"]
+  workingPlans: WorkspaceSnapshot["workingPlans"]
   annotations: WorkspaceSnapshot["annotations"]
 }
 
@@ -58,6 +59,7 @@ export function projectWorkspaceState(
     approvalRules: snapshot.approvalRules,
     thread: snapshot.thread,
     artifacts: snapshot.artifacts,
+    workingPlans: snapshot.workingPlans,
     annotations: snapshot.annotations,
   }
 }
@@ -357,6 +359,7 @@ async function start() {
             approvalRules: validated.approvalRules,
             thread: validated.thread,
             artifacts: validated.artifacts,
+            workingPlans: validated.workingPlans,
             annotations: validated.annotations,
           }),
           message.updatedAt,

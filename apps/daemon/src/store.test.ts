@@ -356,6 +356,7 @@ describe("SqliteWorkspaceStore", () => {
     expect(restored?.approvalRules).toEqual(first.approvalRules)
     expect(restored?.thread).toEqual(first.thread)
     expect(restored?.artifacts).toEqual(first.artifacts)
+    expect(restored?.workingPlans).toEqual(first.workingPlans)
     expect(restored?.annotations).toEqual(first.annotations)
     expect(store.loadProject("project-unknown")).toBeUndefined()
     store.close()
@@ -395,6 +396,7 @@ describe("SqliteWorkspaceStore", () => {
       "project",
       "sessions",
       "thread",
+      "workingPlans",
     ])
   })
 
@@ -428,6 +430,7 @@ describe("SqliteWorkspaceStore", () => {
       approvalRules: live.approvalRules,
       thread: live.thread,
       artifacts: live.artifacts,
+      workingPlans: live.workingPlans,
       annotations: live.annotations,
     })
     migrated.close()
