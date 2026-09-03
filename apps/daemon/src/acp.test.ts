@@ -162,6 +162,13 @@ describe("AcpAgentAdapter", () => {
         phase: "started",
         title: "Run tests",
       })
+      peer.handlers?.onUpdate("acp-session", {
+        type: "plan",
+        steps: [
+          { text: "Inspect", status: "completed" },
+          { text: "Run tests", status: "in-progress" },
+        ],
+      })
       return { stopReason: "end_turn" }
     })
 
@@ -176,6 +183,15 @@ describe("AcpAgentAdapter", () => {
       threadId: "acp-session",
       turnId: "local-turn",
       delta: "Working",
+    })
+    expect(events).toContainEqual({
+      type: "plan-updated",
+      threadId: "acp-session",
+      turnId: "local-turn",
+      steps: [
+        { text: "Inspect", status: "completed" },
+        { text: "Run tests", status: "in-progress" },
+      ],
     })
     expect(events).toContainEqual(expect.objectContaining({ type: "item", phase: "started" }))
   })

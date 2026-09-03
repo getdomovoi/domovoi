@@ -371,8 +371,19 @@ describe("ACP stdio mapping", () => {
     })).toEqual([])
     expect(mapAcpUpdate({
       sessionUpdate: "plan",
-      entries: [{ content: "Test it", priority: "high", status: "in_progress" }],
-    })).toEqual([{ type: "plan", text: "- [~] Test it" }])
+      entries: [
+        { content: "Inspect it", priority: "high", status: "completed" },
+        { content: "Test it", priority: "high", status: "in_progress" },
+        { content: "Ship it", priority: "medium", status: "pending" },
+      ],
+    })).toEqual([{
+      type: "plan",
+      steps: [
+        { text: "Inspect it", status: "completed" },
+        { text: "Test it", status: "in-progress" },
+        { text: "Ship it", status: "pending" },
+      ],
+    }])
     expect(mapAcpUpdate({
       sessionUpdate: "tool_call_update",
       toolCallId: "tool-1",
