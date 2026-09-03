@@ -132,59 +132,18 @@ const packageSubcommands = new Set([
   "exec", "dlx", "x", "install", "i", "add", "remove", "rm", "up", "update",
   "audit", "publish", "pack", "create", "init", "link", "why", "dedupe", "store", "patch",
 ])
-const scriptName = /^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/i
-
-type PackageScriptRun = { script: string; rest: string }
-
-function packageScriptRun(command: string): PackageScriptRun | undefined {
+function isPackageScriptCommand(command: string): boolean {
   const tokens = command.trim().split(/\s+/)
   const manager = tokens[0]?.toLowerCase()
-  if (!manager || !packageManagers.has(manager)) return undefined
-  const explicitRun = tokens[1]?.toLowerCase() === "run"
-  const index = explicitRun ? 2 : 1
-  const script = tokens[index]
-  if (!script || !scriptName.test(script)) return undefined
-  if (!explicitRun && packageSubcommands.has(script.toLowerCase())) return undefined
-  return { script, rest: tokens.slice(index + 1).join(" ") }
-}
-
-type BodyDecision = "review" | "hard-gate"
-
-// A script name authorizes nothing on its own: what runs is the body the
-// manifest defines today, and an agent that can edit the manifest can change
-// it. Judge the resolved body, and every body it delegates to, by the same
-// rules as a typed command.
-function resolvedScriptDecision(
-  body: string,
-  scripts: Readonly<Record<string, string>>,
-  seen: ReadonlySet<string>,
-): BodyDecision {
-  if (seen.size > 4) return "review"
-  if (hardGatePatterns.some((pattern) => pattern.test(body))) return "hard-gate"
-  if (ambiguousShellSyntax.test(body)) return "review"
-  const segments = body.split(commandSeparators).map((segment) => segment.trim()).filter(Boolean)
-  if (segments.length === 0) return "review"
-  for (const candidate of segments) {
-    if (hardGatePatterns.some((pattern) => pattern.test(candidate))) return "hard-gate"
-    const nested = packageScriptRun(candidate)
-    if (nested) {
-      if (seen.has(nested.script)) return "review"
-      const nestedBody = scripts[nested.script]
-      if (nestedBody === undefined) return "review"
-      const decision = resolvedScriptDecision(
-        `${nestedBody} ${nested.rest}`.trim(),
-        scripts,
-        new Set([...seen, nested.script]),
-      )
-      if (decision === "hard-gate") return decision
-    }
-  }
-  // A runner name does not bound what it can execute. Test runners load
-  // repository-controlled tests and configuration; compilers, formatters, and
-  // bundlers accept output paths and executable plugins. The resolved body is
-  // still walked so a hidden hard gate keeps its stronger risk, but every
-  // package script needs review before execution.
-  return "review"
+  if (!manager || !packageManagers.has(manager)) return false
+  const candidate = tokens[1]?.toLowerCase()
+  if (!candidate) return false
+  // `run` always dispatches through the manifest. A leading option can move or
+  // replace the apparent script (`pnpm --filter x test`, `npm run --if-present
+  // test`), so it is dynamic too. Every remaining unknown word is the package
+  // manager's shorthand for a script; only named package-manager subcommands
+  // are direct operations.
+  return candidate === "run" || candidate.startsWith("-") || !packageSubcommands.has(candidate)
 }
 
 export function permissionDecisionFor(input: {
@@ -201,21 +160,16 @@ export function permissionDecisionFor(input: {
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
     return { action: "review", risk: "hard-gate" }
   }
+  // A package script is mutable repository content behind a stable command.
+  // Even normal review is insufficient: an `always-project` rule for `pnpm
+  // test` would otherwise approve a different body after package.json changes.
+  if (command && isPackageScriptCommand(command)) {
+    return { action: "review", risk: "hard-gate" }
+  }
   const isBuildAuto = input.runtime.permissionMode === "build" && input.runtime.auto
   if (isBuildAuto && command !== undefined && !ambiguousShellSyntax.test(command)) {
     if (safeBuildAutoPatterns.some((pattern) => pattern.test(command))) {
       return { action: "allow", risk: "normal" }
-    }
-    const invocation = packageScriptRun(command)
-    const scripts = input.packageScripts
-    const body = invocation && scripts ? scripts[invocation.script] : undefined
-    if (invocation && scripts && body !== undefined) {
-      const decision = resolvedScriptDecision(
-        `${body} ${invocation.rest}`.trim(),
-        scripts,
-        new Set([invocation.script]),
-      )
-      if (decision === "hard-gate") return { action: "review", risk: "hard-gate" }
     }
   }
   return { action: "review", risk: "normal" }
