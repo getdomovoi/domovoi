@@ -63,6 +63,7 @@ describe("skill browser source requests", () => {
         projectId="project-acme-api"
         enablements={[]}
         onSetSkillEnabled={vi.fn(async () => undefined)}
+        onReviewSkill={vi.fn(async () => undefined)}
         onRetry={vi.fn()}
       />,
     )
