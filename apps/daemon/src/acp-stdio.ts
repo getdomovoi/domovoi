@@ -201,7 +201,10 @@ export function mapAcpUpdate(update: SessionUpdate): AcpUpdate[] {
   if (update.sessionUpdate === "plan") {
     return [{
       type: "plan",
-      text: update.entries.map((entry) => `- [${planMarker(entry.status)}] ${entry.content}`).join("\n"),
+      steps: update.entries.map((entry) => ({
+        text: entry.content,
+        status: entry.status === "in_progress" ? "in-progress" as const : entry.status,
+      })),
     }]
   }
   if (update.sessionUpdate === "usage_update") {
@@ -261,12 +264,6 @@ function mapPermissionRequest(request: RequestPermissionRequest): AcpPermissionR
     ...(command ? { command } : {}),
     options: request.options.map((option) => ({ id: option.optionId, kind: option.kind })),
   }
-}
-
-function planMarker(status: "pending" | "in_progress" | "completed"): string {
-  if (status === "completed") return "x"
-  if (status === "in_progress") return "~"
-  return " "
 }
 
 function spawnAcpProcess(command: string, args: readonly string[]): ChildProcessWithoutNullStreams {

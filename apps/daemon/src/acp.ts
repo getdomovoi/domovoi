@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 import { redactDurableText } from "./secret-redaction.js"
@@ -40,7 +40,7 @@ export type AcpPermissionResult = { optionId: string } | { cancelled: true }
 
 export type AcpUpdate =
   | { type: "text"; text: string }
-  | { type: "plan"; text: string }
+  | { type: "plan"; steps: AgentWorkingPlanStep[] }
   | { type: "command"; toolCallId: string; output: string }
   | { type: "diff"; diff: string }
   | { type: "tool"; toolCallId: string; phase: "started" | "completed"; title: string }
@@ -303,7 +303,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     } else if (update.type === "text") {
       this.#emit({ type: "text-delta", ...context, delta: update.text })
     } else if (update.type === "plan") {
-      this.#emit({ type: "plan-delta", ...context, delta: update.text })
+      this.#emit({ type: "plan-updated", ...context, threadId, steps: update.steps })
     } else if (update.type === "command") {
       this.#emit({ type: "command-output", ...context, itemId: update.toolCallId, delta: update.output })
     } else if (update.type === "diff") {
