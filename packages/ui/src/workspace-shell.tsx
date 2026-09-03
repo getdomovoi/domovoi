@@ -2157,6 +2157,8 @@ export function ArtifactDock({
   onCollapse,
   collapseButtonRef,
   defaultTab,
+  tab,
+  onTabChange,
   rpcUrl,
   authorizeArtifact,
   connected,
@@ -2173,6 +2175,8 @@ export function ArtifactDock({
   onCollapse: () => void
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
+  tab?: string | undefined
+  onTabChange?: ((tab: string) => void) | undefined
   rpcUrl: string
   authorizeArtifact: (input: {
     sessionId: string
@@ -2272,7 +2276,12 @@ export function ArtifactDock({
   const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
   const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
-  const [activeTab, setActiveTab] = useState<string>(defaultTab)
+  const [uncontrolledTab, setUncontrolledTab] = useState<string>(defaultTab)
+  const activeTab = tab ?? uncontrolledTab
+  const setActiveTab = (next: string) => {
+    setUncontrolledTab(next)
+    onTabChange?.(next)
+  }
   const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
 
   useEffect(() => {
@@ -3170,6 +3179,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
+  const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
+  const openDockTab = (next: string) => {
+    setDockTab(next)
+    setDockCollapsed(false)
+  }
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
@@ -3601,7 +3615,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           onReconnect={reconnectDaemon}
         />
         {snapshot ? <div className="flex min-h-0 flex-1">
-          <WorkspaceRail surface={surface} machineName={snapshot.machine.name} onSelectSurface={setSurface} />
+          <WorkspaceRail surface={surface} dockTab={dockTab} machineName={snapshot.machine.name} onSelectSurface={setSurface} onSelectDockTab={openDockTab} />
           {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
@@ -3691,7 +3705,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
               <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>
