@@ -296,7 +296,16 @@ The desktop handoff specifies these; `main` does not implement them yet.
   280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
 - [ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract
   lives in the repository rather than only in the project
-- [ ] Port the live terminal-pane restyle from the current design revision
+- [x] Port the live terminal-pane restyle from the current design revision
+  - The chrome moved to the sidebar surface and line spacing opened to 1.85. The revision's
+    per-line treatment, a prompt span and a left-border highlight for command, pass, and fail rows,
+    is not ported and should not be: the pane renders a real PTY through xterm, so classifying a
+    line as a command or a failure would invent structure the stream does not carry.
+- [ ] Rework the Changes dock as per-file accordions from the current design revision
+  - The same live revision that restyled the terminal also replaced the file list plus separate
+    diff body with expandable per-file rows carrying a caret, a hunk header, and inline diff lines,
+    plus an Expand all control. Found on 2026-09-03 by diffing the live desktop file against the
+    tracked handoff; it is a design change nobody had recorded.
 - [x] Prompt-editor modal with prose and Markdown modes, inserts, and draft statistics
 
 ## Goal 2: add private machine-fleet operation

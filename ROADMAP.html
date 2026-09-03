@@ -595,7 +595,17 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract lives in the repository rather than only in the project
 </li>
-<li>[ ] Port the live terminal-pane restyle from the current design revision
+<li>[x] Port the live terminal-pane restyle from the current design revision
+<ul>
+<li>The chrome moved to the sidebar surface and line spacing opened to 1.85. The revision's per-line treatment, a prompt span and a left-border highlight for command, pass, and fail rows, is not ported and should not be: the pane renders a real PTY through xterm, so classifying a line as a command or a failure would invent structure the stream does not carry.
+</li>
+</ul>
+</li>
+<li>[ ] Rework the Changes dock as per-file accordions from the current design revision
+<ul>
+<li>The same live revision that restyled the terminal also replaced the file list plus separate diff body with expandable per-file rows carrying a caret, a hunk header, and inline diff lines, plus an Expand all control. Found on 2026-09-03 by diffing the live desktop file against the tracked handoff; it is a design change nobody had recorded.
+</li>
+</ul>
 </li>
 <li>[x] Prompt-editor modal with prose and Markdown modes, inserts, and draft statistics
 </li>
