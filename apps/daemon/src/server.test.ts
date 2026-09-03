@@ -7693,7 +7693,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("resolves a Build-auto script through the manifest beside it", async () => {
+  it("reviews a Build-auto script resolved through the manifest beside it", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-build-auto-"))
     scratchDirectories.push(workspacePath)
     await writeFile(join(workspacePath, "package.json"), JSON.stringify({
@@ -7785,21 +7785,26 @@ describe("DomovoiDaemon", () => {
       reason: "Run project tests",
       command: "pnpm run leak",
     })
-    const current = await rpc("workspace.get", {})
-
-    expect(agent.resolveApproval).toHaveBeenCalledWith(31, "allow-once")
-    expect(agent.resolveApproval).not.toHaveBeenCalledWith(32, expect.anything())
-    expect(current).toMatchObject({
-      result: {
-        approvals: expect.arrayContaining([
-          expect.objectContaining({
-            providerRequestId: 32,
-            command: "pnpm run leak",
-            risk: "hard-gate",
-          }),
-        ]),
-      },
+    await vi.waitFor(async () => {
+      const current = await rpc("workspace.get", {})
+      expect(current).toMatchObject({
+        result: {
+          approvals: expect.arrayContaining([
+            expect.objectContaining({
+              providerRequestId: 31,
+              command: "pnpm test",
+              risk: "normal",
+            }),
+            expect.objectContaining({
+              providerRequestId: 32,
+              command: "pnpm run leak",
+              risk: "hard-gate",
+            }),
+          ]),
+        },
+      })
     })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
     socket.close()
   })
 

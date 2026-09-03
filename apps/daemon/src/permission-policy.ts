@@ -148,51 +148,12 @@ function packageScriptRun(command: string): PackageScriptRun | undefined {
   return { script, rest: tokens.slice(index + 1).join(" ") }
 }
 
-type BodyDecision = "allow" | "review" | "hard-gate"
+type BodyDecision = "review" | "hard-gate"
 
 // A script name authorizes nothing on its own: what runs is the body the
 // manifest defines today, and an agent that can edit the manifest can change
 // it. Judge the resolved body, and every body it delegates to, by the same
 // rules as a typed command.
-// A resolved body is only as safe as what it actually runs, and the hard-gate
-// patterns describe what is known dangerous rather than what is known safe.
-// Anything outside this list is reviewed, so an unrecognised runner cannot ride
-// in on a script name a human once trusted.
-const boundedScriptRunners = new Set([
-  "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
-  "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
-  "next", "astro", "changeset", "attw", "publint", "knip", "madge",
-])
-
-// Only these flags may appear before the runner. Anything else can change what
-// actually executes: `npx --package=@attacker/payload vitest` runs the attacker's
-// binary under a name on this list, so an unknown flag ends the match.
-const harmlessRunnerFlags = new Set(["-y", "--yes", "--silent", "-s"])
-
-function boundedLeafCommand(candidate: string): boolean {
-  const tokens = candidate.split(/\s+/).filter(Boolean)
-  const executable = tokens[0]?.toLowerCase()
-  if (executable === undefined) return false
-  if (boundedScriptRunners.has(executable)) return true
-  // `npx vitest run` and `pnpm exec tsc` are the same leaf wearing a runner.
-  if (!["npx", "pnpm", "npm", "yarn", "bun"].includes(executable)) return false
-  let index = 1
-  while (index < tokens.length && tokens[index]!.startsWith("-")) {
-    if (!harmlessRunnerFlags.has(tokens[index]!.toLowerCase())) return false
-    index += 1
-  }
-  const next = tokens[index]?.toLowerCase()
-  if (next === "exec" || next === "dlx" || next === "run" || next === "x") {
-    index += 1
-    while (index < tokens.length && tokens[index]!.startsWith("-")) {
-      if (!harmlessRunnerFlags.has(tokens[index]!.toLowerCase())) return false
-      index += 1
-    }
-    return boundedScriptRunners.has(tokens[index]?.toLowerCase() ?? "")
-  }
-  return boundedScriptRunners.has(next ?? "")
-}
-
 function resolvedScriptDecision(
   body: string,
   scripts: Readonly<Record<string, string>>,
@@ -215,12 +176,15 @@ function resolvedScriptDecision(
         scripts,
         new Set([...seen, nested.script]),
       )
-      if (decision !== "allow") return decision
-      continue
+      if (decision === "hard-gate") return decision
     }
-    if (!boundedLeafCommand(candidate)) return "review"
   }
-  return "allow"
+  // A runner name does not bound what it can execute. Test runners load
+  // repository-controlled tests and configuration; compilers, formatters, and
+  // bundlers accept output paths and executable plugins. The resolved body is
+  // still walked so a hidden hard gate keeps its stronger risk, but every
+  // package script needs review before execution.
+  return "review"
 }
 
 export function permissionDecisionFor(input: {
@@ -251,7 +215,6 @@ export function permissionDecisionFor(input: {
         scripts,
         new Set([invocation.script]),
       )
-      if (decision === "allow") return { action: "allow", risk: "normal" }
       if (decision === "hard-gate") return { action: "review", risk: "hard-gate" }
     }
   }
