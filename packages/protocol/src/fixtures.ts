@@ -14,6 +14,7 @@ export function createEmptyWorkspace(machine: Machine): WorkspaceSnapshot {
     approvalRules: [],
     thread: [],
     artifacts: [],
+    workingPlans: [],
     annotations: [],
     skillEnablements: [],
   }
@@ -176,6 +177,92 @@ export const demoWorkspace: WorkspaceSnapshot = {
       title: "Replay operations preview",
       type: "preview",
       revision: 2,
+    },
+  ],
+  workingPlans: [
+    {
+      sessionId: "session-billing",
+      revision: 7,
+      structureRevision: 3,
+      steps: [
+        {
+          id: "plan-step-replay-table",
+          text: "Add a replay table with a unique event-id claim",
+          status: "completed",
+        },
+        {
+          id: "plan-step-claim-commit",
+          text: "Make every handler claim-then-commit before side effects",
+          status: "completed",
+        },
+        {
+          id: "plan-step-migration",
+          text: "Apply the migration on this machine's dev database",
+          status: "in-progress",
+          blocker: { kind: "approval", approvalId: "approval-migrate" },
+        },
+        {
+          id: "plan-step-tests",
+          text: "Rewrite replay.spec.ts to assert exactly-once delivery",
+          status: "pending",
+        },
+      ],
+      providerSync: {
+        provider: "claude-code",
+        model: "sonnet-4.6",
+        providerThreadId: "thread-billing",
+        structureRevision: 2,
+        deliveredAt: "2026-08-25T21:50:00.000Z",
+      },
+      pendingEdit: {
+        id: "plan-edit-migration-order",
+        basedOnStructureRevision: 2,
+        baseSteps: [
+          {
+            id: "plan-step-replay-table",
+            text: "Add a replay table with a unique event-id claim",
+          },
+          {
+            id: "plan-step-claim-commit",
+            text: "Make every handler claim-then-commit before side effects",
+          },
+          {
+            id: "plan-step-migration",
+            text: "Apply the migration",
+          },
+          {
+            id: "plan-step-tests",
+            text: "Rewrite replay.spec.ts to assert exactly-once delivery",
+          },
+        ],
+        draftSteps: [
+          {
+            id: "plan-step-replay-table",
+            text: "Add a replay table with a unique event-id claim",
+          },
+          {
+            id: "plan-step-claim-commit",
+            text: "Make every handler claim-then-commit before side effects",
+          },
+          {
+            id: "plan-step-tests",
+            text: "Rewrite replay.spec.ts to assert exactly-once delivery",
+          },
+          {
+            id: "plan-step-migration",
+            text: "Apply the migration in staging before local development",
+          },
+        ],
+        status: "conflicted",
+        submittedAt: "2026-08-25T21:51:00.000Z",
+        submittedBy: {
+          client: "desktop",
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          clientId: "desktop-primary",
+        },
+      },
+      createdAt: "2026-08-25T21:45:00.000Z",
+      updatedAt: now,
     },
   ],
   annotations: [

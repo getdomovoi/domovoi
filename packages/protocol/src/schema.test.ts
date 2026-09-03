@@ -55,6 +55,7 @@ import {
   workspaceDeltaSchema,
   artifactSchema,
   threadItemSchema,
+  type WorkingPlan,
 } from "./index.js"
 
 const skillSecurityMetadata = {
@@ -65,6 +66,211 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
+  const workingPlan: WorkingPlan = {
+    sessionId: "session-billing",
+    revision: 7,
+    structureRevision: 3,
+    steps: [
+      {
+        id: "plan-step-schema",
+        text: "Add the replay table",
+        status: "completed",
+      },
+      {
+        id: "plan-step-migrate",
+        text: "Apply the migration",
+        status: "in-progress",
+        blocker: { kind: "approval", approvalId: "approval-migrate" },
+      },
+    ],
+    providerSync: {
+      provider: "claude-code",
+      model: "sonnet-4.6",
+      providerThreadId: "thread-billing",
+      structureRevision: 2,
+      deliveredAt: "2026-08-25T21:50:00.000Z",
+    },
+    pendingEdit: {
+      id: "plan-edit-reorder",
+      basedOnStructureRevision: 2,
+      baseSteps: [
+        { id: "plan-step-schema", text: "Add the replay table" },
+        { id: "plan-step-migrate", text: "Run the migration" },
+      ],
+      draftSteps: [
+        { id: "plan-step-migrate", text: "Run the migration in staging" },
+        { id: "plan-step-schema", text: "Add the replay table" },
+      ],
+      status: "conflicted",
+      submittedAt: "2026-08-25T21:51:00.000Z",
+      submittedBy: {
+        client: "desktop",
+        connectionId: "11111111-1111-4111-8111-111111111111",
+        clientId: "desktop-primary",
+      },
+    },
+    createdAt: "2026-08-25T21:45:00.000Z",
+    updatedAt: "2026-08-25T21:52:00.000Z",
+  }
+
+  it("defaults structured working plans for older snapshots", () => {
+    const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    delete legacy.workingPlans
+
+    const parsed = workspaceSnapshotSchema.parse(legacy) as unknown as Record<string, unknown>
+    expect(parsed.workingPlans).toEqual([])
+  })
+
+  it("retains a conflicted working-plan draft for explicit resolution", () => {
+    const snapshot = {
+      ...structuredClone(demoWorkspace),
+      workingPlans: [workingPlan],
+    }
+
+    const parsed = workspaceSnapshotSchema.parse(snapshot) as unknown as {
+      workingPlans?: unknown[]
+    }
+    expect(parsed.workingPlans).toEqual([workingPlan])
+  })
+
+  it("rejects a blocker on a completed working-plan step", () => {
+    const blockedCompleted = structuredClone(workingPlan)
+    blockedCompleted.steps[0]!.blocker = {
+      kind: "approval",
+      approvalId: "approval-migrate",
+    }
+
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [blockedCompleted],
+    }).success).toBe(false)
+  })
+
+  it("keeps working-plan blockers reference-only", () => {
+    const messageBearing = structuredClone(workingPlan) as unknown as {
+      steps: Array<{ blocker?: Record<string, unknown> }>
+    }
+    messageBearing.steps[1]!.blocker!.message = "Paste TOKEN=secret to continue"
+
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [messageBearing],
+    }).success).toBe(false)
+  })
+
+  it("bounds durable working-plan step text", () => {
+    const oversized = structuredClone(workingPlan)
+    oversized.steps[0]!.text = "x".repeat(4_097)
+
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [oversized],
+    }).success).toBe(false)
+  })
+
+  it("does not present inferred files as working-plan facts", () => {
+    const inferredFiles = structuredClone(workingPlan) as unknown as {
+      steps: Array<Record<string, unknown>>
+    }
+    inferredFiles.steps[0]!.files = ["src/replay.ts"]
+
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [inferredFiles],
+    }).success).toBe(false)
+  })
+
+  it("accepts a queued structural draft only against the current structure", () => {
+    const queued = structuredClone(workingPlan)
+    queued.pendingEdit = {
+      ...queued.pendingEdit!,
+      basedOnStructureRevision: queued.structureRevision,
+      baseSteps: queued.steps.map(({ id, text }) => ({ id, text })),
+      status: "queued",
+    }
+
+    expect(workspaceSnapshotSchema.parse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [queued],
+    }).workingPlans).toEqual([queued])
+
+    queued.pendingEdit.baseSteps[0]!.text = "An outdated title"
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [queued],
+    }).success).toBe(false)
+  })
+
+  it.each([
+    ["plan revision", (plan: WorkingPlan) => {
+      plan.revision = plan.structureRevision - 1
+    }],
+    ["provider sync", (plan: WorkingPlan) => {
+      plan.providerSync!.structureRevision = plan.structureRevision + 1
+    }],
+    ["conflicted edit revision", (plan: WorkingPlan) => {
+      plan.pendingEdit!.basedOnStructureRevision = plan.structureRevision
+    }],
+    ["canonical step id", (plan: WorkingPlan) => {
+      plan.steps[1]!.id = plan.steps[0]!.id
+    }],
+    ["draft step id", (plan: WorkingPlan) => {
+      plan.pendingEdit!.draftSteps[1]!.id = plan.pendingEdit!.draftSteps[0]!.id
+    }],
+  ] as const)("rejects an invalid working-plan %s", (_label, mutate) => {
+    const plan = structuredClone(workingPlan)
+    mutate(plan)
+
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [plan],
+    }).success).toBe(false)
+  })
+
+  it("bounds total working-plan text and step count", () => {
+    const aggregate = structuredClone(workingPlan)
+    aggregate.steps = Array.from({ length: 17 }, (_, index) => ({
+      id: `step-${index}`,
+      text: "x".repeat(4_096),
+      status: "pending" as const,
+    }))
+    delete aggregate.pendingEdit
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [aggregate],
+    }).success).toBe(false)
+
+    aggregate.steps = Array.from({ length: 129 }, (_, index) => ({
+      id: `step-${index}`,
+      text: "bounded",
+      status: "pending" as const,
+    }))
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [aggregate],
+    }).success).toBe(false)
+  })
+
+  it("requires working plans and blockers to stay inside one session", () => {
+    const missingApproval = structuredClone(workingPlan)
+    missingApproval.steps[1]!.blocker!.approvalId = "approval-missing"
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [missingApproval],
+    }).success).toBe(false)
+
+    const missingSession = structuredClone(workingPlan)
+    missingSession.sessionId = "session-missing"
+    expect(workspaceSnapshotSchema.safeParse({
+      ...structuredClone(demoWorkspace),
+      workingPlans: [missingSession],
+    }).success).toBe(false)
+
+    const duplicate = structuredClone(demoWorkspace)
+    duplicate.workingPlans.push(structuredClone(workingPlan))
+    expect(workspaceSnapshotSchema.safeParse(duplicate).success).toBe(false)
+  })
+
   it("bounds terminal output notification payloads", () => {
     expect(terminalOutputNotificationSchema.safeParse({
       terminalId: "terminal-1",
