@@ -25,7 +25,7 @@ This repository is early. The current vertical slice includes:
 apps/
   daemon/    domovoid execution service and JSON-RPC endpoint
   desktop/   Electron client
-  web/       browser client and future PWA
+  web/       browser client and installable PWA
 packages/
   protocol/  publishable wire schemas and shared types
   ui/        shared product UI and brand assets
@@ -53,10 +53,11 @@ pnpm dev:desktop
 
 Every daemon requires authentication. Standalone `domovoid` creates a user-private credential at
 `~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require
-`DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`. The opt-in is only for an encrypted outer transport such as a
-Tailscale tailnet or SSH tunnel; the daemon does not provide TLS itself. Set
-`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Remote preview
-documents use short-lived capabilities scoped to one artifact and annotation bridge channel.
+`DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and `DOMOVOI_TLS_KEY_PATH`; the
+daemon terminates TLS itself and refuses a plaintext non-loopback listener. Set
+`DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of trusted browser origins. Preview documents
+on every listener, loopback included, require short-lived signed capabilities scoped to one
+artifact revision, purpose, annotation bridge channel, and parent origin.
 
 ## Verify
 
@@ -81,10 +82,14 @@ Alpha performance limits and the local/CI budget command are documented in
 
 Open product decisions are tracked in
 [`design/design_handoff_domovoi/OPEN-QUESTIONS.md`](design/design_handoff_domovoi/OPEN-QUESTIONS.md).
-The ranked delivery plan is tracked in [`ROADMAP.md`](ROADMAP.md).
+The ranked delivery plan is tracked in [`ROADMAP.md`](ROADMAP.md). Agent-facing conventions and
+the verified command set are summarized in [`AGENTS.md`](AGENTS.md).
 
 ## Licensing
 
 Domovoi is open-core. This repository contains the Apache-2.0-licensed daemon, protocol, clients,
-and local transports. Future hosted account, billing, relay, encrypted vault, and team-policy
-services may live outside this repository.
+and local transports. The daemon's Claude Code session adapter depends at runtime on the
+proprietary `@anthropic-ai/claude-agent-sdk`, installed from npm under Anthropic's terms rather
+than redistributed here; that exception is recorded in [`docs/licensing.md`](docs/licensing.md).
+Future hosted account, billing, relay, encrypted vault, and team-policy services may live outside
+this repository.

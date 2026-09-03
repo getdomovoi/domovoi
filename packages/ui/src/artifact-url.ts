@@ -1,10 +1,6 @@
 import type { ArtifactAccess } from "@getdomovoi/protocol"
 
-export function artifactUrlFor(
-  rpcUrl: string,
-  access: ArtifactAccess,
-  parentOrigin?: string,
-): string {
+export function artifactUrlFor(rpcUrl: string, access: ArtifactAccess): string {
   const url = new URL(rpcUrl)
   // An artifact travels over the same protection the rpc connection has. Only a
   // plaintext socket becomes plaintext http; anything already secure stays
@@ -16,7 +12,7 @@ export function artifactUrlFor(
     revision: String(access.revision),
     purpose: access.purpose,
     ...(access.bridgeChannel ? { bridge: access.bridgeChannel } : {}),
-    ...(access.bridgeChannel && parentOrigin ? { parentOrigin } : {}),
+    ...(access.parentOrigin ? { parentOrigin: access.parentOrigin } : {}),
     expires: String(access.expiresAt),
     signature: access.signature,
   }).toString()

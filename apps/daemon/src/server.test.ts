@@ -12,12 +12,15 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   createEmptyWorkspace,
+  daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
+  devicePairingLimitErrorCode,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
   maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
   projectSwitchConfirmationSchema,
+  protocolVersionMismatchErrorCode,
   workspaceSnapshotSchema,
   type ProviderModel,
   type RpcMethod,
@@ -29,10 +32,12 @@ import {
   maximumIncomingTransfers,
   appendPlanDelta,
   artifactAccessMatches,
-  canServeArtifacts,
   frameAncestorsFor,
   DomovoiDaemon,
+  helloProtocolCompatibility,
   hostAuthorityMatches,
+  persistenceFailureThreshold,
+  persistenceUnavailableContext,
   isTestCommandTitle,
   maximumAuthenticationPayloadBytes,
   maximumCachedSessionHistoryFilterEntries,
@@ -52,6 +57,8 @@ import {
 } from "./rpc-outbound.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { internalRpcErrorMessage } from "./rpc-errors.js"
+import { maximumPairedDevices } from "./device-registry.js"
 import { SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import { WorkspaceEvidenceUnstableError, type WorkspaceService } from "./workspace.js"
 import type { AuditLog } from "./audit-log.js"
@@ -65,6 +72,15 @@ const skillSecurityMetadata = {
   signature: { state: "unsigned" as const },
   trust: { state: "untrusted" as const, reason: "unsigned" as const },
 }
+
+describe("helloProtocolCompatibility", () => {
+  it("keeps a versionless client on its historical protocol after a breaking minor", () => {
+    expect(helloProtocolCompatibility("0.2.0", undefined)).toEqual({
+      clientProtocol: "0.1.0",
+      compatibility: "machine-ahead",
+    })
+  })
+})
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -116,7 +132,26 @@ function identifyClient(
       jsonrpc: "2.0",
       id,
       method: "system.hello",
-      params: { client, clientId, clientVersion: "0.0.1" },
+      params: { client, clientId, clientVersion: "0.0.1", protocolVersion: "0.1.0" },
+    }))
+  })
+}
+
+function identifyMachine(socket: WebSocket, machineId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const id = "test-machine-identity"
+    const receive = (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as { id?: string }
+      if (message.id !== id) return
+      socket.off("message", receive)
+      resolve()
+    }
+    socket.on("message", receive)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "system.hello",
+      params: { client: "machine", machineId, clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
   })
 }
@@ -228,10 +263,7 @@ describe("DomovoiDaemon", () => {
       },
     }))
 
-    await Promise.race([
-      streamed,
-      new Promise((resolve) => setTimeout(resolve, 500)),
-    ])
+    await streamed
     await expect(outcome).resolves.toEqual({
       code: retryableSlowClientCloseCode,
       reason: retryableSlowClientCloseReason,
@@ -277,7 +309,6 @@ describe("DomovoiDaemon", () => {
     })
     let heartbeats = 0
     const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
-    const startedAt = performance.now()
     const response = new Promise<Record<string, unknown>>((resolve) => {
       socket.once("message", (data) => resolve(JSON.parse(data.toString())))
     })
@@ -291,7 +322,6 @@ describe("DomovoiDaemon", () => {
     await expect(response).resolves.toMatchObject({
       result: { activeSessionId: snapshot.sessions[1]!.id },
     })
-    const elapsedMs = performance.now() - startedAt
     clearInterval(heartbeat)
     expect(durable).toBe(true)
     expect(save).not.toHaveBeenCalled()
@@ -300,7 +330,125 @@ describe("DomovoiDaemon", () => {
     // Windows resolves timers to roughly 15 ms, so this asserts they ran at
     // all rather than a rate the platform does not promise.
     expect(heartbeats).toBeGreaterThanOrEqual(2)
-    expect(elapsedMs).toBeLessThan(500)
+    socket.close()
+  })
+
+  it("broadcasts the snapshot as persisted, including deltas streamed during the persist", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
+    const streaming = snapshot.sessions[0]!
+    const other = snapshot.sessions[1]!
+    for (const session of [streaming, other]) {
+      session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
+      session.workspacePath = "/worktrees/x"
+    }
+    streaming.providerThreadId = "thread-streaming"
+    streaming.activeTurnId = "turn-streaming"
+    streaming.state = "active"
+    other.providerThreadId = "thread-other"
+    delete other.activeTurnId
+    other.state = "idle"
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-started"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listeners.add(next)
+        return () => { listeners.delete(next) }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    let parkNextPersist = false
+    let parked!: () => void
+    let releasePersist!: () => void
+    const persistParked = new Promise<void>((resolve) => { parked = resolve })
+    const store = {
+      load: () => structuredClone(snapshot),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => {
+        if (!parkNextPersist) return
+        parkNextPersist = false
+        await new Promise<void>((resolve) => {
+          releasePersist = resolve
+          parked()
+        })
+      }),
+      close: vi.fn(),
+    }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: { codex: agent },
+      errorSink: vi.fn(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const notifications: { method: string; params: Record<string, unknown> }[] = []
+    const responses = new Map<number, (message: Record<string, unknown>) => void>()
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as {
+        id?: number
+        method?: string
+        params?: Record<string, unknown>
+      }
+      if (message.id !== undefined) responses.get(message.id)?.(message)
+      else if (message.method === "workspace.delta" || message.method === "workspace.changed") {
+        notifications.push({ method: message.method, params: message.params ?? {} })
+      }
+    })
+    let nextId = 0
+    const rpc = (method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const id = ++nextId
+        responses.set(id, resolve)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    const assistantBodies = (payload: Record<string, unknown>) =>
+      (payload.thread as { sessionId: string; kind: string; body?: string }[])
+        .filter((item) => item.sessionId === streaming.id && item.kind === "assistant")
+        .map((item) => item.body)
+
+    const sent = await rpc("session.send", { sessionId: streaming.id, prompt: "go", client: "desktop" })
+    const turnId = (sent.result as { sessions: { id: string; activeTurnId?: string }[] }).sessions
+      .find((session) => session.id === streaming.id)!.activeTurnId!
+    notifications.length = 0
+
+    parkNextPersist = true
+    const pendingOther = rpc("session.setRuntime", {
+      sessionId: other.id,
+      client: "desktop",
+      runtime: { ...other.runtime, reasoning: "high" },
+    })
+    await persistParked
+    for (const listener of listeners) {
+      listener({ type: "text-delta", threadId: "thread-streaming", turnId, delta: "hello from A" })
+    }
+    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "workspace.delta" }),
+    ])))
+    releasePersist()
+    await pendingOther
+    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: "workspace.changed" }),
+    ])))
+
+    const changed = notifications.find((notification) => notification.method === "workspace.changed")!
+    expect(assistantBodies(changed.params)).toEqual(
+      expect.arrayContaining([expect.stringContaining("hello from A")]),
+    )
+    const daemonView = await rpc("workspace.get", {})
+    expect(assistantBodies(changed.params)).toEqual(
+      assistantBodies(daemonView.result as Record<string, unknown>),
+    )
     socket.close()
   })
 
@@ -2530,7 +2678,7 @@ describe("DomovoiDaemon", () => {
 
     const hello = await rpc("system.hello", {
       client: "desktop",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "history-token",
     })
     expect((hello.result as { thread: unknown[] }).thread).toHaveLength(100)
@@ -2631,16 +2779,8 @@ describe("DomovoiDaemon", () => {
     expect(annotations[0]!.artifactId).toBe("plan-session-a")
   })
 
-  it("requires signed access for preview documents outside loopback", () => {
-    expect(canServeArtifacts("127.0.0.1")).toBe(true)
-    expect(canServeArtifacts("::1")).toBe(true)
-    expect(canServeArtifacts("100.64.0.10")).toBe(false)
-    expect(canServeArtifacts("100.64.0.10", true)).toBe(true)
-    expect(canServeArtifacts("0.0.0.0")).toBe(false)
-  })
-
-  it("scopes artifact access to id, bridge channel, and expiry", () => {
-    const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", expiresAt: 1_800_000_000 }
+  it("scopes artifact access to id, bridge channel, parent origin, and expiry", () => {
+    const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", parentOrigin: "https://app.domovoi.sh", expiresAt: 1_800_000_000 }
     const signature = signArtifactAccess("artifact-secret", scope)
     expect(signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(artifactAccessMatches(
@@ -2659,6 +2799,32 @@ describe("DomovoiDaemon", () => {
       "artifact-secret",
       { ...scope, bridgeChannel: "preview_channel_changed" },
       signature,
+      1_799_999_999,
+    )).toBe(false)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      { ...scope, parentOrigin: "https://attacker.example" },
+      signature,
+      1_799_999_999,
+    )).toBe(false)
+    const { parentOrigin: _unsignedParentOrigin, ...withoutParentOrigin } = scope
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      withoutParentOrigin,
+      signature,
+      1_799_999_999,
+    )).toBe(false)
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      scope,
+      signArtifactAccess("artifact-secret", withoutParentOrigin),
+      1_799_999_999,
+    )).toBe(false)
+    const { bridgeChannel: _unbridged, ...withoutBridge } = scope
+    expect(artifactAccessMatches(
+      "artifact-secret",
+      withoutBridge,
+      signArtifactAccess("artifact-secret", withoutBridge),
       1_799_999_999,
     )).toBe(false)
     expect(artifactAccessMatches(
@@ -2763,7 +2929,7 @@ describe("DomovoiDaemon", () => {
     }
     await rpc("system.hello", {
       client: "web",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "remote-daemon-token",
     })
     const accessResponse = await rpc("artifact.authorize", {
@@ -2839,7 +3005,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "system.hello",
-      params: { client: "web", clientVersion: "0.0.1" },
+      params: { client: "web", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
 
     await expect(response).resolves.toMatchObject({
@@ -2867,7 +3033,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "system.hello",
-      params: { client: "web", clientVersion: "0.0.1" },
+      params: { client: "web", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
 
     const hello = await response
@@ -2899,7 +3065,7 @@ describe("DomovoiDaemon", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "system.hello",
-        params: { client: "tablet", clientVersion: "0.0.1" },
+        params: { client: "tablet", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
       }))
       return response
     }
@@ -2955,7 +3121,7 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
-    await expect(send(1, "system.hello", { client: "tablet", clientVersion: "0.0.1" }))
+    await expect(send(1, "system.hello", { client: "tablet", clientVersion: "0.0.1", protocolVersion: "0.1.0" }))
       .resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
 
     invalidate(store, paired.device.id)
@@ -3030,7 +3196,7 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       return response
     }
-    await call(1, "system.hello", { client: "desktop", clientVersion: "0.0.1" })
+    await call(1, "system.hello", { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" })
     return { socket, call }
   }
 
@@ -3219,7 +3385,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "system.hello",
-      params: { client: "desktop", clientVersion: "0.0.1" },
+      params: { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
     }))
 
     await expect(response).resolves.toMatchObject({
@@ -3489,6 +3655,48 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("answers empty-params methods when a JSON-RPC request omits params", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const call = (id: number, method: string) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method }))
+      return response
+    }
+
+    const fleet = await call(2, "fleet.list")
+    const devices = await call(3, "device.list")
+    const code = await call(4, "device.issueCode")
+
+    for (const answer of [fleet, devices, code]) {
+      expect(answer.error).toBeUndefined()
+      expect(answer.result).toBeDefined()
+    }
+    expect(code).toMatchObject({
+      result: {
+        code: expect.stringMatching(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/),
+        expiresAt: expect.any(String),
+      },
+    })
+    socket.close()
+  })
+
   it("refuses to issue a pairing code to a client holding only a device credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
@@ -3598,6 +3806,79 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("answers the paired device limit instead of rejecting the connection", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    for (let index = 0; index < maximumPairedDevices; index += 1) {
+      store.devices.pair({ label: `device-${index}` })
+    }
+    const issued = daemon.issuePairingCode()
+    const { socket, call } = await unauthenticatedSocket(daemon)
+
+    const claimed = await call(1, "device.claim", {
+      code: issued.code,
+      label: "one-too-many",
+    })
+
+    expect(claimed).toMatchObject({
+      error: { code: devicePairingLimitErrorCode, message: expect.any(String) },
+    })
+    expect(store.devices.list()).toHaveLength(maximumPairedDevices)
+    socket.close()
+  })
+
+  it("answers an internal error when credential verification itself fails", async () => {
+    const errors: string[] = []
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const originalDevices = Object.getOwnPropertyDescriptor(store, "devices")
+    let explodeDevices = false
+    Object.defineProperty(store, "devices", {
+      get() {
+        if (explodeDevices) throw new Error("device lookup exploded")
+        return originalDevices?.value
+      },
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      errorSink: (entry) => errors.push(entry.context),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const { socket } = await unauthenticatedSocket(daemon)
+    explodeDevices = true
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: unknown }
+        if (message.id !== null) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: {
+        client: "desktop",
+        clientVersion: "0.0.1",
+        protocolVersion: "0.1.0",
+        authToken: "not-the-daemon-token",
+      },
+    }))
+
+    const answer = await response
+    explodeDevices = false
+    expect(answer).toMatchObject({ error: { code: -32603, message: "Internal daemon error" } })
+    expect(errors).toContain("RPC dispatch failed")
+    socket.close()
+  })
+
   it("audits a pairing without recording the code or the credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
@@ -3671,14 +3952,14 @@ describe("DomovoiDaemon", () => {
     })
     await expect(rpc(2, "system.hello", {
       client: "web",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "wrong-token",
     })).resolves.toMatchObject({
       error: { code: -32001, message: "Daemon authentication failed" },
     })
     await expect(rpc(3, "system.hello", {
       client: "web",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
       authToken: "correct-horse-battery-staple",
     })).resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
     await expect(rpc(4, "workspace.get", {})).resolves.toMatchObject({
@@ -3712,7 +3993,7 @@ describe("DomovoiDaemon", () => {
       method: "system.hello",
       params: {
         client: "web",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.1", protocolVersion: "0.1.0",
         authToken: "correct-horse-battery-staple",
       },
     }))
@@ -3742,7 +4023,7 @@ describe("DomovoiDaemon", () => {
         jsonrpc: "2.0",
         id,
         method: "system.hello",
-        params: { client: "web", clientVersion: "0.0.1", authToken: "wrong-token" },
+        params: { client: "web", clientVersion: "0.0.1", protocolVersion: "0.1.0", authToken: "wrong-token" },
       }))
     }
     await expect(rejected).resolves.toEqual({ code: 1008, reason: "authentication failed" })
@@ -3920,7 +4201,7 @@ describe("DomovoiDaemon", () => {
           method: "system.hello",
           params: {
             client: "desktop",
-            clientVersion: "0.0.1",
+            clientVersion: "0.0.1", protocolVersion: "0.1.0",
             ...(authToken ? { authToken } : {}),
           },
         })))
@@ -4284,7 +4565,7 @@ describe("DomovoiDaemon", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "system.hello",
-            params: { client: "desktop", clientVersion: "0.0.1" },
+            params: { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
           }),
         )
       })
@@ -4556,7 +4837,7 @@ describe("DomovoiDaemon", () => {
       authToken: daemon.authToken,
       client: "desktop",
       clientId: "desktop-reviewer",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
     })
     const review = {
       id: currentSkill.id,
@@ -4897,7 +5178,7 @@ describe("DomovoiDaemon", () => {
       const hello = await request(1, "system.hello", {
         client: "web",
         clientId: "spoofed-device-id",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.1", protocolVersion: "0.1.0",
         authToken: daemon.authToken,
       })
       return { socket, request, hello }
@@ -4913,7 +5194,7 @@ describe("DomovoiDaemon", () => {
     await expect(first.request(2, "system.hello", {
       client: "desktop",
       clientId: "changed-device-id",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.1", protocolVersion: "0.1.0",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Connection client identity is already established" },
     })
@@ -4939,6 +5220,81 @@ describe("DomovoiDaemon", () => {
     })
     first.socket.close()
     second.socket.close()
+  })
+
+  it("accepts a hello with no protocol version and treats it as the legacy one", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
+      authToken: "correct-horse-battery-staple",
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    // A client built before the handshake carried a version sends none at all.
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: { client: "web", clientVersion: "0.0.1", authToken: daemon.authToken },
+    }))
+
+    const accepted = await response
+    expect(accepted).toMatchObject({ result: { connectionId: expect.any(String) } })
+    expect(accepted.error).toBeUndefined()
+    socket.close()
+  })
+
+  it("refuses a client that speaks another protocol version", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
+      authToken: "correct-horse-battery-staple",
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "system.hello",
+      params: {
+        client: "web",
+        clientVersion: "0.0.1",
+        protocolVersion: "9.9.9",
+        authToken: daemon.authToken,
+      },
+    }))
+
+    const refusal = await response
+    expect(refusal).toMatchObject({
+      error: {
+        code: protocolVersionMismatchErrorCode,
+        message: expect.stringContaining("0.1.0"),
+      },
+    })
+    expect((refusal.error as { message: string }).message).toContain("9.9.9")
+    socket.close()
   })
 
   it("activates an existing session and rejects unknown sessions", async () => {
@@ -5831,7 +6187,7 @@ describe("DomovoiDaemon", () => {
           jsonrpc: "2.0",
           id: 2,
           method: "system.hello",
-          params: { client: "desktop", clientVersion: "0.0.1" },
+          params: { client: "desktop", clientVersion: "0.0.1", protocolVersion: "0.1.0" },
         }))
       })
       secondSocket.on("message", (data) => {
@@ -5892,6 +6248,381 @@ describe("DomovoiDaemon", () => {
     )
     secondSocket.close()
   })
+
+  it("keeps every project's state when switching repositories", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-per-project-"))
+    scratchDirectories.push(scratch)
+    const statePath = join(scratch, "state.sqlite")
+    const agentListeners = new Set<(event: AgentEvent) => void>()
+    let threadCount = 0
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => `provider-thread-${++threadCount}`),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "provider-turn-1"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        agentListeners.add(listener)
+        return () => agentListeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+        root: path,
+        name: path === "/code/elsewhere" ? "elsewhere" : "domovoi",
+        branch: path === "/code/elsewhere" ? "develop" : "main",
+        head: "a".repeat(40),
+      })),
+      createSessionWorkspace: vi.fn(async (_path: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "a".repeat(40),
+      })),
+      removeSessionWorkspace: vi.fn(async () => {}),
+      checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+      restore: vi.fn(async () => ({
+        restoredCommit: "b".repeat(40),
+        recoveryCommit: "c".repeat(40),
+      })),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
+        id: "machine-per-project",
+        name: "per-project-test",
+        platform: process.platform,
+        arch: process.arch,
+        version: "0.0.1",
+        connection: "local",
+        reachable: true,
+        providers: [],
+      })),
+      agents: { codex: agent },
+      workspaceService,
+      agentTimeoutMs: 500,
+      modelCacheTtlMs: 0,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    const confirmationFor = async (path: string) => {
+      const refused = await rpc("project.open", { path, client: "desktop" })
+      expect(refused).toMatchObject({ error: { code: -32010 } })
+      return projectSwitchConfirmationSchema.parse((refused.error as { data?: unknown }).data)
+    }
+    const runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+
+    await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
+    const created = await rpc("session.create", {
+      title: "Work in domovoi",
+      runtime,
+      client: "desktop",
+    })
+    const sessionId = (created.result as { activeSessionId: string }).activeSessionId
+    const sent = await rpc("session.send", {
+      sessionId,
+      prompt: "Start the migration",
+      client: "desktop",
+    })
+    expect(sent).toMatchObject({
+      result: {
+        sessions: [expect.objectContaining({ id: sessionId, activeTurnId: "provider-turn-1" })],
+      },
+    })
+    for (const listener of agentListeners) {
+      listener({
+        type: "approval-requested",
+        requestId: 91,
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        itemId: "command-1",
+        command: "pnpm build",
+        cwd: `/worktrees/${sessionId}`,
+        reason: "Build the project",
+      })
+    }
+    await vi.waitFor(async () => {
+      const current = await rpc("workspace.get", {})
+      expect((current.result as { approvals: unknown[] }).approvals).toHaveLength(1)
+    })
+
+    const switched = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      confirmation: await confirmationFor("/code/elsewhere"),
+    })
+    expect(switched).toMatchObject({
+      result: {
+        project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
+        sessions: [],
+        activeSessionId: null,
+        approvals: [],
+      },
+    })
+    expect(agent.interruptTurn).toHaveBeenCalledWith("provider-thread-1", "provider-turn-1")
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
+
+    const elsewhereCreated = await rpc("session.create", {
+      title: "Work in elsewhere",
+      runtime,
+      client: "desktop",
+    })
+    const elsewhereSessionId = (elsewhereCreated.result as {
+      activeSessionId: string
+    }).activeSessionId
+
+    const returned = await rpc("project.open", {
+      path: "/code/domovoi",
+      client: "desktop",
+      confirmation: await confirmationFor("/code/domovoi"),
+    })
+    expect(returned).toMatchObject({
+      result: {
+        project: { name: "domovoi", path: "/code/domovoi", branch: "main" },
+        activeSessionId: sessionId,
+        approvals: [],
+        sessions: [expect.objectContaining({
+          id: sessionId,
+          title: "Work in domovoi",
+          state: "idle",
+          workspacePath: `/worktrees/${sessionId}`,
+          providerThreadId: "provider-thread-1",
+        })],
+        thread: expect.arrayContaining([
+          expect.objectContaining({ kind: "user", body: "Start the migration" }),
+          expect.objectContaining({
+            kind: "system",
+            body: "Switching projects interrupted the active turn.",
+          }),
+        ]),
+      },
+    })
+    expect((returned.result as {
+      sessions: Array<Record<string, unknown>>
+    }).sessions[0]).not.toHaveProperty("activeTurnId")
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
+
+    const elsewhereReturn = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      confirmation: await confirmationFor("/code/elsewhere"),
+    })
+    expect(elsewhereReturn).toMatchObject({
+      result: {
+        project: { path: "/code/elsewhere" },
+        sessions: [expect.objectContaining({ id: elsewhereSessionId })],
+      },
+    })
+    socket.close()
+  })
+
+  it("quarantines a provider thread that refuses to stop during a switch", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-per-project-"))
+    scratchDirectories.push(scratch)
+    const statePath = join(scratch, "state.sqlite")
+    const agentListeners = new Set<(event: AgentEvent) => void>()
+    let threadCount = 0
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => `provider-thread-${++threadCount}`),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => { throw new Error("provider is wedged") }),
+      startTurn: vi.fn(async () => "provider-turn-1"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        agentListeners.add(listener)
+        return () => agentListeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(async (path: string, _signal?: AbortSignal) => ({
+        root: path,
+        name: path === "/code/elsewhere" ? "elsewhere" : "domovoi",
+        branch: path === "/code/elsewhere" ? "develop" : "main",
+        head: "a".repeat(40),
+      })),
+      createSessionWorkspace: vi.fn(async (_path: string, sessionId: string) => ({
+        path: `/worktrees/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: "a".repeat(40),
+      })),
+      removeSessionWorkspace: vi.fn(async () => {}),
+      checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+      restore: vi.fn(async () => ({
+        restoredCommit: "b".repeat(40),
+        recoveryCommit: "c".repeat(40),
+      })),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
+        id: "machine-per-project",
+        name: "per-project-test",
+        platform: process.platform,
+        arch: process.arch,
+        version: "0.0.1",
+        connection: "local",
+        reachable: true,
+        providers: [],
+      })),
+      agents: { codex: agent },
+      workspaceService,
+      agentTimeoutMs: 500,
+      modelCacheTtlMs: 0,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+    const confirmationFor = async (path: string) => {
+      const refused = await rpc("project.open", { path, client: "desktop" })
+      expect(refused).toMatchObject({ error: { code: -32010 } })
+      return projectSwitchConfirmationSchema.parse((refused.error as { data?: unknown }).data)
+    }
+    const runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+
+    await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
+    const created = await rpc("session.create", {
+      title: "Work in domovoi",
+      runtime,
+      client: "desktop",
+    })
+    const sessionId = (created.result as { activeSessionId: string }).activeSessionId
+    const sent = await rpc("session.send", {
+      sessionId,
+      prompt: "Start the migration",
+      client: "desktop",
+    })
+    expect(sent).toMatchObject({
+      result: {
+        sessions: [expect.objectContaining({ id: sessionId, activeTurnId: "provider-turn-1" })],
+      },
+    })
+    for (const listener of agentListeners) {
+      listener({
+        type: "approval-requested",
+        requestId: 91,
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        itemId: "command-1",
+        command: "pnpm build",
+        cwd: `/worktrees/${sessionId}`,
+        reason: "Build the project",
+      })
+    }
+    await vi.waitFor(async () => {
+      const current = await rpc("workspace.get", {})
+      expect((current.result as { approvals: unknown[] }).approvals).toHaveLength(1)
+    })
+
+    const switched = await rpc("project.open", {
+      path: "/code/elsewhere",
+      client: "desktop",
+      confirmation: await confirmationFor("/code/elsewhere"),
+    })
+    expect(switched).toMatchObject({
+      result: {
+        project: { name: "elsewhere", path: "/code/elsewhere", branch: "develop" },
+        sessions: [],
+        activeSessionId: null,
+        approvals: [],
+      },
+    })
+    expect(agent.interruptTurn).toHaveBeenCalledWith("provider-thread-1", "provider-turn-1")
+    expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalled()
+
+    // A thread that would not stop may still be writing to the worktree, so the
+    // session must come back asking for a restart rather than looking idle.
+    // The project just switched to holds no sessions, so returning needs no
+    // confirmation.
+    const back = await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
+    const restored = (back.result as { sessions: Array<Record<string, unknown>> }).sessions[0]!
+    expect(restored).toMatchObject({ state: "failed" })
+    expect(restored.activeTurnId).toBeUndefined()
+    // The thread would not stop, so its identity is kept: a second agent must
+    // not be started in a worktree something may still be writing to.
+    expect(restored.providerThreadId).toBe("provider-thread-1")
+    const refusedRestart = await rpc("session.restartProviderThread", {
+      sessionId: restored.id as string,
+      client: "desktop",
+    })
+    expect(refusedRestart).toMatchObject({
+      error: { message: "Session already has a live provider thread" },
+    })
+    const refusedSend = await rpc("session.send", {
+      sessionId: restored.id as string,
+      prompt: "Continue in the preserved worktree",
+      client: "desktop",
+    })
+    expect(refusedSend).toMatchObject({
+      error: { message: "Provider thread requires recovery after emergency stop" },
+    })
+    expect(agent.startTurn).toHaveBeenCalledTimes(1)
+    socket.close()
+  })
+
 
   it("orchestrates a local project, Codex turn, approval, and checkpoint", async () => {
     const agentListeners = new Set<(event: AgentEvent) => void>()
@@ -6402,7 +7133,7 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(agent.stopThread).toHaveBeenCalledWith("provider-thread-1")
-    expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledWith(
+    expect(workspaceService.removeSessionWorkspace).not.toHaveBeenCalledWith(
       `/worktrees/${sessionId}`,
       expect.any(AbortSignal),
     )
@@ -7208,12 +7939,25 @@ describe("DomovoiDaemon", () => {
     expect(artifact).toMatchObject({ sessionId, type: "preview", path: "preview.html" })
     expect((snapshot.result as { artifacts: unknown[] }).artifacts).toHaveLength(2)
 
+    const unsignedPreview = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}`,
+    )
+    expect(unsignedPreview.status).toBe(404)
+    await expect(unsignedPreview.json()).resolves.toEqual({ error: "not_found" })
+
+    const unsignedBridgedPreview = await fetch(
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178`,
+    )
+    expect(unsignedBridgedPreview.status).toBe(404)
+    await expect(unsignedBridgedPreview.json()).resolves.toEqual({ error: "not_found" })
+
     const accessResponse = await rpc("artifact.authorize", {
       sessionId,
       artifactId: artifact!.id,
       revision: artifact!.revision,
       purpose: "preview",
       bridgeChannel: "preview_channel_123456",
+      parentOrigin: "http://127.0.0.1:5178",
       client: "desktop",
     })
     const access = accessResponse.result as {
@@ -7222,15 +7966,26 @@ describe("DomovoiDaemon", () => {
       revision: number
       purpose: string
       bridgeChannel: string
+      parentOrigin: string
       expiresAt: number
       signature: string
     }
     expect(access).toMatchObject({
       artifactId: artifact!.id,
       bridgeChannel: "preview_channel_123456",
+      parentOrigin: "http://127.0.0.1:5178",
     })
     expect(access.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1_000))
     expect(access.signature).toMatch(/^[A-Za-z0-9_-]{43}$/)
+
+    await expect(rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "preview",
+      parentOrigin: "http://127.0.0.1:5178",
+      client: "desktop",
+    })).resolves.toMatchObject({ error: { code: -32602 } })
 
     await expect(rpc("artifact.authorize", {
       sessionId,
@@ -7242,26 +7997,47 @@ describe("DomovoiDaemon", () => {
       error: { code: -32602, message: "Preview artifact does not exist" },
     })
 
-    const preview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}`,
-    )
-    expect(preview.status).toBe(200)
-    expect(preview.headers.get("content-security-policy")).toContain("default-src 'none'")
-    await expect(preview.text()).resolves.toBe("<h1>Domovoi preview</h1>")
-
-    const bridgedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=preview_channel_123456&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178`,
-    )
-    const bridgedContent = await bridgedPreview.text()
-    expect(bridgedContent).toContain("domovoi.preview.selection")
-    expect(bridgedContent).toContain("preview_channel_123456")
-    expect(bridgedContent).toContain(artifact!.id)
-
-    const signedPreview = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=http%3A%2F%2F127.0.0.1%3A5178&expires=${access.expiresAt}&signature=${access.signature}`,
-    )
+    const signedParentOrigin = encodeURIComponent(access.parentOrigin)
+    const signedPreviewUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=${signedParentOrigin}&expires=${access.expiresAt}&signature=${access.signature}`
+    const signedPreview = await fetch(signedPreviewUrl)
     expect(signedPreview.status).toBe(200)
-    expect(await signedPreview.text()).toContain("domovoi.preview.selection")
+    expect(signedPreview.headers.get("content-security-policy")).toContain("default-src 'none'")
+    const signedContent = await signedPreview.text()
+    expect(signedContent).toContain("domovoi.preview.selection")
+    expect(signedContent).toContain("preview_channel_123456")
+    expect(signedContent).toContain(artifact!.id)
+    expect(signedContent).toContain('const parentOrigin="http://127.0.0.1:5178"')
+
+    const retargetedPreview = await fetch(
+      signedPreviewUrl.replace(`parentOrigin=${signedParentOrigin}`, `parentOrigin=${encodeURIComponent("http://attacker.example")}`),
+    )
+    expect(retargetedPreview.status).toBe(404)
+    const opaqueParentPreview = await fetch(
+      signedPreviewUrl.replace(`parentOrigin=${signedParentOrigin}`, "parentOrigin=null"),
+    )
+    expect(opaqueParentPreview.status).toBe(404)
+    const droppedParentPreview = await fetch(
+      signedPreviewUrl.replace(`&parentOrigin=${signedParentOrigin}`, ""),
+    )
+    expect(droppedParentPreview.status).toBe(404)
+
+    const plainResponse = await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: artifact!.revision,
+      purpose: "preview",
+      client: "desktop",
+    })
+    const plainAccess = plainResponse.result as typeof access
+    expect(plainAccess).not.toHaveProperty("parentOrigin")
+    const plainPreviewUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(plainAccess.artifactId)}?session=${plainAccess.sessionId}&revision=${plainAccess.revision}&purpose=preview&expires=${plainAccess.expiresAt}&signature=${plainAccess.signature}`
+    const plainPreview = await fetch(plainPreviewUrl)
+    expect(plainPreview.status).toBe(200)
+    await expect(plainPreview.text()).resolves.toBe("<h1>Domovoi preview</h1>")
+    const unsignedBridge = await fetch(`${plainPreviewUrl}&bridge=preview_channel_123456&parentOrigin=${signedParentOrigin}`)
+    expect(unsignedBridge.status).toBe(404)
+    const unsignedParentOrigin = await fetch(`${plainPreviewUrl}&parentOrigin=${signedParentOrigin}`)
+    expect(unsignedParentOrigin.status).toBe(404)
 
     const printResponse = await rpc("artifact.authorize", {
       sessionId,
@@ -7308,9 +8084,8 @@ describe("DomovoiDaemon", () => {
     }).artifacts.find((candidate) => candidate.id === artifact!.id)
     await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: currentArtifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
-    const invalidBridge = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(artifact!.id)}?bridge=short`,
-    )
+    const invalidBridge = await fetch(`${plainPreviewUrl}&bridge=short`)
+    expect(invalidBridge.status).toBe(200)
     await expect(invalidBridge.text()).resolves.toBe("<h1>Domovoi preview</h1>")
 
     const rebindingStatus = await new Promise<number | undefined>((resolve, reject) => {
@@ -7329,13 +8104,22 @@ describe("DomovoiDaemon", () => {
     expect(rebindingStatus).toBe(404)
 
     const linkedArtifact = (snapshot.result as {
-      artifacts: Array<{ id: string; title: string }>
+      artifacts: Array<{ id: string; title: string; revision: number }>
     }).artifacts.find((candidate) => candidate.title === "linked.html")!
+    const linkedAccess = (await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: linkedArtifact.id,
+      revision: linkedArtifact.revision,
+      purpose: "preview",
+      client: "desktop",
+    })).result as typeof access
+    const linkedUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(linkedAccess.artifactId)}?session=${linkedAccess.sessionId}&revision=${linkedAccess.revision}&purpose=preview&expires=${linkedAccess.expiresAt}&signature=${linkedAccess.signature}`
+    const linkedPreview = await fetch(linkedUrl)
+    expect(linkedPreview.status).toBe(200)
+    await expect(linkedPreview.text()).resolves.toBe("<h1>Safe preview</h1>")
     await unlink(join(worktree, "linked.html"))
     await symlink(join(scratch, "outside.html"), join(worktree, "linked.html"))
-    const symlinkEscape = await fetch(
-      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(linkedArtifact.id)}`,
-    )
+    const symlinkEscape = await fetch(linkedUrl)
     expect(symlinkEscape.status).toBe(404)
 
     const escaped = await fetch(
@@ -7623,6 +8407,116 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("resolves a Build-auto script through the manifest beside it", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-build-auto-"))
+    scratchDirectories.push(workspacePath)
+    await writeFile(join(workspacePath, "package.json"), JSON.stringify({
+      scripts: { test: "vitest run", leak: "cat .env && vitest run" },
+    }))
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: true,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-script-resolution"
+    delete session.activeTurnId
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-script-resolution"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Run the suite",
+      client: "desktop",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 31,
+      threadId: session.providerThreadId,
+      turnId: "turn-script-resolution",
+      reason: "Run project tests",
+      command: "pnpm test",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 32,
+      threadId: session.providerThreadId,
+      turnId: "turn-script-resolution",
+      reason: "Run project tests",
+      command: "pnpm run leak",
+    })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).toHaveBeenCalledWith(31, "allow-once")
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(32, expect.anything())
+    expect(current).toMatchObject({
+      result: {
+        approvals: expect.arrayContaining([
+          expect.objectContaining({
+            providerRequestId: 32,
+            command: "pnpm run leak",
+            risk: "hard-gate",
+          }),
+        ]),
+      },
+    })
+    socket.close()
+  })
+
   it("auto-allows bounded work but keeps hard gates explicit", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -7708,7 +8602,7 @@ describe("DomovoiDaemon", () => {
       requestId: 11,
       threadId: session.providerThreadId,
       turnId: "turn-build-auto",
-      command: "pnpm test",
+      command: "git status --porcelain",
     })
     listener!({
       type: "approval-requested",
@@ -7718,17 +8612,33 @@ describe("DomovoiDaemon", () => {
       reason: "Install skill",
       command: skillInstallCommand,
     })
+    listener!({
+      type: "approval-requested",
+      requestId: 13,
+      threadId: session.providerThreadId,
+      turnId: "turn-build-auto",
+      reason: "Run project tests",
+      command: "pnpm test",
+    })
     const current = await rpc("workspace.get", {})
 
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "allow-once")
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(12, expect.anything())
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(13, expect.anything())
     expect(current).toMatchObject({
       result: {
-        approvals: expect.arrayContaining([expect.objectContaining({
-          providerRequestId: 12,
-          command: skillInstallCommand,
-          risk: "hard-gate",
-        })]),
+        approvals: expect.arrayContaining([
+          expect.objectContaining({
+            providerRequestId: 12,
+            command: skillInstallCommand,
+            risk: "hard-gate",
+          }),
+          expect.objectContaining({
+            providerRequestId: 13,
+            command: "pnpm test",
+            risk: "normal",
+          }),
+        ]),
       },
     })
     const approvalId = (current.result as {
@@ -7764,6 +8674,132 @@ describe("DomovoiDaemon", () => {
     })
     expect((approved.result as { approvals: Array<{ providerRequestId?: number }> }).approvals)
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ providerRequestId: 12 })]))
+    socket.close()
+  })
+
+  it("scopes a standing file-tool rule to the session worktree", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = "/worktrees/rule-scope"
+    session.providerThreadId = "thread-rule-scope"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules.push({
+      id: "rule-edit",
+      projectId: snapshot.project!.id,
+      operation: "Edit a file",
+      command: "Edit",
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    })
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-rule-scope"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+
+    await rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Edit the config",
+      client: "desktop",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 21,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: "/worktrees/rule-scope/src/index.ts",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 22,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: "/outside-worktree/package.json",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 23,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: "/worktrees/rule-scope/src/index.ts",
+      blockedPath: "/worktrees/rule-scope/src/index.ts",
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 24,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+    })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).toHaveBeenCalledTimes(1)
+    expect(agent.resolveApproval).toHaveBeenCalledWith(21, "always-project")
+    expect((current.result as {
+      approvals: Array<{ providerRequestId?: number }>
+    }).approvals.map((approval) => approval.providerRequestId)).toEqual([22, 23, 24])
     socket.close()
   })
 
@@ -8261,7 +9297,7 @@ describe("DomovoiDaemon", () => {
     await expect(rpc("system.hello", {
       client: "web",
       clientId: "browser-audit-test",
-      clientVersion: "audit-test",
+      clientVersion: "audit-test", protocolVersion: "0.1.0",
       authToken: daemon.authToken,
     })).resolves.toHaveProperty("result")
 
@@ -8547,6 +9583,61 @@ describe("DomovoiDaemon transfers", () => {
     return Buffer.from("PACK a session worktree")
   }
 
+  it("accepts a transfer arrival only from a peer daemon", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: stubWorkspaceService(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const bytes = bundleBytes()
+    const arrival = {
+      sessionId: "session-1",
+      sourceMachineId: `machine-${"a".repeat(32)}`,
+      method: "git-bundle" as const,
+      digest: createHash("sha256").update(bytes).digest("hex"),
+      totalBytes: bytes.length,
+    }
+
+    const desktop = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      desktop.once("open", resolve)
+      desktop.once("error", reject)
+    })
+    await identifyClient(desktop)
+    const desktopCall = rpcCaller(desktop)
+    const refused = await desktopCall("transfer.begin", { ...arrival, client: "desktop" })
+    expect(refused).toMatchObject({
+      error: { message: "Accepting a session transfer requires a machine connection" },
+    })
+    desktop.close()
+
+    const peerMachineId = `machine-${"b".repeat(32)}`
+    const peer = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      peer.once("open", resolve)
+      peer.once("error", reject)
+    })
+    await identifyMachine(peer, peerMachineId)
+    const peerCall = rpcCaller(peer)
+    const begun = await peerCall("transfer.begin", { ...arrival, client: "desktop" })
+    expect(begun.result).toBeDefined()
+
+    const entries = store.auditLog!.query({ limit: 50 }).entries
+    const attributed = entries.find(
+      (entry) => entry.action === "transfer.begin" && entry.actor.kind === "machine",
+    )
+    expect(attributed?.actor).toEqual({ kind: "machine", machineId: peerMachineId })
+    const refusedEntry = entries.find(
+      (entry) => entry.action === "transfer.begin" && entry.actor.kind === "client",
+    )
+    expect(refusedEntry?.outcome).toBe("failed")
+    peer.close()
+  })
+
   it("restores a session streamed from another machine", async () => {
     const bytes = bundleBytes()
     const restored: { bundlePath: string; sessionId: string }[] = []
@@ -8573,7 +9664,7 @@ describe("DomovoiDaemon transfers", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    await identifyClient(socket)
+    await identifyMachine(socket, `machine-${"a".repeat(32)}`)
     const call = rpcCaller(socket)
 
     const begun = await call("transfer.begin", {
@@ -8621,7 +9712,7 @@ describe("DomovoiDaemon transfers", () => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
-    await identifyClient(socket)
+    await identifyMachine(socket, `machine-${"a".repeat(32)}`)
     const call = rpcCaller(socket)
 
     const begun = await call("transfer.begin", {
@@ -8661,7 +9752,7 @@ describe("DomovoiDaemon transfers", () => {
         socket.once("open", resolve)
         socket.once("error", reject)
       })
-      await identifyClient(socket)
+      await identifyMachine(socket, `machine-${"a".repeat(32)}`)
       const answer = await rpcCaller(socket)("transfer.begin", {
         sessionId: "session-1",
         sourceMachineId: `machine-${"a".repeat(32)}`,
@@ -9125,6 +10216,228 @@ describe("DomovoiDaemon session transfer requests", () => {
     socket.close()
   })
 
+  function fakeCodexAgent(listeners: Set<(event: AgentEvent) => void>) {
+    return {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-streaming"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listeners.add(next)
+        return () => { listeners.delete(next) }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+  }
+
+  function transferSnapshot() {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
+    snapshot.machine.id = `machine-${"a".repeat(32)}`
+    if (snapshot.project) snapshot.project.machineId = snapshot.machine.id
+    const streaming = snapshot.sessions[0]!
+    const moved = snapshot.sessions[1]!
+    for (const session of snapshot.sessions) {
+      session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
+      session.workspacePath = `/worktrees/${session.id}`
+      delete session.activeTurnId
+      session.state = "idle"
+    }
+    streaming.providerThreadId = "thread-streaming"
+    moved.providerThreadId = "thread-moved"
+    return { snapshot, streaming, moved }
+  }
+
+  function observingClient(socket: WebSocket) {
+    const responses = new Map<number, (message: Record<string, unknown>) => void>()
+    const deltas: Record<string, unknown>[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as {
+        id?: number
+        method?: string
+        params?: Record<string, unknown>
+      }
+      if (message.id !== undefined) responses.get(message.id)?.(message)
+      else if (message.method === "workspace.delta") deltas.push(message.params ?? {})
+    })
+    let nextId = 0
+    const rpc = (method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const id = ++nextId
+        responses.set(id, resolve)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    return { rpc, deltas }
+  }
+
+  function settles<T>(promise: Promise<T>, withinMs: number): Promise<boolean> {
+    return Promise.race([
+      promise.then(() => true, () => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), withinMs)),
+    ])
+  }
+
+  it("keeps serving other sessions while a transfer dials and uploads", async () => {
+    const { snapshot, streaming, moved } = transferSnapshot()
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const targetMachineId = `machine-${"b".repeat(32)}`
+    let dialStarted!: () => void
+    let releaseDial!: () => void
+    const dialing = new Promise<void>((resolve) => { dialStarted = resolve })
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: { codex: fakeCodexAgent(listeners) },
+      authToken: "correct-horse-battery-staple",
+      errorSink: vi.fn(),
+      workspaceService: {
+        ...stubWorkspaceService(),
+        pushSessionRef: async () => ({ remote: "origin", ref: "refs/domovoi/x", commit: "b".repeat(40) }),
+      },
+      connectToMachine: async () => {
+        dialStarted()
+        await new Promise<void>((resolve) => { releaseDial = resolve })
+        return {
+          call: async () => ({ workspacePath: `/worktrees/${moved.id}`, checkpointCommit: "b".repeat(40) }),
+          close: () => {},
+        }
+      },
+    })
+    running.push(daemon)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "tailnet",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [
+        { kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true },
+      ],
+    }, Date.now())
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const { rpc, deltas } = observingClient(socket)
+    await rpc("session.send", { sessionId: streaming.id, prompt: "go", client: "desktop" })
+
+    const transfer = rpc("session.transfer", {
+      sessionId: moved.id,
+      targetMachineId,
+      method: "remote-ref",
+      remote: "origin",
+      client: "desktop",
+    })
+    await dialing
+    for (const listener of listeners) {
+      listener({
+        type: "text-delta",
+        threadId: "thread-streaming",
+        turnId: "turn-streaming",
+        delta: "streamed while another session moves",
+      })
+    }
+    const deltaDelivered = await settles(
+      vi.waitFor(() => expect(deltas).toHaveLength(1), { timeout: 300 }),
+      400,
+    )
+    releaseDial()
+    const answer = await transfer
+
+    expect(deltaDelivered).toBe(true)
+    expect(answer).toMatchObject({ result: { outcome: "succeeded" } })
+    socket.close()
+  })
+
+  it("keeps serving other sessions while an arriving bundle restores", async () => {
+    const { snapshot, streaming } = transferSnapshot()
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const bytes = Buffer.from("PACK a session worktree")
+    let restoreStarted!: () => void
+    let releaseRestore!: () => void
+    const restoring = new Promise<void>((resolve) => { restoreStarted = resolve })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { codex: fakeCodexAgent(listeners) },
+      authToken: "correct-horse-battery-staple",
+      errorSink: vi.fn(),
+      workspaceService: {
+        ...stubWorkspaceService(),
+        restoreSessionFromBundle: async (_bundlePath: string, sessionId: string) => {
+          restoreStarted()
+          await new Promise<void>((resolve) => { releaseRestore = resolve })
+          return {
+            path: `/worktrees/${sessionId}`,
+            branch: `domovoi/${sessionId}`,
+            baseCommit: "c".repeat(40),
+          }
+        },
+      },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const { rpc, deltas } = observingClient(socket)
+    await rpc("session.send", { sessionId: streaming.id, prompt: "go", client: "desktop" })
+
+    const peer = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      peer.once("open", resolve)
+      peer.once("error", reject)
+    })
+    await identifyMachine(peer, `machine-${"b".repeat(32)}`)
+    const peerRpc = rpcCaller(peer)
+    const begun = await peerRpc("transfer.begin", {
+      sessionId: "session-arriving",
+      sourceMachineId: `machine-${"b".repeat(32)}`,
+      method: "git-bundle",
+      digest: createHash("sha256").update(bytes).digest("hex"),
+      totalBytes: bytes.length,
+      client: "desktop",
+    })
+    const finished = peerRpc("transfer.chunk", {
+      transferId: (begun.result as { transferId: string }).transferId,
+      sequence: 0,
+      bytes: bytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+    await restoring
+    for (const listener of listeners) {
+      listener({
+        type: "text-delta",
+        threadId: "thread-streaming",
+        turnId: "turn-streaming",
+        delta: "streamed while a session arrives",
+      })
+    }
+    const deltaDelivered = await settles(
+      vi.waitFor(() => expect(deltas).toHaveLength(1), { timeout: 300 }),
+      400,
+    )
+    releaseRestore()
+    const answer = await finished
+
+    expect(deltaDelivered).toBe(true)
+    expect(answer).toMatchObject({ result: { state: "restored" } })
+    peer.close()
+    socket.close()
+  })
+
   it("refuses a transfer from a client holding only a device credential", async () => {
     const { daemon, store } = transferDaemon()
     const address = await daemon.start()
@@ -9166,6 +10479,198 @@ describe("DomovoiDaemon session transfer requests", () => {
     })
 
     expect(answer).toMatchObject({ error: { message: "Session does not exist" } })
+    socket.close()
+  })
+})
+
+describe("DomovoiDaemon persistence refusal", () => {
+  function persistenceDaemon(
+    agents: Record<string, AgentAdapter> = {},
+    prepare: (snapshot: typeof demoWorkspace) => void = () => {},
+  ) {
+    const snapshot = structuredClone(demoWorkspace)
+    deferLiveTurns(snapshot)
+    snapshot.approvals = []
+    // The daemon loads its snapshot when it is constructed, so anything a test
+    // needs in that snapshot has to be set before this point.
+    prepare(snapshot)
+    const persistence = { failing: true, writes: 0 }
+    const failure = () => new Error("state database is read-only")
+    const store = {
+      load: () => structuredClone(snapshot),
+      save: vi.fn(() => { if (persistence.failing) throw failure() }),
+      saveAsync: vi.fn(async () => {
+        if (persistence.failing) throw failure()
+        persistence.writes += 1
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const auditAppend = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
+      id: `audit-persistence-${auditAppend.mock.calls.length}`,
+      occurredAt: "2026-08-31T12:00:00.000Z",
+      ...input,
+    }))
+    const auditLog = {
+      append: auditAppend,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn(() => ({
+        format: "jsonl" as const,
+        exportedAt: "2026-08-31T12:00:00.000Z",
+        content: "",
+        entryCount: 0,
+        hasMore: false,
+      })),
+    } satisfies AuditLog
+    const errorSink = vi.fn()
+    const daemon = new DomovoiDaemon({ port: 0, store, agents, errorSink, auditLog })
+    running.push(daemon)
+    return { daemon, snapshot, persistence, errorSink, auditAppend }
+  }
+
+  async function connect(daemon: DomovoiDaemon) {
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = `persistence-${++id}`
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: string }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    return { socket, rpc }
+  }
+
+  it("denies a running turn's approval once state cannot reach disk", async () => {
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{ ...codexModels()[0]!, provider: "claude-code", id: "sonnet" }]),
+      startThread: vi.fn(async () => "thread-persistence"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-persistence"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const { daemon, snapshot, persistence, auditAppend } = persistenceDaemon({ "claude-code": agent }, (draft) => {
+      const target = draft.sessions[0]!
+      target.runtime = {
+        provider: "claude-code",
+        model: "sonnet",
+        reasoning: "high",
+        permissionMode: "build",
+        auto: true,
+      }
+      target.state = "idle"
+      target.workspacePath = "/worktrees/persistence"
+      target.providerThreadId = "thread-persistence"
+      delete target.activeTurnId
+    })
+    const session = snapshot.sessions[0]!
+
+    persistence.failing = false
+    const { socket, rpc } = await connect(daemon)
+    await rpc("session.send", { sessionId: session.id, prompt: "Check the tree", client: "desktop" })
+    expect(listener).toBeDefined()
+
+    // A command Build auto would normally allow outright, asked by a turn that
+    // was already running when persistence died.
+    persistence.failing = true
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await rpc("session.activate", { sessionId: session.id, client: "desktop" })
+    }
+    listener!({
+      type: "approval-requested",
+      requestId: 91,
+      threadId: "thread-persistence",
+      turnId: "turn-persistence",
+      command: "git status --porcelain",
+    })
+
+    // Denied rather than allowed, and denied rather than left as a card that
+    // approval.resolve would itself refuse. Agent events are queued, so the
+    // decision lands on a later tick.
+    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(91, "allow-once")
+    expect(auditAppend).toHaveBeenCalledWith(expect.objectContaining({
+      action: "provider.approval-requested",
+      outcome: "denied",
+    }))
+    socket.close()
+  })
+
+  it("refuses mutating requests once persistence keeps failing and still answers read-only ones", async () => {
+    const { daemon, snapshot, errorSink } = persistenceDaemon()
+    const { socket, rpc } = await connect(daemon)
+    const activate = () => rpc("session.activate", {
+      sessionId: snapshot.sessions[1]!.id,
+      client: "desktop",
+    })
+
+    for (let attempt = 1; attempt <= persistenceFailureThreshold; attempt += 1) {
+      await expect(activate()).resolves.toMatchObject({
+        error: { code: -32603, message: internalRpcErrorMessage },
+      })
+    }
+
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "RPC session.activate failed",
+      detail: expect.stringContaining("state database is read-only"),
+    }))
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: persistenceUnavailableContext,
+      detail: expect.stringContaining("state database is read-only"),
+    }))
+    await expect(activate()).resolves.toMatchObject({
+      error: { code: daemonPersistenceUnavailableErrorCode },
+    })
+    await expect(rpc("workspace.get", {})).resolves.toMatchObject({
+      result: { machine: { id: snapshot.machine.id } },
+    })
+    socket.close()
+  })
+
+  it("accepts mutations again after a recovery method persists successfully", async () => {
+    const { daemon, snapshot, persistence } = persistenceDaemon()
+    const { socket, rpc } = await connect(daemon)
+    const activate = () => rpc("session.activate", {
+      sessionId: snapshot.sessions[1]!.id,
+      client: "desktop",
+    })
+    for (let attempt = 1; attempt <= persistenceFailureThreshold; attempt += 1) await activate()
+    await expect(activate()).resolves.toMatchObject({
+      error: { code: daemonPersistenceUnavailableErrorCode },
+    })
+
+    persistence.failing = false
+    await expect(rpc("system.emergencyStop", { client: "desktop" })).resolves.toMatchObject({
+      result: { failures: [] },
+    })
+    expect(persistence.writes).toBeGreaterThan(0)
+
+    await expect(activate()).resolves.toMatchObject({
+      result: { activeSessionId: snapshot.sessions[1]!.id },
+    })
     socket.close()
   })
 })

@@ -1,9 +1,9 @@
 # Domovoi roadmap
 
 This roadmap turns the signed product handoff, product contract, distribution contract, and the
-2026-08-28 repository audit into an ordered delivery plan. It describes outcomes, dependencies,
-and proof of completion. It does not replace `PRODUCT.md`, `DESIGN.md`, or the Claude Design
-handoffs.
+2026-08-28 and 2026-09-02 repository audits into an ordered delivery plan. It describes outcomes,
+dependencies, and proof of completion. It does not replace `PRODUCT.md`, `DESIGN.md`, or the
+Claude Design handoffs.
 
 ## Status and priority
 
@@ -32,7 +32,7 @@ The repository already proves this local vertical slice:
 - [x] local skill discovery across project, user, system, Codex, Claude, Kilo, and `.agents` paths
 - [x] searchable skill browser and read-only `SKILL.md` source viewer
 - [x] shared responsive UI in Electron and the installable web/PWA shell
-- [x] custom desktop window decoration with native platform fallback
+- [x] custom desktop window decoration on Windows and Linux, native title bar on macOS
 - [x] Linux, macOS, and Windows CI for typecheck, tests, and builds
 - [x] Apache-2.0 local core and documented open-core boundary
 
@@ -51,6 +51,8 @@ access.
 - [x] Restrict persisted state permissions
   - Create the Domovoi state directory as `0700` and database plus sidecars as `0600` on POSIX.
   - Repair permissive existing files on startup.
+  - On Windows, state lives under `.domovoi` in the user profile directory; no ACL restriction
+    equivalent exists yet.
 - [x] Make RPC timeouts cancel or quarantine underlying work
   - A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the
     serialized request has failed.
@@ -133,7 +135,15 @@ Every ledger entry is now merged.
 - [x] Expose worktree diff, changed-file details, and test evidence from real Git/tool state
 - [x] Add session archive and deliberate cleanup without deleting the source repository
 - [x] Add explicit fork-with-model beside switch-here behavior
-- [x] Require explicit confirmation before switching projects discards current sessions and worktrees
+- [x] Require explicit confirmation before switching projects stops the current project's running work
+- [x] Keep workspace state per project so opening a second repository preserves the first
+  - Persist one snapshot row per project id beside the active-workspace row, migrating an
+    existing single-row database into the row for its own project.
+  - Restore a project's sessions, thread, approvals, artifacts, and annotations on reopen, and
+    keep machine-scoped state such as machine facts and skill enablement reviews out of the
+    per-project rows.
+  - Stop live provider threads, active turns, and terminals when switching away, and delete
+    session worktrees only on the deliberate `session.archive` path.
 
 ### Providers and credentials
 
@@ -145,17 +155,30 @@ Every ledger entry is now merged.
 - [x] Grok CLI adapter
 - [x] Provider account and readiness settings from the signed handoff
 - [x] OS-keychain storage for direct provider API keys and other secrets
-- [x] Direct API adapters where they add capabilities unavailable through subscription CLIs
+- [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
+  - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
 - [x] Token and cost telemetry normalized per turn, session, provider, and model
-- [x] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
+  - Daemon-side only: `session.usage` exists, but no client requests or renders usage yet.
+- [ ] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
+  - A failure classifier exists, but the Claude adapter drops the failure reason and provider
+    stderr is discarded, so authentication and rate-limit failures surface as unknown/retry.
 
 ### Permissions and auditability
 
 - [x] Ask, Plan, Build manual, and Build auto controls
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
-- [x] Enforce hard gates that Build auto cannot bypass
+- [ ] Key standing rules on a fingerprint of the resolved command rather than its text
+  - A rule matches on `projectId` and the literal command, so it keeps approving a script whose
+    body has since changed. The fingerprint should cover the normalized command, the
+    project-relative directory, recursively expanded script bodies, lifecycle scripts such as
+    `pretest`, and the validated runner arguments. A command whose resolution is ambiguous stays
+    reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the
+    approval and rule schemas.
+- [ ] Enforce hard gates that Build auto cannot bypass
+  - Build auto still auto-allows secret reads through Git: `git show HEAD:.env`, `git diff -- .env`,
+    `git log -p -- .env`, `git diff --no-index`, and `.env.*` variants.
 - [x] Add a searchable audit log with redaction and export
 - [x] Add command-level secret redaction before persistence or display
 - [x] Add a global emergency stop that cancels all active tools and providers, not only UI state
@@ -177,23 +200,52 @@ Every ledger entry is now merged.
 
 - [x] Discover and deduplicate local skills
 - [x] Show provenance, scope, exact path, metadata, and source
-- [x] Define capability manifests, content digests, signature state, and trust state
+- [x] Define capability manifests, content digests, and the signature and trust state model
+- [ ] Verify skill signatures and produce a trusted state
+  - The catalog only emits `unverified`, `unsigned`, or `invalid` signatures and `untrusted` or
+    `blocked` trust, so Build auto rejects every skill. Blocked on unresolved decision 2.
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
 - [x] Define safe behavior for unsigned skills in Build auto
-- [x] Compare skill availability across machines without silently distributing executables
+- [x] Define the skill inventory contract and comparison model without distributing executables
+- [x] Fetch inventories from every reachable fleet member and compare them
+  - The skills surface dials each paired machine that reports the skills capability and asks for
+    its inventory. Metadata only: no skill file crosses a machine boundary.
 
 ### Desktop quality
 
 - [x] Shared Claude-handoff workspace and custom window decoration
 - [x] Persist layout, selected surface, project, and session safely across restarts
 - [x] Keyboard command palette for navigation and common session actions
+  - Sessions, paired machines, and discovered skills are addressable from it, so a session is
+    reachable without the sidebar.
 - [x] Native completion, failure, and approval-needed notifications
 - [x] OS file dialogs, deep links, clipboard behavior, and external-editor handoff
 - [x] First-run provider diagnostics and actionable recovery states
 - [x] Accessibility pass for keyboard, focus, screen readers, reduced motion, contrast, and zoom
 - [x] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
+- [x] Sessions sidebar footer bound to the live machine name and fleet count
+
+### Handoff surfaces not yet built
+
+The desktop handoff specifies these; `main` does not implement them yet.
+
+- [ ] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
+  Terminal, and Revoke actions
+- [ ] Settings shell: Appearance & window (System, Dark, and Light theme; window decoration with
+  system fallback), Permissions & rules, External editor, and Notifications
+- [ ] Cost and context readouts in the app bar and session header from `session.usage`
+- [ ] Add-skill flow with declared-capability review and install scope
+- [ ] Editable working plan with per-step state in the Plan tab
+- [ ] Per-file diff review with revert in the Changes tab
+- [ ] Composer skill chip
+- [ ] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
+  280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
+- [ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract
+  lives in the repository rather than only in the project
+- [ ] Port the live terminal-pane restyle from the current design revision
+- [x] Prompt-editor modal with prose and Markdown modes, inserts, and draft statistics
 
 ## Goal 2: add private machine-fleet operation
 
@@ -202,7 +254,9 @@ fleet.
 
 - [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
-- [x] Add device pairing, revocation, and credential rotation
+- [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+- [ ] Expose device revocation and rotation in a client or `domovoid` command
+  - `device.revoke` and `device.rotate` have no caller outside the daemon and its tests.
 - [x] Add a fleet registry and machine selector to the shared protocol and UI
 - [x] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
@@ -210,23 +264,33 @@ fleet.
   3. LAN connection;
   4. direct tailnet connection;
   5. SSH tunnel where explicitly configured;
-  6. outbound relay fallback after hosted services exist.
+  6. outbound relay fallback after hosted services exist (slot reserved; nothing advertises or
+     dials a relay until Goal 3 ships the service).
 - [x] Authenticate every connection even inside a tailnet
-- [x] Bootstrap `domovoid` through a version-pinned, checksummed install script
+- [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
+  a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
+  tracked under signed GitHub Release artifacts
 - [x] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
+  - `domovoid service install`, `status`, and `remove` ship in the daemon package. Nothing is
+    written to a system-wide location and no step asks for elevation.
 - [x] Implement WSL discovery and a `domovoi open .` Windows interop shim
+  - Ships as `domovoid open`; no `domovoi` alias exists yet.
 - [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
 - [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
 - [x] Add checkpointed machine transfer with live source and target preflight
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
+- [ ] Transfer dialog in the client with preflight, method, and what travels, calling
+  `session.transfer`
+  - `session.transfer` has no client caller; the machine chip only re-attaches to another daemon.
 - [x] Record transfer receipts and retain the source recovery checkpoint
 
 Completion proof:
 
 - one session can be controlled across two clients without divergent state;
-- Linux, macOS, Windows, and WSL daemons pass pairing and reconnect tests;
+- Linux, macOS, and Windows daemons pass pairing and reconnect tests; WSL interop is covered only
+  by unit tests that stub `wsl.exe`;
 - repository bytes never flow through a filesystem sync layer;
 - revoked devices lose access promptly;
 - interrupted transfers recover without losing either worktree.
@@ -355,14 +419,22 @@ dependent work starts.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
    custody model. Current `.sig` declarations are content-digest-bound but are not
    cryptographically verified, so they remain unverified and untrusted; Build auto rejects them.
-3. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
+3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
+   run unattended inside a containment boundary. An allowlisted runner executes files the
+   repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits
+   a changed `vitest.config.ts`, setup file, plugin, or test file to run with the daemon user's
+   permissions, and no command pattern can see that. If the answer is yes, bounded has to mean
+   bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
+   every package manager command is a hard gate and Build auto is narrower than this roadmap
+   describes.
+4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
    whether each decision requires a second factor.
-4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
+5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
    hosted service exists.
-5. **Public site direction:** architecture-led or folklore-led narrative after real product
+6. **Public site direction:** architecture-led or folklore-led narrative after real product
    screenshots are available.
-6. **Packaging formats:** final Linux package set and Windows package-manager targets.
-7. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
+7. **Packaging formats:** final Linux package set and Windows package-manager targets.
+8. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
    and security backport duration.
 
 ## Resolved architecture decisions

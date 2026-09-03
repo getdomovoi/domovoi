@@ -9,7 +9,7 @@ function deferred() {
 }
 
 describe("ResourceMutationQueue", () => {
-  it("aborts running work, rejects queued work, and admits a fresh generation", async () => {
+  it("aborts running work, rejects queued work, and queues a fresh generation behind it", async () => {
     const queue = new ResourceMutationQueue()
     const running = deferred()
     const started = deferred()
@@ -39,12 +39,65 @@ describe("ResourceMutationQueue", () => {
     })
 
     const fresh = vi.fn(async () => {})
-    await queue.enqueue("session-a", fresh)
-    expect(fresh).toHaveBeenCalledOnce()
+    const next = queue.enqueue("session-a", fresh)
+    await expect(Promise.race([
+      next.then(() => "ran" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 50)),
+    ])).resolves.toBe("blocked")
+    expect(fresh).not.toHaveBeenCalled()
 
     running.resolve()
-    await Promise.all([active, waiting])
+    await Promise.all([active, waiting, next])
+    expect(fresh).toHaveBeenCalledOnce()
     expect(cancelled).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a resource serialized behind an aborted mutation that is still running", async () => {
+    const queue = new ResourceMutationQueue()
+    const first = deferred()
+    const order: string[] = []
+    let concurrent = 0
+    let maxConcurrent = 0
+    const track = (name: string, wait?: Promise<void>) => async () => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      order.push(`${name}:start`)
+      await wait
+      order.push(`${name}:end`)
+      concurrent -= 1
+    }
+
+    const aborted = queue.enqueue("session-a", track("first", first.promise))
+    await vi.waitFor(() => expect(order).toEqual(["first:start"]))
+    expect(queue.cancelAll(new Error("Emergency stop requested"))).toEqual({
+      active: 1,
+      queued: 0,
+    })
+    await expect(Promise.race([
+      aborted.then(() => "released" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 50)),
+    ])).resolves.toBe("released")
+
+    const second = queue.enqueue("session-a", track("second"))
+    const exclusive = queue.enqueueExclusive(track("exclusive"))
+    const drained = queue.drain()
+    await expect(Promise.race([
+      Promise.all([second, exclusive, drained]).then(() => "ran" as const),
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 50)),
+    ])).resolves.toBe("blocked")
+    expect(order).toEqual(["first:start"])
+
+    first.resolve()
+    await Promise.all([second, exclusive, drained])
+    expect(order).toEqual([
+      "first:start",
+      "first:end",
+      "second:start",
+      "second:end",
+      "exclusive:start",
+      "exclusive:end",
+    ])
+    expect(maxConcurrent).toBe(1)
   })
 
   it("keeps mutations ordered within one resource", async () => {
