@@ -597,9 +597,23 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Per-file diff review with revert in the Changes tab
 </li>
-<li>[ ] Composer skill chip
+<li>[x] Composer skill chip naming what a turn carries
 <ul>
-<li>Waiting on the prompt composer's budget decision. The chip has to state what actually reached the provider, so whether a selected skill can be dropped silently decides what the chip can honestly claim. Design position agreed on 2026-09-03: a turn selection is a subset of what the project has already reviewed and enabled, never a second path to running unreviewed code.
+<li>The composer names the project's reviewed skill, or counts them, beside a <code>+ skill</code> control that opens the Skills surface, matching the two controls in the desktop handoff.
+</li>
+</ul>
+</li>
+<li>[x] Say on a sent turn which skills reached the provider and which did not
+<ul>
+<li>A user thread item carries <code>providerPromptDelivery</code>, so the thread reports what was sent and, for anything omitted, whether it was cut for room, excluded by a limit, unreadable, dropped because its review changed, or refused by permission mode. An absent record means the turn predates delivery tracking rather than a turn that carried nothing, and the copy never claims the provider used what it received.
+</li>
+</ul>
+</li>
+<li>[ ] Let a person choose which reviewed skills a single turn carries
+<ul>
+<li>The chip states the project set today because turn-scoped selection has no protocol. Design position agreed on 2026-09-03: a turn selection is a subset of what the project has already reviewed and enabled, never a second path to running unreviewed code.
+</li>
+<li>Blocked on a composer change, not on the client. <code>elasticPromptDropOrder</code> currently treats every skill as an elastic project default, so an explicitly chosen skill would be dropped for budget. Explicit selections have to be partitioned as required context before a client can offer the choice, and the protocol already refuses a persisted turn-explicit delivery that contains omissions.
 </li>
 </ul>
 </li>
