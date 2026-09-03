@@ -451,6 +451,23 @@ describe("SqliteWorkspaceStore", () => {
       expect(isCorruption(Object.assign(new Error(message), { code }))).toBe(true)
     })
 
+    it("does not quarantine a locked live database", async () => {
+      const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-locked-"))
+      scratchDirectories.push(scratch)
+      const databasePath = join(scratch, "state.sqlite")
+      const lock = new DatabaseSync(databasePath)
+      lock.exec("CREATE TABLE held_open (id INTEGER); BEGIN EXCLUSIVE")
+      const before = await stat(databasePath)
+      try {
+        expect(() => new SqliteWorkspaceStore(databasePath, initial)).toThrow(/locked/i)
+        expect((await readdir(scratch)).some((entry) => entry.includes(".corrupt-"))).toBe(false)
+        expect((await stat(databasePath)).ino).toBe(before.ino)
+      } finally {
+        lock.exec("ROLLBACK")
+        lock.close()
+      }
+    })
+
     it("keeps a truncated snapshot row beside the database and reseeds the workspace", async () => {
       const { scratch, databasePath, damaged } = await seedThenDamage("truncated-json", async (path) => {
         const database = new DatabaseSync(path)
