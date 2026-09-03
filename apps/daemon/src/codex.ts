@@ -325,11 +325,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
     requestId: number,
     decision: ApprovalDecision,
   ): void {
-    const mapped = decision === "allow-once"
+    const mapped = decision === "allow-once" || decision === "always-project"
       ? "accept"
-      : decision === "always-project"
-        ? "acceptForSession"
-        : "decline"
+      : "decline"
     this.#transport?.send({ id: requestId, result: { decision: mapped } })
   }
 

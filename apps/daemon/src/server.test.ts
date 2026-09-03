@@ -5372,9 +5372,24 @@ describe("DomovoiDaemon", () => {
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.operation = "Run the test suite"
     snapshot.approvals[0]!.command = "pnpm test"
+    snapshot.approvals[0]!.providerRequestId = 91
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { "claude-code": agent },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -5423,6 +5438,7 @@ describe("DomovoiDaemon", () => {
         ]),
       },
     })
+    expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
     socket.close()
   })
 
@@ -9072,7 +9088,7 @@ describe("DomovoiDaemon", () => {
     const current = await rpc("workspace.get", {})
 
     expect(agent.resolveApproval).toHaveBeenCalledTimes(1)
-    expect(agent.resolveApproval).toHaveBeenCalledWith(21, "always-project")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(21, "allow-once")
     expect((current.result as {
       approvals: Array<{ providerRequestId?: number }>
     }).approvals.map((approval) => approval.providerRequestId)).toEqual([22, 23, 24])

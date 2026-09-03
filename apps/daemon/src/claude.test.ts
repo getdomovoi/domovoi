@@ -352,7 +352,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     ])
   })
 
-  it("resumes with worktree context and routes approval decisions", async () => {
+  it("resumes with worktree context without installing provider-native approval rules", async () => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
     const event = vi.fn()
@@ -395,10 +395,9 @@ describe("ClaudeAgentSdkAdapter", () => {
       reason: "Run project tests",
     })))
     adapter.resolveApproval(1, "always-project")
-    await expect(decision).resolves.toMatchObject({
+    await expect(decision).resolves.toEqual({
       behavior: "allow",
       updatedInput: { command: "pnpm test" },
-      updatedPermissions: [expect.objectContaining({ destination: "session" })],
     })
     await adapter.close()
   })

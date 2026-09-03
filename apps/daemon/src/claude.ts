@@ -121,7 +121,6 @@ type Session = {
 
 type PendingApproval = {
   input: Record<string, unknown>
-  suggestions?: PermissionUpdate[]
   resolve: (result: PermissionResult) => void
 }
 
@@ -253,14 +252,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const pending = this.#pendingApprovals.get(requestId)
     if (!pending) return
     this.#pendingApprovals.delete(requestId)
-    if (decision === "allow-once") {
+    if (decision === "allow-once" || decision === "always-project") {
       pending.resolve({ behavior: "allow", updatedInput: pending.input })
-    } else if (decision === "always-project") {
-      pending.resolve({
-        behavior: "allow",
-        updatedInput: pending.input,
-        ...(pending.suggestions ? { updatedPermissions: pending.suggestions } : {}),
-      })
     } else {
       pending.resolve({ behavior: "deny", message: "Denied by the user" })
     }
@@ -366,7 +359,6 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     return new Promise((resolve) => {
       this.#pendingApprovals.set(requestId, {
         input,
-        ...(context.suggestions ? { suggestions: context.suggestions } : {}),
         resolve,
       })
       context.signal.addEventListener("abort", () => {

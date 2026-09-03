@@ -3154,7 +3154,10 @@ export class DomovoiDaemon {
         }
         if (approval.providerRequestId !== undefined && session) {
           this.#agents.require(session.runtime.provider)
-            .resolveApproval(approval.providerRequestId, params.decision)
+            .resolveApproval(
+              approval.providerRequestId,
+              params.decision === "always-project" ? "allow-once" : params.decision,
+            )
         }
         if (params.decision === "always-project") {
           const project = this.#snapshot.project
@@ -4460,7 +4463,7 @@ export class DomovoiDaemon {
       if (!containsSecret && decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else if (decision.risk === "normal" && matchingRule) {
-        this.#agents.require(provider).resolveApproval(event.requestId, "always-project")
+        this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else {
         this.#snapshot.approvals.push({
           id: `approval-${randomUUID()}`,

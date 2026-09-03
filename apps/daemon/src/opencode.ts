@@ -309,11 +309,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const pending = this.#pendingApprovals.get(requestId)
     if (!pending) return
     this.#pendingApprovals.delete(requestId)
-    const response = decision === "allow-once"
+    const response = decision === "allow-once" || decision === "always-project"
       ? "once"
-      : decision === "always-project"
-        ? "always"
-        : "reject"
+      : "reject"
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
         path: { id: pending.threadId, permissionID: pending.permissionId },
