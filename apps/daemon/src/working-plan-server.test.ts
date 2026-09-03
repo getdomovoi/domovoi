@@ -8,6 +8,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { AuditLog } from "./audit-log.js"
+import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceStore } from "./store.js"
 
@@ -39,7 +40,10 @@ function auditLog() {
   }
 }
 
-async function startedDaemon(snapshot: typeof demoWorkspace) {
+async function startedDaemon(
+  snapshot: typeof demoWorkspace,
+  agents: Record<string, AgentAdapter> = {},
+) {
   let durable = structuredClone(snapshot)
   const store = {
     load: () => structuredClone(durable),
@@ -47,7 +51,7 @@ async function startedDaemon(snapshot: typeof demoWorkspace) {
     close: vi.fn(),
   } satisfies WorkspaceStore
   const audit = auditLog()
-  const daemon = new DomovoiDaemon({ port: 0, store, agents: {}, auditLog: audit.log })
+  const daemon = new DomovoiDaemon({ port: 0, store, agents, auditLog: audit.log })
   running.push(daemon)
   const address = await daemon.start()
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
@@ -87,6 +91,7 @@ async function startedDaemon(snapshot: typeof demoWorkspace) {
     audit: audit.append,
     connectionId: (hello.result as typeof hello.result & { connectionId: string }).connectionId,
     durable: () => durable,
+    save: store.save,
   }
 }
 
@@ -221,6 +226,169 @@ describe("working plan RPC", () => {
     expect(discarded.result.snapshot.workingPlans.find(
       (plan) => plan.sessionId === session.id,
     )?.pendingEdit).toBeUndefined()
+    context.socket.close()
+  })
+
+  it("keeps a queued draft conflicted when the provider restructures the plan", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/provider-plan-test"
+    session.providerThreadId = "thread-provider-plan"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = [{
+      sessionId: session.id,
+      revision: 1,
+      structureRevision: 1,
+      steps: [
+        { id: "step-inspect", text: "Inspect", status: "in-progress" },
+        { id: "step-implement", text: "Implement", status: "pending" },
+      ],
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:00:00.000Z",
+    }]
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    snapshot.artifacts.push({
+      id: `plan-${session.id}`,
+      sessionId: session.id,
+      title: "Working plan",
+      type: "plan",
+      revision: 1,
+      mimeType: "text/markdown",
+      content: "# Working plan\n\n1. Inspect\n2. Implement\n",
+    })
+    let emit: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-provider-plan"),
+      steerTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        emit = listener
+        return () => { emit = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { "claude-code": agent })
+    const started = await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue with the plan",
+      client: "desktop",
+    })
+    expect(started).not.toHaveProperty("error")
+    expect(agent.startTurn).toHaveBeenCalledOnce()
+    const queued = await context.rpc("plan.edit", {
+      sessionId: session.id,
+      basedOnStructureRevision: 1,
+      baseSteps: [
+        { id: "step-inspect", text: "Inspect" },
+        { id: "step-implement", text: "Implement" },
+      ],
+      draftSteps: [
+        { id: "step-implement", text: "Implement carefully" },
+        { id: "step-inspect", text: "Inspect" },
+      ],
+      client: "desktop",
+    })
+    expect(queued.result.receipt.disposition).toBe("queued")
+
+    emit!({
+      type: "plan-updated",
+      threadId: "thread-provider-plan",
+      turnId: "turn-provider-plan",
+      steps: [
+        { text: "Inspect", status: "completed" },
+        { text: "Run TOKEN=provider-plan-secret", status: "in-progress" },
+      ],
+    })
+
+    await vi.waitFor(() => expect(context.durable().workingPlans[0]).toMatchObject({
+      revision: 3,
+      structureRevision: 2,
+      steps: [
+        { id: "step-inspect", text: "Inspect", status: "completed" },
+        expect.objectContaining({ text: "Run TOKEN=[REDACTED]", status: "in-progress" }),
+      ],
+      providerSync: {
+        provider: "claude-code",
+        model: "sonnet-4.6",
+        providerThreadId: "thread-provider-plan",
+        structureRevision: 2,
+        deliveredAt: expect.any(String),
+      },
+      pendingEdit: expect.objectContaining({
+        id: queued.result.receipt.editId,
+        status: "conflicted",
+        draftSteps: [
+          { id: "step-implement", text: "Implement carefully" },
+          { id: "step-inspect", text: "Inspect" },
+        ],
+      }),
+    }))
+    const artifact = context.durable().artifacts.find(
+      (candidate) => candidate.id === `plan-${session.id}`,
+    )!
+    expect(artifact).toMatchObject({
+      revision: 2,
+      content: "# Working plan\n\n1. Inspect\n2. Run TOKEN=[REDACTED]\n",
+    })
+    expect(JSON.stringify(context.durable())).not.toContain("provider-plan-secret")
+    expect(context.audit).toHaveBeenCalledWith(expect.objectContaining({
+      actor: {
+        kind: "provider",
+        provider: "claude-code",
+        providerThreadId: "thread-provider-plan",
+      },
+      action: "provider.plan-updated",
+      target: session.id,
+      detail: expect.stringContaining("structure=2"),
+    }))
+    expect(JSON.stringify(context.audit.mock.calls)).not.toContain("provider-plan-secret")
+
+    emit!({
+      type: "plan-updated",
+      threadId: "thread-provider-plan",
+      turnId: "turn-provider-plan",
+      steps: [
+        { text: "Inspect", status: "completed" },
+        { text: "Run TOKEN=provider-plan-secret", status: "completed" },
+      ],
+    })
+    await vi.waitFor(() => expect(context.durable().workingPlans[0]).toMatchObject({
+      revision: 4,
+      structureRevision: 2,
+      steps: [
+        expect.objectContaining({ status: "completed" }),
+        expect.objectContaining({ status: "completed" }),
+      ],
+    }))
+    expect(context.durable().artifacts.find(
+      (candidate) => candidate.id === `plan-${session.id}`,
+    )?.revision).toBe(2)
+
+    const savesBeforeLegacyDelta = context.save.mock.calls.length
+    emit!({
+      type: "plan-delta",
+      threadId: "thread-provider-plan",
+      turnId: "turn-provider-plan",
+      delta: "This opaque plan must not replace canonical steps.",
+    })
+    await vi.waitFor(() => expect(context.save).toHaveBeenCalledTimes(savesBeforeLegacyDelta + 1))
+    expect(context.durable().artifacts.find(
+      (candidate) => candidate.id === `plan-${session.id}`,
+    )).toMatchObject({
+      revision: 2,
+      content: "# Working plan\n\n1. Inspect\n2. Run TOKEN=[REDACTED]\n",
+    })
     context.socket.close()
   })
 })
