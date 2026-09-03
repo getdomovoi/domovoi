@@ -61,6 +61,11 @@ describe("SqliteWorkspaceStore", () => {
       projectId: changed.project!.id,
       operation: "Deploy with secret",
       command: "deploy --api-key persisted-rule-secret",
+      status: "active",
+      execution: demoWorkspace.approvals[0]!.execution as Extract<
+        typeof demoWorkspace.approvals[number]["execution"],
+        { state: "resolved" }
+      >,
       createdBy: "desktop",
       createdAt: "2026-08-29T12:00:00.000Z",
     })
@@ -121,6 +126,11 @@ describe("SqliteWorkspaceStore", () => {
       projectId: changed.project!.id,
       operation: "Deploy with secret",
       command: "deploy --api-key async-rule-secret",
+      status: "active",
+      execution: demoWorkspace.approvals[0]!.execution as Extract<
+        typeof demoWorkspace.approvals[number]["execution"],
+        { state: "resolved" }
+      >,
       createdBy: "desktop",
       createdAt: "2026-08-29T12:00:00.000Z",
     })
@@ -244,6 +254,56 @@ describe("SqliteWorkspaceStore", () => {
     expect(connection!.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "wal" })
     expect(connection!.prepare("PRAGMA synchronous").get()).toMatchObject({ synchronous: 1 })
     store.close()
+  })
+
+  it("inactivates text-only standing rules before exposing a legacy snapshot", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-rules-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    const approvals = legacy.approvals as Array<Record<string, unknown>>
+    delete approvals[0]!.execution
+    legacy.approvalRules = [{
+      id: "legacy-rule-test",
+      projectId: demoWorkspace.project!.id,
+      operation: "Run tests",
+      command: "pnpm test",
+      createdBy: "desktop",
+      createdAt: "2026-08-29T12:00:00.000Z",
+    }]
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    database.close()
+
+    const reopened = new SqliteWorkspaceStore(
+      databasePath,
+      createEmptyWorkspace(demoWorkspace.machine),
+    )
+
+    expect(reopened.load().approvalRules).toEqual([
+      expect.objectContaining({
+        id: "legacy-rule-test",
+        status: "inactive",
+        inactiveReason: "legacy-text-only",
+        inactivatedAt: expect.any(String),
+      }),
+    ])
+    expect(reopened.load().approvals[0]?.execution).toEqual({
+      state: "unresolved",
+      reason: "unsupported-syntax",
+    })
+    expect(reopened.auditLog.query({ action: "approval-rule.inactivated" }).entries).toEqual([
+      expect.objectContaining({
+        action: "approval-rule.inactivated",
+        outcome: "succeeded",
+        projectId: demoWorkspace.project!.id,
+        target: "legacy-rule-test",
+      }),
+    ])
+    reopened.close()
   })
 
   it("keeps paired device credentials across workspace-store reopen", async () => {
@@ -398,6 +458,11 @@ describe("SqliteWorkspaceStore", () => {
       projectId: changed.project!.id,
       operation: "Run tests",
       command: "pnpm test",
+      status: "active",
+      execution: demoWorkspace.approvals[0]!.execution as Extract<
+        typeof demoWorkspace.approvals[number]["execution"],
+        { state: "resolved" }
+      >,
       createdBy: "desktop",
       createdByConnectionId: "11111111-1111-4111-8111-111111111111",
       createdByClientId: "desktop-one",
@@ -408,6 +473,11 @@ describe("SqliteWorkspaceStore", () => {
       projectId: changed.project!.id,
       operation: "Run legacy tests",
       command: "pnpm test:legacy",
+      status: "active",
+      execution: demoWorkspace.approvals[0]!.execution as Extract<
+        typeof demoWorkspace.approvals[number]["execution"],
+        { state: "resolved" }
+      >,
       createdBy: "desktop",
       createdByClientId: "legacy-desktop-one",
       createdAt: "2026-08-26T06:00:00.000Z",
