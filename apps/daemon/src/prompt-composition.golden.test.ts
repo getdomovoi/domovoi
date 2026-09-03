@@ -9,7 +9,7 @@
 // with -u against this file while the composer is being written: an updated
 // snapshot is the failure these tests are here to catch.
 import WebSocket from "ws"
-import { afterEach, expect, it, vi } from "vitest"
+import { afterEach, expect, it } from "vitest"
 
 import {
   demoWorkspace,
