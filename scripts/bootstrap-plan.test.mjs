@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { bootstrapPlan, expectedChecksum, verifyDownload } from "./bootstrap-plan.mjs"
+import { bootstrapPlan, expectedChecksum, pinnedSha256, verifyDownload } from "./bootstrap-plan.mjs"
 
 const releases = "https://github.com/getdomovoi/domovoi/releases/download"
 
@@ -90,5 +90,15 @@ for (const baseUrl of [
 ]) {
   test(`refuses the malformed download base ${JSON.stringify(baseUrl)}`, () => {
     assert.throws(() => bootstrapPlan({ version: "0.1.0", baseUrl }), /https|host|query|fragment/)
+  })
+}
+
+test("accepts the sha256 the caller pins the archive to", () => {
+  assert.equal(pinnedSha256("1".repeat(64)), "1".repeat(64))
+})
+
+for (const digest of [undefined, null, "", "abc", "1".repeat(63), "1".repeat(65), "g".repeat(64)]) {
+  test(`refuses to pin the archive to ${JSON.stringify(digest)}, which is not a sha256`, () => {
+    assert.throws(() => pinnedSha256(digest), /sha256/)
   })
 }
