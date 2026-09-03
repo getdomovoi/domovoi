@@ -63,9 +63,15 @@ function sessionSummary(count: number): string {
 function MachineCard({
   machine,
   sessionCount,
+  inUse,
+  onUse,
+  onOpenTerminal,
 }: {
   machine: FleetMachine
   sessionCount: number | undefined
+  inUse: boolean
+  onUse?: ((machineId: string) => void) | undefined
+  onOpenTerminal?: ((machineId: string) => void) | undefined
 }) {
   const transports = orderedMachineTransports(machine)
   return (
@@ -74,6 +80,25 @@ function MachineCard({
         <span className="text-[13px] font-semibold text-strong">{machine.label}</span>
         <Badge variant={healthVariant[machine.health]}>{healthLabel[machine.health]}</Badge>
         {machine.self ? <Badge variant="outline">This machine</Badge> : null}
+        <span className="ml-auto flex items-center gap-1.5">
+          {inUse ? (
+            <span className="font-machine text-[10px] text-faint">In use</span>
+          ) : onUse ? (
+            <Button variant="outline" size="sm" aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
+              Use
+            </Button>
+          ) : null}
+          {onOpenTerminal && machine.capabilities.includes("terminals") ? (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={`Terminal on ${machine.label}`}
+              onClick={() => onOpenTerminal(machine.id)}
+            >
+              Terminal
+            </Button>
+          ) : null}
+        </span>
       </div>
       <p className="mt-1.5 m-0 font-machine text-[10px] text-faint">
         {machine.platform} · {machine.arch} · {machine.version} · {machine.connection}
@@ -117,6 +142,8 @@ export function FleetView({
   onRevokeDevice,
   onRotateDevice,
   onPairMachine,
+  onUseMachine,
+  onOpenMachineTerminal,
 }: {
   connected: boolean
   machines: FleetMachine[]
@@ -129,6 +156,8 @@ export function FleetView({
   onRevokeDevice: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice: (params: { deviceId: string }) => Promise<DevicePairResult>
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
+  onUseMachine?: ((machineId: string) => void) | undefined
+  onOpenMachineTerminal?: ((machineId: string) => void) | undefined
 }) {
   const [devices, setDevices] = useState<PairedDeviceSummary[] | null>(null)
   const [devicesError, setDevicesError] = useState("")
@@ -247,6 +276,9 @@ export function FleetView({
                 key={machine.id}
                 machine={machine}
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
+                inUse={machine.id === currentMachineId}
+                {...(onUseMachine ? { onUse: onUseMachine } : {})}
+                {...(onOpenMachineTerminal ? { onOpenTerminal: onOpenMachineTerminal } : {})}
               />
             ))}
           </section>

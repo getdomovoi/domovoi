@@ -74,6 +74,8 @@ function renderFleet(overrides: {
     machineName: "studio",
     label: "studio-ipad",
   }))
+  const onUseMachine = vi.fn()
+  const onOpenMachineTerminal = vi.fn()
   const user = userEvent.setup()
   render(
     <FleetView
@@ -86,9 +88,11 @@ function renderFleet(overrides: {
       onRevokeDevice={onRevokeDevice as never}
       onRotateDevice={onRotateDevice as never}
       onPairMachine={onPairMachine as never}
+      onUseMachine={onUseMachine}
+      onOpenMachineTerminal={onOpenMachineTerminal}
     />,
   )
-  return { user, onListDevices, onRevokeDevice, onRotateDevice, onPairMachine }
+  return { user, onListDevices, onRevokeDevice, onRotateDevice, onPairMachine, onUseMachine, onOpenMachineTerminal }
 }
 
 it("describes each machine in the fleet", () => {
@@ -195,4 +199,40 @@ it("says when no device is paired", async () => {
   renderFleet({ devices: [] })
 
   expect(await screen.findByText("No device is paired with this machine")).toBeTruthy()
+})
+
+
+it("opens a machine from its card", async () => {
+  const { user, onUseMachine } = renderFleet()
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Use studio" }))
+
+  expect(onUseMachine).toHaveBeenCalledWith(studio.id)
+})
+
+it("says which machine is already in use instead of offering to open it", () => {
+  renderFleet()
+
+  const card = within(screen.getByRole("group", { name: "workshop" }))
+  expect(card.getByText("In use")).toBeTruthy()
+  expect(card.queryByRole("button", { name: /^Use /u })).toBeNull()
+})
+
+it("opens a terminal on the machine that owns it", async () => {
+  const { user, onOpenMachineTerminal } = renderFleet({
+    machines: [{ ...studio, capabilities: ["sessions", "terminals"] }],
+  })
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Terminal on studio" }))
+
+  expect(onOpenMachineTerminal).toHaveBeenCalledWith(studio.id)
+})
+
+it("offers no terminal on a machine that reports no terminal capability", () => {
+  renderFleet()
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  expect(card.queryByRole("button", { name: "Terminal on studio" })).toBeNull()
 })
