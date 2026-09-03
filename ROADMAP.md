@@ -51,6 +51,8 @@ access.
 - [x] Restrict persisted state permissions
   - Create the Domovoi state directory as `0700` and database plus sidecars as `0600` on POSIX.
   - Repair permissive existing files on startup.
+  - On Windows, state lives under `.domovoi` in the user profile directory; no ACL restriction
+    equivalent exists yet.
 - [x] Make RPC timeouts cancel or quarantine underlying work
   - A timed-out provider, Git, checkpoint, or restore operation must not mutate state after the
     serialized request has failed.
