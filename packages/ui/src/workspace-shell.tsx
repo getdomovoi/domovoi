@@ -167,6 +167,8 @@ import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
+import { ComposerSkillChip } from "./composer-skills"
+import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
   DesktopFirstRunDialog,
@@ -1271,6 +1273,8 @@ export function Thread({
   onTransferSession,
   externalEditor = "system",
   usage = null,
+  onOpenSkills,
+  skillNames,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -1558,7 +1562,15 @@ export function Thread({
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
-              return <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3"><MarkdownQuickView source={item.body} /></div>
+              return (
+                <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3">
+                  <MarkdownQuickView source={item.body} />
+                  <PromptDeliveryNote
+                    delivery={item.providerPromptDelivery}
+                    skillNames={skillNames ?? {}}
+                  />
+                </div>
+              )
             }
             if (item.kind === "system") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
@@ -1617,6 +1629,13 @@ export function Thread({
           />
           <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {onOpenSkills ? (
+                <ComposerSkillChip
+                  snapshot={snapshot}
+                  skillNames={skillNames ?? {}}
+                  onOpenSkills={onOpenSkills}
+                />
+              ) : null}
               <MachineSwitcher
                 machines={machines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
