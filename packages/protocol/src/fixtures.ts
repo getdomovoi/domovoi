@@ -108,6 +108,25 @@ export const demoWorkspace: WorkspaceSnapshot = {
       estimatedDuration: "20–40 seconds",
       checkpoint: "ckpt_7f21",
       requestedAt: now,
+      execution: {
+        state: "resolved",
+        record: {
+          version: 1,
+          coverage: "command-and-script-text",
+          cwd: ".",
+          kind: "shell",
+          entries: [{
+            id: 0,
+            source: { kind: "request" },
+            parts: [{
+              operator: null,
+              argv: ["pnpm", "prisma", "migrate", "deploy"],
+              expandsTo: [],
+            }],
+          }],
+        },
+        digest: `sha256:${"a".repeat(64)}`,
+      },
     },
   ],
   approvalRules: [],

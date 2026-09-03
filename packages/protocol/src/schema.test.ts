@@ -949,6 +949,9 @@ describe("workspace protocol", () => {
         command: "pnpm test",
         createdBy: "desktop",
         createdAt: "2026-08-25T21:52:00.000Z",
+        status: "inactive",
+        inactiveReason: "legacy-text-only",
+        inactivatedAt: "2026-09-03T18:30:00.000Z",
       })
     }],
     ["thread session", "thread.0.sessionId", (snapshot: typeof demoWorkspace) => {
@@ -993,6 +996,9 @@ describe("workspace protocol", () => {
         command: "pnpm test",
         createdBy: "desktop" as const,
         createdAt: "2026-08-25T21:52:00.000Z",
+        status: "inactive" as const,
+        inactiveReason: "legacy-text-only" as const,
+        inactivatedAt: "2026-09-03T18:30:00.000Z",
       }
       snapshot.approvalRules.push(rule, structuredClone(rule))
     }],
