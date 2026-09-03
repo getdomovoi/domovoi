@@ -163,6 +163,7 @@ import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell } from "./settings-shell"
+import { WorkspaceRail } from "./workspace-rail"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
   DesktopFirstRunDialog,
@@ -3599,7 +3600,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           onChangeCredential={onChangeCredential}
           onReconnect={reconnectDaemon}
         />
-        {snapshot && surface === "providers" ? (
+        {snapshot ? <div className="flex min-h-0 flex-1">
+          <WorkspaceRail surface={surface} machineName={snapshot.machine.name} onSelectSurface={setSurface} />
+          {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
@@ -3629,7 +3632,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onWindowDecorationChange: changeWindowDecoration,
             } : {})}
           />
-        ) : snapshot && surface === "skills" ? (
+        ) : surface === "skills" ? (
           <SkillBrowser
             skills={skills}
             inventorySources={skillInventories}
@@ -3649,7 +3652,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
-        ) : snapshot && surface === "fleet" ? (
+        ) : surface === "fleet" ? (
           <FleetView
             connected={connected}
             machines={fleet ?? [localMachineEntry(snapshot)]}
@@ -3662,7 +3665,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onRotateDevice={rotateDevice}
             onPairMachine={pairMachine}
           />
-        ) : snapshot && surface === "audit" ? (
+        ) : surface === "audit" ? (
           <AuditLogView
             connected={connected}
             onBack={() => setSurface("workspace")}
@@ -3670,7 +3673,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onQuery={queryAudit}
             onExport={exportAudit}
           />
-        ) : snapshot ? (
+        ) : (
           <div className="flex min-h-0 flex-1">
             {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} expandButtonRef={sidebarExpandButtonRef} /> : null}
             <ResizablePanelGroup
@@ -3692,7 +3695,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>
-        ) : (
+          )}
+        </div> : (
           <main className="flex min-h-0 flex-1 bg-background">
             <Empty>
               <EmptyHeader>
