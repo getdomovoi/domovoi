@@ -107,6 +107,26 @@ function finalizeStoredWorkspace(
   }
 }
 
+// Only a database that is actually unreadable is quarantined. A busy file, a
+// permission error, or a full disk is an operational failure: renaming the file
+// would move a healthy database out from under whoever holds it and start the
+// daemon on an empty workspace, which loses more than it saves.
+const corruptionCodes = new Set([
+  "SQLITE_CORRUPT",
+  "SQLITE_NOTADB",
+  "SQLITE_FORMAT",
+  "ERR_SQLITE_ERROR",
+])
+
+export function isCorruption(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  const message = error instanceof Error ? error.message : String(error)
+  if (typeof code === "string" && corruptionCodes.has(code) && /malformed|not a database|corrupt/i.test(message)) {
+    return true
+  }
+  return /file is not a database|database disk image is malformed|database is corrupt/i.test(message)
+}
+
 function openWorkspaceDatabase(path: string): DatabaseSync {
   const database = new DatabaseSync(path)
   try {
@@ -307,6 +327,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       database = openWorkspaceDatabase(path)
     } catch (error) {
       if (path === ":memory:") throw error
+      // An operational failure is reported to the caller rather than repaired,
+      // so a locked or unreadable file is never renamed aside.
+      if (!isCorruption(error)) throw error
       recovery = {
         kind: "database",
         quarantinedPath: quarantineDatabase(path),
