@@ -9196,10 +9196,26 @@ describe("DomovoiDaemon persistence refusal", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
+    const auditAppend = vi.fn((input: Parameters<AuditLog["append"]>[0]) => ({
+      id: `audit-persistence-${auditAppend.mock.calls.length}`,
+      occurredAt: "2026-08-31T12:00:00.000Z",
+      ...input,
+    }))
+    const auditLog = {
+      append: auditAppend,
+      query: vi.fn(() => ({ entries: [], hasMore: false })),
+      export: vi.fn(() => ({
+        format: "jsonl" as const,
+        exportedAt: "2026-08-31T12:00:00.000Z",
+        content: "",
+        entryCount: 0,
+        hasMore: false,
+      })),
+    } satisfies AuditLog
     const errorSink = vi.fn()
-    const daemon = new DomovoiDaemon({ port: 0, store, agents, errorSink })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents, errorSink, auditLog })
     running.push(daemon)
-    return { daemon, snapshot, persistence, errorSink }
+    return { daemon, snapshot, persistence, errorSink, auditAppend }
   }
 
   async function connect(daemon: DomovoiDaemon) {
@@ -9247,7 +9263,7 @@ describe("DomovoiDaemon persistence refusal", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const { daemon, snapshot, persistence } = persistenceDaemon({ "claude-code": agent }, (draft) => {
+    const { daemon, snapshot, persistence, auditAppend } = persistenceDaemon({ "claude-code": agent }, (draft) => {
       const target = draft.sessions[0]!
       target.runtime = {
         provider: "claude-code",
@@ -9287,6 +9303,10 @@ describe("DomovoiDaemon persistence refusal", () => {
     // decision lands on a later tick.
     await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(91, "allow-once")
+    expect(auditAppend).toHaveBeenCalledWith(expect.objectContaining({
+      action: "provider.approval-requested",
+      outcome: "denied",
+    }))
     socket.close()
   })
 
