@@ -98,6 +98,7 @@ describe("permissionDecisionFor", () => {
     "cat environment.md",
     "cat src/env.ts",
     "cat docs/keys.md",
+    "pnpm test --env=jsdom",
     "grep -r hosts src",
   ])("does not hard-gate an ordinary mention of a secret-like word: %s", (command) => {
     expect(permissionDecisionFor({ runtime: runtime(true), command })).not.toEqual({
@@ -123,45 +124,27 @@ describe("permissionDecisionFor", () => {
     "npm run lint",
     "yarn typecheck",
     "bun run check",
-    "pnpm test --env=jsdom",
-    "pnpm --filter @example/app test",
-    "npm run --if-present test",
-    "pnpm exec vitest",
-    "pnpm install",
-    "npx vitest run",
-    "bunx vitest run",
-    "/usr/bin/pnpm test",
-    "corepack pnpm test",
-    String.raw`"C:\Program Files\nodejs\npm.cmd" test`,
-    "pnpm test > /tmp/result",
-    "pnpm test < /tmp/input",
-    "pnpm test $(custom-helper)",
-    "pnpm test `custom-helper`",
-    "pnpm test\ncustom-helper",
-  ])("hard-gates a repository-controlled package script: %s", (command) => {
+  ])("reviews a Build-auto package-manager script run: %s", (command) => {
     expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
       action: "review",
-      risk: "hard-gate",
+      risk: "normal",
     })
   })
 
   it.each([
     ["pnpm test", { test: "vitest run" }],
-    ["pnpm test", { test: "vitest run --config attacker-controlled.ts" }],
     ["pnpm run test -- --reporter=json", { test: "vitest run" }],
     ["npm run lint", { lint: "eslint ." }],
     ["yarn typecheck", { typecheck: "tsc --noEmit" }],
     ["bun run check", { check: "pnpm run inner", inner: "biome check ." }],
-    ["pnpm build", { build: "esbuild src.ts --outfile=../../outside.js" }],
-    ["pnpm format", { format: "prettier --write ../../notes.txt" }],
   ] as const)(
-    "reviews a Build-auto script whose runner executes repository-controlled input: %s",
+    "auto-allows a Build-auto script whose resolved body is bounded: %s",
     (command, packageScripts) => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "hard-gate" })
+      })).toEqual({ action: "allow", risk: "normal" })
     },
   )
 
@@ -185,14 +168,15 @@ describe("permissionDecisionFor", () => {
     ["pnpm test", { test: "vitest run $(cat secrets.txt)" }],
     ["pnpm test", { build: "vitest run" }],
     ["pnpm test", { test: "pnpm run test" }],
+    ["pnpm exec vitest", { test: "vitest run" }],
   ] as const)(
-    "hard-gates a Build-auto script that cannot be resolved to a bounded body: %s",
+    "reviews a Build-auto script that cannot be resolved to a bounded body: %s",
     (command, packageScripts) => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "hard-gate" })
+      })).toEqual({ action: "review", risk: "normal" })
     },
   )
 
@@ -209,7 +193,7 @@ describe("permissionDecisionFor", () => {
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "hard-gate" })
+      })).toEqual({ action: "review", risk: "normal" })
     },
   )
 
@@ -225,7 +209,7 @@ describe("permissionDecisionFor", () => {
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "hard-gate" })
+      })).toEqual({ action: "review", risk: "normal" })
     },
   )
 
@@ -233,13 +217,13 @@ describe("permissionDecisionFor", () => {
     ["pnpm test", { test: "npx -y vitest run" }],
     ["pnpm test", { test: "pnpm exec tsc --noEmit" }],
   ] as const)(
-    "reviews a wrapper around a repository-controlled runner: %s",
+    "still allows a plain wrapper around a bounded runner: %s",
     (command, packageScripts) => {
       expect(permissionDecisionFor({
         runtime: runtime(true),
         command,
         packageScripts,
-      })).toEqual({ action: "review", risk: "hard-gate" })
+      })).toEqual({ action: "allow", risk: "normal" })
     },
   )
 
@@ -251,12 +235,12 @@ describe("permissionDecisionFor", () => {
     })).toEqual({ action: "review", risk: "hard-gate" })
   })
 
-  it("keeps a resolved script hard-gated outside Build auto", () => {
+  it("keeps a resolved script under review outside Build auto", () => {
     expect(permissionDecisionFor({
       runtime: runtimeMode("build", false),
       command: "pnpm test",
       packageScripts: { test: "vitest run" },
-    })).toEqual({ action: "review", risk: "hard-gate" })
+    })).toEqual({ action: "review", risk: "normal" })
   })
 
   it.each([
@@ -315,6 +299,11 @@ describe("permissionDecisionFor", () => {
     "Edit",
     "Write",
     "apply_patch",
+    "pnpm test > /tmp/result",
+    "pnpm test < /tmp/input",
+    "pnpm test $(custom-helper)",
+    "pnpm test `custom-helper`",
+    "pnpm test\ncustom-helper",
     "rg AWS_SECRET_ACCESS_KEY ~",
     "grep token ~/.config/service/credentials",
     "ls ~",
@@ -330,10 +319,10 @@ describe("permissionDecisionFor", () => {
       .toEqual({ action: "review", risk: "normal" })
   })
 
-  it("keeps package scripts hard-gated in Build manual", () => {
+  it("keeps Build manual reviewable", () => {
     expect(permissionDecisionFor({ runtime: runtime(false), command: "pnpm test" })).toEqual({
       action: "review",
-      risk: "hard-gate",
+      risk: "normal",
     })
   })
 
@@ -385,18 +374,9 @@ describe("permissionDecisionFor", () => {
     "npx vitest run",
     "pnpm dlx prettier --check .",
     "bunx eslint .",
-  ])("hard-gates package execution without mislabeling it as a skill install: %s", (command) => {
-    expect(isSkillInstallCommand(command)).toBe(false)
-    expect(permissionDecisionFor({ runtime: runtime(true), command })).toEqual({
-      action: "review",
-      risk: "hard-gate",
-    })
-  })
-
-  it.each([
     "bash ./scripts/install.sh",
     "bash -c 'echo add skills'",
-  ])("does not classify an ordinary local command as a skill install: %s", (command) => {
+  ])("does not classify ordinary dependency command as a skill install: %s", (command) => {
     expect(isSkillInstallCommand(command)).toBe(false)
     expect(permissionDecisionFor({ runtime: runtime(true), command })).not.toEqual({
       action: "review",

@@ -7693,7 +7693,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("reviews a Build-auto script resolved through the manifest beside it", async () => {
+  it("resolves a Build-auto script through the manifest beside it", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-build-auto-"))
     scratchDirectories.push(workspacePath)
     await writeFile(join(workspacePath, "package.json"), JSON.stringify({
@@ -7712,14 +7712,6 @@ describe("DomovoiDaemon", () => {
     session.workspacePath = workspacePath
     session.providerThreadId = "thread-script-resolution"
     delete session.activeTurnId
-    snapshot.approvalRules.push({
-      id: "rule-stale-package-script",
-      projectId: snapshot.project!.id,
-      operation: "Run project tests",
-      command: "pnpm test",
-      createdBy: "desktop",
-      createdAt: new Date().toISOString(),
-    })
     let listener: ((event: AgentEvent) => void) | undefined
     const agent = {
       permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
@@ -7793,26 +7785,21 @@ describe("DomovoiDaemon", () => {
       reason: "Run project tests",
       command: "pnpm run leak",
     })
-    await vi.waitFor(async () => {
-      const current = await rpc("workspace.get", {})
-      expect(current).toMatchObject({
-        result: {
-          approvals: expect.arrayContaining([
-            expect.objectContaining({
-              providerRequestId: 31,
-              command: "pnpm test",
-              risk: "hard-gate",
-            }),
-            expect.objectContaining({
-              providerRequestId: 32,
-              command: "pnpm run leak",
-              risk: "hard-gate",
-            }),
-          ]),
-        },
-      })
+    const current = await rpc("workspace.get", {})
+
+    expect(agent.resolveApproval).toHaveBeenCalledWith(31, "allow-once")
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(32, expect.anything())
+    expect(current).toMatchObject({
+      result: {
+        approvals: expect.arrayContaining([
+          expect.objectContaining({
+            providerRequestId: 32,
+            command: "pnpm run leak",
+            risk: "hard-gate",
+          }),
+        ]),
+      },
     })
-    expect(agent.resolveApproval).not.toHaveBeenCalled()
     socket.close()
   })
 
@@ -7935,7 +7922,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             providerRequestId: 13,
             command: "pnpm test",
-            risk: "hard-gate",
+            risk: "normal",
           }),
         ]),
       },

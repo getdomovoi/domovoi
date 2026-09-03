@@ -127,13 +127,100 @@ export function isSkillInstallCommand(command: string): boolean {
   return trimmed.split(commandSeparators).some((segment) => segment !== trimmed && isSkillInstallSegment(segment))
 }
 
-const packageExecutionPattern = new RegExp(
-  String.raw`(?:^|[\s/\\'"])(?:npm(?:-cli\.js)?|npx|pnpm(?:\.cjs)?|yarn(?:pkg)?|bunx?|corepack)(?:\.cmd|\.exe)?(?=$|[\s'"])`,
-  "i",
-)
+const packageManagers = new Set(["pnpm", "npm", "yarn", "bun"])
+const packageSubcommands = new Set([
+  "exec", "dlx", "x", "install", "i", "add", "remove", "rm", "up", "update",
+  "audit", "publish", "pack", "create", "init", "link", "why", "dedupe", "store", "patch",
+])
+const scriptName = /^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/i
 
-function isPackageExecutionCommand(command: string): boolean {
-  return packageExecutionPattern.test(command)
+type PackageScriptRun = { script: string; rest: string }
+
+function packageScriptRun(command: string): PackageScriptRun | undefined {
+  const tokens = command.trim().split(/\s+/)
+  const manager = tokens[0]?.toLowerCase()
+  if (!manager || !packageManagers.has(manager)) return undefined
+  const explicitRun = tokens[1]?.toLowerCase() === "run"
+  const index = explicitRun ? 2 : 1
+  const script = tokens[index]
+  if (!script || !scriptName.test(script)) return undefined
+  if (!explicitRun && packageSubcommands.has(script.toLowerCase())) return undefined
+  return { script, rest: tokens.slice(index + 1).join(" ") }
+}
+
+type BodyDecision = "allow" | "review" | "hard-gate"
+
+// A script name authorizes nothing on its own: what runs is the body the
+// manifest defines today, and an agent that can edit the manifest can change
+// it. Judge the resolved body, and every body it delegates to, by the same
+// rules as a typed command.
+// A resolved body is only as safe as what it actually runs, and the hard-gate
+// patterns describe what is known dangerous rather than what is known safe.
+// Anything outside this list is reviewed, so an unrecognised runner cannot ride
+// in on a script name a human once trusted.
+const boundedScriptRunners = new Set([
+  "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
+  "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
+  "next", "astro", "changeset", "attw", "publint", "knip", "madge",
+])
+
+// Only these flags may appear before the runner. Anything else can change what
+// actually executes: `npx --package=@attacker/payload vitest` runs the attacker's
+// binary under a name on this list, so an unknown flag ends the match.
+const harmlessRunnerFlags = new Set(["-y", "--yes", "--silent", "-s"])
+
+function boundedLeafCommand(candidate: string): boolean {
+  const tokens = candidate.split(/\s+/).filter(Boolean)
+  const executable = tokens[0]?.toLowerCase()
+  if (executable === undefined) return false
+  if (boundedScriptRunners.has(executable)) return true
+  // `npx vitest run` and `pnpm exec tsc` are the same leaf wearing a runner.
+  if (!["npx", "pnpm", "npm", "yarn", "bun"].includes(executable)) return false
+  let index = 1
+  while (index < tokens.length && tokens[index]!.startsWith("-")) {
+    if (!harmlessRunnerFlags.has(tokens[index]!.toLowerCase())) return false
+    index += 1
+  }
+  const next = tokens[index]?.toLowerCase()
+  if (next === "exec" || next === "dlx" || next === "run" || next === "x") {
+    index += 1
+    while (index < tokens.length && tokens[index]!.startsWith("-")) {
+      if (!harmlessRunnerFlags.has(tokens[index]!.toLowerCase())) return false
+      index += 1
+    }
+    return boundedScriptRunners.has(tokens[index]?.toLowerCase() ?? "")
+  }
+  return boundedScriptRunners.has(next ?? "")
+}
+
+function resolvedScriptDecision(
+  body: string,
+  scripts: Readonly<Record<string, string>>,
+  seen: ReadonlySet<string>,
+): BodyDecision {
+  if (seen.size > 4) return "review"
+  if (hardGatePatterns.some((pattern) => pattern.test(body))) return "hard-gate"
+  if (ambiguousShellSyntax.test(body)) return "review"
+  const segments = body.split(commandSeparators).map((segment) => segment.trim()).filter(Boolean)
+  if (segments.length === 0) return "review"
+  for (const candidate of segments) {
+    if (hardGatePatterns.some((pattern) => pattern.test(candidate))) return "hard-gate"
+    const nested = packageScriptRun(candidate)
+    if (nested) {
+      if (seen.has(nested.script)) return "review"
+      const nestedBody = scripts[nested.script]
+      if (nestedBody === undefined) return "review"
+      const decision = resolvedScriptDecision(
+        `${nestedBody} ${nested.rest}`.trim(),
+        scripts,
+        new Set([...seen, nested.script]),
+      )
+      if (decision !== "allow") return decision
+      continue
+    }
+    if (!boundedLeafCommand(candidate)) return "review"
+  }
+  return "allow"
 }
 
 export function permissionDecisionFor(input: {
@@ -150,18 +237,22 @@ export function permissionDecisionFor(input: {
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
     return { action: "review", risk: "hard-gate" }
   }
-  // Package managers dispatch mutable repository scripts, local binaries, and
-  // lifecycle hooks behind stable commands. Even normal review is insufficient:
-  // an `always-project` rule would approve different code after the manifest,
-  // lockfile, or installed package changes. Paths and wrappers are included so
-  // alternate spellings cannot lower the gate.
-  if (command && isPackageExecutionCommand(command)) {
-    return { action: "review", risk: "hard-gate" }
-  }
   const isBuildAuto = input.runtime.permissionMode === "build" && input.runtime.auto
   if (isBuildAuto && command !== undefined && !ambiguousShellSyntax.test(command)) {
     if (safeBuildAutoPatterns.some((pattern) => pattern.test(command))) {
       return { action: "allow", risk: "normal" }
+    }
+    const invocation = packageScriptRun(command)
+    const scripts = input.packageScripts
+    const body = invocation && scripts ? scripts[invocation.script] : undefined
+    if (invocation && scripts && body !== undefined) {
+      const decision = resolvedScriptDecision(
+        `${body} ${invocation.rest}`.trim(),
+        scripts,
+        new Set([invocation.script]),
+      )
+      if (decision === "allow") return { action: "allow", risk: "normal" }
+      if (decision === "hard-gate") return { action: "review", risk: "hard-gate" }
     }
   }
   return { action: "review", risk: "normal" }
