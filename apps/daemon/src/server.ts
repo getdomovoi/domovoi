@@ -89,9 +89,7 @@ import {
   AnnotationVisualContextService,
   type AnnotationVisualContextReader,
 } from "./annotation-visual-context.js"
-import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
-import { agentPromptWithHandoff } from "./handoff-context.js"
-import { agentPromptWithSkills } from "./skill-context.js"
+import { composeProviderPrompt } from "./prompt-composer.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -143,7 +141,6 @@ import {
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
 import {
-  agentPromptWithWorkingPlan,
   blockWorkingPlanForApproval,
   clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
@@ -4184,25 +4181,18 @@ export class DomovoiDaemon {
         const deliversPlan = !session.activeTurnId
           && boundaryPlan !== undefined
           && workingPlanNeedsProviderDelivery(boundaryPlan, providerTarget)
-        const handoffPrompt = agentPromptWithHandoff(this.#snapshot, session.id, params.prompt)
-        const turnPrompt = deliversPlan
-          ? agentPromptWithWorkingPlan(boundaryPlan, handoffPrompt)
-          : handoffPrompt
-        const preparedTurn = await prepareAnnotationTurn(
-          this.#snapshot,
-          session.id,
-          turnPrompt,
-          registeredAgent.capabilities,
-          this.#annotationVisualContext,
-        )
-        const prompt = await agentPromptWithSkills(
-          this.#skillCatalogFor(this.#snapshot.project?.path),
-          this.#snapshot,
-          preparedTurn.prompt,
-          {
-            requireTrusted: session.runtime.permissionMode === "build" && session.runtime.auto,
-          },
-        )
+        const preparedTurn = await composeProviderPrompt({
+          snapshot: this.#snapshot,
+          sessionId: session.id,
+          userPrompt: params.prompt,
+          ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
+          capabilities: registeredAgent.capabilities,
+          annotationVisualContext: this.#annotationVisualContext,
+          skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
+          requireTrustedSkills:
+            session.runtime.permissionMode === "build" && session.runtime.auto,
+        })
+        const { prompt } = preparedTurn
         const createdAt = new Date().toISOString()
         const emergencyThread = providerThreadKey(
           session.runtime.provider,
