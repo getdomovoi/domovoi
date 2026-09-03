@@ -5,6 +5,7 @@ import type { AcpPeer, AcpPeerHandlers, AcpSessionSetup, AcpUpdate } from "./acp
 import { AcpAgentAdapter } from "./acp.js"
 import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
 import type { AgentEvent } from "./agents.js"
+import { classifyProviderFailure } from "./provider-failures.js"
 
 const runtime: Runtime = {
   provider: "cursor-agent",
@@ -240,13 +241,29 @@ describe("AcpAgentAdapter", () => {
     )
   })
 
-  it("reports provider disconnects once with a bounded reason", async () => {
+  it("reports provider disconnects once with a redacted peer reason", async () => {
+    const { adapter, peer } = createHarness()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+    peer.handlers?.onDisconnect("cursor-agent exited with code 1: token=super-secret\n401 token expired")
+    peer.handlers?.onDisconnect("again")
+
+    expect(events).toHaveLength(1)
+    const event = events[0]
+    if (event?.type !== "provider-disconnected") throw new Error("expected a disconnect event")
+    expect(event.reason).not.toMatch(/super-secret/)
+    expect(event.reason).toContain("cursor-agent exited with code 1")
+    expect(event.reason).toContain("401 token expired")
+    expect(classifyProviderFailure(new Error(event.reason)).kind).toBe("authentication-expired")
+  })
+
+  it("falls back to a generic reason when the peer reports none", async () => {
     const { adapter, peer } = createHarness()
     const events: unknown[] = []
     adapter.onEvent((event) => events.push(event))
     await adapter.connect()
-    peer.handlers?.onDisconnect("token=super-secret\nprocess exited")
-    peer.handlers?.onDisconnect("again")
+    peer.handlers?.onDisconnect()
 
     expect(events).toEqual([{
       type: "provider-disconnected",
