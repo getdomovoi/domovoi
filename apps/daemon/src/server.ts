@@ -5177,14 +5177,25 @@ export class DomovoiDaemon {
         this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
       } catch (error) {
         this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
-        // The thread may still be running against the worktree this project is
-        // about to stop showing, so it is quarantined rather than forgotten:
-        // the session comes back marked failed and asks for a restart instead
-        // of looking idle while something else writes to its files.
-        await this.#quarantineProviderThread(
-          session.id,
-          error instanceof Error ? error.message : "The provider thread did not stop",
+        // Quarantine clears the thread id, which is right when a provider is
+        // known to be gone. This one refused to stop, so it may still be
+        // writing to the worktree: the id stays recorded so the restart guard
+        // refuses to start a second agent in the same files, and the session
+        // says why rather than looking idle.
+        session.state = "failed"
+        session.updatedAt = suspendedAt
+        this.#snapshot.approvals = this.#snapshot.approvals.filter(
+          (approval) => approval.sessionId !== session.id,
         )
+        this.#snapshot.thread.push({
+          id: `system-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "system",
+          body: "The provider thread did not stop when this project was closed.",
+          detail: "It may still be running against this worktree, so Domovoi will not start another agent here. Restart Domovoi to clear it, or archive the session.",
+          createdAt: suspendedAt,
+        })
+        continue
       }
     }
     if (interruptedSessionIds.size > 0) {

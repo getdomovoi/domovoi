@@ -6244,8 +6244,17 @@ describe("DomovoiDaemon", () => {
     const back = await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
     const restored = (back.result as { sessions: Array<Record<string, unknown>> }).sessions[0]!
     expect(restored).toMatchObject({ state: "failed" })
-    expect(restored.providerThreadId).toBeUndefined()
     expect(restored.activeTurnId).toBeUndefined()
+    // The thread would not stop, so its identity is kept: a second agent must
+    // not be started in a worktree something may still be writing to.
+    expect(restored.providerThreadId).toBe("provider-thread-1")
+    const refusedRestart = await rpc("session.restartProviderThread", {
+      sessionId: restored.id as string,
+      client: "desktop",
+    })
+    expect(refusedRestart).toMatchObject({
+      error: { message: "Session already has a live provider thread" },
+    })
     socket.close()
   })
 
