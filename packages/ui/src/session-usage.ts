@@ -45,3 +45,21 @@ export function sessionUsageFetchKey(snapshot: WorkspaceSnapshot | null): string
   if (!session) return null
   return `${sessionId}:${session.activeTurnId ?? "idle"}`
 }
+
+export function sessionContextReadout(usage: {
+  contextTokens?: number | undefined
+  contextWindowTokens?: number | undefined
+}): string | undefined {
+  const { contextTokens, contextWindowTokens } = usage
+  if (contextTokens === undefined || contextWindowTokens === undefined) return undefined
+  return `${formatTokenCount(contextTokens)} ctx`
+}
+
+export function sessionContextShare(usage: {
+  contextTokens?: number | undefined
+  contextWindowTokens?: number | undefined
+}): string | undefined {
+  const { contextTokens, contextWindowTokens } = usage
+  if (contextTokens === undefined || contextWindowTokens === undefined) return undefined
+  return `${formatTokenCount(contextTokens)} of ${formatTokenCount(contextWindowTokens)} context tokens`
+}
