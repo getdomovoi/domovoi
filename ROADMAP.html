@@ -444,9 +444,17 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Per-project standing approval rules
 </li>
+<li>[ ] Stop translating a standing approval into provider-native persistence
+<ul>
+<li><code>always-project</code> currently becomes <code>acceptForSession</code> in <code>apps/daemon/src/codex.ts</code>, <code>always</code> in <code>apps/daemon/src/opencode.ts</code>, and provider-suggested <code>updatedPermissions</code> in <code>apps/daemon/src/claude.ts</code>. The provider then answers later requests itself, where Domovoi cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the daemon must own every standing rule. This blocks the fingerprint work below, and it would also let a retired rule keep approving through the provider.
+</li>
+</ul>
+</li>
 <li>[ ] Key standing rules on a fingerprint of the resolved command rather than its text
 <ul>
 <li>A rule matches on <code>projectId</code> and the literal command, so it keeps approving a script whose body has since changed. The fingerprint should cover the normalized command, the project-relative directory, recursively expanded script bodies, lifecycle scripts such as <code>pretest</code>, and the validated runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the approval and rule schemas.
+</li>
+<li>The digest proves the command resolved to the same text, not that the same code runs. An unchanged <code>pnpm test</code> still executes whatever the runner resolves to, so a changed config, plugin, setup file, or dependency binary stays invisible to it. That gap is unresolved decision 3 and this item does not close it.
 </li>
 <li>Decided 2026-09-03: existing text-only rules stop matching but are kept. They stay visible and auditable as inactive rules and need explicit reapproval. They are never deleted and never keep approving anything silently. A rule going inactive has to be legible to the person who granted it, so that a returning approval prompt reads as a deliberate revocation rather than a bug.
 </li>

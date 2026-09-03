@@ -182,6 +182,13 @@ Every ledger entry is now merged.
 - [x] Ask, Plan, Build manual, and Build auto controls
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
+- [ ] Stop translating a standing approval into provider-native persistence
+  - `always-project` currently becomes `acceptForSession` in `apps/daemon/src/codex.ts`, `always`
+    in `apps/daemon/src/opencode.ts`, and provider-suggested `updatedPermissions` in
+    `apps/daemon/src/claude.ts`. The provider then answers later requests itself, where Domovoi
+    cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the
+    daemon must own every standing rule. This blocks the fingerprint work below, and it would also
+    let a retired rule keep approving through the provider.
 - [ ] Key standing rules on a fingerprint of the resolved command rather than its text
   - A rule matches on `projectId` and the literal command, so it keeps approving a script whose
     body has since changed. The fingerprint should cover the normalized command, the
@@ -189,6 +196,10 @@ Every ledger entry is now merged.
     `pretest`, and the validated runner arguments. A command whose resolution is ambiguous stays
     reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the
     approval and rule schemas.
+  - The digest proves the command resolved to the same text, not that the same code runs. An
+    unchanged `pnpm test` still executes whatever the runner resolves to, so a changed config,
+    plugin, setup file, or dependency binary stays invisible to it. That gap is unresolved decision
+    3 and this item does not close it.
   - Decided 2026-09-03: existing text-only rules stop matching but are kept. They stay visible and
     auditable as inactive rules and need explicit reapproval. They are never deleted and never keep
     approving anything silently. A rule going inactive has to be legible to the person who granted
