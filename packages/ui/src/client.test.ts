@@ -191,6 +191,7 @@ describe("DomovoiClient", () => {
       params: {
         client: "web",
         clientId: client.clientId,
+        protocolVersion: "0.1.0",
         authToken: "secret-token",
       },
     })

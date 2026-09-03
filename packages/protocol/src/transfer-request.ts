@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { commitShaSchema, machineIdSchema } from "./identifiers.js"
 import { clientKindSchema } from "./schema.js"
 import { sourceRefusalMessage, sourceRefusalSchema, transferMethodSchema, type SourceRefusal } from "./transfer.js"
 import { transferRefusalMessage, transferRefusalSchema, type TransferRefusal } from "./transfer-preflight.js"
@@ -14,7 +15,7 @@ export const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*
 
 export const sessionTransferParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
-  targetMachineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
+  targetMachineId: machineIdSchema,
   client: clientKindSchema,
   // The bundle keeps repository bytes on the machines involved, so it is what
   // happens unless the caller deliberately asks for the remote.
@@ -45,14 +46,14 @@ export const transferFromRefParamsSchema = z.object({
 
 export const transferFromRefResultSchema = z.object({
   workspacePath: z.string().min(1),
-  checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  checkpointCommit: commitShaSchema,
 }).strict()
 
 export const sessionTransferResultSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("succeeded"),
     workspacePath: z.string().min(1),
-    checkpointCommit: z.string().regex(/^[a-f0-9]{40}$/),
+    checkpointCommit: commitShaSchema,
   }).strict(),
   // A refusal always says why, because the answer decides what the operator
   // does next: pick another machine, or wait for a turn to finish.

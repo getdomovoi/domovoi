@@ -16,8 +16,9 @@ import {
 import type { Checkpoint, SessionBundle, SessionRef } from "./workspace.js"
 
 // Chunks are small enough that a stalled transfer wastes little, and large
-// enough that a worktree does not arrive one packet at a time.
-export const maximumTransferChunkBytes = 262_144
+// enough that a worktree does not arrive one packet at a time. The protocol's
+// maximumTransferChunkBytes stays the one wire ceiling this stays under.
+export const transferSenderChunkBytes = 262_144
 
 export type TransferOutcome =
   | { outcome: "succeeded"; workspacePath: string; checkpointCommit: string }
@@ -194,9 +195,9 @@ export async function sendSessionToMachine(input: {
     }))
 
     let sequence = 0
-    for (let offset = 0; offset < bytes.length; offset += maximumTransferChunkBytes) {
-      const slice = bytes.subarray(offset, offset + maximumTransferChunkBytes)
-      const final = offset + maximumTransferChunkBytes >= bytes.length
+    for (let offset = 0; offset < bytes.length; offset += transferSenderChunkBytes) {
+      const slice = bytes.subarray(offset, offset + transferSenderChunkBytes)
+      const final = offset + transferSenderChunkBytes >= bytes.length
       const answer = transferChunkResultSchema.parse(await input.call("transfer.chunk", {
         transferId: begun.transferId,
         sequence,
