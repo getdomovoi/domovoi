@@ -2121,7 +2121,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.list") {
-        const catalog = this.#catalog()
+        const catalog = this.#catalog(this.#snapshot.project?.path)
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -2588,7 +2588,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "skill.inventory") {
-        const catalog = this.#catalog()
+        const catalog = this.#catalog(this.#snapshot.project?.path)
         const machine = this.#snapshot.machine
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -2609,7 +2609,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.read") {
         const params = paramsResult.data as RpcParams<"skill.read">
-        const catalog = this.#catalog()
+        const catalog = this.#catalog(this.#snapshot.project?.path)
         try {
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -3715,7 +3715,7 @@ export class DomovoiDaemon {
           this.#annotationVisualContext,
         )
         const prompt = await agentPromptWithSkills(
-          this.#catalog(),
+          this.#catalog(this.#snapshot.project?.path),
           this.#snapshot,
           preparedTurn.prompt,
           {
