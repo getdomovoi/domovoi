@@ -41,6 +41,7 @@ export function auditActorLabel(actor: AuditActor): string {
   if (actor.kind === "provider") {
     return [actor.provider, actor.providerThreadId].filter(Boolean).join(" · ")
   }
+  if (actor.kind === "machine") return ["machine", actor.machineId].join(" · ")
   return ["daemon", actor.component].filter(Boolean).join(" · ")
 }
 
