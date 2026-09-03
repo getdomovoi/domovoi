@@ -5174,10 +5174,18 @@ export class DomovoiDaemon {
           this.#agentTimeoutMs,
           "Project switch provider cleanup timed out",
         )
+        this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
       } catch (error) {
         this.#reportError("Domovoi could not stop a provider thread before switching projects", error)
+        // The thread may still be running against the worktree this project is
+        // about to stop showing, so it is quarantined rather than forgotten:
+        // the session comes back marked failed and asks for a restart instead
+        // of looking idle while something else writes to its files.
+        await this.#quarantineProviderThread(
+          session.id,
+          error instanceof Error ? error.message : "The provider thread did not stop",
+        )
       }
-      this.#loadedAgentThreads.delete(providerThreadKey(session.runtime.provider, threadId))
     }
     if (interruptedSessionIds.size > 0) {
       this.#snapshot.approvals = this.#snapshot.approvals.filter(
