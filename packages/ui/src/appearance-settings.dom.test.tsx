@@ -2,7 +2,8 @@ import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { ProviderSettings } from "./provider-settings.js"
+import { defaultNotificationPreferences } from "./notification-preferences.js"
+import { SettingsShell } from "./settings-shell.js"
 
 afterEach(cleanup)
 
@@ -10,20 +11,24 @@ function settingsProps() {
   return {
     providers: [],
     secrets: [],
+    approvalRules: [],
+    notifications: defaultNotificationPreferences(),
+    onNotificationsChange: vi.fn(),
     onBack: vi.fn(),
+    onOpenFleet: vi.fn(),
     onOpenSkills: vi.fn(),
     onOpenAudit: vi.fn(),
   }
 }
 
 function openAppearance() {
-  return userEvent.click(screen.getAllByRole("button", { name: "Appearance" })[0]!)
+  return userEvent.click(screen.getAllByRole("button", { name: "Appearance & window" })[0]!)
 }
 
 it("offers system, dark, and light theme cards beside provider settings", async () => {
   const onThemeChange = vi.fn()
   render(
-    <ProviderSettings
+    <SettingsShell
       {...settingsProps()}
       theme="system"
       onThemeChange={onThemeChange}
@@ -43,7 +48,7 @@ it("offers system, dark, and light theme cards beside provider settings", async 
 
 it("hides window decoration on clients that cannot change it", async () => {
   render(
-    <ProviderSettings
+    <SettingsShell
       {...settingsProps()}
       theme="dark"
       onThemeChange={vi.fn()}
@@ -57,7 +62,7 @@ it("hides window decoration on clients that cannot change it", async () => {
 it("states that a window decoration change applies after a restart", async () => {
   const onWindowDecorationChange = vi.fn()
   render(
-    <ProviderSettings
+    <SettingsShell
       {...settingsProps()}
       theme="dark"
       onThemeChange={vi.fn()}
@@ -78,7 +83,7 @@ it("states that a window decoration change applies after a restart", async () =>
 
 it("announces a stored decoration the running window has not adopted", async () => {
   render(
-    <ProviderSettings
+    <SettingsShell
       {...settingsProps()}
       theme="dark"
       onThemeChange={vi.fn()}
@@ -98,7 +103,7 @@ it("announces a stored decoration the running window has not adopted", async () 
 
 it("keeps the external editor control reachable alongside appearance", async () => {
   render(
-    <ProviderSettings
+    <SettingsShell
       {...settingsProps()}
       theme="system"
       onThemeChange={vi.fn()}
