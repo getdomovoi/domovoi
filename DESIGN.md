@@ -129,6 +129,10 @@ matches what someone recorded on purpose. A diff touching both `design/` and `RE
 is what a reviewer should look at. Verifying the handoff against a signature from Claude Design
 would close that gap and is not something this record claims to do.
 
+Files under `design/` are never edited in this repository. When Claude Design publishes a new
+revision, replace the bundle from the project and run `pnpm design:revision` in the same change so
+the record moves with it.
+
 **The design system is vendored** at `design/design_system_domovoi/`: `styles.css` and the nine
 token files, pulled from the project on 2026-09-02. Those files are the token contract; this
 section covers what they do not state.
@@ -144,9 +148,12 @@ section covers what they do not state.
   accent.
 - Production matches the design system on the other 39 dark tokens, counting the ten it expresses
   as `var()` aliases.
-- The live desktop surface restyles the terminal pane: command rows take a two pixel primary
-  left edge over an eight percent primary wash, failure rows sit in a ten percent destructive
-  band, and the header and footer bars use the sidebar token.
+- The live desktop surface restyles the terminal pane. Command rows carry a two pixel primary
+  left edge over an eight percent primary wash with the prompt as a separate non-selectable span,
+  failure rows sit in a ten percent destructive band using the danger foreground and dim ramps,
+  summary rows use the strong token with the duration in muted foreground, blank lines become
+  seven pixel spacers, the header and footer bars use the sidebar token, and the line height
+  is 1.85. Everything else matches the tracked bundle.
 - Production still implements the tracked handoff geometry rather than the numbers above. Aligning
   the shell is tracked in `ROADMAP.md`, not done.
 
