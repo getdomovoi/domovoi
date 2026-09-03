@@ -40,6 +40,15 @@ describe("provider failure classification", () => {
     expect(classifyProviderFailure(new Error(detail))).toMatchObject({ kind, action })
   })
 
+  it.each([
+    "You have reached your context limit",
+    "You have reached your maximum conversation length limit",
+    "You've reached your context limit",
+    "You've reached your maximum conversation length limit",
+  ])("does not treat a context failure as a provider rate limit: %s", (detail) => {
+    expect(classifyProviderFailure(new Error(detail)).kind).not.toBe("rate-limit")
+  })
+
   it("never returns raw provider text or embedded secrets", () => {
     const failure = classifyProviderFailure(new Error(
       "401 token=super-secret account=secret@example.com",
