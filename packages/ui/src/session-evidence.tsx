@@ -88,6 +88,28 @@ export function splitDiffRows(diff: string): SplitDiffRow[] {
   return rows
 }
 
+export function diffByFile(diff: string): Map<string, string> {
+  const byFile = new Map<string, string>()
+  if (!diff) return byFile
+  let path: string | undefined
+  let lines: string[] = []
+  const commit = () => {
+    if (path !== undefined && lines.length > 0) byFile.set(path, lines.join("\n"))
+  }
+  for (const line of diff.split("\n")) {
+    const header = /^diff --git a\/(.+?) b\/(.+)$/u.exec(line)
+    if (header) {
+      commit()
+      path = header[2]
+      lines = [line]
+      continue
+    }
+    if (path !== undefined) lines.push(line)
+  }
+  commit()
+  return byFile
+}
+
 export function changedFileCounts(files: ChangedFileEvidence[]): {
   added: number
   modified: number
@@ -122,15 +144,35 @@ function FileEvidenceRow({
   file,
   onRevert,
   revertDisabled,
+  fileDiff,
+  diffTruncated,
+  open,
+  onToggle,
 }: {
   file: ChangedFileEvidence
   onRevert?: (() => void) | undefined
   revertDisabled?: boolean
+  fileDiff?: string | undefined
+  diffTruncated?: boolean
+  open?: boolean
+  onToggle?: (() => void) | undefined
 }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 border-b px-3 py-2 last:border-b-0">
+    <div className="border-b last:border-b-0">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 px-3 py-2">
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
+          {onToggle ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`${open ? "Hide" : "Show"} diff for ${file.path}`}
+              aria-expanded={open ?? false}
+              onClick={onToggle}
+            >
+              <span aria-hidden="true" className="font-machine text-[9px]">{open ? "▾" : "▸"}</span>
+            </Button>
+          ) : null}
           <span className="truncate font-machine text-[10px] text-strong" title={file.path}>
             {file.path}
           </span>
@@ -168,6 +210,25 @@ function FileEvidenceRow({
           </Button>
         ) : null}
       </div>
+    </div>
+    {open ? (
+      fileDiff ? (
+        <pre
+          aria-label={`Diff for ${file.path}`}
+          className="m-0 max-h-72 overflow-auto whitespace-pre-wrap break-words border-t bg-code px-3 py-2 font-machine text-[10px] leading-relaxed"
+        >
+          {fileDiff}
+        </pre>
+      ) : (
+        <p className="m-0 border-t px-3 py-2 font-machine text-[9px] text-warning">
+          {file.binary
+            ? "Binary file, so Git reports no diff."
+            : diffTruncated
+              ? "The diff output was truncated at the transport bound before this file."
+              : "Git reported no diff for this file."}
+        </p>
+      )
+    ) : null}
     </div>
   )
 }
@@ -263,6 +324,11 @@ export function SessionEvidenceContent({
   const [revertPending, setRevertPending] = useState(false)
   const [revertError, setRevertError] = useState("")
   const counts = changedFileCounts(evidence?.workspace.files ?? [])
+  const [openFiles, setOpenFiles] = useState<ReadonlySet<string>>(new Set())
+  const fileDiffs = useMemo(
+    () => diffByFile(evidence?.workspace.diff ?? ""),
+    [evidence?.workspace.diff],
+  )
   const confirmRevert = useCallback(() => {
     if (!onRevertFile || revertPath === null) return
     setRevertPending(true)
@@ -331,6 +397,19 @@ export function SessionEvidenceContent({
                       {counts.added} added · {counts.modified} modified · {counts.deleted} deleted
                     </p>
                   </div>
+                  {evidence.workspace.files.length ? (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setOpenFiles((current) => (
+                        current.size === evidence.workspace.files.length
+                          ? new Set()
+                          : new Set(evidence.workspace.files.map((file) => file.path))
+                      ))}
+                    >
+                      {openFiles.size === evidence.workspace.files.length ? "Collapse all" : "Expand all"}
+                    </Button>
+                  ) : null}
                 </div>
                 <Separator />
                 {evidence.workspace.files.length ? evidence.workspace.files.map((file) => (
@@ -341,6 +420,15 @@ export function SessionEvidenceContent({
                       ? { onRevert: () => { setRevertError(""); setRevertPath(file.path) } }
                       : {})}
                     revertDisabled={!connected || revertPending}
+                    {...(fileDiffs.get(file.path) ? { fileDiff: fileDiffs.get(file.path) } : {})}
+                    diffTruncated={evidence.workspace.diffTruncated}
+                    open={openFiles.has(file.path)}
+                    onToggle={() => setOpenFiles((current) => {
+                      const next = new Set(current)
+                      if (next.has(file.path)) next.delete(file.path)
+                      else next.add(file.path)
+                      return next
+                    })}
                   />
                 )) : (
                   <Empty className="min-h-28 border-0">
