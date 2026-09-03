@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs"
-import { homedir, hostname } from "node:os"
+import { homedir, hostname, userInfo } from "node:os"
 
 import { DomovoiDaemon } from "./server.js"
 import { CliProviderProbe } from "./providers.js"
@@ -20,6 +20,7 @@ import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
+import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
 
 async function requestPairingCode(
   config: { host: string; port: number; tls?: unknown },
@@ -158,6 +159,9 @@ const help = `Usage: domovoid [options]
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
+       domovoid service install
+       domovoid service status
+       domovoid service remove
 
 Options:
   -h, --help       Show this help
@@ -193,6 +197,23 @@ async function main() {
     process.exitCode = await runProviderSecretCommand(args, {
       manager: new ProviderSecretManager(),
       readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "service") {
+    // The service runs as the user who asked for it, so the plan is built from
+    // this process's own identity rather than anything a caller passes in.
+    const { uid, username } = userInfo()
+    process.exitCode = await runServiceCommand(args, {
+      ...nodeServiceEffects(),
+      platform: process.platform,
+      execPath: process.argv[1] ?? process.execPath,
+      runtime: process.execPath,
+      home: homedir(),
+      uid,
+      user: username,
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
