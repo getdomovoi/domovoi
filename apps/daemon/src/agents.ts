@@ -15,6 +15,8 @@ export type AgentEvent =
       itemId?: string
       command?: string
       cwd?: string
+      path?: string
+      blockedPath?: string
       reason?: string
     }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
