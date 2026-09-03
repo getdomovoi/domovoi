@@ -1,6 +1,8 @@
 import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
 import type { NormalizedUsage } from "./usage.js"
 
+export type ProviderApprovalDecision = Exclude<ApprovalDecision, "always-project">
+
 export type AgentEvent =
   | { type: "provider-disconnected"; reason: string }
   | { type: "text-delta"; threadId?: string; turnId?: string; delta: string }
@@ -60,7 +62,9 @@ export interface AgentAdapter {
     prompt: string,
     visualContexts?: AgentVisualContext[],
   ): Promise<void>
-  resolveApproval(requestId: number, decision: ApprovalDecision): void
+  // Domovoi owns project-scoped rules. Provider adapters receive only
+  // one-shot grants so provider-native policy cannot outlive daemon state.
+  resolveApproval(requestId: number, decision: ProviderApprovalDecision): void
   onEvent(listener: (event: AgentEvent) => void): () => void
   close(): Promise<void>
 }

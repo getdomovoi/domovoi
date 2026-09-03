@@ -755,7 +755,7 @@ describe("CodexAppServerAdapter", () => {
     }))
 
     adapter.resolveApproval(41, "always-project")
-    expect(transport.sent.at(-1)).toEqual({ id: 41, result: { decision: "acceptForSession" } })
+    expect(transport.sent.at(-1)).toEqual({ id: 41, result: { decision: "accept" } })
     await adapter.close()
   })
 })

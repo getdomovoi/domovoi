@@ -314,7 +314,7 @@ describe("OpenCodeSdkAdapter", () => {
     await vi.waitFor(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
       expect.objectContaining({
         path: { id: threadId, permissionID: "permission-1" },
-        body: { response: "always" },
+        body: { response: "once" },
       }),
     ))
 
