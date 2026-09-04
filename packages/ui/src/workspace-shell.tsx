@@ -64,7 +64,14 @@ import type {
   PreviewBridgeSelectionMessage,
   TransportCandidate,
 } from "@getdomovoi/protocol"
-import { boundedClientThread, protocolVersion, sessionTransferRefusalMessage } from "@getdomovoi/protocol"
+import {
+  boundedClientThread,
+  protocolVersion,
+  selectableTurnSkills,
+  sessionTransferRefusalMessage,
+  turnSkillRefusalFrom,
+  turnSkillSelectionFor,
+} from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -180,7 +187,6 @@ import { SettingsShell } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
-import { selectableTurnSkills, turnSkillRefusalFrom, turnSkillSelectionFor } from "./turn-skill-selection"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
