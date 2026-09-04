@@ -1,27 +1,37 @@
-# Self-hosted relay architecture
+# Encrypted relay transport and commercial rendezvous
 
-Status: agreed design direction on 2026-09-04. Credential prerequisites are implemented. The
-cryptographic suite and library are deliberately unresolved, and no relay wire or networking is
-implemented yet.
+Status: agreed design direction on 2026-09-04, including the corrected open-core licensing
+boundary. Credential prerequisites are implemented. The cryptographic suite and library are
+deliberately unresolved, and no relay wire or networking is implemented yet.
 
 ## Requirement and scope
 
 The immediate requirement is stable reachability while an execution machine changes network
 identity, including when a laptop switches between tailnets. Both the daemon and a phone connect
-outward to one stable, self-hosted rendezvous. Neither endpoint needs to accept a new public
-inbound listener or remain on the same private network.
+outward to one stable rendezvous. Neither endpoint needs to accept a new public inbound listener
+or remain on the same private network.
 
-This is not the hosted Goal 3 service. The first relay has no Domovoi accounts, subscriptions,
-entitlements, billing, guest sessions, or multitenant control plane. Goal 3 may operate the same
-wire contract later, but those hosted concerns must not block a person from running a small relay
-for their own fleet.
+The first operational relay does not require the full hosted Goal 3 stack: Domovoi accounts,
+subscriptions, entitlements, billing, guest sessions, or multitenant routing. It may be deployed
+privately for project dogfooding before those services exist. That deployment mode does not make
+the official relay a free self-hosted component.
 
 Direct private transports remain preferred. The relay is the last transport, used only when a
 configured encrypted route is available.
 
-## Components and trust boundaries
+## Open-core and trust boundaries
 
-The relay is a separate app, not a `domovoid relay serve` mode. The two processes have opposite
+The Apache-2.0 protocol defines the route and encryption contract. The Apache-2.0 daemon owns the
+outbound connection manager and may dial any endpoint that conforms to that contract. The official
+rendezvous implementation and operated service are commercial components. Publishing an open wire
+contract does not put the official server implementation into the Apache distribution.
+
+This split keeps the open daemon useful and avoids binding it to one service URL. It also lets the
+project dogfood a privately deployed commercial rendezvous before the hosted account system is
+ready. Domovoi does not offer the official relay server as a free self-hosted package.
+
+The official relay is a separately licensed and distributed app, not a `domovoid relay serve`
+mode. That is both a licensing boundary and a security boundary. The two processes have opposite
 threat models:
 
 - `domovoid` executes project code and holds provider and device credentials on a trusted
@@ -30,7 +40,9 @@ threat models:
   Domovoi endpoint credentials or plaintext session content.
 
 Putting both roles in one binary would make it too easy to expose the daemon while intending to
-deploy only the rendezvous.
+deploy only the rendezvous, and would put a commercial component inside the Apache-2.0 daemon
+artifact. The production relay must not land in that binary or distribution. A bounded fake relay
+used only by tests may live in the open repository because it is not the operated implementation.
 
 The daemon keeps an outbound WSS registration open. A client opens a second outbound WSS
 connection for the same opaque route. The relay multiplexes bounded binary ciphertext frames
@@ -84,6 +96,11 @@ The daemon has a persistent static channel key. Its public key is pinned during 
 Each paired device has its own static channel key, and the daemon stores that device's public key
 on the paired-device record. Every logical relay connection performs a fresh handshake and gets a
 fresh transport cipher.
+
+On a phone, the device private channel key is generated and used inside the platform keychain. It
+is device-only, non-synchronizing, excluded from backups and exports, and never returned through
+Domovoi protocol state or logs. Forgetting a daemon deletes both its bearer and its private channel
+key. If the key is lost, the device must pair again; no recovery path exports it to another device.
 
 Relay admission requires two factors belonging to the same active device record:
 
@@ -142,7 +159,11 @@ A relay operator sees addresses, timing, sizes, route ids, and connection counts
 drop traffic. A hostile relay can also replay ciphertext, although endpoint sequence checks reject
 it. The relay cannot read or forge accepted plaintext if the end-to-end channel is correct.
 
-This is not zero knowledge. Documentation and client copy must state the metadata boundary plainly.
+This is the central public promise of the commercial relay, not optional defense in depth: the
+company operating the rendezvous cannot read session content. The relay does not ship until tests
+and protocol evidence support that claim. It is not zero knowledge, because the operator still
+observes the metadata above and controls availability. Documentation and client copy must state
+both halves plainly.
 
 ## Open cryptography decision
 
@@ -174,11 +195,15 @@ shipped merely to let networking start.
    them.
 4. In-process hostile-relay tests proving plaintext and endpoint credentials never cross the
    rendezvous boundary.
-5. Outbound manager and separate relay app with generation fencing, bounds, and backpressure.
+5. Open daemon outbound manager plus the separately licensed commercial relay app, with generation
+   fencing, bounds, and backpressure.
 6. Phone connection using its stored descriptor and paired device factors.
 7. Encrypted artifact delivery before a relay route can advertise preview capability.
 
-Hosted accounts, entitlements, billing, guest access, and multitenant scaling remain Goal 3 work.
+A privately operated commercial relay may precede Goal 3 for dogfooding. Hosted accounts,
+entitlements, billing, guest access, and multitenant scaling remain Goal 3 work. The exact repository
+and delivery channel for the commercial server must be settled before slice 5, but it cannot be
+part of the Apache-2.0 daemon binary or package.
 
 ## Parked findings
 

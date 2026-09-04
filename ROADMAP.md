@@ -376,7 +376,7 @@ Three holes found on 2026-09-04 were inside items already marked complete: a pai
 read another machine's workspace, concurrent daemon starts raced on machine identity, and a
 credential could act as either a machine or a person. A second pass over the fleet surface
 underneath the transfer work is queued, weighted toward credential handling and transport
-ordering, where a mistake is both reachable from another machine and quiet. The self-hosted relay
+ordering, where a mistake is both reachable from another machine and quiet. The encrypted relay
 preflight closed the immediate credential blockers: credentials are fixed-width, exact client or
 machine bindings determine the authenticated actor, activity is recorded only after an accepted
 hello, and both legacy credential shapes are retired in one migration. That preflight is not the
@@ -402,15 +402,17 @@ method can be wired safely.
   3. LAN connection;
   4. direct tailnet connection;
   5. SSH tunnel where explicitly configured;
-  6. an end-to-end encrypted, self-hosted outbound relay when one is configured.
+  6. an end-to-end encrypted outbound relay when one is configured.
   - Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open
     items below replace the earlier assumption that relay had to wait for the hosted Goal 3
     service.
 - [x] Authenticate every connection even inside a tailnet
-- [ ] Keep a daemon reachable while its tailnet or network identity changes through the
-  self-hosted rendezvous in `docs/self-hosted-relay.md`
-  - The daemon and client both dial outward. The relay is a separate internet-facing app and sees
-    bounded ciphertext plus metadata, never Domovoi plaintext or endpoint credentials.
+- [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
+  rendezvous in `docs/encrypted-relay.md`
+  - The Apache-2.0 daemon and clients dial a public route contract. The official relay app and
+    operated service are separately licensed commercial components and see bounded ciphertext
+    plus metadata, never Domovoi plaintext or endpoint credentials. A private dogfood deployment
+    does not make the official relay a free self-hosted component.
   - Relay admission requires both the current paired-device bearer and proof of its channel key;
     the daemon root token is never valid on relay ingress. Pairing remains direct-only for the
     alpha.
@@ -420,8 +422,8 @@ method can be wired safely.
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
     maintaining their own list.
-- [ ] Ship the generation-fenced outbound manager and separate self-hosted relay app with bounded
-  pre-authentication input, buffers, streams, idle time, and explicit backpressure
+- [ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app
+  with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
 - [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
   a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
@@ -492,7 +494,7 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
 
 - [ ] OAuth/passkey account service
 - [ ] Account-scoped device registry and short-lived client sessions
-- [ ] Hosted, horizontally scalable deployment of the self-hosted relay wire
+- [ ] Hosted, horizontally scalable deployment of the encrypted relay wire
 - [ ] Preserve payload-level end-to-end encryption through the hosted relay while adding accounts
   and multitenant routing
 - [ ] Relay protocol version negotiation, backpressure, reconnect, and resumable subscriptions
@@ -647,12 +649,13 @@ dependent work starts.
 - WebSocket JSON-RPC is the client/daemon protocol; gRPC is not required for the current surfaces.
 - The daemon owns sessions, Git, tools, terminals, credentials, and canonical state.
 - Code stays on its execution machine; Domovoi does not add a filesystem sync layer.
-- Remote connectivity prefers direct private-network transport, then a configured self-hosted
-  end-to-end encrypted relay. A later hosted service uses the same payload boundary rather than
-  defining the first relay contract.
+- Remote connectivity prefers direct private-network transport, then a configured end-to-end
+  encrypted relay. The route protocol and daemon connection manager are Apache-2.0; the official
+  relay implementation and operated service are separately licensed commercial components.
 - SQLite is owned directly by the daemon; an ORM is not currently justified.
-- Domovoi is open-core. The daemon, protocol, clients, and local transports are Apache-2.0; hosted
-  account, billing, relay, vault, and team services may remain separate.
+- Domovoi is open-core. The daemon, protocol, clients, and local transports are Apache-2.0; the
+  official relay implementation and hosted account, billing, vault, and team services are
+  separately licensed commercial components.
 - Claude Design's app and brand handoffs remain the design source of truth.
 - A session transfer is refused at the moment it is requested rather than queued, so a session never
   changes hands later and unattended. Transfer preflight refuses an unreachable target, a target
