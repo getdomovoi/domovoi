@@ -130,6 +130,9 @@ export function fleetEntryMachineId(entry: FleetEntry): string {
 export const fleetSnapshotSchema = z.object({
   entries: z.array(fleetEntrySchema).max(maximumFleetEntries),
 }).strict().superRefine((fleet, context) => {
+  // Display validation is not admission: pending journals must remain visible
+  // even when recovery discovers no room to promote them. The daemon reserves
+  // pending enrollments against its separate admission limit before claiming.
   if (fleet.entries.filter((entry) => entry.kind === "machine").length > maximumFleetMachines) {
     context.addIssue({ code: "custom", path: ["entries"], message: "The fleet machine admission limit is 128" })
   }
