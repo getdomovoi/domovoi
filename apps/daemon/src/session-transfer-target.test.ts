@@ -258,6 +258,28 @@ describe("target transfer commit", () => {
     })
     expect(restoreSessionFromBundle).toHaveBeenCalledOnce()
     expect(save).toHaveBeenCalledOnce()
+
+    await transactions.markFailed(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+      "persistence-failed",
+    )
+    const digestCollision = structuredClone(committed.snapshot)
+    digestCollision.sessions[0]!.transferredFrom!.manifestDigest = `sha256:${"9".repeat(64)}`
+    await expect(commitPreparedSessionTransfer({
+      snapshot: digestCollision,
+      transferId: packaged.manifest.transferId,
+      manifestDigest: packaged.manifestDigest,
+      transactions,
+      projectHasLineage: async () => true,
+      workspace: { restoreSessionFromBundle, writeTransferredArtifactSource },
+      annotationVisualContext: { storeUpload },
+      usageLedger: { replaceTransferredSession },
+      save,
+      now: () => "2026-09-03T21:03:00.000Z",
+    })).resolves.toMatchObject({
+      result: { state: "refused", reason: "target-session-newer" },
+    })
   })
 
   it("rechecks the digest-bound target project and lineage before recovery", async () => {

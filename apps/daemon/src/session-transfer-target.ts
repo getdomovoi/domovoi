@@ -274,6 +274,7 @@ export async function commitPreparedSessionTransfer(input: {
     const exactArrival = existing.transferredFrom?.transferId === manifest.transferId
       && existing.transferredFrom.sourceMachineId === manifest.sourceMachineId
       && existing.transferredFrom.generation === manifest.ownership.toGeneration
+      && existing.transferredFrom.manifestDigest === input.manifestDigest
       && existing.transferredFrom.checkpointCommit === manifest.project.checkpointCommit
       && existing.workspacePath !== undefined
     if (exactArrival) {
