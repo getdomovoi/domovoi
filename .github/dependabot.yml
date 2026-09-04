@@ -11,6 +11,14 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    ignore:
+      # TypeScript 7 ships no JavaScript compiler API; typescript-eslint and
+      # tsup's declaration bundler both refuse it. Our own code typechecks clean
+      # under 7.0, so this is a toolchain wait, not a source problem. Lift it
+      # when typescript-eslint admits 7.x (typescript-eslint#10940) and tsup
+      # bundles declarations without a TypeScript 6 peer.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       production-minor-and-patch:
         dependency-type: production
