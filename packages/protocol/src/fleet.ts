@@ -6,6 +6,7 @@ import { transportCandidateSchema } from "./transport.js"
 import { connectionKindSchema } from "./schema.js"
 
 export const maximumFleetMachines = 128
+export const maximumFleetEntries = 512
 export const staleHeartbeatMs = 30_000
 export const offlineHeartbeatMs = 120_000
 
@@ -127,8 +128,11 @@ export function fleetEntryMachineId(entry: FleetEntry): string {
 }
 
 export const fleetSnapshotSchema = z.object({
-  entries: z.array(fleetEntrySchema).max(maximumFleetMachines),
+  entries: z.array(fleetEntrySchema).max(maximumFleetEntries),
 }).strict().superRefine((fleet, context) => {
+  if (fleet.entries.filter((entry) => entry.kind === "machine").length > maximumFleetMachines) {
+    context.addIssue({ code: "custom", path: ["entries"], message: "The fleet machine admission limit is 128" })
+  }
   const ids = fleet.entries.map(fleetEntryMachineId)
   if (new Set(ids).size !== ids.length) {
     context.addIssue({
@@ -145,6 +149,18 @@ export const fleetSnapshotSchema = z.object({
     })
   }
 })
+
+// An overflow refuses the entire list, not a silently shortened success.
+// Legacy keyring indexes predate admission limits and can exceed this bound.
+export const fleetSnapshotOverflowSchema = z.object({
+  kind: z.literal("fleet-overflow"),
+  limit: z.literal(maximumFleetEntries),
+  totalEntries: z.number().int().min(maximumFleetEntries + 1).max(Number.MAX_SAFE_INTEGER),
+  entriesNotShown: z.number().int().min(maximumFleetEntries + 1).max(Number.MAX_SAFE_INTEGER),
+}).strict().refine((overflow) => overflow.entriesNotShown === overflow.totalEntries,
+  "An overflow returns no entries")
+
+export type FleetSnapshotOverflow = z.infer<typeof fleetSnapshotOverflowSchema>
 
 // Sent only to authenticated clients. Reconnect always relists. A slow client
 // must reconnect rather than silently coalescing or losing lifecycle changes.
