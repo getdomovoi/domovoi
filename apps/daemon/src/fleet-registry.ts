@@ -8,6 +8,8 @@ import {
   fleetSnapshotSchema,
   machineHeartbeatState,
   maximumFleetMachines,
+  maximumFleetEntries,
+  fleetSnapshotOverflowSchema,
   machineIdSchema,
   protocolVersion,
   sha256DigestSchema,
@@ -42,6 +44,17 @@ export class FleetOperationInProgressError extends Error {
   constructor() {
     super("That machine already has an unfinished fleet operation")
     this.name = "FleetOperationInProgressError"
+  }
+}
+
+export class FleetSnapshotOverflowError extends Error {
+  readonly overflow
+  constructor(totalEntries: number) {
+    super(`Fleet contains ${totalEntries} entries, above the ${maximumFleetEntries}-entry display limit. No entries were shown. Run domovoid fleet-keychain list and remove unused local credentials by machine id.`)
+    this.name = "FleetSnapshotOverflowError"
+    this.overflow = fleetSnapshotOverflowSchema.parse({
+      kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries, entriesNotShown: totalEntries,
+    })
   }
 }
 
@@ -187,6 +200,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
       machineIdSchema.parse(id)
       if (!entries.has(id)) entries.set(id, { kind: "unenrolled", machineId: id })
     }
+    if (entries.size > maximumFleetEntries) throw new FleetSnapshotOverflowError(entries.size)
     // Stable machine keys keep pending/unenrolled states in place rather than
     // moving a row every time a heartbeat refreshes its timestamp.
     return fleetSnapshotSchema.parse({ entries: [...entries]
@@ -232,7 +246,8 @@ export class SqliteFleetRegistry implements FleetRegistry {
       if (this.#database.prepare("SELECT 1 FROM fleet_operations WHERE machine_id = ?").get(pending.machineId)) {
         throw new FleetOperationInProgressError()
       }
-      this.#requireSpace(pending.machineId)
+      // Forget releases authority; recovery must work even at capacity.
+      if (pending.kind === "enroll") this.#requireSpace(pending.machineId)
       this.#database.prepare("INSERT INTO fleet_operations (id, machine_id, payload) VALUES (?, ?, ?)")
         .run(pending.id, pending.machineId, JSON.stringify(pending))
     })
@@ -329,9 +344,12 @@ export class SqliteFleetRegistry implements FleetRegistry {
   }
 
   #requireSpace(id: string): void {
-    const rows = this.#database.prepare("SELECT id FROM fleet_machines UNION SELECT machine_id AS id FROM fleet_operations")
-      .all() as Array<{ id: string }>
-    if (!rows.some((row) => row.id === id) && rows.length >= maximumFleetMachines) throw new FleetLimitReachedError()
+    const operations = this.pendingOperations()
+    const forgetting = new Set(operations.filter((entry) => entry.kind === "forget").map((entry) => entry.machineId))
+    const rows = this.#database.prepare("SELECT id FROM fleet_machines").all() as Array<{ id: string }>
+    const admitted = new Set(rows.filter((row) => !forgetting.has(row.id)).map((row) => row.id))
+    for (const entry of operations) if (entry.kind === "enroll") admitted.add(entry.machineId)
+    if (!admitted.has(id) && admitted.size >= maximumFleetMachines) throw new FleetLimitReachedError()
   }
 
   #transaction<T>(run: () => T): T {

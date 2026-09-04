@@ -1,7 +1,7 @@
 import {
   fleetEnrollParamsSchema, fleetEnrollResultSchema, fleetEntryMachineId,
   fleetForgetParamsSchema, fleetForgetResultSchema, fleetMachineDescriptorSchema,
-  maximumFleetMachines, protocolCompatibility, protocolVersion,
+  maximumFleetMachines, maximumFleetEntries, protocolCompatibility, protocolVersion,
   type FleetEnrollParams, type FleetEnrollRefusal, type FleetEnrollResult,
   type FleetForgetParams, type FleetForgetResult,
   type FleetMachineFacts, type FleetRemoteRevocation, type FleetSnapshot,
@@ -11,7 +11,7 @@ import { createMachineDialer, type MachineConnection, type MachineRouteConnectio
 import { machineCredentialDigest, MachineCredentialUnavailableError, type MachineCredentials } from "./machine-credentials.js"
 import { fleetOperationSummary, type FleetEnrollmentOperation, type FleetForgetOperation } from "./fleet-operations.js"
 import {
-  FleetLimitReachedError, FleetOperationInProgressError,
+  FleetLimitReachedError, FleetOperationInProgressError, FleetSnapshotOverflowError,
   type EnrolledFleetMachine, type FleetConnectionFailure, type FleetRegistry,
 } from "./fleet-registry.js"
 import {
@@ -138,7 +138,9 @@ export class FleetEnrollmentService {
       if (params.expectedMachineId && registry.pendingOperations().some((entry) => entry.machineId === params.expectedMachineId)) {
         throw new FleetOperationInProgressError()
       }
-      if (entries.length >= maximumFleetMachines && !entries.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId)) {
+      const admitted = entries.filter((entry) => entry.kind === "machine" || (entry.kind === "pending" && entry.operation === "enroll"))
+      if ((admitted.length >= maximumFleetMachines && !admitted.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId))
+        || (entries.length >= maximumFleetEntries && !entries.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId))) {
         throw new FleetLimitReachedError()
       }
       claimed = await (this.#input.claim ?? claimMachineSocket)({
@@ -366,7 +368,7 @@ function enrollRefusal(error: unknown): FleetEnrollRefusal {
   if (error instanceof MachineIdentityMismatchError) return "identity-mismatch"
   if (error instanceof MachineSelfEnrollmentError) return "self-enrollment"
   if (error instanceof MachineDescriptorError) return "target-description-invalid"
-  if (error instanceof FleetLimitReachedError) return "fleet-limit"
+  if (error instanceof FleetLimitReachedError || error instanceof FleetSnapshotOverflowError) return "fleet-limit"
   if (error instanceof FleetOperationInProgressError) return "operation-in-progress"
   return "target-unreachable"
 }

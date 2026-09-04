@@ -51,6 +51,44 @@ own short-lived signed capabilities on every listener, loopback included; each c
 to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
 retargeted request returns 404.
 
+## Fleet enrollment and recovery
+
+`fleet.enroll` is a local-root operation. It claims a versioned pairing code, authenticates as
+this machine, and reads the target's own descriptor on one connection. The source records the
+endpoint it actually authenticated over separately from the target's advertisements. Remote
+listeners require TLS; relay enrollment and plaintext off-machine endpoints are refused.
+
+Peer credentials stay in the OS keychain, never the renderer or the workspace snapshot. SQLite
+journals retain an operation kind and credential digest, not its bytes. Enrollment is published
+only after matching keychain readback. Pending enrollment/forget operations remain visible and
+resume on startup. Heartbeats refresh target facts every 15 seconds, with each attempt bounded
+by a 30-second operation deadline. A failed attempt does not advance the last-contact timestamp.
+Forget reports whether the target confirmed revocation; unconfirmed removal requires revoking
+this machine in the target's Devices list. Enrollment does not grant a client credential for
+remote Use or Terminal; that is a separate admission step.
+
+Admission is limited to 128 machine entries, including the local machine and pending enrollment
+reservations. Recovery rows remain visible beyond that limit. The wire list is bounded at 512
+total entries. Older keychain indexes had no count limit. An over-cap index therefore refuses the
+entire list with `fleetSnapshotOverflowErrorCode` (`-32016`) and a `fleet-overflow` error payload
+containing `limit`, `totalEntries`, and `entriesNotShown`. No rows are silently truncated.
+
+For exceptional over-cap recovery, run these locally as the same OS user who runs Domovoi:
+
+```bash
+domovoid fleet-keychain list
+domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
+```
+
+Stop Domovoi and its supervisor before `forget`. The confirmation asserts that you have stopped
+them; the command does not stop or independently verify them. Otherwise a running reconciliation
+could race the repair. `list` prints the complete indexed machine IDs, never credential bytes,
+without the wire cap. `forget` removes only the named local key and index entry, checks readback,
+and leaves unrelated credentials and fleet facts intact. It does not prove revocation on the
+target: revoke this machine in the target's Devices list as well. Restart Domovoi and use ordinary
+Fleet Forget for remaining recorded facts once the list fits. These commands require the OS
+keychain to be available. Pagination of larger legacy fleets is not implemented.
+
 ## When state cannot reach disk
 
 The daemon writes the workspace snapshot after every change. A single failed write is retried on

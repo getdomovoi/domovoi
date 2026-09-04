@@ -131,6 +131,21 @@ describe("SqliteFleetRegistry", () => {
     }, 1_000)).toThrow(FleetLimitReachedError)
   })
 
+  it("can expose and forget an orphan even when all machine slots are full", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      for (let index = 0; index < maximumFleetMachines; index += 1) {
+        fleet.record({ ...localMachine, id: `machine-${index.toString(16).padStart(32, "0")}`, capabilities: ["sessions"] }, 1_000)
+      }
+      const orphan = `machine-${"f".repeat(32)}`
+      expect(fleet.snapshot(localMachine.id, 1_000, [orphan]).entries).toContainEqual({ kind: "unenrolled", machineId: orphan })
+      const operation = fleet.stageForget(orphan, null, 1_000)
+      expect(fleet.snapshot(localMachine.id, 1_000, [orphan]).entries).toHaveLength(maximumFleetMachines + 1)
+      expect(fleet.completeForget(operation.id)).toBe(true)
+      expect(fleet.snapshot(localMachine.id, 1_000).entries).toHaveLength(maximumFleetMachines)
+    } finally { database.close() }
+  })
+
   it("rejects a machine whose facts are not describable", () => {
     const { registry: fleet } = registry()
 

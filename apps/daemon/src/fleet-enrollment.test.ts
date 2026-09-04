@@ -53,6 +53,20 @@ function fixture() {
 }
 
 describe("fleet enrollment coordinator", () => {
+  it("does not count legacy recovery rows as admitted machines and can forget one beyond admission capacity", async () => {
+    const f = fixture()
+    const orphans = Array.from({ length: 129 }, (_, index) => `machine-${index.toString(16).padStart(32, "0")}`)
+    for (const id of orphans) f.credentials.save(id, token)
+    expect(await f.service.enroll(params)).toMatchObject({ outcome: "enrolled", machineId: targetId })
+    expect(f.service.snapshot().entries).toHaveLength(130)
+    expect(await f.service.forget({ machineId: orphans[0]!, client: "cli" })).toMatchObject({
+      outcome: "forgotten", remoteRevocation: "unconfirmed",
+    })
+    expect(f.credentials.forMachine(orphans[0]!)).toBeUndefined()
+    expect(f.service.snapshot().entries).toHaveLength(129)
+    expect(f.registry.enrolled()).toHaveLength(1)
+  })
+
   it("publishes only authenticated facts and a separately observed route after matching keychain readback", async () => {
     const f = fixture()
     const save = f.credentials.save.bind(f.credentials)

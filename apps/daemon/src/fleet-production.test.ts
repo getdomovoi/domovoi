@@ -7,7 +7,7 @@ import { promisify } from "node:util"
 
 import {
   daemonAuthenticationErrorCode, devicePairResultSchema, fleetEnrollResultSchema,
-  fleetSnapshotSchema, protocolVersion, rpcMethods, workspaceSnapshotSchema,
+  fleetSnapshotSchema, fleetSnapshotOverflowSchema, fleetSnapshotOverflowErrorCode, protocolVersion, rpcMethods, workspaceSnapshotSchema,
   type FleetSnapshot, type RpcMethod, type RpcParams,
 } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -77,7 +77,7 @@ async function connect(url: string) {
   let nextId = 0
   async function call<M extends RpcMethod>(method: M, params: RpcParams<M>) {
     const id = ++nextId
-    return new Promise<{ result?: unknown; error?: { code: number; message: string } }>((resolve, reject) => {
+    return new Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); socket.off("message", receive); socket.off("close", closed) }
       const closed = () => { cleanup(); reject(new Error(`Socket closed during ${method}`)) }
       const timer = setTimeout(() => { cleanup(); reject(new Error(`RPC test deadline: ${method}`)) }, 10_000)
@@ -116,6 +116,21 @@ function remote(fleet: FleetSnapshot, id: string) {
 }
 
 describe("production fleet assembly", () => {
+  it("explicitly refuses all rows on legacy index overflow, including the omitted count and a local recovery command", async () => {
+    const source = await machine("source studio")
+    for (let index = 0; index < 512; index += 1) {
+      source.credentials.save(`machine-${index.toString(16).padStart(32, "0")}`, "n".repeat(43))
+    }
+    const reply = await source.root.call("fleet.list", {})
+    expect(reply.result).toBeUndefined()
+    expect(reply.error?.code).toBe(fleetSnapshotOverflowErrorCode)
+    expect(fleetSnapshotOverflowSchema.parse(reply.error?.data)).toEqual({
+      kind: "fleet-overflow", limit: 512, totalEntries: 513, entriesNotShown: 513,
+    })
+    expect(reply.error?.message).toContain("domovoid fleet-keychain list")
+    expect(JSON.stringify(reply)).not.toContain("n".repeat(43))
+  })
+
   it("refreshes an enrolled peer after restart and revocation without leaking fleet broadcasts to machines or unauthed sockets", async () => {
     const source = await machine("source studio")
     const target = await machine("target studio")

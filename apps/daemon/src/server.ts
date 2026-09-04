@@ -12,7 +12,9 @@ import {
   type MachineCapability,
   type FleetMachine,
   fleetMachineDescriptorSchema,
+  fleetSnapshotOverflowErrorCode,
   type FleetMachineDescriptor,
+  type FleetSnapshotOverflow,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
@@ -68,6 +70,7 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
@@ -1517,7 +1520,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -4522,13 +4525,15 @@ export class DomovoiDaemon {
         this.#recordThisMachine()
         this.#scheduleSessionTransferRecovery()
         this.#scheduleRecoveredOwnershipChecks()
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#fleetEnrollment.snapshot(),
-          ),
-        })
+        try {
+          this.#send(socket, {
+            jsonrpc: "2.0", id: request.id,
+            result: rpcMethods[method].result.parse(this.#fleetEnrollment.snapshot()),
+          })
+        } catch (error) {
+          if (!(error instanceof FleetSnapshotOverflowError)) throw error
+          this.#error(socket, request.id, fleetSnapshotOverflowErrorCode, error.message, error.overflow)
+        }
         return
       }
 
