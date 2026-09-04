@@ -77,6 +77,34 @@ export const sessionTransferRepositorySchema = z.discriminatedUnion("method", [
 
 const safeGenerationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 
+export const sessionTransferTargetRefusalSchema = z.enum([
+  "target-project-missing",
+  "target-project-mismatch",
+  "target-session-newer",
+  "target-session-diverged",
+])
+
+export const transferTargetPreflightParamsSchema = z.object({
+  sessionId: z.string().trim().min(1).max(128),
+  sourceMachineId: machineIdSchema,
+  sourceProjectId: z.string().trim().min(1).max(512),
+  lineageCommit: commitShaSchema,
+  ownershipGeneration: safeGenerationSchema,
+  client: clientKindSchema,
+}).strict()
+
+export const transferTargetPreflightResultSchema = z.discriminatedUnion("allowed", [
+  z.object({
+    allowed: z.literal(true),
+    targetProjectId: z.string().trim().min(1).max(512),
+    lineageCommit: commitShaSchema,
+  }).strict(),
+  z.object({
+    allowed: z.literal(false),
+    reason: sessionTransferTargetRefusalSchema,
+  }).strict(),
+])
+
 export const sessionTransferManifestSchema = z.object({
   version: sessionTransferContractVersionSchema,
   transferId: transferIdSchema,
@@ -298,6 +326,9 @@ export const transferAbortResultSchema = z.discriminatedUnion("state", [
 
 export type SessionTransferMember = z.infer<typeof sessionTransferMemberSchema>
 export type SessionTransferRepository = z.infer<typeof sessionTransferRepositorySchema>
+export type SessionTransferTargetRefusal = z.infer<typeof sessionTransferTargetRefusalSchema>
+export type TransferTargetPreflightParams = z.infer<typeof transferTargetPreflightParamsSchema>
+export type TransferTargetPreflightResult = z.infer<typeof transferTargetPreflightResultSchema>
 export type SessionTransferManifest = z.infer<typeof sessionTransferManifestSchema>
 export type SessionTransferTransactionRefusal = z.infer<typeof sessionTransferTransactionRefusalSchema>
 export type TransferPrepareParams = z.infer<typeof transferPrepareParamsSchema>

@@ -14,6 +14,8 @@ import {
   transferMemberParamsSchema,
   transferPrepareParamsSchema,
   transferStatusResultSchema,
+  transferTargetPreflightParamsSchema,
+  transferTargetPreflightResultSchema,
 } from "./transfer-transaction.js"
 
 const transferId = `transfer-${"a".repeat(32)}`
@@ -138,6 +140,7 @@ describe("session transfer manifest", () => {
 describe("transactional transfer rpc", () => {
   it("registers preview and recovery queries as reads and transaction writes as mutations", () => {
     expect(rpcMethods["session.transferPreview"].params).toBe(sessionTransferPreviewParamsSchema)
+    expect(rpcMethods["transfer.preflight"].params).toBe(transferTargetPreflightParamsSchema)
     expect(rpcMethods["transfer.prepare"].params).toBe(transferPrepareParamsSchema)
     expect(rpcMethods["transfer.member"].params).toBe(transferMemberParamsSchema)
     expect(rpcMethods["transfer.commit"].params).toBe(transferCommitParamsSchema)
@@ -145,6 +148,7 @@ describe("transactional transfer rpc", () => {
     expect(rpcMethods["transfer.abort"].params).toBe(transferAbortParamsSchema)
 
     expect(isMutatingRpcMethod("session.transferPreview")).toBe(false)
+    expect(isMutatingRpcMethod("transfer.preflight")).toBe(false)
     expect(isMutatingRpcMethod("transfer.status")).toBe(false)
     for (const method of [
       "transfer.prepare",
@@ -154,6 +158,30 @@ describe("transactional transfer rpc", () => {
     ] as const) {
       expect(isMutatingRpcMethod(method)).toBe(true)
     }
+  })
+
+  it("checks target lineage and ownership before a preview promises a move", () => {
+    expect(transferTargetPreflightParamsSchema.safeParse({
+      sessionId: "session-1",
+      sourceMachineId,
+      sourceProjectId: "project-source",
+      lineageCommit: "6".repeat(40),
+      ownershipGeneration: 2,
+      client: "desktop",
+    }).success).toBe(true)
+    expect(transferTargetPreflightResultSchema.safeParse({
+      allowed: true,
+      targetProjectId: "project-target",
+      lineageCommit: "6".repeat(40),
+    }).success).toBe(true)
+    expect(transferTargetPreflightResultSchema.safeParse({
+      allowed: false,
+      reason: "target-project-mismatch",
+    }).success).toBe(true)
+    expect(transferTargetPreflightResultSchema.safeParse({
+      allowed: false,
+      reason: "session-approval-pending",
+    }).success).toBe(false)
   })
 
   it("prepares a digest-bound manifest idempotently", () => {

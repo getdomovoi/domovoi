@@ -27,6 +27,8 @@ import {
   transferPrepareResultSchema,
   transferStatusParamsSchema,
   transferStatusResultSchema,
+  transferTargetPreflightParamsSchema,
+  transferTargetPreflightResultSchema,
 } from "./transfer-transaction.js"
 
 import {
@@ -1185,6 +1187,10 @@ export const rpcMethods = {
     params: transferPrepareParamsSchema,
     result: transferPrepareResultSchema,
   },
+  "transfer.preflight": {
+    params: transferTargetPreflightParamsSchema,
+    result: transferTargetPreflightResultSchema,
+  },
   "transfer.member": {
     params: transferMemberParamsSchema,
     result: transferMemberResultSchema,
@@ -1340,6 +1346,7 @@ export const rpcMethodMutations = {
   "fleet.list": "read-only",
   "session.transferPreview": "read-only",
   "transfer.have": "read-only",
+  "transfer.preflight": "read-only",
   "transfer.status": "read-only",
   "device.machineCredential": "read-only",
   "device.list": "read-only",
