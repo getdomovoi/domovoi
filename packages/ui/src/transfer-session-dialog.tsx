@@ -31,6 +31,7 @@ import { Input } from "./components/ui/input"
 // earlier version claimed skills travelled and secrets did not, and neither was
 // true. Keep every line checkable against what a transfer actually sends.
 import { transferCoverageLists } from "./transfer-coverage.js"
+import { transferOutcomeNotice } from "./transfer-outcome.js"
 
 type TransferCheck = { label: string; ready: boolean }
 
@@ -96,7 +97,7 @@ export function TransferSessionDialog({
   const [method, setMethod] = useState<TransferMethod>("git-bundle")
   const [remote, setRemote] = useState("")
   const [pending, setPending] = useState(false)
-  const [problem, setProblem] = useState("")
+  const [problem, setProblem] = useState<{ title: string; detail: string } | undefined>(undefined)
   const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
   const [previewing, setPreviewing] = useState(false)
   const [previewAttempt, setPreviewAttempt] = useState(0)
@@ -119,11 +120,14 @@ export function TransferSessionDialog({
       (next) => { if (active) setPreview(next) },
       (cause: unknown) => {
         if (!active) return
-        setProblem(cause instanceof Error ? cause.message : "The move could not be previewed")
+        setProblem({
+          title: "The move could not be previewed",
+          detail: cause instanceof Error ? cause.message : `${source.label} did not answer.`,
+        })
       },
     ).finally(() => { if (active) setPreviewing(false) })
     return () => { active = false }
-  }, [method, onPreview, open, previewAttempt, remote, session.id, target.id])
+  }, [method, onPreview, open, previewAttempt, remote, session.id, source.label, target.id])
 
   // What the move carries is the daemon's answer, so it is read off the preview
   // rather than described here. Before the preview lands there is nothing
@@ -135,7 +139,7 @@ export function TransferSessionDialog({
     if (wasOpen.current && !open) {
       setMethod("git-bundle")
       setRemote("")
-      setProblem("")
+      setProblem(undefined)
       setPreview(undefined)
     }
     wasOpen.current = open
@@ -152,7 +156,7 @@ export function TransferSessionDialog({
   const move = async () => {
     if (!ready) return
     setPending(true)
-    setProblem("")
+    setProblem(undefined)
     try {
       if (!preview?.allowed) return
       const result = await onTransfer({
@@ -173,8 +177,8 @@ export function TransferSessionDialog({
         return
       }
       setProblem(result.outcome === "refused"
-        ? sessionTransferRefusalMessage(result.reason)
-        : `The session did not move and stayed on ${source.label}`)
+        ? { title: "Session did not move", detail: sessionTransferRefusalMessage(result.reason) }
+        : transferOutcomeNotice(result, source.label))
       // The digest describes a session that has since moved on, so the refusal
       // is answered by asking again rather than by making the operator close
       // the dialog and reopen it to get a digest the daemon will accept.
@@ -182,7 +186,10 @@ export function TransferSessionDialog({
         setPreviewAttempt((attempt) => attempt + 1)
       }
     } catch (cause) {
-      setProblem(cause instanceof Error ? cause.message : `The session did not move and stayed on ${source.label}`)
+      setProblem({
+        title: "Session did not move",
+        detail: cause instanceof Error ? cause.message : `The session stayed on ${source.label}.`,
+      })
     } finally {
       setPending(false)
     }
@@ -201,8 +208,8 @@ export function TransferSessionDialog({
         {problem ? (
           <Alert variant="destructive">
             <CircleStopIcon />
-            <AlertTitle>Session did not move</AlertTitle>
-            <AlertDescription>{problem}</AlertDescription>
+            <AlertTitle>{problem.title}</AlertTitle>
+            <AlertDescription>{problem.detail}</AlertDescription>
           </Alert>
         ) : null}
 

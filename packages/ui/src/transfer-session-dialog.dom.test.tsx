@@ -272,6 +272,25 @@ it("previews again when the session changed under the preview", async () => {
   await waitFor(() => expect(onPreview).toHaveBeenCalledTimes(2))
 })
 
+it("says which stage an unfinished move reached and what answers it", async () => {
+  const stalled: SessionTransferResult = {
+    outcome: "incomplete",
+    transferId: `transfer-${"a".repeat(32)}`,
+    state: "failed",
+    reason: "resource-import-failed",
+    recoveryAction: "retry",
+  }
+  const { user } = renderDialog({ onTransfer: () => Promise.resolve(stalled) })
+  await screen.findByRole("group", { name: "Travels with the session" })
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("The move failed")
+  expect(alert.textContent).toContain("artifacts and attachments could not be imported")
+  expect(alert.textContent).toContain("workshop")
+})
+
 it("keeps the session where it is when the move fails", async () => {
   const { user, onTransferred } = renderDialog({
     onTransfer: () => Promise.resolve({
@@ -285,8 +304,9 @@ it("keeps the session where it is when the move fails", async () => {
 
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
-  expect(screen.getByRole("alert").textContent)
-    .toContain("The session did not move and stayed on workshop")
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("The session stayed on workshop")
+  expect(alert.textContent).toContain("could not save the session it received")
   expect(onTransferred).not.toHaveBeenCalled()
 })
 
