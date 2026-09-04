@@ -765,6 +765,34 @@ describe("GitWorkspaceService transfer resources", () => {
     },
   )
 
+  it("binds the indexed commit of an uninitialized submodule", async () => {
+    const { service, workspace } = await repositoryWithIgnoredPreview()
+    const submodulePath = "vendor/dependency"
+    await mkdir(join(workspace.path, submodulePath), { recursive: true })
+    const alternate = (await execute("git", [
+      "-C", workspace.path,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit-tree", `${workspace.baseCommit}^{tree}`,
+      "-m", "alternate gitlink",
+    ])).stdout.trim()
+    await execute("git", [
+      "-C", workspace.path,
+      "update-index", "--add", "--cacheinfo",
+      `160000,${workspace.baseCommit},${submodulePath}`,
+    ])
+    const first = await service.transferFingerprint(workspace.path)
+
+    await execute("git", [
+      "-C", workspace.path,
+      "update-index", "--cacheinfo",
+      `160000,${alternate},${submodulePath}`,
+    ])
+    const second = await service.transferFingerprint(workspace.path)
+
+    expect(second.digest).not.toBe(first.digest)
+  })
+
   it("checks that the target project contains the shared lineage commit", async () => {
     const { repositoryPath, service, workspace } = await repositoryWithIgnoredPreview()
     await expect(service.projectHasLineage(repositoryPath, workspace.baseCommit)).resolves.toBe(true)

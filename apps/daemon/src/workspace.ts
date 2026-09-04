@@ -402,12 +402,33 @@ function utf8GitPaths(bytes: Buffer): string[] {
   return paths.sort()
 }
 
+function indexedGitlinks(bytes: Buffer): ReadonlyMap<string, string> {
+  const gitlinks = new Map<string, string>()
+  const content = bytes.at(-1) === 0 ? bytes.subarray(0, -1) : bytes
+  if (content.byteLength === 0) return gitlinks
+  for (const entry of content.toString("binary").split("\0")) {
+    const separator = entry.indexOf("\t")
+    if (separator === -1) throw new Error("Git returned a malformed index entry")
+    const header = entry.slice(0, separator)
+    if (!header.startsWith("160000 ")) continue
+    const match = /^160000 ([a-f0-9]{40}) [0-3]$/u.exec(header)
+    if (!match) throw new Error("Git returned a malformed gitlink entry")
+    const rawPath = Buffer.from(entry.slice(separator + 1), "binary")
+    const path = rawPath.toString("utf8")
+    if (!Buffer.from(path, "utf8").equals(rawPath)) {
+      throw new Error("Git returned a path that is not valid UTF-8")
+    }
+    gitlinks.set(path, match[1]!)
+  }
+  return gitlinks
+}
+
 async function transferWorktreeFingerprint(
   worktreePath: string,
   signal?: AbortSignal,
 ): Promise<{ headCommit: string; digest: string }> {
   signal?.throwIfAborted()
-  const [headCommit, listed] = await Promise.all([
+  const [headCommit, listed, staged] = await Promise.all([
     git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
     execute("git", [
       "-C",
@@ -420,8 +441,18 @@ async function transferWorktreeFingerprint(
       "--others",
       "--exclude-standard",
     ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    execute("git", [
+      "-C",
+      worktreePath,
+      "-c",
+      "core.fsmonitor=false",
+      "ls-files",
+      "--stage",
+      "-z",
+    ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
   ])
   const paths = utf8GitPaths(Buffer.from(listed.stdout))
+  const gitlinks = indexedGitlinks(Buffer.from(staged.stdout))
   const hash = createHash("sha256").update("domovoi.transfer-worktree.v1\0")
   for (const path of paths) {
     signal?.throwIfAborted()
@@ -446,8 +477,10 @@ async function transferWorktreeFingerprint(
     if (metadata.isDirectory()) {
       // Git lists a directory here only for a tracked submodule. Its commit is
       // what the checkpoint and repository transfer carry, not its loose files.
+      const commit = gitlinks.get(path)
+      if (!commit) throw new Error("Git returned a directory without a gitlink entry")
       hashField(hash, "gitlink")
-      hashField(hash, await git(candidate, ["rev-parse", "HEAD"], signal))
+      hashField(hash, commit)
       continue
     }
     if (!metadata.isFile()) throw new Error("The session worktree contains an unsupported file")
