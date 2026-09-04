@@ -99,10 +99,18 @@ describe("target transfer preflight", () => {
       ownershipGeneration: 3,
     })
     await expect(preflightSessionTransferTarget(workspace, params, async () => true, capabilities))
-      .resolves.toEqual({ allowed: false, reason: "target-session-newer" })
+      .resolves.toEqual({
+        allowed: false,
+        reason: "target-session-newer",
+        existingGeneration: 3,
+      })
     workspace.sessions[0]!.ownershipGeneration = 1
     await expect(preflightSessionTransferTarget(workspace, params, async () => true, capabilities))
-      .resolves.toEqual({ allowed: false, reason: "target-session-diverged" })
+      .resolves.toEqual({
+        allowed: false,
+        reason: "target-session-diverged",
+        existingGeneration: 1,
+      })
   })
 
   it("refuses before transfer when the target cannot commit the declared payload", async () => {
@@ -361,7 +369,11 @@ describe("target transfer commit", () => {
       save,
       now: () => "2026-09-03T21:03:00.000Z",
     })).resolves.toMatchObject({
-      result: { state: "refused", reason: "target-session-newer" },
+      result: {
+        state: "refused",
+        reason: "target-session-newer",
+        existingGeneration: 3,
+      },
     })
   })
 

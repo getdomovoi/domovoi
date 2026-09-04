@@ -73,6 +73,7 @@ export function freezeSourceSessionTransfer(
   const candidate = structuredClone(snapshot)
   const frozen = sourceSession(candidate, session.id)
   frozen.state = "transferring"
+  frozen.ownershipGeneration = intent.state.session.ownershipGeneration
   frozen.transfer = {
     phase: "transferring",
     transferId,
@@ -166,6 +167,7 @@ export function completeSourceSessionTransfer(
     generation: committed.ownershipGeneration,
     manifestDigest: session.transfer.package.manifestDigest,
     completedAt,
+    completion: "committed",
   }
   delete completed.providerThreadId
   delete completed.providerFailure
@@ -307,11 +309,12 @@ export function markSourceOwnershipConflict(
   session.state = "ownership-conflict"
   session.updatedAt = input.detectedAt
   session.ownershipConflict = {
+    kind: "recovery-contradicted",
     transferId: input.transferId,
     otherMachineId: input.otherMachineId,
     otherGeneration: input.otherGeneration,
     detectedAt: input.detectedAt,
-    recoveryAction: "none",
+    recoveryAction: "keep-target-session",
   }
   delete session.activeTurnId
   delete session.providerThreadId
@@ -323,6 +326,116 @@ export function markSourceOwnershipConflict(
     body: "Session ownership conflict detected.",
     detail: `Machine ${input.otherMachineId} holds ownership generation ${input.otherGeneration}. This source is read-only and its recovery worktree is preserved until a person chooses which work to keep.`,
     createdAt: input.detectedAt,
+  })
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
+export function markTargetSessionOwnershipConflict(
+  snapshot: WorkspaceSnapshot,
+  input: {
+    sessionId: string
+    transferId: string
+    reason: "target-session-newer" | "target-session-diverged"
+    otherGeneration: number
+    detectedAt: string
+  },
+): WorkspaceSnapshot {
+  const frozen = frozenSourceSession(snapshot, input.transferId, input.sessionId)
+  const lifecycle = frozen.transfer
+  const generation = frozen.ownershipGeneration ?? 0
+  if (
+    lifecycle.package.state !== "staged"
+    || (
+      input.reason === "target-session-newer"
+        ? input.otherGeneration <= generation
+        : input.otherGeneration > generation
+    )
+  ) {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, input.sessionId)
+  session.state = "ownership-conflict"
+  session.ownershipGeneration = generation
+  session.updatedAt = input.detectedAt
+  session.ownershipConflict = {
+    kind: "target-session-detected",
+    reason: input.reason,
+    transferId: input.transferId,
+    otherMachineId: lifecycle.targetMachineId,
+    otherGeneration: input.otherGeneration,
+    manifestDigest: lifecycle.package.manifestDigest,
+    detectedAt: input.detectedAt,
+    recoveryAction: "keep-target-session",
+  }
+  delete session.transfer
+  delete session.activeTurnId
+  delete session.providerThreadId
+  delete session.providerFailure
+  candidate.thread.push({
+    id: `system-transfer-conflict-${randomUUID()}`,
+    sessionId: session.id,
+    kind: "system",
+    body: "Target session ownership conflict detected.",
+    detail: `Machine ${lifecycle.targetMachineId} reported ownership generation ${input.otherGeneration}. This source is read-only and its recovery worktree is preserved until a person keeps the target session.`,
+    createdAt: input.detectedAt,
+  })
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
+export function releaseSourceOwnershipConflict(
+  snapshot: WorkspaceSnapshot,
+  input: {
+    sessionId: string
+    transferId: string
+    client: ClientKind
+    clientId?: string
+    releasedAt: string
+  },
+): WorkspaceSnapshot {
+  const current = sourceSession(snapshot, input.sessionId)
+  const conflict = current.ownershipConflict
+  const manifestDigest = conflict?.kind === "target-session-detected"
+    ? conflict.manifestDigest
+    : current.sourceRecovery?.manifestDigest
+  if (
+    current.state !== "ownership-conflict"
+    || !conflict
+    || conflict.transferId !== input.transferId
+    || !manifestDigest
+  ) {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, input.sessionId)
+  session.state = "transferred"
+  session.ownershipGeneration = conflict.otherGeneration
+  session.runtime.auto = false
+  session.updatedAt = input.releasedAt
+  session.transfer = {
+    phase: "transferred",
+    transferId: conflict.transferId,
+    targetMachineId: conflict.otherMachineId,
+    generation: conflict.otherGeneration,
+    manifestDigest,
+    completedAt: input.releasedAt,
+    completion: "conflict-released",
+  }
+  delete session.sourceRecovery
+  delete session.ownershipConflict
+  delete session.activeTurnId
+  delete session.providerThreadId
+  delete session.providerFailure
+  const actor = input.clientId ? `${input.client} client ${input.clientId}` : `${input.client} client`
+  candidate.thread.push({
+    id: `system-transfer-conflict-released-${randomUUID()}`,
+    sessionId: session.id,
+    kind: "system",
+    body: "Source ownership released to the target session.",
+    detail: `The ${actor} kept the copy on machine ${conflict.otherMachineId}. This recovery worktree remains readable on this machine and Domovoi does not remove it automatically.`,
+    createdAt: input.releasedAt,
   })
   return workspaceSnapshotSchema.parse(candidate)
 }

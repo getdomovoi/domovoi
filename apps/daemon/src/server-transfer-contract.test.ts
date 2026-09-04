@@ -599,10 +599,12 @@ describe("transactional session transfer RPC", () => {
         manifestDigest: packaged.manifestDigest,
       },
     })
-    await expect(outgoing.status(
-      packaged.manifest.transferId,
-      packaged.manifestDigest,
-    )).resolves.toMatchObject({ state: "unknown" })
+    await vi.waitFor(async () => {
+      await expect(outgoing.status(
+        packaged.manifest.transferId,
+        packaged.manifestDigest,
+      )).resolves.toMatchObject({ state: "unknown" })
+    })
   })
 
   it("thaws a restarted source only when the target authoritatively has no transfer", async () => {
@@ -1015,10 +1017,11 @@ describe("transactional session transfer RPC", () => {
         decidedBy: { client: "desktop", clientId: "studio-mac" },
       },
       ownershipConflict: {
+        kind: "recovery-contradicted",
         transferId: packaged.manifest.transferId,
         otherMachineId: targetMachineId,
         otherGeneration: 2,
-        recoveryAction: "none",
+        recoveryAction: "keep-target-session",
       },
     })
     expect(store.load().thread.at(-1)).toMatchObject({
@@ -1134,6 +1137,199 @@ describe("transactional session transfer RPC", () => {
       ownershipConflict: { transferId: packaged.manifest.transferId },
     })
     reopened.close()
+  })
+
+  it("restores direct target ownership evidence after its snapshot write fails", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-direct-conflict-restart-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const { source } = await transferFixture()
+    const session = source.sessions[0]!
+    delete session.ownershipGeneration
+    const store = new SqliteWorkspaceStore(databasePath, source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion,
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const save = store.saveAsync.bind(store)
+    vi.spyOn(store, "saveAsync").mockImplementation(async (snapshot) => {
+      if (snapshot.sessions[0]?.state === "ownership-conflict") {
+        throw new Error("snapshot disk unavailable")
+      }
+      await save(snapshot)
+    })
+    let checkpointed = false
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => {
+          checkpointed = true
+          return { commit: checkpointCommit, changedFiles: [] }
+        },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: checkpointed ? checkpointCommit : baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK exact session"),
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          if (method === "transfer.status") {
+            return { state: "unknown", transferId: String(params.transferId) }
+          }
+          if (method === "transfer.prepare") {
+            return {
+              state: "refused",
+              transferId: String((params.manifest as { transferId: string }).transferId),
+              reason: "target-session-newer",
+              existingGeneration: 1,
+            }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    const preview = await call("session.transferPreview", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })
+    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+
+    await expect(call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    })).resolves.toMatchObject({
+      result: {
+        outcome: "incomplete",
+        state: "ownership-conflict",
+        recoveryAction: "keep-target-session",
+      },
+    })
+    expect(store.saveAsync).toHaveBeenCalledWith(expect.objectContaining({
+      sessions: [expect.objectContaining({ state: "ownership-conflict" })],
+    }))
+    socket.close()
+
+    await daemon.stop()
+    running.splice(running.indexOf(daemon), 1)
+    const reopened = new SqliteWorkspaceStore(databasePath, source)
+    expect(reopened.load().sessions[0]).toMatchObject({
+      id: session.id,
+      state: "ownership-conflict",
+      workspacePath: session.workspacePath,
+      ownershipGeneration: 0,
+      ownershipConflict: {
+        kind: "target-session-detected",
+        reason: "target-session-newer",
+        otherMachineId: targetMachineId,
+        otherGeneration: 1,
+        recoveryAction: "keep-target-session",
+      },
+    })
+    reopened.close()
+  })
+
+  it.each([
+    { name: "resumed prepare", status: "unknown" as const, conflictMethod: "transfer.prepare" },
+    { name: "retried commit", status: "failed" as const, conflictMethod: "transfer.commit" },
+  ])("freezes target ownership discovered by a $name after restart", async ({
+    status,
+    conflictMethod,
+  }) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-recovery-conflict-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          if (method === "transfer.status") {
+            return status === "failed"
+              ? {
+                  state: "failed",
+                  transferId: String(params.transferId),
+                  reason: "persistence-failed",
+                }
+              : { state: "unknown", transferId: String(params.transferId) }
+          }
+          if (method === conflictMethod) {
+            const remoteTransferId = method === "transfer.prepare"
+              ? String((params.manifest as { transferId: string }).transferId)
+              : String(params.transferId)
+            return {
+              state: "refused",
+              transferId: remoteTransferId,
+              reason: "target-session-newer",
+              existingGeneration: 2,
+            }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      sessionTransferRetryMs: 10,
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
+    expect(store.load().sessions[0]).toMatchObject({
+      workspacePath: "/source/session",
+      ownershipGeneration: 1,
+      ownershipConflict: {
+        kind: "target-session-detected",
+        reason: "target-session-newer",
+        otherMachineId: targetMachineId,
+        otherGeneration: 2,
+        recoveryAction: "keep-target-session",
+      },
+    })
   })
 
   it("reconciles an ambiguous live transfer after returning the incomplete result", async () => {
@@ -2047,6 +2243,153 @@ describe("transactional session transfer RPC", () => {
     })
     socket.close()
   })
+
+  it.each(["prepare", "commit"] as const)(
+    "freezes direct target ownership evidence from transfer.%s until explicitly released",
+    async (conflictAt) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-direct-conflict-"))
+    scratchDirectories.push(scratch)
+    const { source } = await transferFixture()
+    const session = source.sessions[0]!
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion,
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    let checkpointed = false
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => {
+          checkpointed = true
+          return { commit: checkpointCommit, changedFiles: [] }
+        },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: checkpointed ? checkpointCommit : baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK exact session"),
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          if (method === "transfer.status") {
+            return { state: "unknown", transferId: String(params.transferId) }
+          }
+          if (method === "transfer.prepare") {
+            const remoteTransferId = String((params.manifest as { transferId: string }).transferId)
+            return conflictAt === "prepare"
+              ? {
+                  state: "refused",
+                  transferId: remoteTransferId,
+                  reason: "target-session-newer",
+                  existingGeneration: 2,
+                }
+              : { state: "prepared", transferId: remoteTransferId }
+          }
+          if (method === "transfer.commit" && conflictAt === "commit") {
+            return {
+              state: "refused",
+              transferId: String(params.transferId),
+              reason: "target-session-newer",
+              existingGeneration: 2,
+            }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon, "studio-mac")
+    const call = rpc(socket)
+    const preview = await call("session.transferPreview", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })
+    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+
+    const conflict = await call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    })
+    expect(conflict.result).toMatchObject({
+      outcome: "incomplete",
+      state: "ownership-conflict",
+      recoveryAction: "keep-target-session",
+    })
+    const frozen = store.load().sessions[0]!
+    expect(frozen).toMatchObject({
+      state: "ownership-conflict",
+      workspacePath: session.workspacePath,
+      ownershipGeneration: 1,
+      ownershipConflict: {
+        kind: "target-session-detected",
+        reason: "target-session-newer",
+        otherMachineId: targetMachineId,
+        otherGeneration: 2,
+      },
+    })
+
+    await expect(call("session.transferResolveConflict", {
+      sessionId: session.id,
+      transferId: frozen.ownershipConflict!.transferId,
+      confirmation: "keep-target-session",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: {
+        sessions: [expect.objectContaining({
+          id: session.id,
+          state: "transferred",
+          workspacePath: session.workspacePath,
+          ownershipGeneration: 2,
+          transfer: expect.objectContaining({
+            completion: "conflict-released",
+            targetMachineId,
+          }),
+        })],
+      },
+    })
+    expect(store.load().thread.at(-1)).toMatchObject({
+      body: "Source ownership released to the target session.",
+      detail: expect.stringContaining("studio-mac"),
+    })
+    socket.close()
+    },
+  )
 
   it("never loses one source freeze when two sessions move concurrently", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-concurrent-source-"))

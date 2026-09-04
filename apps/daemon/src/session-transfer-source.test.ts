@@ -15,7 +15,9 @@ import {
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
   markSourceOwnershipConflict,
+  markTargetSessionOwnershipConflict,
   recoverUnconfirmedSourceTransfer,
+  releaseSourceOwnershipConflict,
   sendPreparedSessionTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
@@ -204,12 +206,85 @@ describe("source transfer lifecycle", () => {
     })
     expect(conflicted.sessions[0]).toMatchObject({
       state: "ownership-conflict",
-      ownershipConflict: { recoveryAction: "none", otherGeneration: 5 },
+      ownershipConflict: {
+        kind: "recovery-contradicted",
+        recoveryAction: "keep-target-session",
+        otherGeneration: 5,
+      },
     })
     expect(conflicted.thread.at(-1)).toMatchObject({
       kind: "system",
       body: "Session ownership conflict detected.",
     })
+
+    const released = releaseSourceOwnershipConflict(conflicted, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      clientId: "studio-mac",
+      releasedAt: "2026-09-03T23:05:00.000Z",
+    })
+    expect(released.sessions[0]).toMatchObject({
+      state: "transferred",
+      workspacePath: "/source/session",
+      ownershipGeneration: 5,
+      runtime: { auto: false },
+      transfer: {
+        phase: "transferred",
+        completion: "conflict-released",
+        transferId: packaged.manifest.transferId,
+        targetMachineId,
+        generation: 5,
+        manifestDigest: packaged.manifestDigest,
+      },
+    })
+    expect(released.sessions[0]).not.toHaveProperty("sourceRecovery")
+    expect(released.sessions[0]).not.toHaveProperty("ownershipConflict")
+    expect(released.thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Source ownership released to the target session.",
+      detail: expect.stringContaining("studio-mac"),
+    })
+  })
+
+  it("freezes direct target ownership evidence without pretending a person recovered it", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const staged = stageSourceSessionCheckpoint(
+      freezeSourceSessionTransfer(
+        source,
+        intent,
+        packaged.manifest.transferId,
+        "2026-09-03T22:00:00.000Z",
+        { client: "desktop" },
+      ),
+      packaged.manifest,
+    )
+
+    const conflicted = markTargetSessionOwnershipConflict(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      reason: "target-session-newer",
+      otherGeneration: 6,
+      detectedAt: "2026-09-03T22:01:00.000Z",
+    })
+
+    expect(conflicted.sessions[0]).toMatchObject({
+      state: "ownership-conflict",
+      ownershipGeneration: 4,
+      workspacePath: "/source/session",
+      ownershipConflict: {
+        kind: "target-session-detected",
+        reason: "target-session-newer",
+        transferId: packaged.manifest.transferId,
+        otherMachineId: targetMachineId,
+        otherGeneration: 6,
+        manifestDigest: packaged.manifestDigest,
+        recoveryAction: "keep-target-session",
+      },
+    })
+    expect(conflicted.sessions[0]).not.toHaveProperty("transfer")
+    expect(conflicted.sessions[0]).not.toHaveProperty("sourceRecovery")
+    expect(conflicted.sessions[0]).not.toHaveProperty("providerThreadId")
   })
 
   it("clears a recovery claim only after its target confirms no ownership", async () => {

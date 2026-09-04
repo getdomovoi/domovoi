@@ -87,6 +87,7 @@ export async function preflightSessionTransferTarget(
       reason: (existing.ownershipGeneration ?? 0) > params.ownershipGeneration
         ? "target-session-newer"
         : "target-session-diverged",
+      existingGeneration: existing.ownershipGeneration ?? 0,
     })
   }
   if (!snapshot.project) {
@@ -149,9 +150,25 @@ export async function preflightSessionTransferTarget(
 
 function refusal(
   transferId: string,
-  reason: Extract<TransferCommitResult, { state: "refused" }>["reason"],
+  reason: Exclude<
+    Extract<TransferCommitResult, { state: "refused" }>["reason"],
+    "target-session-newer" | "target-session-diverged"
+  >,
 ): TransferCommitResult {
   return transferCommitResultSchema.parse({ state: "refused", transferId, reason })
+}
+
+function ownershipConflictRefusal(
+  transferId: string,
+  reason: "target-session-newer" | "target-session-diverged",
+  existingGeneration: number,
+): TransferCommitResult {
+  return transferCommitResultSchema.parse({
+    state: "refused",
+    transferId,
+    reason,
+    existingGeneration,
+  })
 }
 
 function failureReason(stage: "repository" | "state" | "resources" | "persistence"):
@@ -337,11 +354,12 @@ export async function commitPreparedSessionTransfer(input: {
     }
     return {
       snapshot: input.snapshot,
-      result: refusal(
+      result: ownershipConflictRefusal(
         input.transferId,
         (existing.ownershipGeneration ?? 0) > manifest.ownership.fromGeneration
           ? "target-session-newer"
           : "target-session-diverged",
+        existing.ownershipGeneration ?? 0,
       ),
     }
   }

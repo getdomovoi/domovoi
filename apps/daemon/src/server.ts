@@ -81,8 +81,10 @@ import {
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
   markSourceOwnershipConflict,
+  markTargetSessionOwnershipConflict,
   recoverUnconfirmedSourceTransfer,
   recordPreparingSourceCheckpoint,
+  releaseSourceOwnershipConflict,
   sendPreparedSessionTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
@@ -241,6 +243,7 @@ const sessionResourceMethods = new Set([
   "session.setRuntime",
   "session.transfer",
   "session.transferRecoverSource",
+  "session.transferResolveConflict",
   "transfer.fromRef",
 ])
 const unauditedRpcMethods = new Set<RpcMethod>([
@@ -1823,6 +1826,138 @@ export class DomovoiDaemon {
     })
   }
 
+  async #freezeTargetOwnershipConflict(
+    sessionId: string,
+    refusal: {
+      reason: "target-session-newer" | "target-session-diverged"
+      existingGeneration: number
+    },
+    detectedAt: string,
+  ): Promise<void> {
+    const source = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    const lifecycle = source?.transfer
+    if (
+      source?.state !== "transferring"
+      || lifecycle?.phase !== "transferring"
+      || lifecycle.package.state !== "staged"
+      || !source.workspacePath
+      || !source.baseCommit
+    ) {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+
+    const providerThread = source.providerThreadId
+    const provider = source.runtime.provider
+    const conflicted = markTargetSessionOwnershipConflict(this.#snapshot, {
+      sessionId: source.id,
+      transferId: lifecycle.transferId,
+      reason: refusal.reason,
+      otherGeneration: refusal.existingGeneration,
+      detectedAt,
+    })
+    const removedApprovalIds = new Set(conflicted.approvals.flatMap((approval) => (
+      approval.sessionId === source.id ? [approval.id] : []
+    )))
+    conflicted.approvals = conflicted.approvals.filter(
+      (approval) => !removedApprovalIds.has(approval.id),
+    )
+    conflicted.workingPlans = clearWorkingPlanApprovalBlockers(
+      conflicted.workingPlans,
+      removedApprovalIds,
+      detectedAt,
+    ).plans
+    const authoritative = workspaceSnapshotSchema.parse(conflicted)
+    const conflict = authoritative.sessions.find(
+      (candidate) => candidate.id === source.id,
+    )!.ownershipConflict!
+    const proof: DetectedTransferConflict = {
+      version: sessionTransferContractVersion,
+      sessionId: source.id,
+      sourceMachineId: this.#snapshot.machine.id,
+      sourceProjectId: source.projectId,
+      workspacePath: source.workspacePath,
+      ownershipGeneration: source.ownershipGeneration ?? 0,
+      conflict,
+    }
+
+    // Target ownership evidence changes authority immediately. The source is
+    // frozen in memory before any fallible journal, cleanup, or snapshot write.
+    this.#snapshot = authoritative
+    this.#sessionHistory.invalidate(source.id)
+    this.#syncArtifactWatchers()
+    this.#broadcastSnapshot()
+
+    let proofDurable = false
+    try {
+      if (!this.#store.transferConflicts) {
+        throw new Error("Durable transfer conflict storage is unavailable")
+      }
+      this.#store.transferConflicts.record(proof)
+      proofDurable = true
+    } catch (error) {
+      this.#persistenceFailures = persistenceFailureThreshold
+      this.#persistenceFailed(error)
+      this.#reportError("Domovoi could not persist direct ownership conflict proof", error)
+    }
+    try {
+      this.#closeSessionTerminals(source.id)
+    } catch (error) {
+      this.#reportError("Domovoi could not stop terminals after detecting target ownership", error)
+    }
+    this.#appendAudit({
+      actor: { kind: "daemon", component: "transfer-transaction" },
+      action: "session.ownership-conflict",
+      outcome: "denied",
+      sessionId: source.id,
+      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      target: lifecycle.targetMachineId,
+      detail: `Source stopped because target reported ${refusal.reason} at generation ${refusal.existingGeneration} for transfer ${lifecycle.transferId}`,
+    })
+    if (providerThread) {
+      this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      void withTimeout(
+        this.#agents.require(provider).stopThread(providerThread),
+        this.#agentTimeoutMs,
+        "Target ownership conflict provider shutdown timed out",
+      ).catch((error) => this.#reportError(
+        "Domovoi could not stop a provider after detecting target ownership",
+        error,
+      ))
+    }
+
+    let snapshotDurable = false
+    try {
+      await this.#persistTransferSnapshot(authoritative, source.id)
+      snapshotDurable = true
+    } catch (error) {
+      this.#reportError("Domovoi could not persist a direct ownership conflict", error)
+    }
+    if (proofDurable || snapshotDurable) {
+      await this.#outgoingTransferTransactions.remove(
+        lifecycle.transferId,
+        lifecycle.package.manifestDigest,
+      ).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.#reportError("Domovoi could not remove a conflicted transfer package", error)
+        }
+      })
+    }
+    this.#recordVersionedTransferReceipt({
+      sessionId: source.id,
+      targetMachineId: lifecycle.targetMachineId,
+      method: lifecycle.method,
+      client: lifecycle.requestedBy.client,
+      ...(lifecycle.requestedBy.clientId
+        ? { clientId: lifecycle.requestedBy.clientId }
+        : {}),
+      checkpointCommit: source.baseCommit,
+      outcome: "refused",
+      reason: refusal.reason,
+      startedAt: lifecycle.startedAt,
+      completedAt: detectedAt,
+    })
+  }
+
   async #recoverSessionTransfer(
     sessionId: string,
     parentSignal?: AbortSignal,
@@ -1921,6 +2056,12 @@ export class DomovoiDaemon {
               retried,
               new Date().toISOString(),
             )
+          } else if ("existingGeneration" in retried) {
+            await this.#freezeTargetOwnershipConflict(
+              frozen.id,
+              retried,
+              new Date().toISOString(),
+            )
           } else {
             await this.#thawVersionedSourceTransfer(
               frozen.id,
@@ -2007,6 +2148,15 @@ export class DomovoiDaemon {
           }, this.#sessionTransferTimeoutMs, "Transfer resume timed out", parentSignal)
           if (resumed.state === "committed") {
             await this.#completeVersionedSourceTransfer(
+              frozen.id,
+              resumed,
+              new Date().toISOString(),
+            )
+          } else if (
+            resumed.state === "refused"
+            && "existingGeneration" in resumed
+          ) {
+            await this.#freezeTargetOwnershipConflict(
               frozen.id,
               resumed,
               new Date().toISOString(),
@@ -2131,8 +2281,9 @@ export class DomovoiDaemon {
       sourceMachineId: this.#snapshot.machine.id,
       sourceProjectId: session.projectId,
       workspacePath: session.workspacePath!,
+      ownershipGeneration: session.ownershipGeneration ?? 0,
       sourceRecovery: recovery,
-      ...authoritative.sessions.find((candidate) => candidate.id === session.id)!
+      conflict: authoritative.sessions.find((candidate) => candidate.id === session.id)!
         .ownershipConflict!,
     }
 
@@ -2353,6 +2504,17 @@ export class DomovoiDaemon {
           transferId,
           ownershipGeneration: remote.ownershipGeneration,
           coverage: packaged.manifest.coverage,
+        })
+      }
+
+      if (remote.state === "refused" && "existingGeneration" in remote) {
+        const completedAt = new Date().toISOString()
+        await this.#freezeTargetOwnershipConflict(sourceSession.id, remote, completedAt)
+        return rpcMethods["session.transfer"].result.parse({
+          outcome: "incomplete",
+          transferId,
+          state: "ownership-conflict",
+          recoveryAction: "keep-target-session",
         })
       }
 
@@ -3556,6 +3718,9 @@ export class DomovoiDaemon {
                 state: "refused" as const,
                 transferId: params.manifest.transferId,
                 reason: ready.reason,
+                ...("existingGeneration" in ready
+                  ? { existingGeneration: ready.existingGeneration }
+                  : {}),
               }
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -3808,6 +3973,69 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: prepared.preview,
+        })
+        return
+      }
+
+      if (method === "session.transferResolveConflict") {
+        const params = paramsResult.data as RpcParams<"session.transferResolveConflict">
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Releasing source ownership requires the daemon credential",
+          )
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "client" || actor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Conflict resolution requires the authenticated client identity",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (
+          session?.state !== "ownership-conflict"
+          || session.ownershipConflict?.transferId !== params.transferId
+        ) {
+          this.#error(socket, request.id, invalidParams, "Session has no matching ownership conflict")
+          return
+        }
+        const conflict = session.ownershipConflict
+        const manifestDigest = conflict.kind === "target-session-detected"
+          ? conflict.manifestDigest
+          : session.sourceRecovery?.manifestDigest
+        if (!manifestDigest) {
+          this.#error(socket, request.id, invalidParams, "Ownership conflict has no transfer digest")
+          return
+        }
+        const releasedAt = new Date().toISOString()
+        await this.#persistTransferSnapshot(releaseSourceOwnershipConflict(this.#snapshot, {
+          sessionId: session.id,
+          transferId: params.transferId,
+          client: actor.client,
+          ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          releasedAt,
+        }), session.id)
+        await this.#outgoingTransferTransactions.remove(
+          params.transferId,
+          manifestDigest,
+        ).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            this.#reportError("Domovoi could not remove a released conflict package", error)
+          }
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: workspaceSnapshotForClient(this.#snapshot),
         })
         return
       }

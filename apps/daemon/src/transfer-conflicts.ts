@@ -13,43 +13,117 @@ import {
 
 import { clearWorkingPlanApprovalBlockers } from "./working-plan.js"
 
-export const detectedTransferConflictSchema = sessionOwnershipConflictSchema.extend({
+const conflictProofBaseSchema = sessionSourceRecoverySchema.pick({}).extend({
+  version: sessionTransferContractVersionSchema,
+  sessionId: sessionTransferSessionSchema.shape.id,
+  sourceMachineId: machineIdSchema,
+  sourceProjectId: projectSchema.shape.id,
+  workspacePath: projectSchema.shape.path,
+  ownershipGeneration: sessionSourceRecoverySchema.shape.generation,
+  conflict: sessionOwnershipConflictSchema,
+  sourceRecovery: sessionSourceRecoverySchema.optional(),
+}).strict()
+
+const currentDetectedTransferConflictSchema = conflictProofBaseSchema
+  .superRefine((proof, context) => {
+    if (proof.sourceMachineId === proof.conflict.otherMachineId) {
+      context.addIssue({
+        code: "custom",
+        path: ["conflict", "otherMachineId"],
+        message: "A detected conflict must name another machine",
+      })
+    }
+    if (proof.conflict.kind === "recovery-contradicted") {
+      if (
+        !proof.sourceRecovery
+        || proof.sourceRecovery.transferId !== proof.conflict.transferId
+        || proof.sourceRecovery.targetMachineId !== proof.conflict.otherMachineId
+        || proof.sourceRecovery.generation !== proof.ownershipGeneration
+        || proof.conflict.otherGeneration <= proof.ownershipGeneration
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["conflict"],
+          message: "A recovered conflict proof must contradict its source recovery claim",
+        })
+      }
+      return
+    }
+    if (
+      proof.sourceRecovery !== undefined
+      || (
+        proof.conflict.reason === "target-session-newer"
+          ? proof.conflict.otherGeneration <= proof.ownershipGeneration
+          : proof.conflict.otherGeneration > proof.ownershipGeneration
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["conflict"],
+        message: "A direct conflict proof must preserve the target ownership observation",
+      })
+    }
+  })
+
+// Conflict proofs written before direct target evidence existed were flat.
+// Preserve those durable safety records by lifting them into the versioned
+// nested evidence shape at read time; new writes always use the current shape.
+const legacyDetectedTransferConflictSchema = sessionOwnershipConflictSchema.options[0].extend({
   version: sessionTransferContractVersionSchema,
   sessionId: sessionTransferSessionSchema.shape.id,
   sourceMachineId: machineIdSchema,
   sourceProjectId: projectSchema.shape.id,
   workspacePath: projectSchema.shape.path,
   sourceRecovery: sessionSourceRecoverySchema,
-}).strict().superRefine((proof, context) => {
+}).strict().superRefine((legacy, context) => {
   if (
-    proof.sourceRecovery.transferId !== proof.transferId
-    || proof.sourceRecovery.targetMachineId !== proof.otherMachineId
-    || proof.otherGeneration <= proof.sourceRecovery.generation
+    legacy.sourceRecovery.transferId !== legacy.transferId
+    || legacy.sourceRecovery.targetMachineId !== legacy.otherMachineId
+    || legacy.otherGeneration <= legacy.sourceRecovery.generation
   ) {
     context.addIssue({
       code: "custom",
       path: ["transferId"],
-      message: "A detected conflict must contradict its source recovery claim",
+      message: "A recovered conflict proof must contradict its source recovery claim",
     })
   }
-  if (proof.sourceMachineId === proof.otherMachineId) {
+  if (legacy.sourceMachineId === legacy.otherMachineId) {
     context.addIssue({
       code: "custom",
       path: ["otherMachineId"],
       message: "A detected conflict must name another machine",
     })
   }
-})
+}).transform((legacy) => ({
+  version: legacy.version,
+  sessionId: legacy.sessionId,
+  sourceMachineId: legacy.sourceMachineId,
+  sourceProjectId: legacy.sourceProjectId,
+  workspacePath: legacy.workspacePath,
+  ownershipGeneration: legacy.sourceRecovery.generation,
+  sourceRecovery: legacy.sourceRecovery,
+  conflict: {
+    kind: legacy.kind,
+    transferId: legacy.transferId,
+    otherMachineId: legacy.otherMachineId,
+    otherGeneration: legacy.otherGeneration,
+    detectedAt: legacy.detectedAt,
+    recoveryAction: legacy.recoveryAction,
+  },
+}))
+
+export const detectedTransferConflictSchema = currentDetectedTransferConflictSchema.or(
+  legacyDetectedTransferConflictSchema,
+)
 
 export type DetectedTransferConflict = ReturnType<typeof detectedTransferConflictSchema.parse>
 
 type StoredConflict = { proof: string }
 
 // A recovered source deliberately becomes writable before the target has
-// confirmed its state. Once the target later proves it committed the move,
-// this machine-wide record is the durable reason that source must stay frozen.
-// It is written before the ordinary snapshot save so a failed async writer or
-// a restart cannot turn a proven duplicate owner writable again.
+// confirmed its state. Direct target evidence can likewise arrive before the
+// ordinary snapshot save. This machine-wide record is the durable reason that
+// source must stay frozen across a failed writer or restart.
 export class SqliteTransferConflicts {
   readonly #database: DatabaseSync
 
@@ -78,13 +152,13 @@ export class SqliteTransferConflicts {
         ON CONFLICT(transfer_id) DO NOTHING
       `)
       .run(
-        proof.transferId,
+        proof.conflict.transferId,
         proof.sourceMachineId,
         proof.sourceProjectId,
         proof.sessionId,
         JSON.stringify(proof),
       )
-    const stored = this.#findByTransferId(proof.transferId)
+    const stored = this.#findByTransferId(proof.conflict.transferId)
     if (!stored || JSON.stringify(stored) !== JSON.stringify(proof)) {
       throw new Error("Transfer conflict proof conflicts with an existing transfer")
     }
@@ -121,33 +195,54 @@ function restoreDetectedConflict(
   snapshot: WorkspaceSnapshot,
   proof: DetectedTransferConflict,
 ): WorkspaceSnapshot {
+  const conflict = proof.conflict
   const current = snapshot.sessions.find((session) => session.id === proof.sessionId)
   if (
     !current
     || current.projectId !== proof.sourceProjectId
     || current.workspacePath !== proof.workspacePath
-    || current.ownershipGeneration !== proof.sourceRecovery.generation
-    || JSON.stringify(current.sourceRecovery) !== JSON.stringify(proof.sourceRecovery)
+    || (current.ownershipGeneration ?? 0) !== proof.ownershipGeneration
   ) return snapshot
+
+  // Releasing the source is authoritative canonical state. A retained proof
+  // explains how the conflict happened; it must not freeze a resolved session
+  // again after journal retention or restart.
+  if (
+    current.state === "transferred"
+    && current.transfer?.phase === "transferred"
+    && current.transfer.completion === "conflict-released"
+    && current.transfer.transferId === conflict.transferId
+    && current.transfer.targetMachineId === conflict.otherMachineId
+    && current.transfer.generation === conflict.otherGeneration
+  ) return snapshot
+
   if (
     current.state === "ownership-conflict"
-    && current.ownershipConflict?.transferId === proof.transferId
-    && current.ownershipConflict.otherMachineId === proof.otherMachineId
-    && current.ownershipConflict.otherGeneration === proof.otherGeneration
-    && current.ownershipConflict.detectedAt === proof.detectedAt
+    && JSON.stringify(current.ownershipConflict) === JSON.stringify(conflict)
   ) return snapshot
+
+  if (conflict.kind === "recovery-contradicted") {
+    if (JSON.stringify(current.sourceRecovery) !== JSON.stringify(proof.sourceRecovery)) {
+      return snapshot
+    }
+  } else {
+    const lifecycle = current.transfer
+    if (
+      current.state !== "transferring"
+      || lifecycle?.phase !== "transferring"
+      || lifecycle.transferId !== conflict.transferId
+      || lifecycle.targetMachineId !== conflict.otherMachineId
+      || lifecycle.package.state !== "staged"
+      || lifecycle.package.manifestDigest !== conflict.manifestDigest
+    ) return snapshot
+  }
 
   const candidate = structuredClone(snapshot)
   const session = candidate.sessions.find((entry) => entry.id === proof.sessionId)!
   session.state = "ownership-conflict"
-  session.updatedAt = proof.detectedAt
-  session.ownershipConflict = {
-    transferId: proof.transferId,
-    otherMachineId: proof.otherMachineId,
-    otherGeneration: proof.otherGeneration,
-    detectedAt: proof.detectedAt,
-    recoveryAction: proof.recoveryAction,
-  }
+  session.updatedAt = conflict.detectedAt
+  session.ownershipConflict = conflict
+  if (conflict.kind === "target-session-detected") delete session.transfer
   delete session.activeTurnId
   delete session.providerThreadId
   delete session.providerFailure
@@ -161,15 +256,15 @@ function restoreDetectedConflict(
   candidate.workingPlans = clearWorkingPlanApprovalBlockers(
     candidate.workingPlans,
     removedApprovalIds,
-    proof.detectedAt,
+    conflict.detectedAt,
   ).plans
   candidate.thread.push({
-    id: `system-transfer-conflict-restored-${proof.transferId}`,
+    id: `system-transfer-conflict-restored-${conflict.transferId}`,
     sessionId: session.id,
     kind: "system",
     body: "Session ownership conflict restored.",
-    detail: `Machine ${proof.otherMachineId} holds ownership generation ${proof.otherGeneration}. This source remains read-only because the conflict proof survived a failed snapshot write.`,
-    createdAt: proof.detectedAt,
+    detail: `Machine ${conflict.otherMachineId} holds ownership generation ${conflict.otherGeneration}. This source remains read-only because the conflict proof survived a failed snapshot write.`,
+    createdAt: conflict.detectedAt,
   })
   return workspaceSnapshotSchema.parse(candidate)
 }
