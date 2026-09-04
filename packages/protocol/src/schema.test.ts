@@ -591,6 +591,30 @@ describe("workspace protocol", () => {
       transfer: { phase: "transferred", generation: 4 },
     })
 
+    const imported = structuredClone(demoWorkspace)
+    const importedMachineId = `machine-${"1".repeat(32)}`
+    imported.machine.id = importedMachineId
+    imported.project!.machineId = importedMachineId
+    imported.sessions[2]!.ownershipGeneration = 4
+    imported.sessions[2]!.transferredFrom = {
+      transferId: `transfer-${"e".repeat(32)}`,
+      sourceMachineId: `machine-${"f".repeat(32)}`,
+      generation: 4,
+      checkpointCommit: "a".repeat(40),
+      completedAt: "2026-09-03T18:01:00.000Z",
+    }
+    expect(workspaceSnapshotSchema.parse(imported).sessions[2]?.transferredFrom)
+      .toEqual(imported.sessions[2]?.transferredFrom)
+    const newerProvenance = structuredClone(imported)
+    newerProvenance.sessions[2]!.transferredFrom!.generation = 5
+    expect(workspaceSnapshotSchema.safeParse(newerProvenance).success).toBe(false)
+    const missingOwnership = structuredClone(imported)
+    delete missingOwnership.sessions[2]!.ownershipGeneration
+    expect(workspaceSnapshotSchema.safeParse(missingOwnership).success).toBe(false)
+    const sameMachine = structuredClone(imported)
+    sameMachine.sessions[2]!.transferredFrom!.sourceMachineId = importedMachineId
+    expect(workspaceSnapshotSchema.safeParse(sameMachine).success).toBe(false)
+
     const liveProvider = structuredClone(transferred)
     liveProvider.sessions[2]!.providerThreadId = "thread-still-live"
     expect(workspaceSnapshotSchema.safeParse(liveProvider).success).toBe(false)

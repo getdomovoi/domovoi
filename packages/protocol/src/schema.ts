@@ -155,6 +155,14 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
   }).strict(),
 ])
 
+export const sessionTransferOriginSchema = z.object({
+  transferId: transferIdSchema,
+  sourceMachineId: machineIdSchema,
+  generation: ownershipGenerationSchema,
+  checkpointCommit: commitShaSchema,
+  completedAt: z.string().datetime({ offset: true }),
+}).strict()
+
 export const sessionSummarySchema = z.object({
   id: z.string().min(1),
   projectId: z.string().min(1),
@@ -176,6 +184,7 @@ export const sessionSummarySchema = z.object({
   forkedFrom: sessionForkOriginSchema.optional(),
   ownershipGeneration: ownershipGenerationSchema.optional(),
   transfer: sessionTransferLifecycleSchema.optional(),
+  transferredFrom: sessionTransferOriginSchema.optional(),
 }).superRefine((session, context) => {
   const archiveState = session.state === "archiving" || session.state === "archived"
   if (!archiveState && (
@@ -261,6 +270,19 @@ export const sessionSummarySchema = z.object({
         })
       }
     }
+  }
+  if (
+    session.transferredFrom
+    && (
+      session.ownershipGeneration === undefined
+      || session.transferredFrom.generation > session.ownershipGeneration
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["transferredFrom", "generation"],
+      message: "Transfer provenance cannot be newer than session ownership",
+    })
   }
 })
 
@@ -730,6 +752,13 @@ export const workspaceSnapshotSchema = z.object({
         code: "custom",
         message: "Session must belong to the workspace project",
         path: ["sessions", index, "projectId"],
+      })
+    }
+    if (session.transferredFrom?.sourceMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Transfer provenance must name another machine",
+        path: ["sessions", index, "transferredFrom", "sourceMachineId"],
       })
     }
     if (session.forkedFrom) {

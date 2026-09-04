@@ -6,6 +6,7 @@ import {
   permissionModeSchema,
   reasoningEffortSchema,
   sessionForkOriginSchema,
+  sessionTransferOriginSchema,
   threadItemSchema,
   workingPlanSchema,
 } from "./schema.js"
@@ -44,6 +45,7 @@ export const sessionTransferSessionSchema = z.object({
   baseCommit: commitShaSchema,
   ownershipGeneration: safeCounterSchema,
   forkedFrom: sessionTransferForkOriginSchema.optional(),
+  transferredFrom: sessionTransferOriginSchema.optional(),
 }).strict()
 
 const transferUsageBase = z.object({

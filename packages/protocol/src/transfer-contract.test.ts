@@ -28,6 +28,13 @@ const state = {
     updatedAt: "2026-09-03T18:00:00.000Z",
     baseCommit: "1".repeat(40),
     ownershipGeneration: 3,
+    transferredFrom: {
+      transferId: `transfer-${"c".repeat(32)}`,
+      sourceMachineId,
+      generation: 3,
+      checkpointCommit: "1".repeat(40),
+      completedAt: "2026-09-03T17:30:00.000Z",
+    },
   },
   thread: [{
     id: "thread-user",
