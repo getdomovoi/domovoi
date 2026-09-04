@@ -309,15 +309,18 @@ The desktop handoff specifies these; `main` does not implement them yet.
     because its review changed, or refused by permission mode. An absent record means the turn
     predates delivery tracking rather than a turn that carried nothing, and the copy never claims
     the provider used what it received.
-- [ ] Let a person choose which reviewed skills a single turn carries
-  - The chip states the project set today because turn-scoped selection has no protocol. Design
-    position agreed on 2026-09-03: a turn selection is a subset of what the project has already
-    reviewed and enabled, never a second path to running unreviewed code.
-  - Blocked on a composer change, not on the client. `elasticPromptDropOrder` currently treats
-    every skill as an elastic project default, so an explicitly chosen skill would be dropped for
-    budget. Explicit selections have to be partitioned as required context before a client can
-    offer the choice, and the protocol already refuses a persisted turn-explicit delivery that
-    contains omissions.
+- [x] Let a person choose which reviewed skills a single turn carries
+  - `session.send` takes an optional `skillSelection` pinning each chosen skill to the content
+    digest and capability manifest it was chosen against, so a skill that changed between choosing
+    and sending refuses the whole turn instead of quietly substituting itself. The refusal names
+    the skill and whether it is no longer enabled, unreadable, changed, or excluded by permission
+    mode, and the composer marks that skill.
+  - A selection is a subset of what the project already reviewed and enabled, never a second path
+    to running unreviewed code. Explicit selections are required context: they never enter the
+    budget drop order, and a selection that cannot fit refuses the turn rather than sending fewer
+    skills than a person chose.
+  - Sending no selection preserves the project-default behaviour exactly, and an empty selection is
+    a deliberate "no skills this turn" rather than an absent one.
 - [ ] Give the prompt composer a total budget and a documented drop order
   - `apps/daemon/src/prompt-composer.ts` now assembles skills, annotations, working plan, handoff,
     and user text in one place, and `apps/daemon/src/prompt-composition.golden.test.ts` pins all
