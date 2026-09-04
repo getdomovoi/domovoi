@@ -963,7 +963,12 @@ describe("GitWorkspaceService session ref restore", () => {
     const targetClone = join(scratch, "target-project")
     await execute("git", ["clone", "--quiet", remotePath, targetClone])
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
-    const restored = await target.restoreSessionFromRef(targetClone, "origin", "session-1")
+    const restored = await target.restoreSessionFromRef(
+      targetClone,
+      "origin",
+      "session-1",
+      checkpoint.commit,
+    )
 
     expect(restored.baseCommit).toBe(checkpoint.commit)
     const contents = await readFile(join(restored.path, "README.md"), "utf8")
@@ -973,6 +978,19 @@ describe("GitWorkspaceService session ref restore", () => {
       "rev-parse", `refs/domovoi/checkpoints/${checkpoint.commit}^{commit}`,
     ])
     expect(durable.stdout.trim()).toBe(checkpoint.commit)
+
+    await expect(target.restoreSessionFromRef(
+      targetClone,
+      "origin",
+      "session-1",
+      checkpoint.commit,
+    )).resolves.toEqual(restored)
+    await expect(target.restoreSessionFromRef(
+      targetClone,
+      "origin",
+      "session-1",
+      "f".repeat(40),
+    )).rejects.toThrow("Remote session ref changed before transfer commit")
   })
 })
 

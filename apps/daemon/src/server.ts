@@ -2544,6 +2544,7 @@ export class DomovoiDaemon {
           repositoryPath,
           params.remote,
           params.sessionId,
+          undefined,
           signal,
         )
         this.#send(socket, {

@@ -28,6 +28,7 @@ type TargetWorkspaceOperations = {
     repositoryPath: string,
     remote: string,
     sessionId: string,
+    expectedCommit?: string,
   ) => Promise<RestoredWorkspace>
   writeTransferredArtifactSource?: (
     worktreePath: string,
@@ -150,6 +151,7 @@ async function restoreRepository(
     snapshot.project.path,
     manifest.repository.remote,
     manifest.sessionId,
+    manifest.repository.commit,
   )
 }
 
