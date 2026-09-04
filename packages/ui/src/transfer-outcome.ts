@@ -50,19 +50,19 @@ export function transferOutcomeNotice(
     case "unknown":
       return {
         title: "The move did not report back",
-        detail: `${stayed} Check the transfer to see whether it landed.`,
+        detail: `${stayed} Domovoi keeps checking whether it landed.`,
         action: "check-status",
       }
     case "receiving":
       return {
         title: "The move stopped partway",
-        detail: `${stayed} The target still has what it received, so this can carry on.`,
+        detail: `${stayed} The target has part of it, and Domovoi keeps trying to finish.`,
         action: "resume",
       }
     case "prepared":
       return {
         title: "The move stopped before it was committed",
-        detail: `${stayed} The target has everything and is waiting to commit it.`,
+        detail: `${stayed} The target has everything, and Domovoi keeps trying to commit it.`,
         action: "resume",
       }
     case "recovering":
@@ -74,7 +74,7 @@ export function transferOutcomeNotice(
     case "failed":
       return {
         title: "The move failed",
-        detail: `${stayed} ${failureDetail[result.reason]}`,
+        detail: `${stayed} ${failureDetail[result.reason]} Domovoi keeps retrying.`,
         action: "retry",
       }
     case "ownership-unconfirmed":

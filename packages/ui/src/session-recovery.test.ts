@@ -23,43 +23,15 @@ const session = {
 } as unknown as SessionSummary
 
 describe("sessionRecoveryOffer", () => {
-  it("offers release only once the daemon has given the move up", () => {
-    const offer = sessionRecoveryOffer(session, "studio")
-
-    expect(offer?.transferId).toBe(transferring.transferId)
-    expect(offer?.confirmation).toBe("target-does-not-have-session")
-    expect(offer?.confirmLabel).toContain("studio")
-    expect(offer?.detail).toContain("diverge")
-  })
-
-  it("offers release for an ordinary session, not only one that had failed", () => {
-    // resumeState carries the pre-transfer session state. Gating on it meant an
-    // idle session, which is the normal case, never saw the way out.
+  it("offers nothing while no daemon state says recovery is appropriate", () => {
+    // package.state staged is reached by a healthy move too, so offering the
+    // release on it invited the operator to declare the target empty mid-move.
     for (const resumeState of ["idle", "done", "failed"] as const) {
       expect(sessionRecoveryOffer(
         { ...session, transfer: { ...transferring, resumeState } } as SessionSummary,
         "studio",
-      )?.kind).toBe("release-stranded")
+      )).toBeUndefined()
     }
-  })
-
-  it("stays quiet until the package the daemon needs is staged", () => {
-    expect(sessionRecoveryOffer(
-      { ...session, transfer: { ...transferring, package: { state: "preparing" } } } as SessionSummary,
-      "studio",
-    )).toBeUndefined()
-  })
-
-  it("does not offer release on a session that is not mid-move", () => {
-    expect(sessionRecoveryOffer({ ...session, state: "idle" } as SessionSummary, "studio"))
-      .toBeUndefined()
-    expect(sessionRecoveryOffer({ ...session, transfer: undefined } as SessionSummary, "studio"))
-      .toBeUndefined()
-  })
-
-  it("names the machine plainly when its label is unknown", () => {
-    expect(sessionRecoveryOffer(session, undefined)?.confirmLabel)
-      .toBe("the other machine does not have it")
   })
 })
 

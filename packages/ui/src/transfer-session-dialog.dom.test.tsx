@@ -195,6 +195,10 @@ it("moves the session over the named remote", async () => {
 
   await user.click(screen.getByRole("radio", { name: /remote ref/i }))
   await user.type(screen.getByLabelText("Remote name"), "origin")
+  // The remote preview waits for typing to stop, so the move is not offered
+  // until that request has answered.
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Move session" }).hasAttribute("disabled")).toBe(false))
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({

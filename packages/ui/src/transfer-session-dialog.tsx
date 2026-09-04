@@ -33,6 +33,10 @@ import { Input } from "./components/ui/input"
 import { transferCoverageLists } from "./transfer-coverage.js"
 import { returnTransferExplanation, transferOutcomeNotice } from "./transfer-outcome.js"
 
+// Long enough that an ordinary remote name is typed in one go, short enough
+// that the preview feels like an answer rather than a delay.
+export const previewDebounceMs = 400
+
 type TransferCheck = { label: string; ready: boolean }
 
 export function transferChecks(input: {
@@ -97,7 +101,7 @@ export function TransferSessionDialog({
   const [method, setMethod] = useState<TransferMethod>("git-bundle")
   const [remote, setRemote] = useState("")
   const [pending, setPending] = useState(false)
-  const [problem, setProblem] = useState<{ title: string; detail: string } | undefined>(undefined)
+  const [problem, setProblem] = useState<{ title: string; detail: string; from: "preview" | "move" } | undefined>(undefined)
   const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
   const [previewing, setPreviewing] = useState(false)
   const [previewAttempt, setPreviewAttempt] = useState(0)
@@ -107,26 +111,53 @@ export function TransferSessionDialog({
   // the contract version and intent digest this call returns.
   useEffect(() => {
     if (!open) return
-    if (method === "remote-ref" && !remote.trim()) return
     let active = true
-    setPreviewing(true)
-    setPreview(undefined)
-    void onPreview({
-      sessionId: session.id,
-      targetMachineId: target.id,
-      method,
-      ...(method === "remote-ref" ? { remote: remote.trim() } : {}),
-    }).then(
-      (next) => { if (active) setPreview(next) },
-      (cause: unknown) => {
-        if (!active) return
-        setProblem({
-          title: "The move could not be previewed",
-          detail: cause instanceof Error ? cause.message : `${source.label} did not answer.`,
-        })
-      },
-    ).finally(() => { if (active) setPreviewing(false) })
-    return () => { active = false }
+    // A preview is not a cheap read: it collects portable state, fingerprints
+    // the repository and calls the target. Typing a remote name would run one
+    // per keystroke, so the request waits for the typing to stop.
+    if (method === "remote-ref" && !remote.trim()) {
+      setPreview(undefined)
+      setPreviewing(false)
+      return
+    }
+    const run = () => {
+      setPreviewing(true)
+      setPreview(undefined)
+      void onPreview({
+        sessionId: session.id,
+        targetMachineId: target.id,
+        method,
+        ...(method === "remote-ref" ? { remote: remote.trim() } : {}),
+      }).then(
+        (next) => {
+          if (!active) return
+          setPreview(next)
+          // A preview that failed and then succeeded has nothing left to report,
+          // so its error goes. A refused move stays: the operator asked for it
+          // and the answer is what they are waiting to read.
+          setProblem((current) => current?.from === "preview" ? undefined : current)
+        },
+        (cause: unknown) => {
+          if (!active) return
+          setProblem({
+            title: "The move could not be previewed",
+            detail: cause instanceof Error ? cause.message : `${source.label} did not answer.`,
+            from: "preview",
+          })
+        },
+      ).finally(() => { if (active) setPreviewing(false) })
+    }
+    // Only the typed remote needs waiting on. Opening the dialog, or switching
+    // method, is a settled intent and asks at once.
+    if (method !== "remote-ref") {
+      run()
+      return () => { active = false }
+    }
+    const timer = setTimeout(run, previewDebounceMs)
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
   }, [method, onPreview, open, previewAttempt, remote, session.id, source.label, target.id])
 
   // What the move carries is the daemon's answer, so it is read off the preview
@@ -187,9 +218,10 @@ export function TransferSessionDialog({
           detail: [sessionTransferRefusalMessage(result.reason), returning]
             .filter((part) => part !== undefined)
             .join(" "),
+          from: "move",
         })
       } else {
-        setProblem(transferOutcomeNotice(result, source.label))
+        setProblem({ ...transferOutcomeNotice(result, source.label), from: "move" })
       }
       // The digest describes a session that has since moved on, so the refusal
       // is answered by asking again rather than by making the operator close
@@ -201,6 +233,7 @@ export function TransferSessionDialog({
       setProblem({
         title: "Session did not move",
         detail: cause instanceof Error ? cause.message : `The session stayed on ${source.label}.`,
+        from: "move",
       })
     } finally {
       setPending(false)
@@ -305,6 +338,23 @@ export function TransferSessionDialog({
               : `${source.label} has not said what this move would carry`}
           </p>
         )}
+
+        {preview?.allowed === false ? (
+          <Alert variant="destructive">
+            <CircleStopIcon />
+            <AlertTitle>This move is refused</AlertTitle>
+            <AlertDescription>
+              {[
+                sessionTransferRefusalMessage(preview.reason),
+                returnTransferExplanation(
+                  session.transferredFrom?.sourceMachineId,
+                  target.id,
+                  target.label,
+                ),
+              ].filter((part) => part !== undefined).join(" ")}
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         <DialogFooter>
           <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>

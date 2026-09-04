@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { pairMachine, MachinePairingError } from "./pair-machine.js"
+import { protocolVersion } from "@getdomovoi/protocol"
+
+import { clientVersion } from "./client.js"
+import { machineHelloParams, pairMachine, MachinePairingError } from "./pair-machine.js"
 
 const code = "hearth-quiet-ember-42"
 const credential = "n".repeat(43)
@@ -75,4 +78,14 @@ describe("pairMachine", () => {
       "The machine paired but its credential could not be stored",
     )
   })
+})
+
+it("greets a newly paired machine as a machine, on the current protocol", () => {
+  expect(machineHelloParams("machine-token")).toEqual({
+    client: "machine",
+    clientVersion,
+    protocolVersion,
+    authToken: "machine-token",
+  })
+  expect(protocolVersion).not.toBe("0.1.0")
 })

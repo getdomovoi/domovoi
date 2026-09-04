@@ -16,33 +16,17 @@ export type SessionRecoveryOffer =
   | (OfferCommon & { kind: "release-stranded", confirmation: "target-does-not-have-session" })
   | (OfferCommon & { kind: "keep-target", confirmation: "keep-target-session" })
 
-// A move that stopped leaves the source frozen and waiting. The daemon can only
-// release it on an operator's word that the target did not take the session,
-// which is a claim no client may make for them, so the offer exists to put that
-// claim in front of the person rather than to make the decision.
+// A stranded move has no offer yet, on purpose. transferRecoverSource is a
+// dangerous escape hatch: it releases the source on the operator's word that the
+// target did not take the session. Nothing in the snapshot says the daemon has
+// stopped trying, and it retries on its own, so any signal available here would
+// offer the hatch during a healthy move. It returns when the daemon records that
+// operator recovery is appropriate.
 export function sessionRecoveryOffer(
-  session: SessionSummary,
-  targetLabel: string | undefined,
+  _session: SessionSummary,
+  _targetLabel: string | undefined,
 ): SessionRecoveryOffer | undefined {
-  const transfer = session.transfer
-  if (session.state !== "transferring") return undefined
-  if (transfer?.phase !== "transferring") return undefined
-  // resumeState is the state the session had before it froze, restored on thaw,
-  // and says nothing about the move. Reading it as progress hid the offer from
-  // every ordinary transfer and showed it during live ones. The daemon accepts
-  // a recovery only for a staged package, so that is the condition to match.
-  if (transfer.package.state !== "staged") return undefined
-
-  const target = targetLabel ?? "the other machine"
-  return {
-    kind: "release-stranded",
-    transferId: transfer.transferId,
-    targetMachineId: transfer.targetMachineId,
-    title: "This session is frozen after a move that did not finish",
-    detail: `It cannot be worked on here until it is released. Release it only if ${target} did not take the session, because two machines writing the same work will diverge.`,
-    confirmation: "target-does-not-have-session",
-    confirmLabel: `${target} does not have it`,
-  }
+  return undefined
 }
 
 // Both machines hold a copy and only one may keep the session. The exit is one
@@ -95,7 +79,7 @@ export function readOnlySessionNotice(
       return {
         badge: "Moving",
         title: `Moving to ${other}`,
-        detail: "This session is frozen while it moves, so nothing here can change it.",
+        detail: "This session is frozen while it moves, so nothing here can change it. Domovoi keeps reconciling it if the move is interrupted.",
       }
     case "transferred":
       return session.transfer?.phase === "transferred"

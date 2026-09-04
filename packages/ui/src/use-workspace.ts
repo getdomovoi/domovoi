@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { clientVersion, DomovoiClient, type DomovoiRequestOptions } from "./client"
+import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { rpcMethods } from "@getdomovoi/protocol"
 import { openClaimConnection } from "./claim-socket"
-import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
+import { machineHelloParams, pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { applyWorkspaceDelta } from "./workspace-delta"
 
 type WorkspaceSnapshotState = {
@@ -533,7 +533,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
         try {
           const greeting = rpcMethods["system.hello"].result.parse(await connection.call(
             "system.hello",
-            { client: "machine", clientVersion, authToken: credential },
+            machineHelloParams(credential),
           ))
           return { id: greeting.machine.id, name: greeting.machine.name }
         } finally {
