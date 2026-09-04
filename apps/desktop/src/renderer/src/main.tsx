@@ -9,6 +9,8 @@ import {
 } from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
 
+import { resolveDesktopStartup } from "./desktop-startup.js"
+
 applyStoredAppearanceTheme()
 
 const root = createRoot(document.getElementById("root")!)
@@ -20,10 +22,8 @@ function DesktopLaunchSmoke() {
 
 async function renderDesktop(): Promise<void> {
   try {
-    if (!window.domovoiDesktop) throw new Error("Desktop bridge is unavailable")
-    const rpcToken = await window.domovoiDesktop.getRpcToken()
-    if (!rpcToken) throw new Error("Desktop authentication token is unavailable")
-    if (window.domovoiLaunchSmoke) {
+    const startup = await resolveDesktopStartup(window)
+    if (startup.kind === "launch-smoke") {
       root.render(<DesktopLaunchSmoke />)
       return
     }
@@ -32,8 +32,8 @@ async function renderDesktop(): Promise<void> {
         <WorkspaceErrorBoundary>
           <WorkspaceShell
             clientKind="desktop"
-            rpcUrl="ws://127.0.0.1:47831/rpc"
-            rpcToken={rpcToken}
+            rpcUrl={startup.rpcUrl}
+            rpcToken={startup.rpcToken}
             windowBridge={window.domovoiDesktop}
           />
         </WorkspaceErrorBoundary>
