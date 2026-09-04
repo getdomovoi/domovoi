@@ -64,7 +64,11 @@ function exactManifest(
   current: SkillCapabilityManifest,
   reviewed: SkillCapabilityManifest,
 ): boolean {
-  return JSON.stringify(current) === JSON.stringify(reviewed)
+  if (current.version !== reviewed.version) return false
+  const currentCapabilities = new Set(current.capabilities)
+  const reviewedCapabilities = new Set(reviewed.capabilities)
+  return currentCapabilities.size === reviewedCapabilities.size
+    && [...currentCapabilities].every((capability) => reviewedCapabilities.has(capability))
 }
 
 function boundedContent(content: string): { content: string; truncated: boolean } {
