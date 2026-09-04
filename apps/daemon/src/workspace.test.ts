@@ -700,6 +700,75 @@ describe("GitWorkspaceService session bundles", () => {
   })
 })
 
+describe("GitWorkspaceService transfer resources", () => {
+  async function repositoryWithIgnoredPreview() {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-resources-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
+    await writeFile(join(repositoryPath, ".gitignore"), "previews/\n")
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-source")
+    await mkdir(join(workspace.path, "previews"))
+    await writeFile(join(workspace.path, "previews", "preview.html"), "<h1>portable</h1>\n")
+    return { scratch, repositoryPath, service, workspace }
+  }
+
+  it("fingerprints all worktree bytes that a confirmation is about", async () => {
+    const { service, workspace } = await repositoryWithIgnoredPreview()
+    const before = await service.transferFingerprint(workspace.path)
+    await writeFile(join(workspace.path, "README.md"), "changed\n")
+    const after = await service.transferFingerprint(workspace.path)
+
+    expect(before.headCommit).toBe(workspace.baseCommit)
+    expect(before.digest).toMatch(/^sha256:[a-f0-9]{64}$/u)
+    expect(after.digest).not.toBe(before.digest)
+  })
+
+  it("checks that the target project contains the shared lineage commit", async () => {
+    const { repositoryPath, service, workspace } = await repositoryWithIgnoredPreview()
+    await expect(service.projectHasLineage(repositoryPath, workspace.baseCommit)).resolves.toBe(true)
+    await expect(service.projectHasLineage(repositoryPath, "0".repeat(40))).resolves.toBe(false)
+  })
+
+  it("promotes only ignored artifact sources and never clobbers a target file", async () => {
+    const { service, workspace } = await repositoryWithIgnoredPreview()
+    const bytes = await service.readIgnoredArtifactSource(
+      workspace.path,
+      "previews/preview.html",
+    )
+    expect(Buffer.from(bytes!)).toEqual(Buffer.from("<h1>portable</h1>\n"))
+    await expect(service.readIgnoredArtifactSource(workspace.path, "README.md"))
+      .resolves.toBeUndefined()
+    await expect(service.readIgnoredArtifactSource(workspace.path, "../outside.html"))
+      .rejects.toThrow("Artifact path must stay inside the session worktree")
+
+    const target = await service.createSessionWorkspace(
+      join(workspace.path, "..", "..", "project"),
+      "session-target",
+    )
+    await service.writeTransferredArtifactSource(target.path, "previews/preview.html", bytes!)
+    await service.writeTransferredArtifactSource(target.path, "previews/preview.html", bytes!)
+    await expect(readFile(join(target.path, "previews", "preview.html"), "utf8"))
+      .resolves.toBe("<h1>portable</h1>\n")
+    await expect(service.writeTransferredArtifactSource(
+      target.path,
+      "previews/preview.html",
+      Buffer.from("different\n"),
+    )).rejects.toThrow("Transferred artifact source conflicts with an existing file")
+  })
+})
+
 describe("GitWorkspaceService bundle restore", () => {
   async function sourceWithBundle(prefix: string) {
     const scratch = await mkdtemp(join(tmpdir(), prefix))

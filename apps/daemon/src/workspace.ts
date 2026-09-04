@@ -1,8 +1,10 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { chmod, mkdir, realpath, rename, rm } from "node:fs/promises"
-import { basename, isAbsolute, join, relative, resolve } from "node:path"
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
+
+import { maximumPreviewSourceBytes } from "@getdomovoi/protocol"
 
 const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
@@ -140,6 +142,26 @@ export interface WorkspaceService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace>
+  transferFingerprint?(
+    worktreePath: string,
+    signal?: AbortSignal,
+  ): Promise<{ headCommit: string; digest: string }>
+  projectHasLineage?(
+    repositoryPath: string,
+    lineageCommit: string,
+    signal?: AbortSignal,
+  ): Promise<boolean>
+  readIgnoredArtifactSource?(
+    worktreePath: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Buffer | undefined>
+  writeTransferredArtifactSource?(
+    worktreePath: string,
+    path: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void>
 }
 
 export type SessionRef = {
@@ -315,7 +337,7 @@ async function hashGit(
 async function workspaceEvidenceFingerprint(
   worktreePath: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ headCommit: string; digest: string }> {
   const fingerprintConfig = [
     "-c",
     "core.fsmonitor=false",
@@ -340,13 +362,23 @@ async function workspaceEvidenceFingerprint(
       "--",
     ], signal),
   ])
-  return createHash("sha256")
+  const digest = createHash("sha256")
     .update(baseCommit)
     .update("\0")
     .update(status)
     .update("\0")
     .update(diffHash)
     .digest("hex")
+  return { headCommit: baseCommit, digest: `sha256:${digest}` }
+}
+
+function pathStaysInside(root: string, candidate: string): boolean {
+  const fromRoot = relative(root, candidate)
+  return fromRoot === "" || (
+    fromRoot !== ".."
+    && !fromRoot.startsWith(`..${sep}`)
+    && !isAbsolute(fromRoot)
+  )
 }
 
 function fieldsAndPath(record: string, fieldCount: number): { fields: string[]; path: string } {
@@ -567,7 +599,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
       ])
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, signal)
-      if (fingerprintBefore !== fingerprintAfter) continue
+      if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
 
       const stats = parseNumstat(numstat)
       const allFiles: ChangedFileEvidence[] = parseStatus(status).map((file) => {
@@ -589,6 +621,122 @@ export class GitWorkspaceService implements WorkspaceService {
       }
     }
     throw new WorkspaceEvidenceUnstableError()
+  }
+
+  async transferFingerprint(
+    worktreePath: string,
+    signal?: AbortSignal,
+  ): Promise<{ headCommit: string; digest: string }> {
+    for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
+      const before = await workspaceEvidenceFingerprint(worktreePath, signal)
+      const after = await workspaceEvidenceFingerprint(worktreePath, signal)
+      if (before.digest === after.digest) return after
+    }
+    throw new WorkspaceEvidenceUnstableError()
+  }
+
+  async projectHasLineage(
+    repositoryPath: string,
+    lineageCommit: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!/^[a-f0-9]{40}$/u.test(lineageCommit)) return false
+    try {
+      await git(repositoryPath, ["merge-base", "--is-ancestor", lineageCommit, "HEAD"], signal)
+      return true
+    } catch {
+      signal?.throwIfAborted()
+      return false
+    }
+  }
+
+  async readIgnoredArtifactSource(
+    worktreePath: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Buffer | undefined> {
+    signal?.throwIfAborted()
+    if (!isWorktreeRelativePath(path)) {
+      throw new Error("Artifact path must stay inside the session worktree")
+    }
+    const root = await realpath(worktreePath)
+    const lexicalPath = resolve(root, path)
+    if (!pathStaysInside(root, lexicalPath)) {
+      throw new Error("Artifact path must stay inside the session worktree")
+    }
+    const [metadata, canonicalPath] = await Promise.all([lstat(lexicalPath), realpath(lexicalPath)])
+    if (
+      !metadata.isFile()
+      || metadata.isSymbolicLink()
+      || !pathStaysInside(root, canonicalPath)
+      || metadata.size > maximumPreviewSourceBytes
+    ) {
+      throw new Error("Artifact source is unavailable for transfer")
+    }
+    try {
+      await git(root, ["check-ignore", "--quiet", "--", path], signal)
+    } catch (error) {
+      signal?.throwIfAborted()
+      if ((error as { code?: unknown }).code === 1) return undefined
+      throw error
+    }
+    const bytes = await readFile(canonicalPath)
+    if (bytes.byteLength > maximumPreviewSourceBytes) {
+      throw new Error("Artifact source is unavailable for transfer")
+    }
+    return bytes
+  }
+
+  async writeTransferredArtifactSource(
+    worktreePath: string,
+    path: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted()
+    if (!isWorktreeRelativePath(path) || bytes.byteLength > maximumPreviewSourceBytes) {
+      throw new Error("Artifact path must stay inside the session worktree")
+    }
+    const root = await realpath(worktreePath)
+    const lexicalPath = resolve(root, path)
+    if (!pathStaysInside(root, lexicalPath)) {
+      throw new Error("Artifact path must stay inside the session worktree")
+    }
+    let parent = root
+    const parentFromRoot = relative(root, dirname(lexicalPath))
+    for (const segment of parentFromRoot === "" ? [] : parentFromRoot.split(sep)) {
+      parent = join(parent, segment)
+      try {
+        await mkdir(parent, { mode: 0o700 })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      }
+      const [metadata, canonicalParent] = await Promise.all([lstat(parent), realpath(parent)])
+      if (
+        !metadata.isDirectory()
+        || metadata.isSymbolicLink()
+        || !pathStaysInside(root, canonicalParent)
+      ) {
+        throw new Error("Artifact path must stay inside the session worktree")
+      }
+    }
+    try {
+      await writeFile(lexicalPath, bytes, { flag: "wx", mode: 0o600 })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      const metadata = await lstat(lexicalPath)
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new Error("Transferred artifact source conflicts with an existing file", {
+          cause: error,
+        })
+      }
+      const existing = await readFile(lexicalPath)
+      if (!existing.equals(Buffer.from(bytes))) {
+        throw new Error("Transferred artifact source conflicts with an existing file", {
+          cause: error,
+        })
+      }
+    }
   }
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
