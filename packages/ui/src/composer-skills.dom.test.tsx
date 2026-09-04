@@ -83,3 +83,30 @@ it("appears in the composer, not only as a component", () => {
   expect(shell).toContain("<ComposerSkillChip")
   expect(shell).toContain("<PromptDeliveryNote")
 })
+
+it("lets a person choose which reviewed skills this turn carries", async () => {
+  const onSelectionChange = vi.fn()
+  render(<TooltipProvider><ComposerSkillChip
+    snapshot={snapshot([review("skill-aaaaaaaaaaaa"), review("skill-bbbbbbbbbbbb")])}
+    skillNames={{ "skill-aaaaaaaaaaaa": "plan-preview", "skill-bbbbbbbbbbbb": "replay-audit" }}
+    onOpenSkills={vi.fn()}
+    onSelectionChange={onSelectionChange}
+  /></TooltipProvider>)
+
+  await userEvent.click(screen.getByRole("button", { name: /2 skills/u }))
+  await userEvent.click(screen.getByRole("menuitemcheckbox", { name: "plan-preview" }))
+
+  expect(onSelectionChange).toHaveBeenCalledWith(new Set(["skill-bbbbbbbbbbbb"]))
+})
+
+it("marks the skill a refused send named", () => {
+  render(<TooltipProvider><ComposerSkillChip
+    snapshot={snapshot([review("skill-aaaaaaaaaaaa")])}
+    skillNames={{ "skill-aaaaaaaaaaaa": "plan-preview" }}
+    onOpenSkills={vi.fn()}
+    refusal={{ kind: "turn-skill-selection-refused", skillId: "skill-aaaaaaaaaaaa", reason: "review-changed" }}
+  /></TooltipProvider>)
+
+  expect(screen.getByRole("status", { name: "Skill selection refused" }).textContent)
+    .toContain("plan-preview")
+})
