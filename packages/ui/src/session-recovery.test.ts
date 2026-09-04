@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { SessionSummary } from "@getdomovoi/protocol"
 
-import { sessionRecoveryOffer } from "./session-recovery.js"
+import { sessionConflictOffer, sessionRecoveryOffer } from "./session-recovery.js"
 
 const transferring: NonNullable<SessionSummary["transfer"]> = {
   phase: "transferring",
@@ -51,5 +51,57 @@ describe("sessionRecoveryOffer", () => {
   it("names the machine plainly when its label is unknown", () => {
     expect(sessionRecoveryOffer(session, undefined)?.confirmLabel)
       .toBe("the other machine does not have it")
+  })
+})
+
+const conflict = {
+  kind: "target-session-detected",
+  transferId: `transfer-${"d".repeat(32)}`,
+  otherMachineId: `machine-${"e".repeat(32)}`,
+  otherGeneration: 4,
+  detectedAt: "2026-09-04T11:00:00.000Z",
+  recoveryAction: "keep-target-session",
+  reason: "target-session-newer",
+  manifestDigest: `sha256:${"f".repeat(64)}`,
+} as NonNullable<SessionSummary["ownershipConflict"]>
+
+const conflicted = {
+  ...session,
+  state: "ownership-conflict",
+  ownershipConflict: conflict,
+} as unknown as SessionSummary
+
+describe("sessionConflictOffer", () => {
+  it("states the whole trade before the operator confirms it", () => {
+    const offer = sessionConflictOffer(conflicted, "studio")
+
+    expect(offer?.confirmation).toBe("keep-target-session")
+    expect(offer?.kind).toBe("keep-target")
+    expect(offer?.transferId).toBe(conflict.transferId)
+    // The three things a person must know before a one-way door: who wins, that
+    // it is permanent, and that their files remain and are theirs to clean up.
+    expect(offer?.detail).toContain("studio")
+    expect(offer?.detail).toContain("for good")
+    expect(offer?.detail).toContain("nothing removes them for you")
+  })
+
+  it("says how the conflict was found, because the two causes differ", () => {
+    expect(sessionConflictOffer(conflicted, "studio")?.detail)
+      .toContain("already holds a copy")
+    expect(sessionConflictOffer(
+      {
+        ...conflicted,
+        ownershipConflict: { ...conflict, kind: "recovery-contradicted" },
+      } as SessionSummary,
+      "studio",
+    )?.detail).toContain("after it was recovered here")
+  })
+
+  it("offers nothing without a conflict to settle", () => {
+    expect(sessionConflictOffer(session, "studio")).toBeUndefined()
+    expect(sessionConflictOffer(
+      { ...conflicted, ownershipConflict: undefined } as SessionSummary,
+      "studio",
+    )).toBeUndefined()
   })
 })
