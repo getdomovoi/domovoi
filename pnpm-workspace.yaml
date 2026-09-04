@@ -9,6 +9,15 @@ allowBuilds:
   node-pty: true
   unrs-resolver: true
 
+# Expo's CLI pulls image-size 2.0.2 through its dev tooling. Two high advisories
+# name 2.0.3 as patched and npm has published nothing above 2.0.2, so an override
+# cannot resolve. The path is CLI tooling and does not ship in the phone bundle.
+# Remove both ids the moment 2.0.3 exists.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-5p2g-fcmc-qvqq
+    - GHSA-w3rx-r6r6-pgpr
+
 overrides:
   # Pins every consumer to one esbuild copy. electron-vite 5.0.0 declares ^0.25.11 and
   # tsup 8.5.1 declares ^0.27.0, so neither admits 0.28.x. Remove the override once both
