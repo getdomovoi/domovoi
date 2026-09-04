@@ -28,7 +28,7 @@ export const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*
 const sessionTransferRequestFields = {
   sessionId: z.string().trim().min(1).max(128),
   targetMachineId: machineIdSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
   // The bundle keeps repository bytes on the machines involved, so it is what
   // happens unless the caller deliberately asks for the remote.
   method: transferMethodSchema.default("git-bundle"),
@@ -70,14 +70,14 @@ export const sessionTransferParamsSchema = z.object({
 export const transferFromRefParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
   remote: gitRemoteNameSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const sessionTransferRecoverSourceParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
   transferId: transferIdSchema,
   confirmation: z.literal("target-does-not-have-session"),
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const sessionTransferRecoverSourceResultSchema = workspaceSnapshotSchema
@@ -86,7 +86,7 @@ export const sessionTransferResolveConflictParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
   transferId: transferIdSchema,
   confirmation: z.literal("keep-target-session"),
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const sessionTransferResolveConflictResultSchema = workspaceSnapshotSchema
