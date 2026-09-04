@@ -99,6 +99,7 @@ export function TransferSessionDialog({
   const [problem, setProblem] = useState("")
   const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
   const [previewing, setPreviewing] = useState(false)
+  const [previewAttempt, setPreviewAttempt] = useState(0)
 
   // The daemon decides what this move would carry and whether it may happen at
   // all. Asking it is not a nicety: session.transfer refuses anything without
@@ -122,7 +123,7 @@ export function TransferSessionDialog({
       },
     ).finally(() => { if (active) setPreviewing(false) })
     return () => { active = false }
-  }, [method, onPreview, open, remote, session.id, target.id])
+  }, [method, onPreview, open, previewAttempt, remote, session.id, target.id])
 
   // What the move carries is the daemon's answer, so it is read off the preview
   // rather than described here. Before the preview lands there is nothing
@@ -174,6 +175,12 @@ export function TransferSessionDialog({
       setProblem(result.outcome === "refused"
         ? sessionTransferRefusalMessage(result.reason)
         : `The session did not move and stayed on ${source.label}`)
+      // The digest describes a session that has since moved on, so the refusal
+      // is answered by asking again rather than by making the operator close
+      // the dialog and reopen it to get a digest the daemon will accept.
+      if (result.outcome === "refused" && result.reason === "session-state-changed") {
+        setPreviewAttempt((attempt) => attempt + 1)
+      }
     } catch (cause) {
       setProblem(cause instanceof Error ? cause.message : `The session did not move and stayed on ${source.label}`)
     } finally {

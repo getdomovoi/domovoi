@@ -259,6 +259,19 @@ it("lists what the daemon says the move carries, not a list written here", async
   expect(screen.getByText(/The provider has to be started again on the target/)).toBeTruthy()
 })
 
+it("previews again when the session changed under the preview", async () => {
+  const refused: SessionTransferResult = { outcome: "refused", reason: "session-state-changed" }
+  const { user, onPreview } = renderDialog({ onTransfer: () => Promise.resolve(refused) })
+  await screen.findByRole("group", { name: "Travels with the session" })
+  expect(onPreview).toHaveBeenCalledOnce()
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  expect(screen.getByRole("alert").textContent)
+    .toContain("The session changed after the transfer preview, so review the move again")
+  await waitFor(() => expect(onPreview).toHaveBeenCalledTimes(2))
+})
+
 it("keeps the session where it is when the move fails", async () => {
   const { user, onTransferred } = renderDialog({
     onTransfer: () => Promise.resolve({
