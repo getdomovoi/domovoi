@@ -10,7 +10,7 @@ type Warning = SessionTransferCoverage["warnings"][number]["kind"]
 // dialog came to promise that secrets stayed behind.
 const includedLabel: Record<Included, string> = {
   repository: "Repository, at the checkpoint commit",
-  thread: "Thread",
+  thread: "Thread, including tool and test history",
   checkpoints: "Checkpoints",
   artifacts: "Artifacts",
   "artifact-sources": "Artifact sources",
@@ -18,7 +18,7 @@ const includedLabel: Record<Included, string> = {
   "annotation-crops": "Annotation crops",
   "working-plan": "Working plan",
   usage: "Usage totals",
-  "runtime-settings": "Runtime settings",
+  "runtime-settings": "Runtime settings, including permission mode",
 }
 
 const excludedLabel: Record<Excluded, string> = {

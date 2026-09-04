@@ -27,6 +27,19 @@ describe("transferCoverageLists", () => {
     }
   })
 
+  it("names what a kind actually carries, so the list does not under-promise", () => {
+    const coverage = sessionTransferCoverageSchema.parse({
+      included: [{ kind: "thread" }, { kind: "runtime-settings" }],
+      excluded: [],
+      warnings: [],
+    })
+
+    const [thread, runtime] = transferCoverageLists(coverage).included
+
+    expect(thread).toContain("tool and test history")
+    expect(runtime).toContain("permission mode")
+  })
+
   it("carries a count into the label when the daemon reports one", () => {
     const coverage = sessionTransferCoverageSchema.parse({
       included: [{ kind: "artifacts", count: 3 }, { kind: "thread" }],
@@ -34,6 +47,7 @@ describe("transferCoverageLists", () => {
       warnings: [],
     })
 
-    expect(transferCoverageLists(coverage).included).toEqual(["Artifacts (3)", "Thread"])
+    expect(transferCoverageLists(coverage).included)
+      .toEqual(["Artifacts (3)", "Thread, including tool and test history"])
   })
 })
