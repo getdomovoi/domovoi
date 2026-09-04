@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { chmod, lstat, mkdir, open, readFile, readlink, realpath, rename, rm, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -373,6 +374,78 @@ async function workspaceEvidenceFingerprint(
   return { headCommit: baseCommit, digest: `sha256:${digest}` }
 }
 
+function hashField(hash: ReturnType<typeof createHash>, value: string | Uint8Array): void {
+  const bytes = typeof value === "string" ? Buffer.from(value, "utf8") : value
+  hash.update(String(bytes.byteLength)).update(":").update(bytes)
+}
+
+async function transferWorktreeFingerprint(
+  worktreePath: string,
+  signal?: AbortSignal,
+): Promise<{ headCommit: string; digest: string }> {
+  signal?.throwIfAborted()
+  const [headCommit, listed] = await Promise.all([
+    git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
+    execute("git", [
+      "-C",
+      worktreePath,
+      "-c",
+      "core.fsmonitor=false",
+      "ls-files",
+      "-z",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+    ], { maxBuffer: maximumGitOutputBytes, signal }),
+  ])
+  const paths = Buffer.from(listed.stdout).toString("utf8").split("\0").filter(Boolean).sort()
+  const hash = createHash("sha256").update("domovoi.transfer-worktree.v1\0")
+  for (const path of paths) {
+    signal?.throwIfAborted()
+    const candidate = resolve(worktreePath, path)
+    if (!pathStaysInside(worktreePath, candidate)) {
+      throw new Error("Git returned a path outside the session worktree")
+    }
+    hashField(hash, path)
+    let metadata
+    try {
+      metadata = await lstat(candidate)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      hashField(hash, "missing")
+      continue
+    }
+    if (metadata.isSymbolicLink()) {
+      hashField(hash, "symlink")
+      hashField(hash, await readlink(candidate))
+      continue
+    }
+    if (metadata.isDirectory()) {
+      // Git lists a directory here only for a tracked submodule. Its commit is
+      // what the checkpoint and repository transfer carry, not its loose files.
+      hashField(hash, "gitlink")
+      hashField(hash, await git(candidate, ["rev-parse", "HEAD"], signal))
+      continue
+    }
+    if (!metadata.isFile()) throw new Error("The session worktree contains an unsupported file")
+    hashField(hash, "file")
+    hashField(hash, metadata.mode & 0o111 ? "executable" : "regular")
+    const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      const opened = await handle.stat()
+      if (!opened.isFile()) throw new Error("The session worktree changed while it was hashed")
+      hashField(hash, String(opened.size))
+      for await (const chunk of handle.createReadStream({ autoClose: false })) {
+        signal?.throwIfAborted()
+        hash.update(chunk)
+      }
+    } finally {
+      await handle.close()
+    }
+  }
+  return { headCommit, digest: `sha256:${hash.digest("hex")}` }
+}
+
 function pathStaysInside(root: string, candidate: string): boolean {
   const fromRoot = relative(root, candidate)
   return fromRoot === "" || (
@@ -629,9 +702,9 @@ export class GitWorkspaceService implements WorkspaceService {
     signal?: AbortSignal,
   ): Promise<{ headCommit: string; digest: string }> {
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
-      const before = await workspaceEvidenceFingerprint(worktreePath, signal)
-      const after = await workspaceEvidenceFingerprint(worktreePath, signal)
-      if (before.digest === after.digest) return after
+      const before = await transferWorktreeFingerprint(worktreePath, signal)
+      const after = await transferWorktreeFingerprint(worktreePath, signal)
+      if (before.headCommit === after.headCommit && before.digest === after.digest) return after
     }
     throw new WorkspaceEvidenceUnstableError()
   }

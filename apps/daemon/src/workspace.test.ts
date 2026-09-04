@@ -735,6 +735,21 @@ describe("GitWorkspaceService transfer resources", () => {
     expect(after.digest).not.toBe(before.digest)
   })
 
+  it("binds untracked contents and stays stable when those contents are checkpointed", async () => {
+    const { service, workspace } = await repositoryWithIgnoredPreview()
+    const draftPath = join(workspace.path, "draft.txt")
+    await writeFile(draftPath, "first\n")
+    const first = await service.transferFingerprint(workspace.path)
+    await writeFile(draftPath, "second\n")
+    const second = await service.transferFingerprint(workspace.path)
+
+    expect(second.digest).not.toBe(first.digest)
+    const checkpoint = await service.checkpoint(workspace.path, "before-transfer")
+    const checkpointed = await service.transferFingerprint(workspace.path)
+    expect(checkpointed.headCommit).toBe(checkpoint.commit)
+    expect(checkpointed.digest).toBe(second.digest)
+  })
+
   it("checks that the target project contains the shared lineage commit", async () => {
     const { repositoryPath, service, workspace } = await repositoryWithIgnoredPreview()
     await expect(service.projectHasLineage(repositoryPath, workspace.baseCommit)).resolves.toBe(true)
