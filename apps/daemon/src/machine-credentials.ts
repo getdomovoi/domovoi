@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
 
 import { credentialSchema, machineIdSchema } from "@getdomovoi/protocol"
@@ -26,6 +27,15 @@ export interface MachineCredentials {
   forMachine(machineId: string): string | undefined
   forget(machineId: string): void
   machines(): string[]
+}
+
+// Cross-store journals keep only this commitment, never keychain bytes. Binding
+// the identity as well as the domain prevents a digest from moving to a new row.
+export function machineCredentialDigest(machineId: string, credential: string): string {
+  requireMachineId(machineId)
+  if (!credentialSchema.safeParse(credential).success) throw new Error("Machine credential is malformed")
+  return `sha256:${createHash("sha256")
+    .update("domovoi:machine-credential:v1\0").update(machineId).update("\0").update(credential).digest("hex")}`
 }
 
 // A credential for another machine is a secret like any provider key, so it
