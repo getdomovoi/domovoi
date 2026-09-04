@@ -82,6 +82,27 @@ describe("provider prompt delivery", () => {
     }).success).toBe(false)
   })
 
+  it("keeps historic recorded budgets readable after the current limit changes", () => {
+    const historic = {
+      ...delivery(),
+      budget: {
+        unit: "utf16-code-units" as const,
+        limit: 131_072,
+        used: 120_000,
+      },
+    }
+
+    expect(providerPromptDeliverySchema.parse(historic).budget).toEqual(historic.budget)
+    expect(providerPromptDeliverySchema.safeParse({
+      ...historic,
+      budget: { ...historic.budget, used: historic.budget.limit + 1 },
+    }).success).toBe(false)
+    expect(providerPromptDeliverySchema.safeParse({
+      ...historic,
+      budget: { ...historic.budget, limit: 0, used: 0 },
+    }).success).toBe(false)
+  })
+
   it("partitions each selected skill into delivered or one omission reason", () => {
     const duplicate = delivery()
     duplicate.skills.omitted.budget.push("skill-111111111111")
