@@ -45,6 +45,22 @@ access.
   - Generate a high-entropy credential when none is supplied.
   - Persist standalone credentials in a user-private file and keep browser handoff session-only.
   - Prove unauthenticated RPC and terminal requests are rejected.
+- [ ] Stop a paired machine reading another machine's workspace
+  - `system.hello` with `client: "machine"` returns the full workspace snapshot, and every
+    workspace broadcast reaches machine sockets. A paired machine therefore sees another
+    machine's sessions, thread, artifacts, and approvals, none of which it needs.
+  - Present for any paired machine today, independent of session transfer. Found on 2026-09-03
+    while auditing transfer authentication; the transfer work only made someone look.
+  - A machine connection needs the transfer surface, not the workspace. Returning an empty or
+    sanitized snapshot for a machine hello and excluding machine sockets from broadcasts needs no
+    protocol change.
+- [ ] Bind a machine credential to the machine it was issued for
+  - `device.claim` records only a code and a label, and `system.hello` accepts a caller-supplied
+    `machineId`, so a paired token can present as any machine or as a desktop client. Every
+    ownership decision in a transfer rests on believing who answered.
+  - Enrolment has to capture the machine the credential is for, and the actor has to be derived
+    from the credential rather than asserted in the request. Verifying the parameter is not enough
+    on its own: there is nothing to verify against until enrolment binds it.
 - [x] Protect embedded OpenCode and Kilo provider servers
   - Use provider-supported authentication or OS-protected IPC.
   - Prove direct unauthenticated requests cannot bypass Domovoi approvals.

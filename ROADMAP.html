@@ -251,6 +251,24 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
+<li>[ ] Stop a paired machine reading another machine's workspace
+<ul>
+<li><code>system.hello</code> with <code>client: &quot;machine&quot;</code> returns the full workspace snapshot, and every workspace broadcast reaches machine sockets. A paired machine therefore sees another machine's sessions, thread, artifacts, and approvals, none of which it needs.
+</li>
+<li>Present for any paired machine today, independent of session transfer. Found on 2026-09-03 while auditing transfer authentication; the transfer work only made someone look.
+</li>
+<li>A machine connection needs the transfer surface, not the workspace. Returning an empty or sanitized snapshot for a machine hello and excluding machine sockets from broadcasts needs no protocol change.
+</li>
+</ul>
+</li>
+<li>[ ] Bind a machine credential to the machine it was issued for
+<ul>
+<li><code>device.claim</code> records only a code and a label, and <code>system.hello</code> accepts a caller-supplied <code>machineId</code>, so a paired token can present as any machine or as a desktop client. Every ownership decision in a transfer rests on believing who answered.
+</li>
+<li>Enrolment has to capture the machine the credential is for, and the actor has to be derived from the credential rather than asserted in the request. Verifying the parameter is not enough on its own: there is nothing to verify against until enrolment binds it.
+</li>
+</ul>
+</li>
 <li>[x] Protect embedded OpenCode and Kilo provider servers
 <ul>
 <li>Use provider-supported authentication or OS-protected IPC.
