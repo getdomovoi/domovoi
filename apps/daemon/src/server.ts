@@ -22,6 +22,7 @@ import {
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
   terminalOutputBatchDelayMilliseconds,
+  turnSkillSelectionErrorCode,
   maximumEmergencyStopFailureMessageLength,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
@@ -49,6 +50,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
   versionlessClientProtocol,
@@ -93,6 +95,7 @@ import {
   composeProviderPrompt,
   PromptCompositionLimitError,
 } from "./prompt-composer.js"
+import { TurnSkillSelectionError } from "./skill-context.js"
 import {
   NodePtyTerminalService,
   type TerminalProcess,
@@ -1337,7 +1340,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -4196,8 +4199,19 @@ export class DomovoiDaemon {
             skillCatalog: this.#skillCatalogFor(this.#snapshot.project?.path),
             requireTrustedSkills:
               session.runtime.permissionMode === "build" && session.runtime.auto,
+            ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
           })
         } catch (error) {
+          if (error instanceof TurnSkillSelectionError) {
+            this.#error(
+              socket,
+              request.id,
+              turnSkillSelectionErrorCode,
+              error.message,
+              error.refusal,
+            )
+            return
+          }
           if (error instanceof PromptCompositionLimitError) {
             this.#error(socket, request.id, invalidParams, error.message)
             return

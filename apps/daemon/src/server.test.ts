@@ -26,6 +26,7 @@ import {
   type RpcMethod,
   type RpcResult,
   type SkillSummary,
+  turnSkillSelectionErrorCode,
 } from "@getdomovoi/protocol"
 
 import {
@@ -6291,6 +6292,158 @@ describe("DomovoiDaemon", () => {
       expect.stringContaining("Audit every repository change."),
     )
     expect(skillCatalog.read).toHaveBeenCalledTimes(2)
+    socket.close()
+  })
+
+  it("sends exact turn skills and reports a stale review without starting a turn", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.workspacePath = "/worktrees/session-billing"
+    session.providerThreadId = "provider-thread-billing"
+    snapshot.thread = []
+    snapshot.annotations = []
+    snapshot.workingPlans = []
+    const alpha: SkillSummary = {
+      id: "skill-aaaaaaaaaaaa",
+      name: "alpha",
+      description: "Alpha instructions.",
+      path: "/skills/alpha/SKILL.md",
+      scope: "user",
+      source: "agents",
+      ...skillSecurityMetadata,
+    }
+    const beta: SkillSummary = {
+      ...alpha,
+      id: "skill-bbbbbbbbbbbb",
+      name: "beta",
+      description: "Beta instructions.",
+      path: "/skills/beta/SKILL.md",
+      contentDigest: `sha256:${"b".repeat(64)}`,
+    }
+    snapshot.skillEnablements = [alpha, beta].map((skill) => ({
+      projectId: snapshot.project!.id,
+      skillId: skill.id,
+      enabled: true,
+      contentDigest: skill.contentDigest,
+      manifest: skill.manifest,
+      reviewedAt: "2026-09-03T12:00:00.000Z",
+      reviewedBy: { client: "desktop" as const, clientId: "reviewer" },
+    }))
+    const skillCatalog = {
+      list: vi.fn(async () => [alpha, beta]),
+      read: vi.fn(async (skillId: string) => {
+        if (skillId === alpha.id) return { skill: alpha, content: "Use alpha." }
+        if (skillId === beta.id) return { skill: beta, content: "Use beta." }
+        throw new Error("missing")
+      }),
+    } satisfies SkillCatalog
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "provider-thread-unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) =>
+        "provider-turn-explicit"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agent,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+
+    const selectedBeta = {
+      mode: "turn-explicit",
+      skills: [{
+        skillId: beta.id,
+        review: { contentDigest: beta.contentDigest, manifest: beta.manifest },
+      }],
+    }
+    const sent = await rpc(1, "session.send", {
+      sessionId: session.id,
+      prompt: "Use the chosen skill",
+      client: "desktop",
+      skillSelection: selectedBeta,
+    })
+
+    const sentThread = (sent.result as { thread: Array<{
+      kind: string
+      providerPromptDelivery?: { skills: unknown }
+    }> }).thread
+    expect(sentThread).toHaveLength(1)
+    expect(sentThread[0]).toMatchObject({ kind: "user" })
+    expect(sentThread[0]?.providerPromptDelivery?.skills).toMatchObject({
+      selection: "turn-explicit",
+      delivered: [expect.objectContaining({ id: beta.id })],
+      omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] },
+    })
+    const providerPrompt = agent.startTurn.mock.calls[0]![0].prompt
+    expect(providerPrompt).toContain("Use beta.")
+    expect(providerPrompt).not.toContain("Use alpha.")
+
+    const refused = await rpc(2, "session.send", {
+      sessionId: session.id,
+      prompt: "Use changed alpha",
+      client: "desktop",
+      skillSelection: {
+        mode: "turn-explicit",
+        skills: [{
+          skillId: alpha.id,
+          review: {
+            contentDigest: `sha256:${"c".repeat(64)}`,
+            manifest: alpha.manifest,
+          },
+        }],
+      },
+    })
+
+    expect(refused).toMatchObject({
+      error: {
+        code: turnSkillSelectionErrorCode,
+        message: expect.stringContaining(alpha.id),
+        data: {
+          kind: "turn-skill-selection-refused",
+          skillId: alpha.id,
+          reason: "review-changed",
+        },
+      },
+    })
+    expect(agent.startTurn).toHaveBeenCalledOnce()
+    expect(agent.steerTurn).not.toHaveBeenCalled()
+    expect(skillCatalog.read).toHaveBeenCalledOnce()
+    const current = await rpc(3, "workspace.get", {})
+    expect(current).toMatchObject({ result: { thread: [expect.objectContaining({ kind: "user" })] } })
     socket.close()
   })
 

@@ -5,6 +5,7 @@ import {
   type ProviderPromptDelivery,
   type ProviderPromptHandoffDelivery,
   type ProviderPromptSkillDelivery,
+  type TurnSkillSelection,
   type WorkingPlan,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -18,7 +19,7 @@ import {
 import { prepareAnnotationVisuals } from "./annotation-visual-turn.js"
 import { prepareHandoffPrompt } from "./handoff-context.js"
 import {
-  prepareProjectSkillContext,
+  prepareTurnSkillContext,
   renderProjectSkillContext,
 } from "./skill-context.js"
 import type { SkillCatalog } from "./skills.js"
@@ -33,6 +34,7 @@ export type ProviderPromptInput = {
   annotationVisualContext: AnnotationVisualContextReader
   skillCatalog: SkillCatalog
   requireTrustedSkills: boolean
+  skillSelection?: TurnSkillSelection
 }
 
 export type ComposedProviderPrompt = {
@@ -43,10 +45,34 @@ export type ComposedProviderPrompt = {
 
 export class PromptCompositionLimitError extends Error {}
 
-export const elasticPromptDropOrder = [
-  "project-default-skills",
-  "oldest-annotations",
+export const providerPromptPrecedence = [
+  "skills",
+  "annotations",
+  "working-plan",
+  "provider-handoff",
+  "user-request",
 ] as const
+
+type ProviderPromptSection = (typeof providerPromptPrecedence)[number]
+type PromptSectionRetention = "required" | "elastic"
+
+export const elasticPromptDropOrder = [
+  "skills",
+  "annotations",
+] as const satisfies readonly ProviderPromptSection[]
+
+function promptSectionRetention(skillRetention: PromptSectionRetention): Record<
+  ProviderPromptSection,
+  PromptSectionRetention
+> {
+  return {
+    skills: skillRetention,
+    annotations: "elastic",
+    "working-plan": "required",
+    "provider-handoff": "required",
+    "user-request": "required",
+  }
+}
 
 function countSkillOmissions(delivery: ProviderPromptSkillDelivery): number {
   return Object.values(delivery.omitted)
@@ -109,11 +135,13 @@ function requiredContextError(
     "user request",
     ...(input.workingPlan ? ["working plan"] : []),
     ...(handoff.status === "delivered" ? ["provider handoff"] : []),
+    ...(input.skillSelection?.skills.length ? ["explicitly selected skills"] : []),
   ]
   const remedies = [
     "Shorten the request",
     ...(input.workingPlan ? ["edit the working plan"] : []),
     ...(required.includes("provider handoff") ? ["start a fresh session"] : []),
+    ...(input.skillSelection?.skills.length ? ["remove one or more selected skills"] : []),
   ]
   return new PromptCompositionLimitError(
     `Cannot send this turn: required ${required.join(" and ")} exceed the ${maximumProviderPromptCodeUnits} UTF-16 code units Domovoi payload limit. ${remedies.join(", ")} and try again.`,
@@ -154,20 +182,24 @@ export async function composeProviderPrompt(
     input.sessionId,
     annotationVisuals.deliveries,
   )
-  const skills = await prepareProjectSkillContext(
+  const skills = await prepareTurnSkillContext(
     input.skillCatalog,
     input.snapshot,
+    input.skillSelection,
     { requireTrusted: input.requireTrustedSkills },
   )
+  const retention = promptSectionRetention(skills.retention)
   let includedSkills = skills.deliverable.length
   let includedAnnotations = annotations.candidates.length
   const droppers: Record<(typeof elasticPromptDropOrder)[number], () => boolean> = {
-    "project-default-skills": () => {
+    skills: () => {
+      if (retention.skills !== "elastic") return false
       if (includedSkills === 0) return false
       includedSkills -= 1
       return true
     },
-    "oldest-annotations": () => {
+    annotations: () => {
+      if (retention.annotations !== "elastic") return false
       if (includedAnnotations === 0) return false
       includedAnnotations -= 1
       return true

@@ -14,6 +14,7 @@ import {
 import {
   composeProviderPrompt,
   elasticPromptDropOrder,
+  providerPromptPrecedence,
 } from "./prompt-composer.js"
 import type { SkillCatalog } from "./skills.js"
 
@@ -93,10 +94,14 @@ function input(snapshot: WorkspaceSnapshot, userPrompt: string) {
 
 describe("composeProviderPrompt budget", () => {
   it("encodes elastic retention separately from semantic prompt order", () => {
-    expect(elasticPromptDropOrder).toEqual([
-      "project-default-skills",
-      "oldest-annotations",
+    expect(providerPromptPrecedence).toEqual([
+      "skills",
+      "annotations",
+      "working-plan",
+      "provider-handoff",
+      "user-request",
     ])
+    expect(elasticPromptDropOrder).toEqual(["skills", "annotations"])
   })
 
   it("drops project-default skills before annotations", async () => {
@@ -127,6 +132,29 @@ describe("composeProviderPrompt budget", () => {
     expect(result.providerPromptDelivery.skills.omitted.budget).toEqual([fixture.summary.id])
     expect(result.providerPromptDelivery.annotations.deliveredIds).toEqual(["annotation-1"])
     expect(result.providerPromptDelivery.budget.used).toBe(result.prompt.length)
+  })
+
+  it("rejects overflow instead of dropping an explicitly selected skill", async () => {
+    const snapshot = baseSnapshot()
+    const fixture = skillFixture()
+    snapshot.skillEnablements = [fixture.review]
+
+    await expect(composeProviderPrompt({
+      ...input(snapshot, "u".repeat(250_000)),
+      skillCatalog: fixture.catalog,
+      skillSelection: {
+        mode: "turn-explicit",
+        skills: [{
+          skillId: fixture.summary.id,
+          review: {
+            contentDigest: fixture.review.contentDigest,
+            manifest: fixture.review.manifest,
+          },
+        }],
+      },
+    })).rejects.toThrow(
+      "Cannot send this turn: required user request and explicitly selected skills exceed the 262144 UTF-16 code units Domovoi payload limit. Shorten the request, remove one or more selected skills and try again.",
+    )
   })
 
   it("drops oldest annotations only after default skills are gone", async () => {
