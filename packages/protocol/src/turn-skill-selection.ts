@@ -4,7 +4,7 @@ import {
   type SkillSummary,
   type TurnSkillSelection,
   type TurnSkillSelectionRefusal,
-} from "@getdomovoi/protocol"
+} from "./skills.js"
 
 export type SelectableTurnSkill = Pick<SkillSummary, "id" | "name" | "contentDigest" | "manifest">
 

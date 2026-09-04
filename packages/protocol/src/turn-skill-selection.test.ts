@@ -1,4 +1,4 @@
-import type { SkillEnablementReview, SkillSummary } from "@getdomovoi/protocol"
+import type { SkillEnablementReview, SkillSummary } from "./skills.js"
 import { expect, it } from "vitest"
 
 import { selectableTurnSkills, turnSkillRefusalFrom, turnSkillSelectionFor } from "./turn-skill-selection.js"
@@ -44,6 +44,21 @@ it("offers only skills the project reviewed and enabled", () => {
   )
 
   expect(offered.map((entry) => entry.id)).toEqual([alpha.id])
+})
+
+it("orders what it offers by name, so the same catalog reads the same way twice", () => {
+  const zulu = skill("skill-cccccccccccc", "zulu-check", digest("c"))
+  const offered = selectableTurnSkills(
+    [zulu, beta, alpha],
+    [review(zulu), review(beta), review(alpha)],
+    "project-one",
+  )
+
+  expect(offered.map((entry) => entry.name)).toEqual(["plan-preview", "replay-audit", "zulu-check"])
+})
+
+it("offers nothing when no project is open, because enablement is per project", () => {
+  expect(selectableTurnSkills([alpha], [review(alpha)], undefined)).toEqual([])
 })
 
 it("sends nothing at all when the person has not chosen", () => {
