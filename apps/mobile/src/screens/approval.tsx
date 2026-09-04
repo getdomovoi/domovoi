@@ -43,7 +43,7 @@ export function ApprovalScreen({
 
       <ScrollView contentContainerClassName="gap-3 px-4 pb-8">
         <Card className="bg-code">
-          <Text className="font-machine text-[12px] text-foreground">{approval.command}</Text>
+          <Text className="font-mono text-[12px] text-foreground">{approval.command}</Text>
         </Card>
 
         <Card className="gap-0 p-0">
@@ -53,7 +53,7 @@ export function ApprovalScreen({
               className={`flex-row items-center justify-between px-3.5 py-3 ${index > 0 ? "border-t border-border" : ""}`}
             >
               <Text variant="label">{fact.key}</Text>
-              <Text className={`font-machine text-[11px] ${fact.tone ?? "text-strong"}`}>
+              <Text className={`font-mono text-[11px] ${fact.tone ?? "text-strong"}`}>
                 {fact.value}
               </Text>
             </View>
