@@ -1,5 +1,6 @@
 import {
   boundedClientThread,
+  maximumSessionPromptCharacters,
   type ApprovalDecision,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -30,7 +31,15 @@ export type SessionDetail = {
   // A paused session is one the daemon has nothing running for, so offering to
   // pause it again would be a button that does nothing.
   pausable: boolean
+  sending: SendReadiness
 }
+
+// Sending is either refused with the daemon's own reason, or allowed with a
+// note about what the message will actually do. The two are kept apart so a
+// screen cannot render a refusal as a hint or the other way round.
+export type SendReadiness =
+  | { can: false, reason: string }
+  | { can: true, hint: string | undefined }
 
 const decisionLabels: Record<ApprovalDecision, string> = {
   "allow-once": "Allowed once",
@@ -98,6 +107,51 @@ export function isPausable(session: WorkspaceSnapshot["sessions"][number]): bool
   return Boolean(session.providerThreadId && session.activeTurnId)
 }
 
+const readOnlyReasons: Partial<Record<
+  WorkspaceSnapshot["sessions"][number]["state"],
+  string
+>> = {
+  archiving: "This session is being archived, so it is read-only.",
+  archived: "Archived sessions are read-only.",
+  transferring: "Ownership of this session is moving, so it is read-only.",
+  transferred: "This session belongs to another machine now.",
+  "ownership-conflict": "This session has conflicting owners and is read-only.",
+}
+
+// The daemon refuses a send for exactly two reasons, and they are mirrored here
+// so the composer is disabled with the real reason instead of failing after the
+// person has typed. A turn already running is not one of them: the daemon
+// steers that turn rather than starting another, which is a different thing to
+// do with a message and worth saying, not worth blocking.
+export function sendReadiness(
+  session: WorkspaceSnapshot["sessions"][number],
+  hasApproval: boolean,
+): SendReadiness {
+  const readOnly = readOnlyReasons[session.state]
+  if (readOnly) return { can: false, reason: readOnly }
+  if (!session.workspacePath || !session.providerThreadId) {
+    return { can: false, reason: "This session has no worktree or provider thread yet." }
+  }
+  if (hasApproval) {
+    return { can: true, hint: "An approval is waiting. Answering it may be the faster reply." }
+  }
+  if (session.activeTurnId) {
+    return { can: true, hint: "A turn is running. This steers it rather than starting a new one." }
+  }
+  return { can: true, hint: undefined }
+}
+
+// The daemon trims before it measures, so a prompt of nothing but spaces is
+// refused here for the same reason it would be refused there.
+export function promptProblem(draft: string): string | undefined {
+  const trimmed = draft.trim()
+  if (trimmed.length === 0) return "Write something to send."
+  if (trimmed.length > maximumSessionPromptCharacters) {
+    return `That is longer than the ${maximumSessionPromptCharacters} characters a prompt may be.`
+  }
+  return undefined
+}
+
 export function sessionDetail(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
@@ -105,6 +159,9 @@ export function sessionDetail(
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)
   if (!session) return undefined
   const thread = threadEntries(snapshot, sessionId)
+  const approvalId = snapshot.approvals.find(
+    (approval) => approval.sessionId === sessionId,
+  )?.id
   return {
     id: session.id,
     title: session.title,
@@ -115,7 +172,8 @@ export function sessionDetail(
     state: session.state,
     entries: thread.entries,
     omitted: thread.omitted,
-    approvalId: snapshot.approvals.find((approval) => approval.sessionId === sessionId)?.id,
+    approvalId,
     pausable: isPausable(session),
+    sending: sendReadiness(session, approvalId !== undefined),
   }
 }

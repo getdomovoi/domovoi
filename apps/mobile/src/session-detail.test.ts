@@ -1,11 +1,18 @@
 import {
   demoWorkspace,
   maximumEffectiveClientThreadItems,
+  maximumSessionPromptCharacters,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { isPausable, sessionDetail, threadEntries } from "./session-detail"
+import {
+  isPausable,
+  promptProblem,
+  sendReadiness,
+  sessionDetail,
+  threadEntries,
+} from "./session-detail"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -89,6 +96,70 @@ describe("sessionDetail", () => {
 
   it("returns nothing for a session this snapshot does not have", () => {
     expect(sessionDetail(workspace(), "session-missing")).toBeUndefined()
+  })
+})
+
+describe("sendReadiness", () => {
+  function ready(snapshot: WorkspaceSnapshot) {
+    const session = snapshot.sessions[0]
+    if (!session) throw new Error("fixture needs a session")
+    session.workspacePath = "/Users/dev/.domovoi/worktrees/wt-billing-idem"
+    session.providerThreadId = "thread-billing"
+    return session
+  }
+
+  it("allows a send once the session has a worktree and a provider thread", () => {
+    expect(sendReadiness(ready(workspace()), false)).toEqual({ can: true, hint: undefined })
+  })
+
+  it("refuses a session the daemon has nothing to send into", () => {
+    const snapshot = workspace()
+    const session = snapshot.sessions[0]
+    if (!session) throw new Error("fixture needs a session")
+
+    const refusal = sendReadiness(session, false)
+
+    expect(refusal.can).toBe(false)
+  })
+
+  it("refuses every read-only state with its own reason", () => {
+    for (const state of ["archiving", "archived", "transferring", "transferred", "ownership-conflict"] as const) {
+      const snapshot = workspace()
+      const session = ready(snapshot)
+      session.state = state
+
+      expect(sendReadiness(session, false).can).toBe(false)
+    }
+  })
+
+  it("says a message will steer a running turn rather than refusing it", () => {
+    const snapshot = workspace()
+    const session = ready(snapshot)
+    session.activeTurnId = "turn-1"
+
+    const readiness = sendReadiness(session, false)
+
+    expect(readiness.can).toBe(true)
+    expect(readiness.can && readiness.hint).toContain("steers it")
+  })
+
+  it("points at the waiting approval first, because that is the faster answer", () => {
+    const readiness = sendReadiness(ready(workspace()), true)
+
+    expect(readiness.can && readiness.hint).toContain("approval")
+  })
+})
+
+describe("promptProblem", () => {
+  it("refuses nothing and whitespace, which the daemon trims away too", () => {
+    expect(promptProblem("")).toBeDefined()
+    expect(promptProblem("   \n ")).toBeDefined()
+    expect(promptProblem("ship it")).toBeUndefined()
+  })
+
+  it("measures the trimmed prompt against the protocol limit", () => {
+    expect(promptProblem(`  ${"a".repeat(maximumSessionPromptCharacters)}  `)).toBeUndefined()
+    expect(promptProblem("a".repeat(maximumSessionPromptCharacters + 1))).toBeDefined()
   })
 })
 

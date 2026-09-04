@@ -1,5 +1,6 @@
-import { ScrollView, View } from "react-native"
+import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native"
 
+import { Composer } from "../components/composer"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
@@ -89,20 +90,33 @@ export function SessionScreen({
   detail,
   plan,
   pausing,
+  draft,
+  sending,
+  sendProblem,
   onBack,
   onOpenApproval,
   onPause,
+  onChangeDraft,
+  onSend,
 }: {
   detail: SessionDetail
   plan: PlanSummary | undefined
   pausing: boolean
+  draft: string
+  sending: boolean
+  sendProblem: string
   onBack: () => void
   onOpenApproval: (approvalId: string) => void
   onPause: () => void
+  onChangeDraft: (draft: string) => void
+  onSend: () => void
 }) {
   const approvalId = detail.approvalId
   return (
-    <View className="flex-1 bg-background">
+    <KeyboardAvoidingView
+      className="flex-1 bg-background"
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       <View className="flex-row items-center gap-2 px-2 py-3">
         <Button title="‹" variant="ghost" onPress={onBack} className="px-3" accessibilityLabel="Back to sessions" />
         <View className="flex-1 gap-0.5">
@@ -159,6 +173,15 @@ export function SessionScreen({
           />
         </Card>
       </ScrollView>
-    </View>
+
+      <Composer
+        draft={draft}
+        readiness={detail.sending}
+        sending={sending}
+        problem={sendProblem}
+        onChangeDraft={onChangeDraft}
+        onSend={onSend}
+      />
+    </KeyboardAvoidingView>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { View } from "react-native"
 import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
@@ -16,7 +16,7 @@ import { FleetScreen } from "./screens/fleet"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
-import { sessionDetail } from "./session-detail"
+import { promptProblem, sessionDetail } from "./session-detail"
 import { waitingCount } from "./session-rows"
 import "./global.css"
 
@@ -31,6 +31,13 @@ export function App() {
   const [deciding, setDeciding] = useState(false)
   const [pausing, setPausing] = useState(false)
   const [confirmPauseSession, setConfirmPauseSession] = useState(false)
+  const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  const [sendProblem, setSendProblem] = useState("")
+  // A turn costs money, and two taps land in the same frame before the sending
+  // state has re-rendered anything. The latch is read and set synchronously, so
+  // the second tap has nothing left to do.
+  const inFlightSend = useRef(false)
   const [fleet, setFleet] = useState<FleetMachine[] | undefined>(undefined)
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
@@ -114,6 +121,31 @@ export function App() {
     }
   }
 
+  const sendMessage = async (sessionId: string) => {
+    if (inFlightSend.current) return
+    const problem = promptProblem(draft)
+    if (problem) {
+      setSendProblem(problem)
+      return
+    }
+    inFlightSend.current = true
+    setSending(true)
+    setSendProblem("")
+    try {
+      await call("session.send", {
+        sessionId,
+        prompt: draft.trim(),
+        client: clientKind,
+      })
+      setDraft("")
+    } catch (cause) {
+      setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
+    } finally {
+      inFlightSend.current = false
+      setSending(false)
+    }
+  }
+
   // An approval is the reason the phone exists, so it takes the whole screen
   // and the tab bar goes away until it is answered or dismissed.
   if (openApproval) {
@@ -143,9 +175,20 @@ export function App() {
             detail={openSession}
             plan={openPlan}
             pausing={pausing}
-            onBack={() => setOpenSessionId(undefined)}
+            draft={draft}
+            sending={sending}
+            sendProblem={sendProblem}
+            onBack={() => {
+              setOpenSessionId(undefined)
+              setSendProblem("")
+            }}
             onOpenApproval={setOpenApprovalId}
             onPause={() => setConfirmPauseSession(true)}
+            onChangeDraft={(next) => {
+              setDraft(next)
+              if (sendProblem) setSendProblem("")
+            }}
+            onSend={() => void sendMessage(openSession.id)}
           />
           <ConfirmSheet
             open={confirmPauseSession}
@@ -173,7 +216,16 @@ export function App() {
               <SessionsScreen
                 snapshot={snapshot}
                 machineCount={fleet?.length}
-                onOpenSession={setOpenSessionId}
+                onOpenSession={(sessionId) => {
+                  // A draft is written for one session. Carrying it into
+                  // another one would let a reply meant for one agent start a
+                  // turn on a different one.
+                  if (sessionId !== openSessionId) {
+                    setDraft("")
+                    setSendProblem("")
+                  }
+                  setOpenSessionId(sessionId)
+                }}
                 onPauseAll={() => setConfirmPause(true)}
               />
             ) : (
