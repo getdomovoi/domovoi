@@ -327,12 +327,18 @@ const transactionRequest = {
 } as const
 
 export const transferCommitParamsSchema = z.object(transactionRequest).strict()
-export const transferCommitResultSchema = z.discriminatedUnion("state", [
+export const transferCommitResultSchema = z.union([
   z.object({ ...committedFields, state: z.literal("committed") }).strict(),
   z.object({
     ...transactionCommon,
     state: z.literal("refused"),
-    reason: sessionTransferTransactionRefusalSchema,
+    reason: sessionTransferTransactionNonConflictRefusalSchema,
+  }).strict(),
+  z.object({
+    ...transactionCommon,
+    state: z.literal("refused"),
+    reason: sessionTransferTargetConflictReasonSchema,
+    existingGeneration: safeGenerationSchema,
   }).strict(),
 ])
 

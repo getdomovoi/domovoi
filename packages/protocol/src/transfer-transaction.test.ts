@@ -231,6 +231,17 @@ describe("transactional transfer rpc", () => {
         transferId,
         reason,
       }).success).toBe(false)
+      expect(transferCommitResultSchema.safeParse({
+        state: "refused",
+        transferId,
+        reason,
+        existingGeneration: 3,
+      }).success).toBe(true)
+      expect(transferCommitResultSchema.safeParse({
+        state: "refused",
+        transferId,
+        reason,
+      }).success).toBe(false)
     }
     expect(transferTargetPreflightResultSchema.safeParse({
       allowed: false,
