@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import {
   sessionTransferManifestSchema,
+  transferMemberChunkBytes,
   type SessionTransferManifest,
 } from "@getdomovoi/protocol"
 
@@ -122,7 +123,9 @@ describe("file transfer transaction journal", () => {
   it("streams members durably, refuses gaps, and verifies their digest", async () => {
     const { root, transactions } = await journal()
     const stateBytes = Buffer.from("state")
-    const repositoryBytes = Buffer.from("repository")
+    const firstRepositoryChunk = Buffer.alloc(transferMemberChunkBytes, 7)
+    const finalRepositoryChunk = Buffer.from("repository")
+    const repositoryBytes = Buffer.concat([firstRepositoryChunk, finalRepositoryChunk])
     const manifest = manifestFor(stateBytes, repositoryBytes)
     const manifestDigest = sessionTransferManifestDigest(manifest)
     await transactions.prepare(manifest, manifestDigest)
@@ -149,7 +152,7 @@ describe("file transfer transaction journal", () => {
       transferId,
       memberId: "repository",
       sequence: 0,
-      bytes: Buffer.from("repo").toString("base64"),
+      bytes: firstRepositoryChunk.toString("base64"),
       final: false,
       client: "desktop",
     })).resolves.toEqual({
@@ -162,7 +165,7 @@ describe("file transfer transaction journal", () => {
       transferId,
       memberId: "repository",
       sequence: 1,
-      bytes: Buffer.from("sitory").toString("base64"),
+      bytes: finalRepositoryChunk.toString("base64"),
       final: true,
       client: "desktop",
     })).resolves.toEqual({ state: "prepared", transferId })

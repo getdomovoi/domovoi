@@ -10,6 +10,7 @@ import {
   sessionTransferManifestSchema,
   transferCommitParamsSchema,
   transferMemberResultSchema,
+  transferMemberChunkBytes,
   transferPrepareResultSchema,
   transferStatusParamsSchema,
   transferAbortResultSchema,
@@ -259,6 +260,22 @@ describe("transactional transfer rpc", () => {
       state: "prepared",
       transferId,
     }).success).toBe(true)
+  })
+
+  it("bounds durable member fragments with full non-final chunks", () => {
+    const request = (bytes: Buffer, final: boolean) => transferMemberParamsSchema.safeParse({
+      transferId,
+      memberId: "repository",
+      sequence: 0,
+      bytes: bytes.toString("base64"),
+      final,
+      client: "desktop",
+    }).success
+
+    expect(request(Buffer.alloc(0), false)).toBe(false)
+    expect(request(Buffer.alloc(1), false)).toBe(false)
+    expect(request(Buffer.alloc(transferMemberChunkBytes), false)).toBe(true)
+    expect(request(Buffer.alloc(1), true)).toBe(true)
   })
 
   it("commits, queries, and aborts without guessing after a lost acknowledgement", () => {

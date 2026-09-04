@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import {
+  canonicalBase64DecodedByteLength,
   clientKindSchema,
   commitShaSchema,
   machineIdSchema,
@@ -22,6 +23,7 @@ import { transferMethodSchema } from "./transfer.js"
 
 export const sessionTransferManifestDomain = "domovoi.session-transfer-manifest.v1\0" as const
 export const sessionTransferMemberIdSchema = z.string().regex(/^[a-z][a-z0-9:._-]{0,255}$/)
+export const transferMemberChunkBytes = 262_144
 
 const memberCommon = {
   memberId: sessionTransferMemberIdSchema,
@@ -258,7 +260,18 @@ export const transferMemberParamsSchema = transferChunkSchema.extend({
   transferId: transferIdSchema,
   memberId: sessionTransferMemberIdSchema,
   client: clientKindSchema,
-}).strict()
+}).strict().superRefine((request, context) => {
+  if (request.final) return
+  if (canonicalBase64DecodedByteLength(request.bytes) === transferMemberChunkBytes) return
+  // Full non-final chunks make the journal entry count a function of the
+  // manifest's bounded byte total. Without this, a sender could consume
+  // unbounded inodes and quadratic scans with tiny or empty fragments.
+  context.addIssue({
+    code: "custom",
+    path: ["bytes"],
+    message: `Non-final transfer member chunks must contain ${transferMemberChunkBytes} bytes`,
+  })
+})
 
 export const transferMemberResultSchema = z.discriminatedUnion("state", [
   z.object({

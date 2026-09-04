@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import {
   transferCommitResultSchema,
+  transferMemberChunkBytes,
   transferMemberResultSchema,
   transferPrepareResultSchema,
   transferStatusResultSchema,
@@ -22,8 +23,6 @@ import {
 } from "./session-transfer-package.js"
 import { SessionTransferStateError } from "./session-transfer-state.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
-
-const transferMemberChunkBytes = 262_144
 
 type CommittedTransfer = Extract<TransferStatusResult, { state: "committed" }>
 type RemoteTransferResult =
