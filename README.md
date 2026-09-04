@@ -94,5 +94,6 @@ Domovoi is open-core. This repository contains the Apache-2.0-licensed daemon, p
 and local transports. The daemon's Claude Code session adapter depends at runtime on the
 proprietary `@anthropic-ai/claude-agent-sdk`, installed from npm under Anthropic's terms rather
 than redistributed here; that exception is recorded in [`docs/licensing.md`](docs/licensing.md).
-Future hosted account, billing, relay, encrypted vault, and team-policy services may live outside
-this repository.
+Hosted account, billing, relay, encrypted vault, and team-policy services are commercial and live
+in private repositories outside this one. Which side of that line a change belongs on, and why, is
+recorded in [`docs/open-core-boundary.md`](docs/open-core-boundary.md).
