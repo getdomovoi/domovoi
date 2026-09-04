@@ -367,17 +367,27 @@ async function sendMember(input: {
       )
   let result: TransferMemberResult | undefined
   for (const [sequence, chunk] of chunks.entries()) {
-    result = transferMemberResultSchema.parse(await input.call("transfer.member", {
+    result = matchingTransferResult(input.manifest.transferId, transferMemberResultSchema.parse(
+      await input.call("transfer.member", {
       transferId: input.manifest.transferId,
       memberId: input.memberId,
       sequence,
       bytes: chunk.toString("base64"),
       final: sequence === chunks.length - 1,
       client: input.client,
-    }))
+      }),
+    ))
     if (result.state === "refused") return result
   }
   if (!result) throw new Error("A transfer member produced no chunks")
+  return result
+}
+
+function matchingTransferResult<T extends { transferId: string }>(
+  transferId: string,
+  result: T,
+): T {
+  if (result.transferId !== transferId) throw new Error("Target transfer identity changed")
   return result
 }
 
@@ -390,11 +400,14 @@ export async function sendPreparedSessionTransfer(input: {
 }): Promise<RemoteTransferResult> {
   let status: TransferStatusResult
   try {
-    status = transferStatusResultSchema.parse(await input.call("transfer.status", {
-      transferId: input.transferId,
-      manifestDigest: input.manifestDigest,
-      client: input.client,
-    }))
+    status = matchingTransferResult(
+      input.transferId,
+      transferStatusResultSchema.parse(await input.call("transfer.status", {
+        transferId: input.transferId,
+        manifestDigest: input.manifestDigest,
+        client: input.client,
+      })),
+    )
   } catch {
     return transferStatusResultSchema.parse({ state: "unknown", transferId: input.transferId })
   }
@@ -406,11 +419,14 @@ export async function sendPreparedSessionTransfer(input: {
   ) return status
 
   const manifest = await input.transactions.manifest(input.transferId, input.manifestDigest)
-  const prepared = transferPrepareResultSchema.parse(await input.call("transfer.prepare", {
-    manifest,
-    manifestDigest: input.manifestDigest,
-    client: input.client,
-  }))
+  const prepared = matchingTransferResult(
+    input.transferId,
+    transferPrepareResultSchema.parse(await input.call("transfer.prepare", {
+      manifest,
+      manifestDigest: input.manifestDigest,
+      client: input.client,
+    })),
+  )
   if (prepared.state === "committed" || prepared.state === "refused") return prepared
   if (prepared.state === "receiving") {
     const declared = new Set(manifest.members.map((member) => member.memberId))
@@ -422,9 +438,12 @@ export async function sendPreparedSessionTransfer(input: {
       if (result.state === "refused") return result
     }
   }
-  return transferCommitResultSchema.parse(await input.call("transfer.commit", {
-    transferId: input.transferId,
-    manifestDigest: input.manifestDigest,
-    client: input.client,
-  }))
+  return matchingTransferResult(
+    input.transferId,
+    transferCommitResultSchema.parse(await input.call("transfer.commit", {
+      transferId: input.transferId,
+      manifestDigest: input.manifestDigest,
+      client: input.client,
+    })),
+  )
 }

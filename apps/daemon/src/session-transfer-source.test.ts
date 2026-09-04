@@ -213,6 +213,51 @@ describe("source transfer lifecycle", () => {
 })
 
 describe("prepared source transfer delivery", () => {
+  it("never trusts a target response for another transfer", async () => {
+    const { packaged } = await transferFixture()
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-outgoing-correlation-"))
+    scratchDirectories.push(scratch)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    const wrongTransferId = `transfer-${"0".repeat(32)}`
+    const send = (call: (method: string) => Promise<unknown>) => sendPreparedSessionTransfer({
+      transactions: outgoing,
+      transferId: packaged.manifest.transferId,
+      manifestDigest: packaged.manifestDigest,
+      client: "desktop",
+      call,
+    })
+
+    await expect(send(async () => ({ state: "aborted", transferId: wrongTransferId })))
+      .resolves.toEqual({ state: "unknown", transferId: packaged.manifest.transferId })
+    await expect(send(async (method) => method === "transfer.status"
+      ? { state: "unknown", transferId: packaged.manifest.transferId }
+      : { state: "refused", transferId: wrongTransferId, reason: "session-state-changed" }))
+      .rejects.toThrow("Target transfer identity changed")
+    await expect(send(async (method) => {
+      if (method === "transfer.status") {
+        return { state: "unknown", transferId: packaged.manifest.transferId }
+      }
+      if (method === "transfer.prepare") {
+        return {
+          state: "receiving",
+          transferId: packaged.manifest.transferId,
+          missingMemberIds: [packaged.manifest.stateMemberId],
+        }
+      }
+      return { state: "refused", transferId: wrongTransferId, reason: "digest-mismatch" }
+    })).rejects.toThrow("Target transfer identity changed")
+    await expect(send(async (method) => {
+      if (method === "transfer.status") {
+        return { state: "unknown", transferId: packaged.manifest.transferId }
+      }
+      if (method === "transfer.prepare") {
+        return { state: "prepared", transferId: packaged.manifest.transferId }
+      }
+      return { state: "refused", transferId: wrongTransferId, reason: "session-state-changed" }
+    })).rejects.toThrow("Target transfer identity changed")
+  })
+
   it("journals every byte before streaming only the target's missing members", async () => {
     const repositoryBytes = Buffer.alloc(600_000, 7)
     const { packaged } = await transferFixture(repositoryBytes)
