@@ -19,6 +19,7 @@ export function SettingsScreen({
   onChangeUrl,
   onChangeToken,
   onConnect,
+  onForget,
 }: {
   url: string
   token: string
@@ -27,6 +28,7 @@ export function SettingsScreen({
   onChangeUrl: (value: string) => void
   onChangeToken: (value: string) => void
   onConnect: () => void
+  onForget: () => void
 }) {
   return (
     <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-3 p-4 pb-8">
@@ -59,13 +61,15 @@ export function SettingsScreen({
           />
         </View>
         <Button title="Connect" variant="primary" onPress={onConnect} />
+        <Button title="Forget this daemon" variant="ghost" onPress={onForget} />
         <Text variant="meta">{statusLabel[status]}</Text>
         {problem ? <Text className="text-[12px] text-destructive">{problem}</Text> : null}
       </Card>
 
       <Text variant="meta">
         The phone reaches the daemon directly over your tailnet. Nothing is relayed through a
-        hosted service, and the token stays on this device.
+        hosted service. The token is held in this device's keychain, is never copied off it, and
+        forgetting the daemon removes it.
       </Text>
     </ScrollView>
   )

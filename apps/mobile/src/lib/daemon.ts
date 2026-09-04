@@ -27,6 +27,7 @@ export class DaemonConnection {
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       onStatus: (status: DaemonStatus) => void
       onError: (message: string) => void
+      onClosed: () => void
     },
   ) {}
 
@@ -94,7 +95,12 @@ export class DaemonConnection {
       }
       this.#pending.clear()
       this.handlers.onStatus("closed")
+      if (!this.#closed) this.handlers.onClosed()
     }
+  }
+
+  isOpen(): boolean {
+    return this.#socket?.readyState === 1
   }
 
   call(method: string, params: unknown): Promise<unknown> {

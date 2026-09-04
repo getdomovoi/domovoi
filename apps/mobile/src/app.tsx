@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { View } from "react-native"
 import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
@@ -6,6 +6,7 @@ import type { ApprovalDecision } from "@getdomovoi/protocol"
 
 import { TabBar, type Tab } from "./components/tab-bar"
 import { Text } from "./components/ui/text"
+import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
 import { useDaemon } from "./lib/use-daemon"
 import { ApprovalScreen } from "./screens/approval"
 import { FleetScreen } from "./screens/fleet"
@@ -19,8 +20,25 @@ export function App() {
   const [url, setUrl] = useState("")
   const [token, setToken] = useState("")
   const [connectTo, setConnectTo] = useState<{ url: string, token: string } | undefined>(undefined)
+  const [restoring, setRestoring] = useState(true)
   const [openApprovalId, setOpenApprovalId] = useState<string | undefined>(undefined)
   const [deciding, setDeciding] = useState(false)
+
+  // The saved credential is what makes the app usable the second time it is
+  // opened, so it is restored before anything is drawn.
+  useEffect(() => {
+    let live = true
+    void loadCredential().then((saved) => {
+      if (!live) return
+      if (saved) {
+        setUrl(saved.url)
+        setToken(saved.token)
+        setConnectTo(saved)
+      }
+      setRestoring(false)
+    })
+    return () => { live = false }
+  }, [])
 
   const { snapshot, status, problem, call } = useDaemon(connectTo?.url, connectTo?.token)
   const waiting = snapshot ? waitingCount(snapshot) : 0
@@ -83,7 +101,9 @@ export function App() {
               <View className="flex-1 items-center justify-center gap-2 p-6">
                 <Text variant="title">Not connected</Text>
                 <Text variant="meta" className="text-center">
-                  Add your daemon address and pairing token in Settings.
+                  {restoring
+                    ? "Looking for a saved daemon."
+                    : "Add your daemon address and pairing token in Settings."}
                 </Text>
               </View>
             )
@@ -97,7 +117,17 @@ export function App() {
               problem={problem}
               onChangeUrl={setUrl}
               onChangeToken={setToken}
-              onConnect={() => setConnectTo({ url: url.trim(), token: token.trim() })}
+              onConnect={() => {
+                const next = { url: url.trim(), token: token.trim() }
+                setConnectTo(next)
+                void saveCredential(next)
+              }}
+              onForget={() => {
+                setConnectTo(undefined)
+                setUrl("")
+                setToken("")
+                void clearCredential()
+              }}
             />
           ) : null}
         </View>
