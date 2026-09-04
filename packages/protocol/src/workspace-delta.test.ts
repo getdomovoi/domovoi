@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { demoWorkspace, maximumEffectiveClientThreadItems, type WorkspaceDelta } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumEffectiveClientThreadItems, type WorkspaceDelta } from "./index.js"
 
 import { applyWorkspaceDelta } from "./workspace-delta.js"
 

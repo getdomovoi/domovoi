@@ -3,10 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
-import { rpcMethods } from "@getdomovoi/protocol"
+import { applyWorkspaceDelta, rpcMethods } from "@getdomovoi/protocol"
 import { openClaimConnection } from "./claim-socket"
 import { machineHelloParams, pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
-import { applyWorkspaceDelta } from "./workspace-delta"
+
 
 type WorkspaceSnapshotState = {
   target: string
