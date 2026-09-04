@@ -4,21 +4,20 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-const { DomovoiDaemon, createProductionDaemon } = await import("./dist/public.js")
+const publicApi = await import("./dist/public.js")
+const { createProductionDaemon } = publicApi
 const internal = await import("./dist/server.js")
 
-// The published entry stays narrow; the injection seams stay reachable on the
-// internal path the workspace and the tests use.
-assert.deepEqual(
-  Object.keys(await import("./dist/public.js")).sort(),
-  ["DomovoiDaemon", "createProductionDaemon"],
-)
-assert.ok(internal.DomovoiDaemon)
-assert.ok(Object.keys(internal).length > 10)
+// Published entry points cannot bypass production assembly. The internal path
+// remains as a package-artifact compatibility surface, not a construction API.
+assert.deepEqual(Object.keys(publicApi).sort(), ["createProductionDaemon"])
+assert.equal("DomovoiDaemon" in internal, false)
 
-const daemon = new DomovoiDaemon({ statePath: ":memory:" })
-assert.match(daemon.authToken, /^[A-Za-z0-9_-]{43}$/)
-await daemon.stop()
+const publicTypes = readFileSync(new URL("./dist/public.d.ts", import.meta.url), "utf8")
+const internalTypes = readFileSync(new URL("./dist/server.d.ts", import.meta.url), "utf8")
+assert.doesNotMatch(publicTypes, /\bDomovoiDaemon(?:Constructor|Instance|Options)?\b/)
+assert.doesNotMatch(publicTypes, /\bDaemonServerOptions\b/)
+assert.doesNotMatch(internalTypes, /\bDomovoiDaemon\b/)
 
 const productionHome = mkdtempSync(join(tmpdir(), "domovoi-dist-factory-"))
 try {

@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 describe("production daemon assembly", () => {
-  it("constructs the raw daemon only inside the production factory", async () => {
+  it("keeps the raw daemon class inside the server and production factory", async () => {
     const sourceRoot = import.meta.dirname
     const entries = await readdir(sourceRoot, { recursive: true })
     const offenders: string[] = []
@@ -20,7 +20,10 @@ describe("production daemon assembly", () => {
       ) continue
 
       const source = await readFile(join(sourceRoot, entry), "utf8")
-      if (/\bnew\s+DomovoiDaemon\b/u.test(source)) offenders.push(normalized)
+      if (
+        /\bDomovoiDaemon\b/u.test(source)
+        || /\bexport\s+\*\s+from\s+["']\.\/server(?:\.js)?["']/u.test(source)
+      ) offenders.push(normalized)
     }
 
     expect(offenders).toEqual([])
