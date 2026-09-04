@@ -70,6 +70,7 @@ export interface FleetRegistry {
   completeEnrollment(operationId: string, credentialDigest: string): boolean
   abortEnrollment(operationId: string): boolean
   stageForget(machineId: string, credentialDigest: string | null, nowMs: number): FleetForgetOperation
+  pendingForgetEnrollment(operationId: string): EnrolledFleetMachine | undefined
   confirmRemoteRevocation(operationId: string): boolean
   completeForget(operationId: string): boolean
   refreshAuthenticated(facts: FleetMachineFacts, credentialDigest: string, nowMs: number): boolean
@@ -272,6 +273,16 @@ export class SqliteFleetRegistry implements FleetRegistry {
         .run(JSON.stringify({ ...pending, remoteRevocation: "confirmed" }), operationId)
       return true
     })
+  }
+
+  pendingForgetEnrollment(operationId: string): EnrolledFleetMachine | undefined {
+    const operation = this.#operation(operationId)
+    if (operation?.kind !== "forget" || operation.credentialDigest === null) return undefined
+    // This route is available only to finish this journaled revocation, never
+    // to ordinary dialing or heartbeat while forget is in progress.
+    const row = this.#database.prepare("SELECT * FROM fleet_machines WHERE id = ? AND credential_digest = ?")
+      .get(operation.machineId, operation.credentialDigest) as StoredFleetMachine | undefined
+    return row === undefined ? undefined : { facts: readFacts(row), credentialDigest: operation.credentialDigest }
   }
 
   completeForget(operationId: string): boolean {

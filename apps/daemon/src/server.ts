@@ -69,6 +69,7 @@ import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { createMachineDialer } from "./machine-dial.js"
+import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
@@ -758,6 +759,8 @@ export type DaemonServerOptions = {
   tls?: TlsMaterial
   advertiseHost?: string
   machineCredentials?: MachineCredentials
+  fleetOperationTimeoutMs?: number
+  fleetHeartbeatIntervalMs?: number
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
   transferTransactions?: FileTransferTransactions
   outgoingTransferTransactions?: FileTransferTransactions
@@ -872,6 +875,7 @@ export class DomovoiDaemon {
   #advertiseHost: string | undefined
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
+  #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
   #transferTransactions: FileTransferTransactions
   #outgoingTransferTransactions: FileTransferTransactions
@@ -912,10 +916,7 @@ export class DomovoiDaemon {
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
     this.#connectToMachine = options.connectToMachine ?? createMachineDialer({
-      machines: () => this.#store.fleet?.snapshot(
-        this.#snapshot.machine.id,
-        Date.now(),
-      ).entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : []) ?? [],
+      machines: () => this.#fleetEnrollment.snapshot().entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : []),
       credentials: this.#machineCredentials,
       dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
       open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
@@ -995,6 +996,14 @@ export class DomovoiDaemon {
       this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
     }
     this.#localMachine = structuredClone(this.#snapshot.machine)
+    this.#fleetEnrollment = new FleetEnrollmentService({
+      selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
+      operationTimeoutMs: options.fleetOperationTimeoutMs ?? defaultFleetOperationTimeoutMs,
+      heartbeatIntervalMs: options.fleetHeartbeatIntervalMs ?? defaultFleetHeartbeatIntervalMs,
+      recordLocal: () => this.#recordThisMachine(),
+      changed: (fleet) => this.#broadcastNotification("fleet.changed", fleet),
+      reportFailure: (context) => this.#reportError(context, new Error("Fleet lifecycle recovery will retry")),
+    })
     const usagePath = options.store || statePath === ":memory:"
       ? ":memory:"
       : join(dirname(statePath), "usage.sqlite")
@@ -1241,6 +1250,7 @@ export class DomovoiDaemon {
     // remains read-only while its own resource queue reconciles in background.
     this.#scheduleSessionTransferRecovery()
     this.#scheduleRecoveredOwnershipChecks()
+    this.#fleetEnrollment.start()
     if (this.#providerProbe) this.#queueProviderRefresh(true)
 
     return this.address!
@@ -1249,20 +1259,22 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    const fleetStopped = this.#fleetEnrollment.stop()
     if (this.#transferReconciliationTimer) {
       clearTimeout(this.#transferReconciliationTimer)
       this.#transferReconciliationTimer = undefined
     }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
-    const stopping = this.#finishStop()
+    const stopping = this.#finishStop(fleetStopped)
     this.#stopPromise = stopping
     return stopping
   }
 
-  async #finishStop(): Promise<void> {
+  async #finishStop(fleetStopped: Promise<void>): Promise<void> {
     const failures: unknown[] = []
     try {
+      await fleetStopped
       await this.#providerRefresh
       try {
         await withTimeout(
@@ -1355,7 +1367,7 @@ export class DomovoiDaemon {
       ? { ...authenticatedActor, connectionId }
       : authenticatedActor ?? { kind: "daemon", component: "rpc" }
     const sessionId = this.#auditSessionId(values)
-    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId"]
+    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId", "machineId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
       ?? ((method === "skill.setEnabled" || method === "skill.review")
@@ -1384,7 +1396,7 @@ export class DomovoiDaemon {
   #amendPendingAudit(
     socket: WebSocket,
     id: string | number | null,
-    updates: Pick<AuditAppendInput, "target" | "detail">,
+    updates: Pick<AuditAppendInput, "target" | "detail"> & { outcome?: AuditOutcome },
   ): void {
     const input = this.#pendingAudits.get(socket)?.get(JSON.stringify(id))
     if (!input) return
@@ -1567,7 +1579,7 @@ export class DomovoiDaemon {
     const sourceCapability = this.#sourceTransferCapabilityRefusal(params.method)
     if (sourceCapability) return this.#refusedTransferPreview(params, sourceCapability)
 
-    const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
+    const fleet = this.#fleetEnrollment.snapshot()
     const target = fleet?.entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : [])
       .find((machine) => machine.id === params.targetMachineId)
     if (!target) return this.#refusedTransferPreview(params, "target-unreachable")
@@ -2798,6 +2810,10 @@ export class DomovoiDaemon {
         || request.method === "audit.query"
         || request.method === "audit.export"
         || request.method === "fleet.heartbeat"
+        || request.method === "fleet.list"
+        || request.method === "fleet.enroll"
+        || request.method === "fleet.forget"
+        || request.method === "device.revokeCurrent"
         || request.method === "system.emergencyStop"
     } catch {
       return false
@@ -4510,10 +4526,27 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
-            this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-              ?? { entries: [] },
+            this.#fleetEnrollment.snapshot(),
           ),
         })
+        return
+      }
+
+      if (method === "fleet.enroll" || method === "fleet.forget") {
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Managing the fleet requires the daemon credential")
+          return
+        }
+        const result = method === "fleet.enroll"
+          ? await this.#fleetEnrollment.enroll(paramsResult.data as RpcParams<"fleet.enroll">)
+          : await this.#fleetEnrollment.forget(paramsResult.data as RpcParams<"fleet.forget">)
+        if (result.outcome === "refused") this.#amendPendingAudit(socket, request.id, { outcome: "denied", detail: `reason=${result.reason}` })
+        else this.#amendPendingAudit(socket, request.id, {
+          target: result.outcome === "pending" ? result.operation.machineId : result.machineId,
+          detail: result.outcome === "pending" ? `pending=${result.operation.id}`
+            : "remoteRevocation" in result ? `remoteRevocation=${result.remoteRevocation}` : "authenticated-enrollment",
+        })
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
         return
       }
 
