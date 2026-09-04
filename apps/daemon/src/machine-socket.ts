@@ -236,6 +236,7 @@ export async function claimMachineSocket(input: SocketInput & {
   endpoint: string
 }> {
   const channel = await openMachineChannel(input)
+  let authenticated = false
   try {
     const rawClaim = await channel.call("device.claim", {
       code: input.code, label: input.sourceDeviceLabel, machineId: input.sourceMachineId, protocolVersion,
@@ -247,12 +248,24 @@ export async function claimMachineSocket(input: SocketInput & {
     }
     const credential = claim.data.token
     const id = await greet(channel, credential, input.deadline)
+    authenticated = true
     if (input.expectedMachineId !== undefined && id !== input.expectedMachineId) throw new MachineIdentityMismatchError()
     if (id === input.sourceMachineId) throw new MachineSelfEnrollmentError()
     const descriptor = await readMachineDescriptor(channel, id, credential, input.deadline)
     channel.finishHandshake()
     return { connection: { call: channel.call, close: channel.close }, credential, descriptor, endpoint: input.endpoint }
-  } catch (error) { channel.close(); throw error }
+  } catch (error) {
+    if (authenticated && input.deadline.remainingMs() > 0) {
+      // A claim that never reaches the coordinator must not leave avoidable
+      // authority behind. Best effort only, on this authenticated socket and
+      // within the original budget; never replace the original refusal.
+      const cleanup = input.deadline.limit(1_000)
+      try { await channel.call("device.revokeCurrent", {}, undefined, cleanup) } catch { /* No confirmed-revocation claim. */ }
+      finally { cleanup.clear() }
+    }
+    channel.close()
+    throw error
+  }
 }
 
 export async function readMachineDescriptor(
