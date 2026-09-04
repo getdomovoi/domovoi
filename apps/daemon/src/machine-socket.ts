@@ -7,6 +7,7 @@ import {
   fleetDirectEndpointSchema,
   fleetMachineDescriptorSchema,
   machineIdSchema,
+  protocolCompatibility,
   protocolVersion,
   protocolVersionMismatchErrorCode,
   rpcResponseSchema,
@@ -184,13 +185,19 @@ function openMachineChannel(input: SocketInput): Promise<MachineChannel> {
 }
 
 function handshakeIdentity(result: unknown): string {
-  const snapshot = systemHelloResultSchema.safeParse(result)
-  if (snapshot.success) return machineIdSchema.parse(snapshot.data.machine.id)
   const version = result && typeof result === "object" && "protocolVersion" in result ? result.protocolVersion : undefined
   // An untrusted error must not turn arbitrary peer text into a logged version.
-  if (typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version) && version.length <= 64 && version !== protocolVersion) {
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || version.length > 64) {
+    throw new MachineDescriptorError()
+  }
+  if (protocolCompatibility(protocolVersion, version) !== "compatible") {
     throw new MachineProtocolMismatchError(version)
   }
+  // The durable snapshot schema pins our local version. Compatible peers can
+  // differ in patch version; validate their full shape without changing any
+  // published remote fact. Only the checked identity leaves this function.
+  const snapshot = systemHelloResultSchema.safeParse({ ...result as object, protocolVersion })
+  if (snapshot.success) return machineIdSchema.parse(snapshot.data.machine.id)
   throw new MachineDescriptorError()
 }
 
@@ -229,6 +236,7 @@ export async function claimMachineSocket(input: SocketInput & {
   endpoint: string
 }> {
   const channel = await openMachineChannel(input)
+  let authenticated = false
   try {
     const rawClaim = await channel.call("device.claim", {
       code: input.code, label: input.sourceDeviceLabel, machineId: input.sourceMachineId, protocolVersion,
@@ -240,12 +248,24 @@ export async function claimMachineSocket(input: SocketInput & {
     }
     const credential = claim.data.token
     const id = await greet(channel, credential, input.deadline)
+    authenticated = true
     if (input.expectedMachineId !== undefined && id !== input.expectedMachineId) throw new MachineIdentityMismatchError()
     if (id === input.sourceMachineId) throw new MachineSelfEnrollmentError()
     const descriptor = await readMachineDescriptor(channel, id, credential, input.deadline)
     channel.finishHandshake()
     return { connection: { call: channel.call, close: channel.close }, credential, descriptor, endpoint: input.endpoint }
-  } catch (error) { channel.close(); throw error }
+  } catch (error) {
+    if (authenticated && input.deadline.remainingMs() > 0) {
+      // A claim that never reaches the coordinator must not leave avoidable
+      // authority behind. Best effort only, on this authenticated socket and
+      // within the original budget; never replace the original refusal.
+      const cleanup = input.deadline.limit(1_000)
+      try { await channel.call("device.revokeCurrent", {}, undefined, cleanup) } catch { /* No confirmed-revocation claim. */ }
+      finally { cleanup.clear() }
+    }
+    channel.close()
+    throw error
+  }
 }
 
 export async function readMachineDescriptor(
@@ -258,7 +278,9 @@ export async function readMachineDescriptor(
   const parsed = fleetMachineDescriptorSchema.safeParse(result)
   if (!parsed.success || JSON.stringify(parsed.data).includes(credential)) throw new MachineDescriptorError()
   if (parsed.data.id !== expectedMachineId) throw new MachineIdentityMismatchError()
-  if (parsed.data.protocolVersion !== protocolVersion) throw new MachineProtocolMismatchError(parsed.data.protocolVersion)
+  if (protocolCompatibility(protocolVersion, parsed.data.protocolVersion) !== "compatible") {
+    throw new MachineProtocolMismatchError(parsed.data.protocolVersion)
+  }
   deadline.throwIfExpired()
   return parsed.data
 }

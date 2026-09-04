@@ -4,6 +4,7 @@ import {
   fleetMachineFactsSchema,
   fleetMachineSchema,
   fleetSnapshotSchema,
+  fleetSnapshotOverflowSchema,
   machineHeartbeatState,
   maximumFleetMachines,
   staleHeartbeatMs,
@@ -196,6 +197,30 @@ describe("fleetSnapshotSchema", () => {
       self: false,
     }))
     expect(fleetSnapshotSchema.safeParse({ entries: machines.map(described) }).success).toBe(false)
+  })
+
+  it("keeps recovery rows visible beyond the admission cap but bounds the full wire list", () => {
+    const machines = Array.from({ length: maximumFleetMachines }, (_unused, index) => described({
+      ...machine, id: `machine-${index.toString(16).padStart(32, "0")}`, self: false,
+    }))
+    const recovery = Array.from({ length: 512 - maximumFleetMachines }, (_unused, index) => ({
+      kind: "unenrolled", machineId: `machine-${(index + maximumFleetMachines).toString(16).padStart(32, "0")}`,
+    }))
+    expect(fleetSnapshotSchema.parse({ entries: [...machines, ...recovery] }).entries).toHaveLength(512)
+    expect(fleetSnapshotSchema.safeParse({ entries: [...machines, ...recovery, {
+      kind: "unenrolled", machineId: `machine-${"f".repeat(32)}`,
+    }] }).success).toBe(false)
+    expect(fleetSnapshotSchema.safeParse({ entries: [...machines, ...recovery.slice(0, -1), {
+      kind: "pending", id: "12345678-1234-4234-8234-123456789abc", machineId: `machine-${"f".repeat(32)}`,
+      operation: "forget", startedAt: "2026-09-04T12:00:00.000Z",
+    }] }).success).toBe(true)
+  })
+
+  it("reports the full omitted count when refusing an over-cap fleet", () => {
+    const overflow = { kind: "fleet-overflow", limit: 512, totalEntries: 513, entriesNotShown: 513 }
+    expect(fleetSnapshotOverflowSchema.parse(overflow)).toEqual(overflow)
+    expect(fleetSnapshotOverflowSchema.safeParse({ ...overflow, entriesNotShown: 514 }).success).toBe(false)
+    expect(fleetSnapshotOverflowSchema.safeParse({ ...overflow, totalEntries: 512 }).success).toBe(false)
   })
 })
 

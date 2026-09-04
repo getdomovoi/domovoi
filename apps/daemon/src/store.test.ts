@@ -26,13 +26,18 @@ describe("SqliteWorkspaceStore", () => {
     scratchDirectories.push(scratch)
     const databasePath = join(scratch, "state.sqlite")
     const original = new SqliteWorkspaceStore(databasePath, structuredClone(demoWorkspace))
-    const paired = original.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
-    const before = original.load()
-    await original.close()
+    let paired: ReturnType<typeof original.devices.pair>
+    let before: WorkspaceSnapshot
+    try {
+      paired = original.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+      before = original.load()
+    } finally { await original.close() }
     const database = new DatabaseSync(databasePath)
-    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
-      .run(JSON.stringify({ ...before, protocolVersion: "0.3.0" }))
-    database.close()
+    try {
+      expect(protocolVersion).not.toBe("0.3.0")
+      database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+        .run(JSON.stringify({ ...before, protocolVersion: "0.3.0" }))
+    } finally { database.close() }
 
     const reopened = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
     try {
@@ -43,6 +48,11 @@ describe("SqliteWorkspaceStore", () => {
     } finally {
       await reopened.close()
     }
+    const durable = new DatabaseSync(databasePath)
+    try {
+      const row = durable.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+      expect(JSON.parse(row.snapshot)).toEqual({ ...before, protocolVersion })
+    } finally { durable.close() }
   })
 
   it("keeps committed transfer ownership after restart and active project changes", async () => {

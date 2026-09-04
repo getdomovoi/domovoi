@@ -1,4 +1,4 @@
-import { fleetDirectEndpointSchema, orderedTransports, type FleetMachine } from "@getdomovoi/protocol"
+import { fleetDirectEndpointSchema, orderedTransports, type FleetMachineFacts } from "@getdomovoi/protocol"
 
 import type { MachineCredentials } from "./machine-credentials.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
@@ -31,7 +31,7 @@ function leavesThisMachine(endpoint: string): boolean {
 // fleet says about it, the credential pairing left here, and the transport
 // order the protocol defines.
 export function createMachineDialer(input: {
-  machines: () => FleetMachine[]
+  machines: () => readonly Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute">[]
   credentials: MachineCredentials | undefined
   dialTimeoutMs: number
   open: (input: {

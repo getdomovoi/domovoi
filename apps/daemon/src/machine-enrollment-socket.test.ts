@@ -20,7 +20,7 @@ afterEach(async () => {
   }
 })
 
-async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string } = {}) {
+async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string; heartbeatVersion?: string } = {}) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   servers.push(server)
   await once(server, "listening")
@@ -29,7 +29,7 @@ async function target(overrides: { heartbeatId?: string; label?: string; silence
   const workspace = createEmptyWorkspace({ ...demoWorkspace.machine, id: targetId })
   const descriptor = {
     id: overrides.heartbeatId ?? targetId, label: overrides.label ?? "studio", platform: "darwin", arch: "arm64",
-    version: "0.0.1", protocolVersion, capabilities: ["sessions"], transports: [],
+    version: "0.0.1", protocolVersion: overrides.heartbeatVersion ?? protocolVersion, capabilities: ["sessions"], transports: [],
   }
   server.on("connection", (socket) => {
     connections += 1
@@ -81,12 +81,35 @@ describe("machine enrollment socket", () => {
     const self = await target({ claimMachineId: targetId })
     await expect(claimMachineSocket({ ...self.input, sourceMachineId: targetId }))
       .rejects.toThrow("cannot enroll itself")
-    expect(self.calls.map((call) => call.method)).toEqual(["device.claim", "system.hello"])
+    expect(self.calls.map((call) => call.method)).toEqual(["device.claim", "system.hello", "device.revokeCurrent"])
   })
 
   it("checks the identity again in the authenticated descriptor", async () => {
     const machine = await target({ heartbeatId: sourceId })
     await expect(claimMachineSocket(machine.input)).rejects.toThrow("different machine")
+    expect(machine.calls.at(-1)?.method).toBe("device.revokeCurrent")
+  })
+
+  it("retains a compatible descriptor patch version rather than requiring literal equality", async () => {
+    const remoteVersion = `${protocolVersion.split(".").slice(0, 2).join(".")}.1`
+    const machine = await target({ heartbeatVersion: remoteVersion })
+    const claimed = await claimMachineSocket(machine.input)
+    try { expect(claimed.descriptor.protocolVersion).toBe(remoteVersion) }
+    finally { claimed.connection.close() }
+  })
+
+  it("bounds a silent compensating revocation and preserves the original refusal", async () => {
+    const machine = await target({ heartbeatId: sourceId, silenceAt: "device.revokeCurrent" })
+    let expire: (() => void) | undefined
+    const deadline = OperationDeadline.start(1_000, {
+      now: () => 0,
+      scheduler: { setTimeout: (callback) => { expire ??= callback; return 1 }, clearTimeout: () => {} },
+    })
+    deadlines.push(deadline)
+    const refused = expect(claimMachineSocket({ ...machine.input, deadline })).rejects.toThrow("different machine")
+    await vi.waitFor(() => expect(machine.calls.at(-1)?.method).toBe("device.revokeCurrent"))
+    expire!()
+    await refused
   })
 
   it("refuses a claim bound to another machine before sending its credential", async () => {

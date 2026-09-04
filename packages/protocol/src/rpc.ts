@@ -101,6 +101,7 @@ export const protocolVersionMismatchErrorCode = -32012 as const
 export const devicePairingLimitErrorCode = -32013 as const
 export const daemonPersistenceUnavailableErrorCode = -32014 as const
 export const turnSkillSelectionErrorCode = -32015 as const
+export const fleetSnapshotOverflowErrorCode = -32016 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
