@@ -11,6 +11,7 @@ import {
   collectAuditExport,
   downloadAuditExport,
 } from "./audit-log-view"
+import { Deadline } from "./deadline"
 
 const entry: AuditEntry = {
   id: "audit-111111111111",
@@ -122,7 +123,7 @@ describe("audit log view", () => {
 
     const exported = await collectAuditExport(onExport, { query: "session" }, {
       signal: new AbortController().signal,
-      deadlineAt: Date.now() + 30_000,
+      deadline: Deadline.start(30_000),
     })
 
     expect(onExport).toHaveBeenNthCalledWith(
@@ -146,7 +147,7 @@ describe("audit log view", () => {
 
     await expect(collectAuditExport(onExport, {}, {
       signal: new AbortController().signal,
-      deadlineAt: Date.now() + 30_000,
+      deadline: Deadline.start(30_000),
     })).rejects.toThrow("repeated a continuation cursor")
   })
 })

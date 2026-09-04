@@ -12,6 +12,13 @@ export { claimMachine, MachineClaimError, type ClaimConnection } from "./claim-m
 export { PairMachineDialog } from "./pair-machine-dialog"
 export { pairMachine, MachinePairingError, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 export { openClaimConnection } from "./claim-socket"
+export { Deadline, DeadlineExceededError } from "./deadline"
+export {
+  DomovoiConnectTimeoutError,
+  DomovoiRpcTimeoutError,
+  type DomovoiClientBudgets,
+  type DomovoiRequestOptions,
+} from "./client"
 export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
 export {
   dialTransport,

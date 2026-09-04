@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { claimMachine, MachineClaimError } from "./claim-machine.js"
+import { Deadline } from "./deadline.js"
 
 const code = "hearth-quiet-ember-42"
+const deadline = Deadline.start(2_147_483_647)
 const credential = "n".repeat(43)
 const device = {
   id: `device-${"a".repeat(32)}`,
@@ -38,11 +40,29 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })
 
     expect(claimed.token).toBe(credential)
     expect(claimed.device.label).toBe("studio-ipad")
     expect(io.calls[0]).toMatchObject({ method: "device.claim", params: { code, label: "studio-ipad" } })
+  })
+
+  it("opens the claim socket under the pairing's own deadline", async () => {
+    const io = transport()
+    const own = Deadline.start(30_000)
+
+    await claimMachine({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code,
+      label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
+      open: io.open,
+      deadline: own,
+    })
+
+    expect(io.open).toHaveBeenCalledWith("wss://workshop.tailnet:47831/rpc", own)
+    own.clear()
   })
 
   it("claims over loopback without encryption", async () => {
@@ -54,6 +74,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })).resolves.toBeTruthy()
   })
 
@@ -66,6 +87,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })).rejects.toThrow(MachineClaimError)
     expect(io.open).not.toHaveBeenCalled()
   })
@@ -79,6 +101,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })).rejects.toThrow(MachineClaimError)
     expect(io.open).not.toHaveBeenCalled()
   })
@@ -88,7 +111,7 @@ describe("claimMachine", () => {
     async (endpoint) => {
       const io = transport()
 
-      await expect(claimMachine({ endpoint, code, label: "studio-ipad", machineId: `machine-${"b".repeat(32)}`, open: io.open }))
+      await expect(claimMachine({ endpoint, code, label: "studio-ipad", machineId: `machine-${"b".repeat(32)}`, open: io.open, deadline }))
         .rejects.toThrow(MachineClaimError)
       expect(io.open).not.toHaveBeenCalled()
     },
@@ -103,6 +126,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })
 
     expect(io.closed).toEqual(["wss://workshop.tailnet:47831/rpc"])
@@ -117,6 +141,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })).rejects.toThrow("Pairing was refused")
     expect(io.closed).toEqual(["wss://workshop.tailnet:47831/rpc"])
   })
@@ -130,6 +155,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     }).catch((error: Error) => error)
 
     expect(String(failure)).not.toContain(code)
@@ -144,6 +170,7 @@ describe("claimMachine", () => {
       label: "studio-ipad",
       machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
+      deadline,
     })).rejects.toThrow(MachineClaimError)
   })
 })
@@ -157,6 +184,7 @@ it("names the machine the credential is being issued for", async () => {
     label: "studio-ipad",
     machineId: `machine-${"b".repeat(32)}`,
     open: io.open,
+    deadline,
   })
 
   expect(io.calls[0]?.params).toEqual({

@@ -25,11 +25,15 @@ import { Input } from "./components/ui/input"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import type { DomovoiRequestOptions } from "./client"
+import { Deadline } from "./deadline"
 
 const outcomes = ["all", "started", "succeeded", "failed", "denied", "cancelled"] as const
 type OutcomeFilter = (typeof outcomes)[number]
 type AuditExportFilters = Omit<AuditExportParams, "before" | "format" | "limit">
 type AuditDownload = Pick<AuditExportResult, "format" | "exportedAt" | "entryCount" | "content">
+const auditQueryBudgetMs = 15_000
+const auditExportBudgetMs = 60_000
+
 type AbortControllerHolder = { current: AbortController | undefined }
 
 const maximumAuditDownloadPages = 20
@@ -66,7 +70,7 @@ export function cancelAuditExport(holder: AbortControllerHolder): void {
 export async function collectAuditExport(
   onExport: (params: AuditExportParams, options?: DomovoiRequestOptions) => Promise<AuditExportResult>,
   filters: AuditExportFilters,
-  options: { signal: AbortSignal; deadlineAt: number },
+  options: { signal: AbortSignal; deadline: Deadline },
 ): Promise<AuditDownload> {
   const chunks: string[] = []
   const cursors = new Set<string>()
@@ -77,8 +81,7 @@ export async function collectAuditExport(
 
   for (let pageIndex = 0; pageIndex < maximumAuditDownloadPages; pageIndex += 1) {
     options.signal.throwIfAborted()
-    const remainingMs = Math.floor(options.deadlineAt - Date.now())
-    if (remainingMs <= 0) throw new Error("Audit export deadline exceeded")
+    if (options.deadline.expired) throw new Error("Audit export deadline exceeded")
     const page = await onExport(
       {
         ...filters,
@@ -86,7 +89,7 @@ export async function collectAuditExport(
         limit: 500,
         ...(before ? { before } : {}),
       },
-      { signal: options.signal, timeoutMs: remainingMs },
+      { signal: options.signal, deadline: options.deadline },
     )
     if (pageIndex === 0) exportedAt = page.exportedAt
     chunks.push(page.content)
@@ -193,9 +196,10 @@ export function AuditLogView({
     }
     const request = ++requestRef.current
     const controller = new AbortController()
+    const deadline = Deadline.start(auditQueryBudgetMs)
     setLoading(true)
     setError("")
-    void onQuery({ ...filters, limit: 50 }, { signal: controller.signal, timeoutMs: 15_000 }).then(
+    void onQuery({ ...filters, limit: 50 }, { signal: controller.signal, deadline }).then(
       (next) => { if (request === requestRef.current) setPage(next) },
       (cause: unknown) => {
         if (request === requestRef.current && !controller.signal.aborted) {
@@ -203,6 +207,7 @@ export function AuditLogView({
         }
       },
     ).finally(() => {
+      deadline.clear()
       if (request === requestRef.current) setLoading(false)
     })
     return () => {
@@ -224,12 +229,13 @@ export function AuditLogView({
     const controller = new AbortController()
     loadControllerRef.current?.abort()
     loadControllerRef.current = controller
+    const deadline = Deadline.start(auditQueryBudgetMs)
     setLoading(true)
     setError("")
     try {
       const older = await onQuery(
         { ...filters, before: page.nextCursor, limit: 50 },
-        { signal: controller.signal, timeoutMs: 15_000 },
+        { signal: controller.signal, deadline },
       )
       if (request === requestRef.current) setPage((current) => mergeAuditPages(current, older))
     } catch (cause) {
@@ -246,18 +252,20 @@ export function AuditLogView({
     if (!connected || exporting) return
     const controller = new AbortController()
     exportControllerRef.current = controller
+    const deadline = Deadline.start(auditExportBudgetMs)
     setExporting(true)
     setError("")
     try {
       downloadAuditExport(await collectAuditExport(onExport, filters, {
         signal: controller.signal,
-        deadlineAt: Date.now() + 60_000,
+        deadline,
       }))
     } catch (cause) {
       if (!controller.signal.aborted) {
         setError(cause instanceof Error ? cause.message : "Audit export could not be created")
       }
     } finally {
+      deadline.clear()
       if (exportControllerRef.current === controller) exportControllerRef.current = undefined
       setExporting(false)
     }
