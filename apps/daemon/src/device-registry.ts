@@ -103,18 +103,26 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         paired_at TEXT NOT NULL,
         last_seen_at TEXT,
         revoked_at TEXT,
-        credential_role TEXT NOT NULL DEFAULT 'client',
+        credential_role TEXT NOT NULL,
         machine_id TEXT
       );
       CREATE INDEX IF NOT EXISTS paired_devices_revoked_at ON paired_devices (revoked_at);
     `)
     const columns = this.#database.prepare("PRAGMA table_info(paired_devices)").all() as Array<{ name: string }>
     if (!columns.some((column) => column.name === "credential_role")) {
-      this.#database.exec("ALTER TABLE paired_devices ADD COLUMN credential_role TEXT NOT NULL DEFAULT 'client'")
+      // The old table mixed client and daemon-to-daemon credentials. There is
+      // no sound way to infer which authority an existing token held, so the
+      // migration gives it no reusable role and revokes it below.
+      this.#database.exec("ALTER TABLE paired_devices ADD COLUMN credential_role TEXT NOT NULL DEFAULT 'legacy'")
     }
     if (!columns.some((column) => column.name === "machine_id")) {
       this.#database.exec("ALTER TABLE paired_devices ADD COLUMN machine_id TEXT")
     }
+    this.#database.prepare(`
+      UPDATE paired_devices
+      SET revoked_at = COALESCE(revoked_at, ?)
+      WHERE credential_role = 'legacy'
+    `).run(new Date().toISOString())
   }
 
   pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { DatabaseSync } from "node:sqlite"
 
 import { describe, expect, it } from "vitest"
@@ -50,7 +51,7 @@ describe("SqliteDeviceRegistry", () => {
     })
   })
 
-  it("migrates existing paired credentials as client credentials", () => {
+  it("revokes ambiguous legacy credentials instead of granting client authority", () => {
     const database = new DatabaseSync(":memory:")
     database.exec(`
       CREATE TABLE paired_devices (
@@ -62,9 +63,25 @@ describe("SqliteDeviceRegistry", () => {
         revoked_at TEXT
       );
     `)
+    const token = "n".repeat(43)
+    database.prepare(`
+      INSERT INTO paired_devices (id, label, token_hash, paired_at)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      `device-${"c".repeat(32)}`,
+      "legacy peer",
+      createHash("sha256").update(token).digest("hex"),
+      "2026-09-03T12:00:00.000Z",
+    )
     const devices = new SqliteDeviceRegistry(database)
     const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
 
+    expect(devices.verify(token)).toBeUndefined()
+    expect(devices.isActive(token)).toBe(false)
+    expect(devices.list()).toContainEqual(expect.objectContaining({
+      label: "legacy peer",
+      revokedAt: expect.any(String),
+    }))
     expect(devices.verify(paired.token)?.binding).toEqual({ kind: "client" })
     expect(database.prepare("SELECT credential_role, machine_id FROM paired_devices WHERE id = ?")
       .get(paired.device.id)).toEqual({ credential_role: "client", machine_id: null })
