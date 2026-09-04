@@ -438,7 +438,7 @@ function hashField(hash: ReturnType<typeof createHash>, value: string | Uint8Arr
   hash.update(String(bytes.byteLength)).update(":").update(bytes)
 }
 
-function utf8GitPaths(bytes: Buffer): string[] {
+export function utf8GitPaths(bytes: Buffer): string[] {
   const paths: string[] = []
   let start = 0
   while (start < bytes.byteLength) {

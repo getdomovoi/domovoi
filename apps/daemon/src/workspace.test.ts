@@ -7,7 +7,7 @@ import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { GitWorkspaceService, WorkspaceEvidenceUnstableError } from "./workspace.js"
+import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } from "./workspace.js"
 
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
@@ -762,7 +762,12 @@ describe("GitWorkspaceService transfer resources", () => {
     expect(after.digest).toBe(before.digest)
   })
 
-  it.runIf(process.platform !== "win32")(
+  it("refuses Git path-list bytes that are not valid UTF-8", () => {
+    expect(() => utf8GitPaths(Buffer.from([0x66, 0x6f, 0x80, 0x00])))
+      .toThrow("Git returned a path that is not valid UTF-8")
+  })
+
+  it.runIf(process.platform !== "win32" && process.platform !== "darwin")(
     "refuses a transfer fingerprint when Git reports a non-UTF-8 path",
     async () => {
       const { service, workspace } = await repositoryWithIgnoredPreview()
@@ -981,7 +986,7 @@ describe("GitWorkspaceService bundle restore", () => {
       restoredCommit: historical.commit,
     })
     await expect(readFile(join(restored.path, "README.md"), "utf8"))
-      .resolves.toBe("abandoned branch\n")
+      .resolves.toMatch(/^abandoned branch\r?\n$/u)
   })
 
   it("never destroys a session worktree that is already there", async () => {

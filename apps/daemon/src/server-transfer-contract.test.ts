@@ -1723,7 +1723,9 @@ describe("transactional session transfer RPC", () => {
 
   it("refuses an unsupported target transport before accepting transfer bytes", async () => {
     const snapshot = targetSnapshot()
-    const transactions = new FileTransferTransactions(":memory:")
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-unsupported-transfer-"))
+    scratchDirectories.push(scratch)
+    const transactions = new FileTransferTransactions(join(scratch, "transactions"))
     const store = new SqliteWorkspaceStore(":memory:", snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
