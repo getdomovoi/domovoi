@@ -40,7 +40,6 @@ import { transferReceiptSchema } from "./transfer.js"
 import {
   sessionTransferParamsSchema,
   sessionTransferResultSchema,
-  transferFromRefResultSchema,
 } from "./transfer-request.js"
 
 function option<T extends { options: readonly unknown[] }>(
@@ -155,7 +154,6 @@ describe("commit sha", () => {
     expect(unwrap(option(threadItemSchema, "kind", "checkpoint").shape.commit)).toBe(commitShaSchema)
     expect(transferReceiptSchema.shape.checkpointCommit).toBe(commitShaSchema)
     expect(workspaceEvidenceSchema.shape.baseCommit).toBe(commitShaSchema)
-    expect(transferFromRefResultSchema.shape.checkpointCommit).toBe(commitShaSchema)
     expect(option(sessionTransferResultSchema, "outcome", "succeeded").shape.checkpointCommit).toBe(commitShaSchema)
     expect(unwrap(option(sessionHistoryEntrySchema, "category", "checkpoints").shape.commit)).toBe(commitShaSchema)
   })
