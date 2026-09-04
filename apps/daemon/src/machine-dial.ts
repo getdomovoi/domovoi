@@ -1,15 +1,20 @@
-import { selectTransport, type FleetMachine } from "@getdomovoi/protocol"
+import { fleetDirectEndpointSchema, orderedTransports, type FleetMachine } from "@getdomovoi/protocol"
 
 import type { MachineCredentials } from "./machine-credentials.js"
+import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
 
 export type MachineConnection = {
   call: (
     method: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
+    deadline?: OperationDeadline,
   ) => Promise<unknown>
   close: () => void
 }
+
+export type MachineRouteConnection = MachineConnection & { endpoint: string }
 
 const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
 
@@ -28,42 +33,98 @@ function leavesThisMachine(endpoint: string): boolean {
 export function createMachineDialer(input: {
   machines: () => FleetMachine[]
   credentials: MachineCredentials | undefined
+  dialTimeoutMs: number
   open: (input: {
     endpoint: string
     expectedMachineId: string
     credential: string
+    deadline: OperationDeadline
     signal?: AbortSignal
   }) => Promise<MachineConnection>
-  relayAvailable?: boolean
-}): (machineId: string, signal?: AbortSignal) => Promise<MachineConnection> {
-  return async (machineId: string, signal?: AbortSignal) => {
-    const machine = input.machines().find((candidate) => candidate.id === machineId)
-    if (!machine) throw new Error("That machine cannot be reached")
+}): (machineId: string, signal?: AbortSignal, deadline?: OperationDeadline) => Promise<MachineRouteConnection> {
+  validateOperationDeadlineBudget(input.dialTimeoutMs)
+  return async (machineId: string, signal?: AbortSignal, parentDeadline?: OperationDeadline) => {
+    const deadline = parentDeadline?.limit(input.dialTimeoutMs)
+      ?? OperationDeadline.start(input.dialTimeoutMs, signal ? { signal } : {})
+    try {
+      deadline.throwIfExpired()
+      if (signal?.aborted) throw new Error("The transfer was cancelled")
+      const machine = input.machines().find((candidate) => candidate.id === machineId)
+      if (!machine) throw new Error("That machine cannot be reached")
 
-    const credential = input.credentials?.forMachine(machineId)
-    if (!credential) throw new Error("That machine has to be paired again")
+      const credential = input.credentials?.forMachine(machineId)
+      if (!credential) throw new Error("That machine has to be paired again")
 
-    const transport = selectTransport(machine.transports, {
-      ...(input.relayAvailable === undefined ? {} : { relayAvailable: input.relayAvailable }),
-    })
-    if (!transport) throw new Error("That machine advertises no usable transport")
-
-    // A credential must never cross a network in the clear. An endpoint is not
-    // proof of where it leads: nothing stops a machine elsewhere from
-    // advertising a loopback address, so plaintext is dialed only when the
-    // machine and the transport both say this is the local machine.
-    const staysHere = transport.kind === "local"
-      && machine.connection === "local"
-      && !leavesThisMachine(transport.endpoint)
-    if (!transport.endpoint.startsWith("wss://") && !staysHere) {
-      throw new Error("Refusing to authenticate over an unencrypted connection")
-    }
-
-    return input.open({
-      endpoint: transport.endpoint,
-      expectedMachineId: machine.id,
-      credential,
-      ...(signal ? { signal } : {}),
-    })
+      const endpoints: string[] = []
+      if (machine.verifiedRoute && fleetDirectEndpointSchema.safeParse(machine.verifiedRoute.endpoint).success) {
+        endpoints.push(machine.verifiedRoute.endpoint)
+      }
+      let refusedPlaintext = false
+      for (const transport of orderedTransports(machine.transports)) {
+        // No relay can carry this plaintext RPC codec. A future encrypted relay
+        // is a separate capability, not a caller-controlled availability flag.
+        if (transport.kind === "relay" || (transport.kind === "ssh" && transport.configured !== true)) continue
+        const staysHere = transport.kind === "local"
+          && machine.connection === "local"
+          && !leavesThisMachine(transport.endpoint)
+        if ((!transport.endpoint.startsWith("wss://") && !staysHere)
+          || !fleetDirectEndpointSchema.safeParse(transport.endpoint).success) {
+          refusedPlaintext = true
+          continue
+        }
+        if (!endpoints.includes(transport.endpoint)) endpoints.push(transport.endpoint)
+      }
+      if (endpoints.length === 0) throw new Error(refusedPlaintext
+        ? "Refusing to authenticate over an unencrypted connection"
+        : "That machine advertises no usable transport")
+      let lastError: unknown
+      for (const endpoint of endpoints) {
+        deadline.throwIfExpired()
+        if (signal?.aborted) throw new Error("The transfer was cancelled")
+        try {
+          const connection = await boundedOpen(input.open({
+            endpoint, expectedMachineId: machine.id, credential, deadline,
+            ...(signal ? { signal } : {}),
+          }), deadline, signal)
+          return { ...connection, endpoint }
+        } catch (error) {
+          // Failed identity/authority is not evidence to keep trying elsewhere.
+          if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
+            || error instanceof MachineProtocolMismatchError || error instanceof MachineDescriptorError) throw error
+          lastError = error
+        }
+      }
+      deadline.throwIfExpired()
+      throw lastError
+    } finally { deadline.clear() }
   }
+}
+
+function boundedOpen(opening: Promise<MachineConnection>, deadline: OperationDeadline, signal?: AbortSignal): Promise<MachineConnection> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const detach = () => {
+      deadline.signal.removeEventListener("abort", abortDeadline)
+      signal?.removeEventListener("abort", abortSignal)
+    }
+    const refuse = (error: unknown) => {
+      if (settled) return
+      settled = true
+      detach()
+      reject(error)
+    }
+    const abortDeadline = () => refuse(deadline.signal.reason)
+    const abortSignal = () => refuse(new Error("The transfer was cancelled"))
+    deadline.signal.addEventListener("abort", abortDeadline, { once: true })
+    signal?.addEventListener("abort", abortSignal, { once: true })
+    if (deadline.remainingMs() === 0) abortDeadline()
+    if (signal?.aborted) abortSignal()
+    opening.then((connection) => {
+      if (deadline.remainingMs() === 0) abortDeadline()
+      if (settled) { connection.close(); return }
+      settled = true
+      detach()
+      resolve(connection)
+    }, refuse)
+  })
 }

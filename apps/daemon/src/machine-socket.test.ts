@@ -5,26 +5,38 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   daemonAuthenticationErrorCode,
+  createEmptyWorkspace,
   demoWorkspace,
   protocolVersion,
 } from "@getdomovoi/protocol"
 
 import {
+  defaultMachineCallTimeoutMs,
+  defaultMachineHandshakeTimeoutMs,
   MachinePairingRequiredError,
   openMachineSocket as openMachineSocketWithoutDefaults,
 } from "./machine-socket.js"
+import { OperationDeadline } from "./operation-deadline.js"
 
 const servers: WebSocketServer[] = []
+const machineId = `machine-${"a".repeat(32)}`
+const machineWorkspace = createEmptyWorkspace({ ...demoWorkspace.machine, id: machineId })
 
 function openMachineSocket(
-  input: Omit<Parameters<typeof openMachineSocketWithoutDefaults>[0], "expectedMachineId"> & {
+  input: Omit<Parameters<typeof openMachineSocketWithoutDefaults>[0], "expectedMachineId" | "deadline" | "callTimeoutMs"> & {
     expectedMachineId?: string
+    callTimeoutMs?: number
+    scheduler?: NonNullable<Parameters<typeof OperationDeadline.start>[1]>["scheduler"]
   },
 ) {
+  const { scheduler, ...socketInput } = input
+  const deadline = OperationDeadline.start(defaultMachineHandshakeTimeoutMs, scheduler ? { scheduler } : {})
   return openMachineSocketWithoutDefaults({
-    ...input,
-    expectedMachineId: input.expectedMachineId ?? demoWorkspace.machine.id,
-  })
+    ...socketInput,
+    deadline,
+    callTimeoutMs: input.callTimeoutMs ?? defaultMachineCallTimeoutMs,
+    expectedMachineId: input.expectedMachineId ?? machineId,
+  }).finally(() => deadline.clear())
 }
 
 afterEach(async () => {
@@ -55,7 +67,7 @@ async function machineServer(handler: (message: Record<string, unknown>) => unkn
 describe("openMachineSocket", () => {
   it("refuses an endpoint answered by a different machine", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return { state: "unknown" }
     })
 
@@ -71,7 +83,7 @@ describe("openMachineSocket", () => {
 
   it("says hello with the credential before anything else", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return { state: "receiving" }
     })
 
@@ -98,7 +110,7 @@ describe("openMachineSocket", () => {
   it("refuses a machine that speaks another protocol version", async () => {
     const machine = await machineServer((message) => {
       if (message.method === "system.hello") {
-        return { ...structuredClone(demoWorkspace), protocolVersion: "9.9.9" }
+        return { ...structuredClone(machineWorkspace), protocolVersion: "9.9.9" }
       }
       return { state: "receiving" }
     })
@@ -139,7 +151,7 @@ describe("openMachineSocket", () => {
 
   it("answers each call with the reply that carries its id", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return { echoed: message.id }
     })
 
@@ -164,7 +176,7 @@ describe("openMachineSocket", () => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number; method?: string }
         if (message.method === "system.hello") {
-          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: structuredClone(demoWorkspace) }))
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: structuredClone(machineWorkspace) }))
           return
         }
         socket.send(JSON.stringify({
@@ -195,7 +207,7 @@ describe("openMachineSocket", () => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number; method?: string }
         if (message.method === "system.hello") {
-          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: structuredClone(demoWorkspace) }))
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: structuredClone(machineWorkspace) }))
           return
         }
         socket.close()
@@ -222,7 +234,7 @@ describe("openMachineSocket", () => {
 
   it("refuses a call once the connection is closed", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return { state: "receiving" }
     })
 
@@ -238,7 +250,7 @@ describe("openMachineSocket", () => {
 
   it("gives up on a call the machine never answers", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return undefined
     })
 
@@ -255,7 +267,7 @@ describe("openMachineSocket", () => {
 
   it("refuses more calls than it will keep waiting for", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return undefined
     })
 
@@ -276,9 +288,27 @@ describe("openMachineSocket", () => {
     await Promise.all(pending)
   })
 
+  it("refuses a late result even when the deadline timer has not run", async () => {
+    let now = 0
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
+      now = 101
+      return { state: "committed" }
+    })
+    const connection = await openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43) })
+    const deadline = OperationDeadline.start(100, {
+      now: () => now,
+      scheduler: { setTimeout: () => 1, clearTimeout: () => {} },
+    })
+    try {
+      await expect(connection.call("transfer.status", {}, undefined, deadline))
+        .rejects.toThrow("That machine stopped answering before the deadline")
+    } finally { connection.close(); deadline.clear() }
+  })
+
   it("stops waiting when the transfer is cancelled", async () => {
     const machine = await machineServer((message) => {
-      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      if (message.method === "system.hello") return structuredClone(machineWorkspace)
       return undefined
     })
     const cancelled = new AbortController()

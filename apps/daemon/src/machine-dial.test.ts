@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import type { FleetMachine } from "@getdomovoi/protocol"
 
 import { createMachineDialer } from "./machine-dial.js"
+import { OperationDeadline } from "./operation-deadline.js"
 
 const credential = "n".repeat(43)
 const machineId = `machine-${"b".repeat(32)}`
@@ -60,6 +61,7 @@ function dialer(overrides: {
         machines: () => [machineId],
       },
       open,
+      dialTimeoutMs: 1_000,
     }),
   }
 }
@@ -74,6 +76,7 @@ describe("createMachineDialer", () => {
       endpoint: "wss://studio.tailnet:47831/rpc",
       expectedMachineId: machineId,
       credential,
+      deadline: expect.any(OperationDeadline),
     }])
     connection.close()
   })
@@ -91,6 +94,86 @@ describe("createMachineDialer", () => {
     await io.dial(machineId)
 
     expect(io.opened[0]!.endpoint).toBe("wss://studio.lan:47831/rpc")
+  })
+
+  it("prefers a source-verified endpoint even when the target never advertised it", async () => {
+    const io = dialer({ machines: [machine({
+      connection: "direct",
+      verifiedRoute: { endpoint: "wss://studio-forward.example:443/rpc", lastAuthenticatedAt: new Date(0).toISOString() },
+    })] })
+    await io.dial(machineId)
+    expect(io.opened[0]?.endpoint).toBe("wss://studio-forward.example:443/rpc")
+  })
+
+  it("tries fallback routes within one shared deadline without redialing the same endpoint", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(100, { now: () => now })
+    const seen: Array<{ endpoint: string; remaining: number; deadline: OperationDeadline }> = []
+    const connection = { call: async () => ({}), close: () => {} }
+    const dial = createMachineDialer({
+      machines: () => [machine({ verifiedRoute: { endpoint: "wss://studio.old/rpc", lastAuthenticatedAt: new Date(0).toISOString() },
+        transports: [
+          { kind: "tailnet", endpoint: "wss://studio.tailnet/rpc", authenticated: true },
+          { kind: "lan", endpoint: "wss://studio.old/rpc", authenticated: true },
+        ],
+      })],
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      dialTimeoutMs: 1_000,
+      open: async (input) => {
+        seen.push({ endpoint: input.endpoint, remaining: input.deadline.remainingMs(), deadline: input.deadline })
+        if (seen.length === 1) { now = 75; throw new Error("old endpoint went away") }
+        return connection
+      },
+    })
+    try {
+      const result = await dial(machineId, undefined, deadline)
+      expect(seen.map(({ endpoint, remaining }) => ({ endpoint, remaining }))).toEqual([
+        { endpoint: "wss://studio.old/rpc", remaining: 100 },
+        { endpoint: "wss://studio.tailnet/rpc", remaining: 25 },
+      ])
+      expect(seen[0]?.deadline).toBe(seen[1]?.deadline)
+      expect(result.endpoint).toBe("wss://studio.tailnet/rpc")
+    } finally { deadline.clear() }
+  })
+
+  it("does not start another route once the original budget is spent", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(100, { now: () => now })
+    const open = vi.fn(async () => { now = 101; throw new Error("gone") })
+    const dial = createMachineDialer({
+      machines: () => [machine({ transports: [
+        { kind: "lan", endpoint: "wss://studio.lan/rpc", authenticated: true },
+        { kind: "tailnet", endpoint: "wss://studio.tailnet/rpc", authenticated: true },
+      ] })],
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      dialTimeoutMs: 1_000, open,
+    })
+    try {
+      await expect(dial(machineId, undefined, deadline)).rejects.toThrow(/deadline/)
+      expect(open).toHaveBeenCalledOnce()
+    } finally { deadline.clear() }
+  })
+
+  it("bounds an opener that ignores cancellation and closes a late connection", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(100, { now: () => now })
+    const close = vi.fn()
+    let complete: (connection: { call: () => Promise<unknown>; close: () => void }) => void = () => {}
+    const dial = createMachineDialer({
+      machines: () => [machine()],
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      dialTimeoutMs: 1_000,
+      open: () => new Promise((resolve) => { complete = resolve }),
+    })
+    const opening = dial(machineId, undefined, deadline)
+    const refused = expect(opening).rejects.toThrow(/deadline/)
+    now = 101
+    deadline.remainingMs()
+    await refused
+    complete({ call: async () => ({}), close })
+    await Promise.resolve()
+    expect(close).toHaveBeenCalledOnce()
+    deadline.clear()
   })
 
   it("refuses a machine it keeps no credential for", async () => {
