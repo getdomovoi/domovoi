@@ -345,7 +345,9 @@ function KindCell({ binding, dimmed }: { binding: DeviceCredentialBinding; dimme
           </Badge>
         ) : (
           <span className="font-machine text-[10px] text-faint">
-            {binding.kind === "client" ? "client" : `was ${binding.previousRole}`}
+            {binding.kind === "client"
+              ? "client"
+              : binding.previousRole === "unknown" ? "role not recorded" : `was ${binding.previousRole}`}
           </span>
         )}
       </span>
