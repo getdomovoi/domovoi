@@ -66,7 +66,6 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { TransferAssembler } from "./transfer-assembler.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
-import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-source.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import {
   collectSessionTransferState,
@@ -1433,35 +1432,6 @@ export class DomovoiDaemon {
       id,
       error: { code, message, ...(data ? { data } : {}) },
     })
-  }
-
-  #recordTransferRefusal(
-    sessionId: string,
-    targetMachineId: string,
-    client: ClientKind,
-    reason: TransferReceipt["reason"],
-  ): void {
-    const at = new Date().toISOString()
-    // A receipt is a record of what happened, not part of the answer: a daemon
-    // that cannot store one still has to tell the caller it refused.
-    try {
-      this.#store.transferReceipts?.record({
-        sessionId,
-        sourceMachineId: this.#snapshot.machine.id,
-        targetMachineId,
-        method: "git-bundle",
-        checkpointId: `checkpoint-${"0".repeat(40)}`,
-        checkpointCommit: "0".repeat(40),
-        recoveryCheckpointRetained: true,
-        outcome: "refused",
-        ...(reason ? { reason } : {}),
-        decidedBy: { client },
-        startedAt: at,
-        completedAt: at,
-      })
-    } catch (error) {
-      this.#reportError("Domovoi could not record a transfer receipt", error)
-    }
   }
 
   #refusedTransferPreview(
@@ -3650,190 +3620,53 @@ export class DomovoiDaemon {
           return
         }
 
-        if (params.contractVersion !== undefined && params.intentDigest !== undefined) {
-          const prepared = await this.#prepareTransferPreview({
-            sessionId: params.sessionId,
-            targetMachineId: params.targetMachineId,
-            client: params.client,
-            method: params.method,
-            ...(params.remote ? { remote: params.remote } : {}),
-          }, signal)
-          if (!prepared.preview.allowed || !prepared.target || !prepared.intent) {
-            const reason = prepared.preview.allowed
-              ? "session-state-invalid"
-              : prepared.preview.reason
-            this.#send(socket, {
-              jsonrpc: "2.0",
-              id: request.id,
-              result: rpcMethods[method].result.parse({ outcome: "refused", reason }),
-            })
-            return
-          }
-          if (prepared.preview.intentDigest !== params.intentDigest) {
-            this.#send(socket, {
-              jsonrpc: "2.0",
-              id: request.id,
-              result: rpcMethods[method].result.parse({
-                outcome: "refused",
-                reason: "session-state-changed",
-              }),
-            })
-            return
-          }
-          const transferDeadline = new AbortController()
-          const timeout = setTimeout(() => transferDeadline.abort(), this.#sessionTransferTimeoutMs)
-          timeout.unref?.()
-          const transferSignal = signal
-            ? AbortSignal.any([signal, transferDeadline.signal])
-            : transferDeadline.signal
-          try {
-            const transferActor = this.#authenticatedActors.get(socket)
-            const outcome = await this.#sendVersionedSessionTransfer(
-              params as RpcParams<"session.transfer"> & {
-                contractVersion: 1
-                intentDigest: string
-              },
-              { ...prepared, target: prepared.target, intent: prepared.intent },
-              transferActor?.kind === "client" ? transferActor.clientId : undefined,
-              transferSignal,
-            )
-            if (outcome.outcome === "incomplete") this.#scheduleSessionTransferRecovery()
-            this.#send(socket, {
-              jsonrpc: "2.0",
-              id: request.id,
-              result: rpcMethods[method].result.parse(outcome),
-            })
-          } finally {
-            clearTimeout(timeout)
-          }
+        const prepared = await this.#prepareTransferPreview({
+          sessionId: params.sessionId,
+          targetMachineId: params.targetMachineId,
+          client: params.client,
+          method: params.method,
+          ...(params.remote ? { remote: params.remote } : {}),
+        }, signal)
+        if (!prepared.preview.allowed || !prepared.target || !prepared.intent) {
+          const reason = prepared.preview.allowed
+            ? "session-state-invalid"
+            : prepared.preview.reason
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({ outcome: "refused", reason }),
+          })
           return
         }
-
-        const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-        const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
-        if (!target) {
-          // A machine this daemon cannot see is a machine it cannot reach now,
-          // and a transfer is refused rather than queued.
+        if (prepared.preview.intentDigest !== params.intentDigest) {
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
               outcome: "refused",
-              reason: "target-unreachable",
+              reason: "session-state-changed",
             }),
           })
           return
         }
-
-        // Nothing reaches for the other machine until the transfer is allowed:
-        // an ineligible session or an unusable target is settled here.
-        const sourceReady = sourcePreflight({ session })
-        if (!sourceReady.allowed) {
-          this.#recordTransferRefusal(session.id, target.id, params.client, sourceReady.reason)
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({
-              outcome: "refused",
-              reason: sourceReady.reason,
-            }),
-          })
-          return
-        }
-        const targetReady = transferPreflight({
-          source: { ...target, id: this.#snapshot.machine.id },
-          target,
-        })
-        if (!targetReady.allowed) {
-          this.#recordTransferRefusal(session.id, target.id, params.client, targetReady.reason)
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({
-              outcome: "refused",
-              reason: targetReady.reason,
-            }),
-          })
-          return
-        }
-
-        // A target that stops answering must not hold this request open, and a
-        // cancelled request must not keep talking to the other machine.
         const transferDeadline = new AbortController()
         const timeout = setTimeout(() => transferDeadline.abort(), this.#sessionTransferTimeoutMs)
         timeout.unref?.()
         const transferSignal = signal
           ? AbortSignal.any([signal, transferDeadline.signal])
           : transferDeadline.signal
-        const connection = await this.#connectToMachine(target.id, transferSignal)
         try {
-          if (params.method === "remote-ref") {
-            const outcome = await sendSessionThroughRemote({
-              session,
-              sourceMachineId: this.#snapshot.machine.id,
-              target,
-              client: params.client,
-              remote: params.remote!,
-              call: (remoteMethod, remoteParams) =>
-                connection.call(remoteMethod, remoteParams, transferSignal),
-              // The git work runs under the transfer's own deadline, so a call
-              // that hangs cannot outlive the transfer and hold the queue.
-              checkpoint: (worktreePath, label) =>
-                this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
-              pushSessionRef: this.#workspaceService.pushSessionRef
-                ? (worktreePath, remote, sessionId) =>
-                  this.#workspaceService.pushSessionRef!(
-                    worktreePath,
-                    remote,
-                    sessionId,
-                    transferSignal,
-                  )
-                : undefined,
-              recordReceipt: (receipt) => {
-                try {
-                  this.#store.transferReceipts?.record(receipt)
-                } catch (error) {
-                  this.#reportError("Domovoi could not record a transfer receipt", error)
-                }
-              },
-              now: () => new Date().toISOString(),
-            })
-            this.#send(socket, {
-              jsonrpc: "2.0",
-              id: request.id,
-              result: rpcMethods[method].result.parse(outcome),
-            })
-            return
-          }
-          const readBundle = this.#readTransferBundle
-          const bundleSession = this.#workspaceService.bundleSession
-          if (!readBundle || !bundleSession) {
-            this.#error(socket, request.id, internalError, "This machine cannot send transfers")
-            return
-          }
-          const outcome = await sendSessionToMachine({
-            session,
-            sourceMachineId: this.#snapshot.machine.id,
-            target,
-            client: params.client,
-            call: (remoteMethod, remoteParams) =>
-              connection.call(remoteMethod, remoteParams, transferSignal),
-            checkpoint: (worktreePath, label) =>
-              this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
-            bundleSession: (worktreePath, bundlePath, sinceCommit) =>
-              bundleSession(worktreePath, bundlePath, sinceCommit, transferSignal),
-            readBundle,
-            recordReceipt: (receipt) => {
-              // The receipt records what happened; it does not decide it. A
-              // daemon that cannot store one still answers with the outcome.
-              try {
-                this.#store.transferReceipts?.record(receipt)
-              } catch (error) {
-                this.#reportError("Domovoi could not record a transfer receipt", error)
-              }
+          const transferActor = this.#authenticatedActors.get(socket)
+          const outcome = await this.#sendVersionedSessionTransfer(
+            params as RpcParams<"session.transfer"> & {
+              contractVersion: 1
+              intentDigest: string
             },
-            now: () => new Date().toISOString(),
-          })
+            { ...prepared, target: prepared.target, intent: prepared.intent },
+            transferActor?.kind === "client" ? transferActor.clientId : undefined,
+            transferSignal,
+          )
+          if (outcome.outcome === "incomplete") this.#scheduleSessionTransferRecovery()
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -3841,7 +3674,6 @@ export class DomovoiDaemon {
           })
         } finally {
           clearTimeout(timeout)
-          connection.close()
         }
         return
       }
