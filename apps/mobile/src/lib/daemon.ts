@@ -133,13 +133,30 @@ export class DaemonConnection {
     return this.#socket?.readyState === 1
   }
 
+  // Requests sent and not yet answered. Every one of them holds a promise the
+  // caller is waiting on, so a number that climbs and never falls is the shape
+  // of a leak.
+  pendingRequests(): number {
+    return this.#pending.size
+  }
+
   call(method: string, params: unknown): Promise<unknown> {
     const socket = this.#socket
     if (!socket) return Promise.reject(new Error("The daemon connection is not open"))
     const id = this.#nextId++
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject })
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      try {
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      } catch (cause) {
+        // Sending on a socket that is already closing throws, and the entry
+        // would otherwise sit in the map waiting for a reply to a request that
+        // was never sent. It is cleared here rather than left for onclose,
+        // because depending on another handler to tidy up is a promise this
+        // class cannot keep on its own.
+        this.#pending.delete(id)
+        reject(cause instanceof Error ? cause : new Error("The request could not be sent"))
+      }
     })
   }
 
