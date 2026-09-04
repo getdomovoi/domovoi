@@ -45,7 +45,6 @@ const args = xvfb ? ["--auto-servernum", electronPath, ...electronArgs] : electr
 const env = {
   ...process.env,
   APPDATA: join(profileRoot, "config"),
-  DOMOVOI_AUTH_TOKEN: "desktop-launch-smoke-token",
   DOMOVOI_DESKTOP_LAUNCH_SMOKE: "1",
   HOME: profileRoot,
   LOCALAPPDATA: join(profileRoot, "data"),
@@ -119,6 +118,12 @@ try {
   }
   if (!stdout.split(/\r?\n/u).includes(successMarker)) {
     throw new Error(`desktop launch smoke did not emit ${successMarker}`)
+  }
+  // Starting is all the smoke proves. A daemon state directory in its
+  // throwaway home means the app built a daemon and minted credentials to do it.
+  const daemonState = join(profileRoot, ".domovoi")
+  if (await access(daemonState).then(() => true, () => false)) {
+    throw new Error(`desktop launch smoke created daemon state at ${daemonState}`)
   }
 
   process.stdout.write(`${successMarker}\n`)
