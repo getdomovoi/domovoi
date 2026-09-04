@@ -39,6 +39,7 @@ type PendingCall = {
 // workspace client.
 export function openMachineSocket(input: {
   endpoint: string
+  expectedMachineId: string
   machineId: string
   credential: string
   handshakeTimeoutMs?: number
@@ -182,6 +183,12 @@ export function openMachineSocket(input: {
             reject(spoken === undefined
               ? new Error("That machine answered the handshake with an invalid result")
               : new Error(`That machine speaks protocol ${spoken}, this daemon speaks ${protocolVersion}`))
+            socket.close()
+            return
+          }
+          if (snapshot.data.machine.id !== input.expectedMachineId) {
+            scheduler.clearTimeout(handshake)
+            reject(new Error("The endpoint answered as a different machine"))
             socket.close()
             return
           }

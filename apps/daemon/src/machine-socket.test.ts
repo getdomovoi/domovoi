@@ -5,10 +5,21 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { openMachineSocket } from "./machine-socket.js"
+import { openMachineSocket as openMachineSocketWithoutDefaults } from "./machine-socket.js"
 
 const servers: WebSocketServer[] = []
 const peerMachineId = `machine-${"a".repeat(32)}`
+
+function openMachineSocket(
+  input: Omit<Parameters<typeof openMachineSocketWithoutDefaults>[0], "expectedMachineId"> & {
+    expectedMachineId?: string
+  },
+) {
+  return openMachineSocketWithoutDefaults({
+    ...input,
+    expectedMachineId: input.expectedMachineId ?? demoWorkspace.machine.id,
+  })
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
@@ -36,6 +47,23 @@ async function machineServer(handler: (message: Record<string, unknown>) => unkn
 }
 
 describe("openMachineSocket", () => {
+  it("refuses an endpoint answered by a different machine", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      return { state: "unknown" }
+    })
+
+    const opening = openMachineSocket({
+      endpoint: machine.endpoint,
+      machineId: peerMachineId,
+      expectedMachineId: `machine-${"f".repeat(32)}`,
+      credential: "n".repeat(43),
+    })
+    void opening.then((connection) => connection.close(), () => {})
+    await expect(opening).rejects.toThrow("The endpoint answered as a different machine")
+    expect(machine.seen).toHaveLength(1)
+  })
+
   it("says hello with the credential before anything else", async () => {
     const machine = await machineServer((message) => {
       if (message.method === "system.hello") return structuredClone(demoWorkspace)

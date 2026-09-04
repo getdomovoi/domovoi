@@ -36,9 +36,19 @@ function dialer(overrides: {
     close: () => void
   }>
 } = {}) {
-  const opened: { endpoint: string; machineId: string; credential: string }[] = []
+  const opened: Array<{
+    endpoint: string
+    expectedMachineId: string
+    machineId: string
+    credential: string
+  }> = []
   const open = overrides.open
-    ?? (async (input: { endpoint: string; machineId: string; credential: string }) => {
+    ?? (async (input: {
+      endpoint: string
+      expectedMachineId: string
+      machineId: string
+      credential: string
+    }) => {
       opened.push(input)
       return { call: async () => ({}), close: () => {} }
     })
@@ -66,6 +76,7 @@ describe("createMachineDialer", () => {
 
     expect(io.opened).toEqual([{
       endpoint: "wss://studio.tailnet:47831/rpc",
+      expectedMachineId: machineId,
       machineId: sourceMachineId,
       credential,
     }])

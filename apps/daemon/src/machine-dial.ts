@@ -31,6 +31,7 @@ export function createMachineDialer(input: {
   credentials: MachineCredentials | undefined
   open: (input: {
     endpoint: string
+    expectedMachineId: string
     machineId: string
     credential: string
     signal?: AbortSignal
@@ -62,6 +63,7 @@ export function createMachineDialer(input: {
 
     return input.open({
       endpoint: transport.endpoint,
+      expectedMachineId: machine.id,
       // The credential selects the target, but the handshake identifies the
       // caller. Sending the target id here makes both ends appear to be the
       // same machine and defeats source-bound transfer authorization.

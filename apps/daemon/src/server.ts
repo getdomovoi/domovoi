@@ -859,8 +859,9 @@ export class DomovoiDaemon {
       ).machines ?? [],
       sourceMachineId: () => this.#snapshot.machine.id,
       credentials: this.#machineCredentials,
-      open: ({ endpoint, machineId, credential, signal }) => openMachineSocket({
+      open: ({ endpoint, expectedMachineId, machineId, credential, signal }) => openMachineSocket({
         endpoint,
+        expectedMachineId,
         machineId,
         credential,
         ...(signal ? { signal } : {}),
