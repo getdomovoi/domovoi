@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
+  credentialSchema,
   type MachineCapability,
   type FleetMachine,
   createEmptyWorkspace,
@@ -884,6 +885,10 @@ export class DomovoiDaemon {
   #ownershipChecks = new Set<string>()
 
   constructor(options: DaemonServerOptions = {}) {
+    const authToken = options.authToken ?? randomBytes(32).toString("base64url")
+    if (!credentialSchema.safeParse(authToken).success) {
+      throw new Error("Daemon credential must be a 43-character base64url value")
+    }
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
@@ -988,7 +993,7 @@ export class DomovoiDaemon {
       options.worktreeRoot ?? join(homedir(), ".domovoi", "worktrees"),
     )
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
-    this.#authToken = options.authToken ?? randomBytes(32).toString("base64url")
+    this.#authToken = authToken
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalReapGraceMs = options.terminalReapGraceMs ?? 30_000
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
@@ -1613,7 +1618,7 @@ export class DomovoiDaemon {
           ownershipGeneration: session.ownershipGeneration ?? 0,
           method: params.method,
           coverage: collected.coverage,
-          client: params.client,
+          initiatedByClient: params.initiatedByClient,
         }, signal),
       )
       if (!targetReady.allowed) {
@@ -2020,7 +2025,7 @@ export class DomovoiDaemon {
                   {
                     transferId: lifecycle.transferId,
                     manifestDigest,
-                    client: lifecycle.requestedBy.client,
+                    initiatedByClient: lifecycle.requestedBy.client,
                   },
                   signal,
                 )),
@@ -2078,7 +2083,7 @@ export class DomovoiDaemon {
                   {
                     transferId: lifecycle.transferId,
                     manifestDigest,
-                    client: lifecycle.requestedBy.client,
+                    initiatedByClient: lifecycle.requestedBy.client,
                   },
                   signal,
                 )),
@@ -2144,7 +2149,7 @@ export class DomovoiDaemon {
                     {
                       transferId: lifecycle.transferId,
                       manifestDigest,
-                      client: lifecycle.requestedBy.client,
+                      initiatedByClient: lifecycle.requestedBy.client,
                     },
                     signal,
                   )),
@@ -2176,7 +2181,7 @@ export class DomovoiDaemon {
                 transactions: this.#outgoingTransferTransactions,
                 transferId: lifecycle.transferId,
                 manifestDigest,
-                client: lifecycle.requestedBy.client,
+                initiatedByClient: lifecycle.requestedBy.client,
                 call: (method, params) => connection.call(method, params, signal),
               })
             } finally {
@@ -2250,7 +2255,7 @@ export class DomovoiDaemon {
             {
               transferId: recovery.transferId,
               manifestDigest: recovery.manifestDigest,
-              client: recovery.decidedBy.client,
+              initiatedByClient: recovery.decidedBy.client,
             },
             signal,
           ))
@@ -2431,7 +2436,7 @@ export class DomovoiDaemon {
       prepared.intent,
       transferId,
       startedAt,
-      { client: params.client, ...(clientId ? { clientId } : {}) },
+      { client: params.initiatedByClient, ...(clientId ? { clientId } : {}) },
     )
     await this.#persistTransferSnapshot(frozen, sourceSession.id)
 
@@ -2529,7 +2534,7 @@ export class DomovoiDaemon {
           transactions: this.#outgoingTransferTransactions,
           transferId,
           manifestDigest: packaged.manifestDigest,
-          client: params.client,
+          initiatedByClient: params.initiatedByClient,
           call: (method, remoteParams) => connection.call(method, remoteParams, signal),
         })
       } finally {
@@ -2577,7 +2582,7 @@ export class DomovoiDaemon {
           sessionId: sourceSession.id,
           targetMachineId: prepared.target.id,
           method: params.method,
-          client: params.client,
+          client: params.initiatedByClient,
           checkpointCommit,
           outcome: "refused",
           reason,
@@ -2655,7 +2660,7 @@ export class DomovoiDaemon {
         sessionId: sourceSession.id,
         targetMachineId: prepared.target.id,
         method: params.method,
-        client: params.client,
+        client: params.initiatedByClient,
         checkpointCommit,
         outcome: "refused",
         reason,
@@ -3093,12 +3098,14 @@ export class DomovoiDaemon {
           )
           return
         }
+        this.#store.devices?.markSeen(credential.device.id, new Date().toISOString())
         this.#authenticatedActors.set(socket, {
           kind: "machine",
           machineId: credential.binding.machineId,
         })
       } else {
-        if (this.#deviceCredentials.get(socket)?.verified.binding.kind === "machine") {
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (credential?.binding.kind === "machine") {
           this.#error(
             socket,
             request.id,
@@ -3107,10 +3114,24 @@ export class DomovoiDaemon {
           )
           return
         }
+        if (credential?.binding.kind === "client" && credential.binding.client !== hello.client) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Paired client credential does not match this client",
+          )
+          return
+        }
+        if (credential) this.#store.devices?.markSeen(credential.device.id, new Date().toISOString())
         this.#authenticatedActors.set(socket, {
           kind: "client",
-          client: hello.client,
-          ...(hello.clientId ? { clientId: hello.clientId } : {}),
+          client: credential?.binding.kind === "client"
+            ? credential.binding.client
+            : hello.client,
+          ...(credential
+            ? { clientId: credential.device.id }
+            : hello.clientId ? { clientId: hello.clientId } : {}),
         })
       }
       this.#connectionIds.set(socket, randomUUID())
@@ -3192,6 +3213,27 @@ export class DomovoiDaemon {
     }
 
     const authenticatedActor = this.#authenticatedActors.get(socket)
+    const clientClaim = paramsResult.data as {
+      client?: unknown
+      initiatedByClient?: unknown
+    }
+    // Most client RPCs name their actor directly. Transfer RPCs name the same
+    // source-verified actor as provenance because the value later crosses a
+    // machine boundary; both claims must agree with the authenticated socket.
+    const requestClient = clientClaim.client ?? clientClaim.initiatedByClient
+    if (
+      authenticatedActor?.kind === "client"
+      && requestClient !== undefined
+      && requestClient !== authenticatedActor.client
+    ) {
+      this.#error(
+        socket,
+        request.id,
+        invalidParams,
+        "RPC client does not match the authenticated client",
+      )
+      return
+    }
     if (authenticatedActor?.kind === "machine" && !machineRpcMethods.has(method)) {
       this.#error(
         socket,
@@ -3745,7 +3787,7 @@ export class DomovoiDaemon {
             ownershipGeneration: params.manifest.ownership.fromGeneration,
             method: params.manifest.repository.method,
             coverage: params.manifest.coverage,
-            client: params.client,
+            initiatedByClient: params.initiatedByClient,
           }, (path, commit) => this.#workspaceService.projectHasLineage
             ? this.#workspaceService.projectHasLineage(path, commit, signal)
             : Promise.resolve(false), this.#targetTransferCapabilities())
@@ -4007,7 +4049,7 @@ export class DomovoiDaemon {
           )
           return
         }
-        if (actor.client !== params.client) {
+        if (actor.client !== params.initiatedByClient) {
           this.#error(
             socket,
             request.id,
@@ -4037,7 +4079,7 @@ export class DomovoiDaemon {
           return
         }
         const actor = this.#authenticatedActors.get(socket)
-        if (actor?.kind !== "client" || actor.client !== params.client) {
+        if (actor?.kind !== "client" || actor.client !== params.initiatedByClient) {
           this.#error(
             socket,
             request.id,
@@ -4100,7 +4142,7 @@ export class DomovoiDaemon {
           return
         }
         const actor = this.#authenticatedActors.get(socket)
-        if (actor?.kind !== "client" || actor.client !== params.client) {
+        if (actor?.kind !== "client" || actor.client !== params.initiatedByClient) {
           this.#error(
             socket,
             request.id,
@@ -4139,7 +4181,7 @@ export class DomovoiDaemon {
                   {
                     transferId: lifecycle.transferId,
                     manifestDigest,
-                    client: actor.client,
+                    initiatedByClient: actor.client,
                   },
                   statusSignal,
                 )),
@@ -4279,7 +4321,7 @@ export class DomovoiDaemon {
           )
           return
         }
-        if (transferActor.client !== params.client) {
+        if (transferActor.client !== params.initiatedByClient) {
           this.#error(
             socket,
             request.id,
@@ -4304,7 +4346,7 @@ export class DomovoiDaemon {
         const prepared = await this.#prepareTransferPreview({
           sessionId: params.sessionId,
           targetMachineId: params.targetMachineId,
-          client: params.client,
+          initiatedByClient: transferActor.client,
           method: params.method,
           ...(params.remote ? { remote: params.remote } : {}),
         }, signal)
@@ -4448,7 +4490,10 @@ export class DomovoiDaemon {
         const result = method === "device.pair"
           ? devices.pair({
               label: (params as { label: string }).label,
-              binding: { kind: "client" },
+              binding: {
+                kind: "client",
+                client: (params as RpcParams<"device.pair">).client,
+              },
             })
           : method === "device.list"
             ? { devices: devices.list() }

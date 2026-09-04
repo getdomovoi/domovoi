@@ -1,16 +1,16 @@
 import { createHash, randomBytes } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 
-import { machineIdSchema } from "@getdomovoi/protocol"
+import {
+  clientKindSchema,
+  machineIdSchema,
+  pairedDeviceSchema,
+  type ClientKind,
+  type DeviceCredentialBinding as PublicDeviceCredentialBinding,
+  type PairedDeviceSummary,
+} from "@getdomovoi/protocol"
 
-export type PairedDevice = {
-  id: string
-  label: string
-  pairedAt: string
-  lastSeenAt?: string
-  revokedAt?: string
-  revocationReason?: "legacy-unbound-credential"
-}
+export type PairedDevice = PairedDeviceSummary
 
 export type DevicePairing = {
   device: PairedDevice
@@ -18,7 +18,7 @@ export type DevicePairing = {
 }
 
 export type DeviceCredentialBinding =
-  | { kind: "client" }
+  | { kind: "client"; client: ClientKind }
   | { kind: "machine"; machineId: string }
 
 export type VerifiedDeviceCredential = {
@@ -32,6 +32,7 @@ export const maximumPairedDeviceLabelLength = 128
 export interface DeviceRegistry {
   pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing
   verify(token: string): VerifiedDeviceCredential | undefined
+  markSeen(deviceId: string, seenAt: string): void
   isActive(token: string): boolean
   rotate(deviceId: string): DevicePairing
   revoke(deviceId: string): PairedDevice
@@ -60,6 +61,7 @@ type StoredDevice = {
   revoked_at: string | null
   revocation_reason: string | null
   credential_role: string
+  client_kind: string | null
   machine_id: string | null
 }
 
@@ -76,23 +78,39 @@ function validateLabel(label: string): string {
 }
 
 function toPairedDevice(row: StoredDevice): PairedDevice {
-  return {
+  const binding = publicCredentialBinding(row)
+  return pairedDeviceSchema.parse({
     id: row.id,
     label: row.label,
     pairedAt: row.paired_at,
+    binding,
     ...(row.last_seen_at === null ? {} : { lastSeenAt: row.last_seen_at }),
     ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
-    ...(row.revocation_reason === "legacy-unbound-credential"
+    ...(
+      row.revocation_reason === "legacy-unbound-credential"
+      || row.revocation_reason === "legacy-unbound-client-kind"
       ? { revocationReason: row.revocation_reason }
       : {}),
-  }
+  })
 }
 
 function credentialBinding(row: StoredDevice): DeviceCredentialBinding | undefined {
-  if (row.credential_role === "client" && row.machine_id === null) return { kind: "client" }
-  if (row.credential_role !== "machine") return undefined
+  if (row.credential_role === "client" && row.machine_id === null) {
+    const client = clientKindSchema.safeParse(row.client_kind)
+    return client.success ? { kind: "client", client: client.data } : undefined
+  }
+  if (row.credential_role !== "machine" || row.client_kind !== null) return undefined
   const machineId = machineIdSchema.safeParse(row.machine_id)
   return machineId.success ? { kind: "machine", machineId: machineId.data } : undefined
+}
+
+function publicCredentialBinding(row: StoredDevice): PublicDeviceCredentialBinding {
+  const active = credentialBinding(row)
+  if (active) return active
+  return {
+    kind: "unbound",
+    previousRole: row.credential_role === "client" ? "client" : "unknown",
+  }
 }
 
 export class SqliteDeviceRegistry implements DeviceRegistry {
@@ -110,6 +128,7 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         revoked_at TEXT,
         revocation_reason TEXT,
         credential_role TEXT NOT NULL,
+        client_kind TEXT,
         machine_id TEXT
       );
       CREATE INDEX IF NOT EXISTS paired_devices_revoked_at ON paired_devices (revoked_at);
@@ -124,6 +143,9 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     if (!columns.some((column) => column.name === "machine_id")) {
       this.#database.exec("ALTER TABLE paired_devices ADD COLUMN machine_id TEXT")
     }
+    if (!columns.some((column) => column.name === "client_kind")) {
+      this.#database.exec("ALTER TABLE paired_devices ADD COLUMN client_kind TEXT")
+    }
     if (!columns.some((column) => column.name === "revocation_reason")) {
       this.#database.exec("ALTER TABLE paired_devices ADD COLUMN revocation_reason TEXT")
     }
@@ -133,11 +155,22 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
           revocation_reason = 'legacy-unbound-credential'
       WHERE credential_role = 'legacy'
     `).run(new Date().toISOString())
+    this.#database.prepare(`
+      UPDATE paired_devices
+      SET revoked_at = COALESCE(revoked_at, ?),
+          revocation_reason = 'legacy-unbound-client-kind'
+      WHERE credential_role = 'client'
+        AND (
+          client_kind IS NULL
+          OR client_kind NOT IN ('desktop', 'web', 'tablet', 'phone', 'cli')
+        )
+    `).run(new Date().toISOString())
   }
 
   pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing {
     const label = validateLabel(input.label)
     if (input.binding.kind === "machine") machineIdSchema.parse(input.binding.machineId)
+    else clientKindSchema.parse(input.binding.client)
     const active = this.#database
       .prepare("SELECT COUNT(*) AS total FROM paired_devices WHERE revoked_at IS NULL")
       .get() as { total: number }
@@ -148,12 +181,13 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       id: `device-${randomBytes(16).toString("hex")}`,
       label,
       pairedAt: new Date().toISOString(),
+      binding: input.binding,
     }
     this.#database
       .prepare(`
         INSERT INTO paired_devices (
-          id, label, token_hash, paired_at, credential_role, machine_id
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          id, label, token_hash, paired_at, credential_role, client_kind, machine_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         device.id,
@@ -161,6 +195,7 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         hashDeviceToken(token),
         device.pairedAt,
         input.binding.kind,
+        input.binding.kind === "client" ? input.binding.client : null,
         input.binding.kind === "machine" ? input.binding.machineId : null,
       )
     return { device, token }
@@ -175,11 +210,13 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     const binding = credentialBinding(row)
     if (!binding) return undefined
 
-    const lastSeenAt = new Date().toISOString()
+    return { device: toPairedDevice(row), binding }
+  }
+
+  markSeen(deviceId: string, seenAt: string): void {
     this.#database
-      .prepare("UPDATE paired_devices SET last_seen_at = ? WHERE id = ?")
-      .run(lastSeenAt, row.id)
-    return { device: toPairedDevice({ ...row, last_seen_at: lastSeenAt }), binding }
+      .prepare("UPDATE paired_devices SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL")
+      .run(seenAt, deviceId)
   }
 
   isActive(token: string): boolean {
