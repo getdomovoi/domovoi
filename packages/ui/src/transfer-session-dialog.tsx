@@ -31,7 +31,7 @@ import { Input } from "./components/ui/input"
 // earlier version claimed skills travelled and secrets did not, and neither was
 // true. Keep every line checkable against what a transfer actually sends.
 import { transferCoverageLists } from "./transfer-coverage.js"
-import { transferOutcomeNotice } from "./transfer-outcome.js"
+import { returnTransferExplanation, transferOutcomeNotice } from "./transfer-outcome.js"
 
 type TransferCheck = { label: string; ready: boolean }
 
@@ -176,9 +176,21 @@ export function TransferSessionDialog({
         onOpenChange(false)
         return
       }
-      setProblem(result.outcome === "refused"
-        ? { title: "Session did not move", detail: sessionTransferRefusalMessage(result.reason) }
-        : transferOutcomeNotice(result, source.label))
+      if (result.outcome === "refused") {
+        const returning = returnTransferExplanation(
+          session.transferredFrom?.sourceMachineId,
+          target.id,
+          target.label,
+        )
+        setProblem({
+          title: "Session did not move",
+          detail: [sessionTransferRefusalMessage(result.reason), returning]
+            .filter((part) => part !== undefined)
+            .join(" "),
+        })
+      } else {
+        setProblem(transferOutcomeNotice(result, source.label))
+      }
       // The digest describes a session that has since moved on, so the refusal
       // is answered by asking again rather than by making the operator close
       // the dialog and reopen it to get a digest the daemon will accept.

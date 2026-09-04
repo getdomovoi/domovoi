@@ -5,7 +5,7 @@ import {
   type SessionTransferResult,
 } from "@getdomovoi/protocol"
 
-import { transferOutcomeNotice } from "./transfer-outcome.js"
+import { returnTransferExplanation, transferOutcomeNotice } from "./transfer-outcome.js"
 
 type Incomplete = Extract<SessionTransferResult, { outcome: "incomplete" }>
 
@@ -53,5 +53,17 @@ describe("transferOutcomeNotice", () => {
     )
 
     expect(notice.detail).toContain("artifacts and attachments could not be imported")
+  })
+})
+
+describe("returnTransferExplanation", () => {
+  it("names the origin when the target is the machine the session came from", () => {
+    expect(returnTransferExplanation("machine-a", "machine-a", "workshop"))
+      .toContain("came from workshop")
+  })
+
+  it("stays quiet for any other target", () => {
+    expect(returnTransferExplanation("machine-a", "machine-b", "studio")).toBeUndefined()
+    expect(returnTransferExplanation(undefined, "machine-b", "studio")).toBeUndefined()
   })
 })

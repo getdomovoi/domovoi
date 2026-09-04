@@ -29,6 +29,18 @@ export type TransferOutcomeNotice = {
   action: "resume" | "retry" | "check-status" | "confirm-source-recovery" | undefined
 }
 
+// A machine the session came from still holds the read-only copy it kept, and
+// the daemon refuses any target that already knows the session id. The refusal
+// is accurate but reads as corruption, so the origin is named instead.
+export function returnTransferExplanation(
+  originMachineId: string | undefined,
+  targetMachineId: string,
+  targetLabel: string,
+): string | undefined {
+  if (originMachineId === undefined || originMachineId !== targetMachineId) return undefined
+  return `This session came from ${targetLabel}, which kept a read-only copy of it. Moving a session back to a machine it came from is not supported yet.`
+}
+
 export function transferOutcomeNotice(
   result: Incomplete,
   sourceLabel: string,

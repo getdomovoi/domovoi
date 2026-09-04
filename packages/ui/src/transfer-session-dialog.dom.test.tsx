@@ -291,6 +291,32 @@ it("says which stage an unfinished move reached and what answers it", async () =
   expect(alert.textContent).toContain("workshop")
 })
 
+it("explains a refusal caused by moving a session back where it came from", async () => {
+  const refused: SessionTransferResult = { outcome: "refused", reason: "target-session-diverged" }
+  renderDialog({
+    session: {
+      ...session,
+      transferredFrom: {
+        transferId: `transfer-${"e".repeat(32)}`,
+        sourceMachineId: target.id,
+        generation: 1,
+        manifestDigest: `sha256:${"f".repeat(64)}`,
+        checkpointCommit: "a".repeat(40),
+        completedAt: "2026-09-01T09:00:00.000Z",
+      },
+    } as typeof session,
+    onTransfer: () => Promise.resolve(refused),
+  })
+  const { user } = { user: userEvent.setup() }
+  await screen.findByRole("group", { name: "Travels with the session" })
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("needs manual recovery")
+  expect(alert.textContent).toContain("came from studio")
+})
+
 it("keeps the session where it is when the move fails", async () => {
   const { user, onTransferred } = renderDialog({
     onTransfer: () => Promise.resolve({
