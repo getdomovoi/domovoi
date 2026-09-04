@@ -456,7 +456,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   // Moving a session lands on the target machine, so the answer is returned to
   // the caller rather than folded into this machine's snapshot.
   const previewTransfer = useCallback(async (
-    params: Omit<SessionTransferPreviewParams, "client">,
+    params: Omit<SessionTransferPreviewParams, "initiatedByClient">,
     options?: DomovoiRequestOptions,
   ): Promise<SessionTransferPreview> => {
     const client = clientRef.current
@@ -465,7 +465,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   }, [])
 
   const transferSession = useCallback(async (
-    params: Omit<SessionTransferParams, "client">,
+    params: Omit<SessionTransferParams, "initiatedByClient">,
     options?: DomovoiRequestOptions,
   ): Promise<SessionTransferResult> => {
     const client = clientRef.current
