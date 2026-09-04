@@ -146,24 +146,28 @@ function rpc(socket: WebSocket) {
 
 async function openMachine(
   daemon: DomovoiDaemon,
+  store: SqliteWorkspaceStore,
   machineId = sourceMachineId,
-): Promise<WebSocket> {
+): Promise<{ socket: WebSocket; hello: Record<string, unknown> }> {
+  const paired = store.devices.pair({
+    label: "peer daemon",
+    binding: { kind: "machine", machineId },
+  })
   const address = daemon.address!
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-    headers: { authorization: `Bearer ${daemon.authToken}` },
+    headers: { authorization: `Bearer ${paired.token}` },
   })
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve)
     socket.once("error", reject)
   })
   const call = rpc(socket)
-  await call("system.hello", {
+  const hello = await call("system.hello", {
     client: "machine",
-    machineId,
     clientVersion: "0.0.1",
     protocolVersion: "0.1.0",
   })
-  return socket
+  return { socket, hello }
 }
 
 async function openClient(
@@ -226,28 +230,17 @@ describe("transactional session transfer RPC", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.machine.id = targetMachineId
     snapshot.project!.machineId = targetMachineId
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store,
       authToken: "correct-horse-battery-staple",
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     })
     running.push(daemon)
     await daemon.start()
     const address = daemon.address!
-    const machineSocket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
-    await new Promise<void>((resolve, reject) => {
-      machineSocket.once("open", resolve)
-      machineSocket.once("error", reject)
-    })
-    const hello = await rpc(machineSocket)("system.hello", {
-      client: "machine",
-      machineId: sourceMachineId,
-      clientVersion: "0.0.1",
-      protocolVersion: "0.1.0",
-    })
+    const { socket: machineSocket, hello } = await openMachine(daemon, store)
     expect(hello.result).toMatchObject({
       project: null,
       activeSessionId: null,
@@ -358,7 +351,7 @@ describe("transactional session transfer RPC", () => {
       client: "desktop",
     }
 
-    const machineSocket = await openMachine(daemon, targetMachineId)
+    const { socket: machineSocket } = await openMachine(daemon, store, targetMachineId)
     const machineCall = rpc(machineSocket)
     for (const [method, params] of [
       ["workspace.get", {}],
@@ -1145,7 +1138,7 @@ describe("transactional session transfer RPC", () => {
     })
     running.push(daemon)
     await daemon.start()
-    const socket = await openMachine(daemon)
+    const { socket } = await openMachine(daemon, store)
     const call = rpc(socket)
     const packaged = await packagedTransfer()
 
@@ -1286,7 +1279,7 @@ describe("transactional session transfer RPC", () => {
     })
     running.push(daemon)
     await daemon.start()
-    const socket = await openMachine(daemon)
+    const { socket } = await openMachine(daemon, store)
     const call = rpc(socket)
     const packaged = await packagedTransfer()
     const preflight = {

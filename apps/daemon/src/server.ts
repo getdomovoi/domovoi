@@ -147,7 +147,10 @@ import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
-import { DeviceLimitReachedError } from "./device-registry.js"
+import {
+  DeviceLimitReachedError,
+  type VerifiedDeviceCredential,
+} from "./device-registry.js"
 import type { MachineCredentials } from "./machine-credentials.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
@@ -807,7 +810,10 @@ export class DomovoiDaemon {
   #terminalReapGraceMs: number
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
-  #deviceCredentials = new WeakMap<WebSocket, string>()
+  #deviceCredentials = new WeakMap<WebSocket, {
+    token: string
+    verified: VerifiedDeviceCredential
+  }>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
   #connectionIds = new WeakMap<WebSocket, string>()
   #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
@@ -879,12 +885,10 @@ export class DomovoiDaemon {
         this.#snapshot.machine.id,
         Date.now(),
       ).machines ?? [],
-      sourceMachineId: () => this.#snapshot.machine.id,
       credentials: this.#machineCredentials,
-      open: ({ endpoint, expectedMachineId, machineId, credential, signal }) => openMachineSocket({
+      open: ({ endpoint, expectedMachineId, credential, signal }) => openMachineSocket({
         endpoint,
         expectedMachineId,
-        machineId,
         credential,
         ...(signal ? { signal } : {}),
       }),
@@ -1024,8 +1028,9 @@ export class DomovoiDaemon {
   #credentialAccepted(socket: WebSocket, token: string | undefined): boolean {
     if (secureTokenMatch(this.#authToken, token)) return true
     if (!token) return false
-    if (this.#store.devices?.verify(token) === undefined) return false
-    this.#deviceCredentials.set(socket, token)
+    const verified = this.#store.devices?.verify(token)
+    if (verified === undefined) return false
+    this.#deviceCredentials.set(socket, { token, verified })
     return true
   }
 
@@ -1043,9 +1048,9 @@ export class DomovoiDaemon {
   // A paired device can be revoked or rotated while it holds an open socket, so
   // its credential is rechecked for every request rather than only at connect.
   #deviceCredentialActive(socket: WebSocket): boolean {
-    const token = this.#deviceCredentials.get(socket)
-    if (token === undefined) return true
-    return this.#store.devices?.isActive(token) === true
+    const credential = this.#deviceCredentials.get(socket)
+    if (credential === undefined) return true
+    return this.#store.devices?.isActive(credential.token) === true
   }
 
   issuePairingCode(): { code: string; expiresAt: string } {
@@ -2775,8 +2780,30 @@ export class DomovoiDaemon {
         return
       }
       if (hello.client === "machine") {
-        this.#authenticatedActors.set(socket, { kind: "machine", machineId: hello.machineId })
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (credential?.binding.kind !== "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Machine connections require a machine-paired credential",
+          )
+          return
+        }
+        this.#authenticatedActors.set(socket, {
+          kind: "machine",
+          machineId: credential.binding.machineId,
+        })
       } else {
+        if (this.#deviceCredentials.get(socket)?.verified.binding.kind === "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Machine credentials cannot identify as a client",
+          )
+          return
+        }
         this.#authenticatedActors.set(socket, {
           kind: "client",
           client: hello.client,
@@ -2796,7 +2823,10 @@ export class DomovoiDaemon {
         return
       }
       try {
-        const paired = this.#pairing.claim(params.code, { label: params.label }, Date.now())
+        const paired = this.#pairing.claim(params.code, {
+          label: params.label,
+          machineId: params.machineId,
+        }, Date.now())
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
@@ -3329,15 +3359,6 @@ export class DomovoiDaemon {
         || method === "transfer.status"
         || method === "transfer.abort"
       ) {
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
         const actor = this.#authenticatedActors.get(socket)
         if (actor?.kind !== "machine") {
           this.#error(
@@ -4015,7 +4036,10 @@ export class DomovoiDaemon {
           return
         }
         const result = method === "device.pair"
-          ? devices.pair({ label: (params as { label: string }).label })
+          ? devices.pair({
+              label: (params as { label: string }).label,
+              binding: { kind: "client" },
+            })
           : method === "device.list"
             ? { devices: devices.list() }
             : method === "device.revoke"

@@ -40,7 +40,6 @@ type PendingCall = {
 export function openMachineSocket(input: {
   endpoint: string
   expectedMachineId: string
-  machineId: string
   credential: string
   handshakeTimeoutMs?: number
   callTimeoutMs?: number
@@ -170,7 +169,6 @@ export function openMachineSocket(input: {
       // anything else to it.
       send("system.hello", {
         client: "machine",
-        machineId: input.machineId,
         clientVersion: "0.0.1",
         protocolVersion,
         authToken: input.credential,

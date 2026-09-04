@@ -400,11 +400,11 @@ describe("SqliteWorkspaceStore", () => {
     scratchDirectories.push(scratch)
     const databasePath = join(scratch, "state.sqlite")
     const first = new SqliteWorkspaceStore(databasePath, demoWorkspace)
-    const paired = first.devices.pair({ label: "studio-ipad" })
+    const paired = first.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     first.close()
 
     const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
-    expect(reopened.devices.verify(paired.token)?.id).toBe(paired.device.id)
+    expect(reopened.devices.verify(paired.token)?.device.id).toBe(paired.device.id)
     expect(reopened.devices.list()).toEqual([
       expect.objectContaining({ id: paired.device.id, label: "studio-ipad" }),
     ])

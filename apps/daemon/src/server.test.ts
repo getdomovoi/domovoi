@@ -78,6 +78,7 @@ const skillSecurityMetadata = {
   signature: { state: "unsigned" as const },
   trust: { state: "untrusted" as const, reason: "unsigned" as const },
 }
+const claimedMachineId = `machine-${"c".repeat(32)}`
 
 describe("helloProtocolCompatibility", () => {
   it("keeps a versionless client on its historical protocol after a breaking minor", () => {
@@ -3288,7 +3289,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
     const address = await daemon.start()
-    const paired = store.devices.pair({ label: "studio-ipad" })
+    const paired = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
 
     const open = (token: string) => {
       const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
@@ -3333,6 +3334,46 @@ describe("DomovoiDaemon", () => {
     revokedSocket.close()
   })
 
+  it("derives machine actors from machine-bound credentials", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    running.push(daemon)
+    await daemon.start()
+    const machineId = `machine-${"d".repeat(32)}`
+    const clientCredential = store.devices.pair({
+      label: "studio-ipad",
+      binding: { kind: "client" },
+    })
+    const machineCredential = store.devices.pair({
+      label: "studio-mac",
+      binding: { kind: "machine", machineId },
+    })
+    const hello = async (token: string, client: "desktop" | "machine") => {
+      const { socket, call } = await unauthenticatedSocket(daemon)
+      const response = await call(1, "system.hello", {
+        client,
+        clientVersion: "0.0.1",
+        protocolVersion: "0.1.0",
+        authToken: token,
+      })
+      socket.close()
+      return response
+    }
+
+    await expect(hello(daemon.authToken, "machine")).resolves.toMatchObject({
+      error: { message: "Machine connections require a machine-paired credential" },
+    })
+    await expect(hello(clientCredential.token, "machine")).resolves.toMatchObject({
+      error: { message: "Machine connections require a machine-paired credential" },
+    })
+    await expect(hello(machineCredential.token, "desktop")).resolves.toMatchObject({
+      error: { message: "Machine credentials cannot identify as a client" },
+    })
+    await expect(hello(machineCredential.token, "machine")).resolves.toMatchObject({
+      result: { machine: { id: demoWorkspace.machine.id }, sessions: [], thread: [] },
+    })
+  })
+
   it.each([
     ["revoked", (store: SqliteWorkspaceStore, deviceId: string) => {
       store.devices.revoke(deviceId)
@@ -3345,7 +3386,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
     const address = await daemon.start()
-    const paired = store.devices.pair({ label: "studio-ipad" })
+    const paired = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${paired.token}` },
     })
@@ -3500,7 +3541,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
     await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const { socket, call } = await pairingClient(daemon, issued.token)
 
     const pairAttempt = await call(2, "device.pair", { label: "second-ipad", client: "tablet" })
@@ -3523,7 +3564,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -3715,7 +3756,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -3799,7 +3840,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -3943,7 +3984,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -3986,11 +4027,18 @@ describe("DomovoiDaemon", () => {
     const issued = daemon.issuePairingCode()
     const { socket, call } = await unauthenticatedSocket(daemon)
 
-    const claimed = await call(1, "device.claim", { code: issued.code, label: "studio-ipad" })
+    const claimed = await call(1, "device.claim", {
+      code: issued.code,
+      label: "studio-ipad",
+      machineId: claimedMachineId,
+    })
 
     const token = (claimed.result as { token: string }).token
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(store.devices.verify(token)?.label).toBe("studio-ipad")
+    expect(store.devices.verify(token)).toEqual({
+      device: expect.objectContaining({ label: "studio-ipad" }),
+      binding: { kind: "machine", machineId: claimedMachineId },
+    })
     socket.close()
   })
 
@@ -4017,7 +4065,11 @@ describe("DomovoiDaemon", () => {
     await daemon.start()
     const { socket, call } = await unauthenticatedSocket(daemon)
 
-    await expect(call(1, "device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad" }))
+    await expect(call(1, "device.claim", {
+      code: "hearth-quiet-ember-42",
+      label: "studio-ipad",
+      machineId: claimedMachineId,
+    }))
       .resolves.toMatchObject({ error: { message: "Pairing was refused" } })
     expect(store.devices.list()).toHaveLength(0)
     socket.close()
@@ -4033,11 +4085,13 @@ describe("DomovoiDaemon", () => {
     const withNoPairingOpen = await call(1, "device.claim", {
       code: "hearth-quiet-ember-42",
       label: "studio-ipad",
+      machineId: claimedMachineId,
     })
     daemon.issuePairingCode()
     const withWrongCode = await call(2, "device.claim", {
       code: "willow-harbor-cedar-11",
       label: "studio-ipad",
+      machineId: claimedMachineId,
     })
 
     const refusal = (response: Record<string, unknown>) =>
@@ -4053,7 +4107,7 @@ describe("DomovoiDaemon", () => {
     running.push(daemon)
     await daemon.start()
     for (let index = 0; index < maximumPairedDevices; index += 1) {
-      store.devices.pair({ label: `device-${index}` })
+      store.devices.pair({ label: `device-${index}`, binding: { kind: "client" } })
     }
     const issued = daemon.issuePairingCode()
     const { socket, call } = await unauthenticatedSocket(daemon)
@@ -4061,6 +4115,7 @@ describe("DomovoiDaemon", () => {
     const claimed = await call(1, "device.claim", {
       code: issued.code,
       label: "one-too-many",
+      machineId: claimedMachineId,
     })
 
     expect(claimed).toMatchObject({
@@ -4128,7 +4183,11 @@ describe("DomovoiDaemon", () => {
     const issued = daemon.issuePairingCode()
     const { socket, call } = await unauthenticatedSocket(daemon)
 
-    const claimed = await call(1, "device.claim", { code: issued.code, label: "studio-ipad" })
+    const claimed = await call(1, "device.claim", {
+      code: issued.code,
+      label: "studio-ipad",
+      machineId: claimedMachineId,
+    })
 
     const token = (claimed.result as { token: string }).token
     const entries = store.auditLog.query({ limit: 50 }).entries
@@ -10645,7 +10704,7 @@ describe("DomovoiDaemon transfers", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -11292,7 +11351,7 @@ describe("DomovoiDaemon session transfer requests", () => {
   it("refuses a transfer from a client holding only a device credential", async () => {
     const { daemon, store } = transferDaemon()
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad" })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
