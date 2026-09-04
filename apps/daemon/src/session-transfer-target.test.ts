@@ -309,7 +309,10 @@ describe("target transfer commit", () => {
     expect(restoreSessionFromBundle).toHaveBeenCalledWith(
       expect.any(String),
       "session-billing",
-      { repositoryPath: "/target/project" },
+      {
+        repositoryPath: "/target/project",
+        checkpointCommits: ["7".repeat(40), checkpointCommit],
+      },
     )
     expect(writeTransferredArtifactSource).toHaveBeenCalledWith(
       "/target/session-billing",

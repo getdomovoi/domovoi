@@ -10,6 +10,18 @@ import { maximumPreviewSourceBytes } from "@getdomovoi/protocol"
 const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 const safeRemoteName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
+const commitSha = /^[a-f0-9]{40}$/u
+
+function checkpointRef(commit: string): string {
+  return `refs/domovoi/checkpoints/${commit}`
+}
+
+function uniqueCheckpointCommits(commits: readonly string[] = []): string[] {
+  if (commits.some((commit) => !commitSha.test(commit))) {
+    throw new Error("Transferred checkpoint commit is invalid")
+  }
+  return [...new Set(commits)]
+}
 
 export type RepositoryInfo = {
   root: string
@@ -125,6 +137,7 @@ export interface WorkspaceService {
     bundlePath: string,
     sinceCommit?: string,
     signal?: AbortSignal,
+    checkpointCommits?: readonly string[],
   ): Promise<SessionBundle>
   restoreSessionFromBundle?(
     bundlePath: string,
@@ -137,6 +150,7 @@ export interface WorkspaceService {
     remote: string,
     sessionId: string,
     signal?: AbortSignal,
+    checkpointCommits?: readonly string[],
   ): Promise<SessionRef>
   sessionHeadCommit?(sessionId: string, signal?: AbortSignal): Promise<string | undefined>
   restoreSessionFromRef?(
@@ -145,6 +159,7 @@ export interface WorkspaceService {
     sessionId: string,
     expectedCommitOrSignal?: string | AbortSignal,
     signal?: AbortSignal,
+    checkpointCommits?: readonly string[],
   ): Promise<SessionWorkspace>
   transferFingerprint?(
     worktreePath: string,
@@ -184,6 +199,7 @@ export type SessionBundleRestoreOptions = {
   // Import into the target project so the arrival remains one of its managed
   // worktrees. A standalone clone would keep the disposable bundle as origin.
   repositoryPath: string
+  checkpointCommits?: readonly string[]
 }
 
 async function restrictBundlePermissions(path: string): Promise<void> {
@@ -236,6 +252,22 @@ async function git(
     signal,
   })
   return result.stdout.trim()
+}
+
+async function verifiedCheckpointRefs(
+  repositoryPath: string,
+  commits: readonly string[] | undefined,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const unique = uniqueCheckpointCommits(commits)
+  const refs = unique.map(checkpointRef)
+  for (const [index, ref] of refs.entries()) {
+    const resolved = await git(repositoryPath, ["rev-parse", `${ref}^{commit}`], signal)
+    if (resolved !== unique[index]) {
+      throw new Error("Transferred checkpoint ref does not match its commit")
+    }
+  }
+  return refs
 }
 
 async function gitDirectory(
@@ -999,6 +1031,7 @@ export class GitWorkspaceService implements WorkspaceService {
     remote: string,
     sessionId: string,
     signal?: AbortSignal,
+    checkpointCommits?: readonly string[],
   ): Promise<SessionRef> {
     if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
     // A remote name that begins with a dash would be read as an option by git.
@@ -1011,7 +1044,18 @@ export class GitWorkspaceService implements WorkspaceService {
 
     const commit = await this.#checkpointedHead(worktreePath, signal)
     const ref = `refs/domovoi/sessions/${sessionId}`
-    await git(worktreePath, ["push", "--", remote, `${commit}:${ref}`], signal)
+    const checkpointRefs = await verifiedCheckpointRefs(
+      worktreePath,
+      checkpointCommits,
+      signal,
+    )
+    await git(worktreePath, [
+      "push",
+      "--",
+      remote,
+      `${commit}:${ref}`,
+      ...checkpointRefs.map((checkpoint) => `${checkpoint}:${checkpoint}`),
+    ], signal)
     return { ref, commit, remote }
   }
 
@@ -1023,6 +1067,7 @@ export class GitWorkspaceService implements WorkspaceService {
     sessionId: string,
     expectedCommitOrSignal?: string | AbortSignal,
     signal?: AbortSignal,
+    checkpointCommits?: readonly string[],
   ): Promise<SessionWorkspace> {
     const expectedCommit = typeof expectedCommitOrSignal === "string"
       ? expectedCommitOrSignal
@@ -1037,11 +1082,20 @@ export class GitWorkspaceService implements WorkspaceService {
     }
 
     const ref = `refs/domovoi/sessions/${sessionId}`
-    await git(repositoryPath, ["fetch", "--quiet", "--", remote, `${ref}:${ref}`], operationSignal)
+    const checkpointRefs = uniqueCheckpointCommits(checkpointCommits).map(checkpointRef)
+    await git(repositoryPath, [
+      "fetch",
+      "--quiet",
+      "--",
+      remote,
+      `${ref}:${ref}`,
+      ...checkpointRefs.map((checkpoint) => `${checkpoint}:${checkpoint}`),
+    ], operationSignal)
     const commit = await git(repositoryPath, ["rev-parse", `${ref}^{commit}`], operationSignal)
     if (expectedCommit !== undefined && commit !== expectedCommit) {
       throw new Error("Remote session ref changed before transfer commit")
     }
+    await verifiedCheckpointRefs(repositoryPath, checkpointCommits, operationSignal)
 
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
@@ -1093,6 +1147,7 @@ export class GitWorkspaceService implements WorkspaceService {
     bundlePath: string,
     sinceCommit?: string,
     signal?: AbortSignal,
+    checkpointCommits?: readonly string[],
   ): Promise<SessionBundle> {
     // The caller names where the bundle goes, but a path that walks upward can
     // land somewhere it was never meant to, so traversal is refused outright.
@@ -1121,8 +1176,15 @@ export class GitWorkspaceService implements WorkspaceService {
       throw new Error("Session worktree has work that is not checkpointed")
     }
 
-    const range = sinceCommit === undefined ? "HEAD" : `${sinceCommit}..HEAD`
-    await git(worktreePath, ["bundle", "create", resolved, range], signal)
+    const checkpointRefs = await verifiedCheckpointRefs(
+      worktreePath,
+      checkpointCommits,
+      signal,
+    )
+    const revisions = sinceCommit === undefined
+      ? ["HEAD", ...checkpointRefs]
+      : [`^${sinceCommit}`, "HEAD", ...checkpointRefs]
+    await git(worktreePath, ["bundle", "create", resolved, ...revisions], signal)
     await restrictBundlePermissions(resolved)
     return { path: resolved, commit, incremental: sinceCommit !== undefined }
   }
@@ -1147,7 +1209,14 @@ export class GitWorkspaceService implements WorkspaceService {
 
     // Each restore owns its temporary ref, so concurrent attempts cannot
     // delete or retarget one another's fetched commit.
-    const incomingRef = `refs/domovoi/incoming/${sessionId}/${randomUUID()}`
+    const incomingPrefix = `refs/domovoi/incoming/${sessionId}/${randomUUID()}`
+    const incomingRef = `${incomingPrefix}/head`
+    const declaredCheckpoints = uniqueCheckpointCommits(options.checkpointCommits)
+    const incomingCheckpoints = declaredCheckpoints.map((commit) => ({
+      commit,
+      source: checkpointRef(commit),
+      target: `${incomingPrefix}/checkpoints/${commit}`,
+    }))
     try {
       await git(repository.root, [
         "fetch",
@@ -1155,6 +1224,7 @@ export class GitWorkspaceService implements WorkspaceService {
         "--",
         bundlePath,
         `+HEAD:${incomingRef}`,
+        ...incomingCheckpoints.map(({ source, target }) => `+${source}:${target}`),
       ], signal)
     } catch {
       signal?.throwIfAborted()
@@ -1163,6 +1233,21 @@ export class GitWorkspaceService implements WorkspaceService {
 
     try {
       const arrived = await git(repository.root, ["rev-parse", `${incomingRef}^{commit}`], signal)
+      for (const checkpoint of incomingCheckpoints) {
+        const resolved = await git(
+          repository.root,
+          ["rev-parse", `${checkpoint.target}^{commit}`],
+          signal,
+        )
+        if (resolved !== checkpoint.commit) {
+          throw new Error("Transferred checkpoint ref does not match its commit")
+        }
+      }
+      const installCheckpointRefs = async (): Promise<void> => {
+        for (const commit of new Set([...declaredCheckpoints, arrived])) {
+          await git(repository.root, ["update-ref", checkpointRef(commit), commit], signal)
+        }
+      }
       // An incremental bundle applies only to the managed worktree this target
       // already owns. Uncommitted target work is never this transfer's to drop.
       const held = await this.sessionHeadCommit(sessionId, signal)
@@ -1179,7 +1264,7 @@ export class GitWorkspaceService implements WorkspaceService {
           throw new SessionWorktreeExistsError()
         }
         await git(path, ["checkout", "--quiet", "-B", branch, arrived], signal)
-        await git(path, ["update-ref", `refs/domovoi/checkpoints/${arrived}`, arrived], signal)
+        await installCheckpointRefs()
         return { path, branch, baseCommit: arrived }
       }
 
@@ -1202,10 +1287,12 @@ export class GitWorkspaceService implements WorkspaceService {
         }
         throw error
       }
-      await git(path, ["update-ref", `refs/domovoi/checkpoints/${arrived}`, arrived], signal)
+      await installCheckpointRefs()
       return { path, branch, baseCommit: arrived }
     } finally {
-      await git(repository.root, ["update-ref", "-d", incomingRef], signal).catch(() => {})
+      for (const ref of [incomingRef, ...incomingCheckpoints.map(({ target }) => target)]) {
+        await git(repository.root, ["update-ref", "-d", ref], signal).catch(() => {})
+      }
     }
   }
 

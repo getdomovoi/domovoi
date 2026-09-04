@@ -2109,6 +2109,11 @@ describe("transactional session transfer RPC", () => {
     const targetTransactions = new FileTransferTransactions(join(scratch, "target"))
     let checkpointed = false
     let observedStagedSource = false
+    const bundleSession = vi.fn(async (_worktreePath: string, bundlePath: string) => ({
+      path: bundlePath,
+      commit: checkpointCommit,
+      incremental: false,
+    }))
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
@@ -2139,11 +2144,7 @@ describe("transactional session transfer RPC", () => {
           }
         },
         readIgnoredArtifactSource: async () => undefined,
-        bundleSession: async (_worktreePath, bundlePath) => ({
-          path: bundlePath,
-          commit: checkpointCommit,
-          incremental: false,
-        }),
+        bundleSession,
       },
       readTransferBundle: async () => Buffer.from("PACK exact session"),
       connectToMachine: async () => ({
@@ -2207,6 +2208,18 @@ describe("transactional session transfer RPC", () => {
       contractVersion: 1,
       ownershipGeneration: 4,
     })
+    expect(bundleSession).toHaveBeenCalledWith(
+      session.workspacePath,
+      expect.any(String),
+      undefined,
+      expect.any(AbortSignal),
+      [
+        ...source.thread.flatMap((item) => (
+          item.kind === "checkpoint" && item.commit ? [item.commit] : []
+        )),
+        checkpointCommit,
+      ],
+    )
     expect(observedStagedSource).toBe(true)
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferred",

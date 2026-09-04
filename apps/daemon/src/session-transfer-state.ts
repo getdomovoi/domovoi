@@ -21,6 +21,17 @@ export class SessionTransferStateError extends Error {
   }
 }
 
+export function sessionTransferCheckpointCommits(
+  state: SessionTransferState,
+  currentCommit: string,
+): string[] {
+  const commits = state.thread.flatMap((item) => (
+    item.kind === "checkpoint" && item.commit ? [item.commit] : []
+  ))
+  commits.push(currentCommit)
+  return [...new Set(commits)]
+}
+
 function transferArrivalThreadItem(
   session: WorkspaceSnapshot["sessions"][number],
 ): WorkspaceSnapshot["thread"][number] {

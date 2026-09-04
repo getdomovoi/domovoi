@@ -11,7 +11,10 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import { importSessionTransferState } from "./session-transfer-state.js"
+import {
+  importSessionTransferState,
+  sessionTransferCheckpointCommits,
+} from "./session-transfer-state.js"
 import type { CommittedTransferOwnership } from "./transfer-ownership.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 
@@ -24,13 +27,14 @@ type TargetWorkspaceOperations = {
   restoreSessionFromBundle?: (
     bundlePath: string,
     sessionId: string,
-    options: { repositoryPath: string },
+    options: { repositoryPath: string; checkpointCommits: readonly string[] },
   ) => Promise<RestoredWorkspace>
   restoreSessionFromRef?: (
     repositoryPath: string,
     remote: string,
     sessionId: string,
     expectedCommit?: string,
+    checkpointCommits?: readonly string[],
   ) => Promise<RestoredWorkspace>
   writeTransferredArtifactSource?: (
     worktreePath: string,
@@ -197,6 +201,7 @@ async function restoreRepository(
   snapshot: WorkspaceSnapshot,
   manifest: SessionTransferManifest,
   manifestDigest: string,
+  state: ReturnType<typeof sessionTransferStateSchema.parse>,
   transactions: FileTransferTransactions,
   workspace: TargetWorkspaceOperations,
 ): Promise<RestoredWorkspace> {
@@ -212,6 +217,10 @@ async function restoreRepository(
     )
     return workspace.restoreSessionFromBundle(bundlePath, manifest.sessionId, {
       repositoryPath: snapshot.project.path,
+      checkpointCommits: sessionTransferCheckpointCommits(
+        state,
+        manifest.project.checkpointCommit,
+      ),
     })
   }
   if (!workspace.restoreSessionFromRef) {
@@ -222,6 +231,7 @@ async function restoreRepository(
     manifest.repository.remote,
     manifest.sessionId,
     manifest.repository.commit,
+    sessionTransferCheckpointCommits(state, manifest.project.checkpointCommit),
   )
 }
 
@@ -389,6 +399,7 @@ export async function commitPreparedSessionTransfer(input: {
       input.snapshot,
       manifest,
       input.manifestDigest,
+      state,
       input.transactions,
       input.workspace,
     )

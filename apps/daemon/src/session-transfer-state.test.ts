@@ -9,6 +9,7 @@ import {
 import {
   importSessionTransferState,
   portableSessionTransferState,
+  sessionTransferCheckpointCommits,
   SessionTransferStateError,
 } from "./session-transfer-state.js"
 
@@ -75,6 +76,15 @@ describe("portable session transfer state", () => {
     for (const forbidden of ["approvals", "approvalRules", "skillEnablements"]) {
       expect(state).not.toHaveProperty(forbidden)
     }
+  })
+
+  it("names every durable checkpoint the repository transport must carry", () => {
+    const state = portableSessionTransferState(sourceWorkspace(), "session-billing", usage)
+
+    expect(sessionTransferCheckpointCommits(state, checkpointCommit)).toEqual([
+      "7".repeat(40),
+      checkpointCommit,
+    ])
   })
 
   it("refuses open approvals and transfer lifecycle states", () => {

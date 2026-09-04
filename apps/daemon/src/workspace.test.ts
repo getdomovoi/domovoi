@@ -937,6 +937,53 @@ describe("GitWorkspaceService bundle restore", () => {
     expect(durable.stdout.trim()).toBe(checkpoint.commit)
   })
 
+  it("carries a restorable checkpoint that is not reachable from the current head", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-restore-history-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const targetRepositoryPath = join(scratch, "target-project")
+    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
+    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
+    const base = workspace.baseCommit
+
+    await writeFile(join(workspace.path, "README.md"), "abandoned branch\n")
+    const historical = await source.checkpoint(workspace.path, "historical")
+    await execute("git", ["-C", workspace.path, "reset", "--hard", base])
+    await writeFile(join(workspace.path, "README.md"), "current branch\n")
+    const current = await source.checkpoint(workspace.path, "current")
+    const checkpoints = [historical.commit, current.commit]
+    const bundle = await source.bundleSession(
+      workspace.path,
+      join(scratch, "session.bundle"),
+      undefined,
+      undefined,
+      checkpoints,
+    )
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    const restored = await target.restoreSessionFromBundle(bundle.path, "session-1", {
+      repositoryPath: targetRepositoryPath,
+      checkpointCommits: checkpoints,
+    })
+
+    await expect(target.restore(restored.path, historical.commit)).resolves.toMatchObject({
+      restoredCommit: historical.commit,
+    })
+    await expect(readFile(join(restored.path, "README.md"), "utf8"))
+      .resolves.toBe("abandoned branch\n")
+  })
+
   it("never destroys a session worktree that is already there", async () => {
     const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-occupied-")
     const targetRoot = join(scratch, "target-worktrees")
@@ -1136,6 +1183,58 @@ describe("GitWorkspaceService session ref restore", () => {
       "session-1",
       "f".repeat(40),
     )).rejects.toThrow("Remote session ref changed before transfer commit")
+  })
+
+  it("pushes and restores checkpoint refs outside the current branch", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-ref-history-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const remotePath = join(scratch, "remote.git")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
+    await execute("git", ["init", "--bare", remotePath])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath,
+      "-c", "user.name=Test User",
+      "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await execute("git", ["-C", repositoryPath, "remote", "add", "origin", remotePath])
+    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
+
+    await writeFile(join(workspace.path, "README.md"), "abandoned branch\n")
+    const historical = await source.checkpoint(workspace.path, "historical")
+    await execute("git", ["-C", workspace.path, "reset", "--hard", workspace.baseCommit])
+    await writeFile(join(workspace.path, "README.md"), "current branch\n")
+    const current = await source.checkpoint(workspace.path, "current")
+    const checkpoints = [historical.commit, current.commit]
+    await source.pushSessionRef(
+      workspace.path,
+      "origin",
+      "session-1",
+      undefined,
+      checkpoints,
+    )
+
+    const targetClone = join(scratch, "target-project")
+    await execute("git", ["clone", "--quiet", remotePath, targetClone])
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    const restored = await target.restoreSessionFromRef(
+      targetClone,
+      "origin",
+      "session-1",
+      current.commit,
+      undefined,
+      checkpoints,
+    )
+
+    await expect(target.restore(restored.path, historical.commit)).resolves.toMatchObject({
+      restoredCommit: historical.commit,
+    })
   })
 })
 

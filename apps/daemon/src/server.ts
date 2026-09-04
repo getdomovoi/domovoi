@@ -75,7 +75,10 @@ import {
   finalizeSessionTransferIntent,
   type PreparedSessionTransferIntent,
 } from "./session-transfer-package.js"
-import { SessionTransferStateError } from "./session-transfer-state.js"
+import {
+  sessionTransferCheckpointCommits,
+  SessionTransferStateError,
+} from "./session-transfer-state.js"
 import {
   clearConfirmedSourceRecovery,
   completeSourceSessionTransfer,
@@ -2409,6 +2412,10 @@ export class DomovoiDaemon {
         signal,
       )
       checkpointCommit = checkpoint.commit
+      const checkpointCommits = sessionTransferCheckpointCommits(
+        prepared.intent.state,
+        checkpoint.commit,
+      )
       await this.#persistTransferSnapshot(
         recordPreparingSourceCheckpoint(this.#snapshot, transferId, checkpoint.commit),
         sourceSession.id,
@@ -2437,6 +2444,7 @@ export class DomovoiDaemon {
             join(temporary, "repository.bundle"),
             undefined,
             signal,
+            checkpointCommits,
           )
           const bytes = await readBundle(bundle.path)
           packaged = createSessionTransferPackage(prepared.intent, {
@@ -2458,6 +2466,7 @@ export class DomovoiDaemon {
           params.remote,
           sourceSession.id,
           signal,
+          checkpointCommits,
         )
         packaged = createSessionTransferPackage(prepared.intent, {
           transferId,
@@ -3870,6 +3879,7 @@ export class DomovoiDaemon {
             ...(this.#workspaceService.restoreSessionFromBundle
               ? { restoreSessionFromBundle: (path: string, sessionId: string, options: {
                   repositoryPath: string
+                  checkpointCommits: readonly string[]
                 }) => (
                   this.#workspaceService.restoreSessionFromBundle!(path, sessionId, options, signal)
                 ) }
@@ -3880,12 +3890,14 @@ export class DomovoiDaemon {
                   remote: string,
                   sessionId: string,
                   expectedCommit?: string,
+                  checkpointCommits?: readonly string[],
                 ) => this.#workspaceService.restoreSessionFromRef!(
                   path,
                   remote,
                   sessionId,
                   expectedCommit,
                   signal,
+                  checkpointCommits,
                 ) }
               : {}),
             ...(this.#workspaceService.writeTransferredArtifactSource
