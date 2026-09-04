@@ -861,13 +861,18 @@ describe("transactional session transfer RPC", () => {
     socket.close()
   })
 
-  it("accepts, restores, and idempotently commits a transfer from its source machine", async () => {
+  it("keeps an imported owner authoritative when the transaction journal commit fails", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
     scratchDirectories.push(scratch)
     const transactions = new FileTransferTransactions(join(scratch, "transactions"))
     const snapshot = targetSnapshot()
     const workspaceService = {
-      inspect: async () => ({ root: "/target/project", name: "project", branch: "main", head: baseCommit }),
+      inspect: async (path: string) => ({
+        root: path,
+        name: path === "/target/project" ? "project" : "other",
+        branch: "main",
+        head: baseCommit,
+      }),
       createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
       removeSessionWorkspace: async () => {},
       checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
@@ -879,9 +884,10 @@ describe("transactional session transfer RPC", () => {
         baseCommit: checkpointCommit,
       }),
     } satisfies WorkspaceService
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
     const daemon = new DomovoiDaemon({
       port: 0,
-      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      store,
       authToken: "correct-horse-battery-staple",
       workspaceService,
       transferTransactions: transactions,
@@ -925,31 +931,35 @@ describe("transactional session transfer RPC", () => {
       manifestDigest: packaged.manifestDigest,
       client: "desktop",
     }
+    vi.spyOn(transactions, "markCommitted")
+      .mockRejectedValueOnce(new Error("journal unavailable after snapshot commit"))
     await expect(call("transfer.commit", commitParams)).resolves.toMatchObject({
-      result: {
-        state: "committed",
-        checkpointCommit,
-        ownershipGeneration: 2,
-      },
-    })
-    await expect(call("transfer.commit", commitParams)).resolves.toMatchObject({
-      result: { state: "committed" },
-    })
-    await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
-      result: { state: "committed" },
-    })
-    await transactions.remove(packaged.manifest.transferId, packaged.manifestDigest)
-    await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
-      result: {
-        state: "committed",
-        checkpointCommit,
-        ownershipGeneration: 2,
-      },
+      error: { code: -32603 },
     })
 
-    const loaded = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
-    expect(loaded.sessions).toHaveLength(1)
-    expect(loaded.sessions[0]).toMatchObject({
+    const importedAfterJournalFailure = workspaceSnapshotSchema.parse(
+      (await call("workspace.get", {})).result,
+    )
+    expect(importedAfterJournalFailure.sessions).toEqual([
+      expect.objectContaining({
+        id: packaged.manifest.sessionId,
+        ownershipGeneration: 2,
+        transferredFrom: expect.objectContaining({ transferId: packaged.manifest.transferId }),
+      }),
+    ])
+    await expect(call("transfer.commit", commitParams)).resolves.toMatchObject({
+      result: {
+        state: "committed",
+        checkpointCommit,
+        ownershipGeneration: 2,
+      },
+    })
+    await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
+      result: { state: "committed" },
+    })
+    const imported = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
+    expect(imported.sessions).toHaveLength(1)
+    expect(imported.sessions[0]).toMatchObject({
       id: packaged.manifest.sessionId,
       state: "idle",
       ownershipGeneration: 2,
@@ -960,8 +970,40 @@ describe("transactional session transfer RPC", () => {
         checkpointCommit,
       },
     })
-    expect(loaded.thread.filter((item) => item.id.startsWith("system-transfer-")))
+    expect(imported.thread.filter((item) => item.id.startsWith("system-transfer-")))
       .toHaveLength(1)
+
+    await transactions.remove(packaged.manifest.transferId, packaged.manifestDigest)
+    const clientSocket = await openClient(daemon)
+    const clientCall = rpc(clientSocket)
+    const confirmation = await clientCall("project.open", {
+      path: "/target/other",
+      client: "desktop",
+    })
+    await expect(clientCall("project.open", {
+      path: "/target/other",
+      client: "desktop",
+      confirmation: (confirmation.error as { data: unknown }).data,
+    })).resolves.toMatchObject({ result: { project: { path: "/target/other" }, sessions: [] } })
+    await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
+      result: {
+        state: "committed",
+        checkpointCommit,
+        ownershipGeneration: 2,
+      },
+    })
+    await expect(call("transfer.prepare", {
+      manifest: packaged.manifest,
+      manifestDigest: packaged.manifestDigest,
+      client: "desktop",
+    })).resolves.toMatchObject({ result: { state: "committed" } })
+    await expect(call("transfer.abort", commitParams)).resolves.toMatchObject({
+      result: { state: "committed" },
+    })
+
+    const loaded = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
+    expect(loaded.sessions).toHaveLength(0)
+    clientSocket.close()
     socket.close()
   })
 

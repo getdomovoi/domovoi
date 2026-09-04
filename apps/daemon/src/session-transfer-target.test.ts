@@ -259,18 +259,19 @@ describe("target transfer commit", () => {
     expect(restoreSessionFromBundle).toHaveBeenCalledOnce()
     expect(save).toHaveBeenCalledOnce()
 
-    await transactions.markFailed(
-      packaged.manifest.transferId,
-      packaged.manifestDigest,
+    const failed = await preparedTransfer()
+    await failed.transactions.markFailed(
+      failed.packaged.manifest.transferId,
+      failed.packaged.manifestDigest,
       "persistence-failed",
     )
     const digestCollision = structuredClone(committed.snapshot)
     digestCollision.sessions[0]!.transferredFrom!.manifestDigest = `sha256:${"9".repeat(64)}`
     await expect(commitPreparedSessionTransfer({
       snapshot: digestCollision,
-      transferId: packaged.manifest.transferId,
-      manifestDigest: packaged.manifestDigest,
-      transactions,
+      transferId: failed.packaged.manifest.transferId,
+      manifestDigest: failed.packaged.manifestDigest,
+      transactions: failed.transactions,
       projectHasLineage: async () => true,
       workspace: { restoreSessionFromBundle, writeTransferredArtifactSource },
       annotationVisualContext: { storeUpload },

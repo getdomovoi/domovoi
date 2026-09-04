@@ -12,6 +12,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { importSessionTransferState } from "./session-transfer-state.js"
+import type { CommittedTransferOwnership } from "./transfer-ownership.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 
 type RestoredWorkspace = {
@@ -220,7 +221,10 @@ export async function commitPreparedSessionTransfer(input: {
   workspace: TargetWorkspaceOperations
   annotationVisualContext: TargetAnnotationVisualContext
   usageLedger: TargetUsageLedger
-  save: (snapshot: WorkspaceSnapshot) => Promise<void>
+  save: (
+    snapshot: WorkspaceSnapshot,
+    ownership: CommittedTransferOwnership,
+  ) => Promise<void>
   now: () => string
 }): Promise<{ snapshot: WorkspaceSnapshot; result: TransferCommitResult }> {
   const current = await input.transactions.status(input.transferId, input.manifestDigest)
@@ -349,7 +353,19 @@ export async function commitPreparedSessionTransfer(input: {
 
     stage = "persistence"
     await input.transactions.markRecovering(input.transferId, input.manifestDigest, stage)
-    await input.save(candidate)
+    await input.save(candidate, {
+      version: 1,
+      transferId: manifest.transferId,
+      manifestDigest: input.manifestDigest,
+      sessionId: manifest.sessionId,
+      sourceMachineId: manifest.sourceMachineId,
+      targetMachineId: manifest.targetMachineId,
+      targetProjectId: manifest.project.targetProjectId,
+      workspacePath: restored.path,
+      checkpointCommit: manifest.project.checkpointCommit,
+      generation: manifest.ownership.toGeneration,
+      completedAt,
+    })
     const result = committedResult(manifest, restored.path)
     await input.transactions.markCommitted(input.transferId, input.manifestDigest, result)
     return { snapshot: candidate, result }

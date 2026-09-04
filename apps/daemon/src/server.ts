@@ -3216,6 +3216,25 @@ export class DomovoiDaemon {
             })
             return
           }
+          const durable = this.#store.transferOwnership?.find({
+            transferId: params.manifest.transferId,
+            manifestDigest: params.manifestDigest,
+            sourceMachineId: actor.machineId,
+          })
+          if (durable?.targetMachineId === this.#snapshot.machine.id) {
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                state: "committed",
+                transferId: durable.transferId,
+                workspacePath: durable.workspacePath,
+                checkpointCommit: durable.checkpointCommit,
+                ownershipGeneration: durable.generation,
+              }),
+            })
+            return
+          }
           if (!this.#workspaceService.projectHasLineage) {
             this.#error(socket, request.id, internalError, "This machine cannot verify project lineage")
             return
@@ -3284,6 +3303,25 @@ export class DomovoiDaemon {
           | RpcParams<"transfer.commit">
           | RpcParams<"transfer.status">
           | RpcParams<"transfer.abort">
+        const durable = this.#store.transferOwnership?.find({
+          transferId: params.transferId,
+          manifestDigest: params.manifestDigest,
+          sourceMachineId: actor.machineId,
+        })
+        if (durable?.targetMachineId === this.#snapshot.machine.id) {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({
+              state: "committed",
+              transferId: durable.transferId,
+              workspacePath: durable.workspacePath,
+              checkpointCommit: durable.checkpointCommit,
+              ownershipGeneration: durable.generation,
+            }),
+          })
+          return
+        }
         if (method === "transfer.status") {
           const result = await this.#transferTransactions.status(
             params.transferId,
@@ -3348,6 +3386,7 @@ export class DomovoiDaemon {
         if (
           !this.#workspaceService.projectHasLineage
           || !this.#usageLedger.replaceTransferredSession
+          || !this.#store.saveTransferredSnapshot
         ) {
           this.#error(socket, request.id, internalError, "This machine cannot commit session transfers")
           return
@@ -3400,19 +3439,26 @@ export class DomovoiDaemon {
               this.#usageLedger.replaceTransferredSession!(sessionId, records)
             ),
           },
-          save: async (candidate) => {
+          save: async (candidate, ownership) => {
             try {
-              if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
-              else this.#store.save(candidate)
+              await this.#store.saveTransferredSnapshot!(candidate, ownership)
             } catch (error) {
               this.#persistenceFailed(error)
               throw error
             }
             this.#persistenceSucceeded()
+            // Once the imported snapshot and ownership acknowledgement commit
+            // atomically, this process must adopt them before touching the
+            // disposable transaction journal. A later journal failure cannot
+            // make the target overwrite its now-authoritative imported state.
+            this.#snapshot = candidate
+            this.#sessionHistory.invalidate(manifest.sessionId)
+            this.#syncArtifactWatchers()
+            this.#broadcastSnapshot()
           },
           now: () => new Date().toISOString(),
         })
-        if (committed.snapshot !== before) {
+        if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
           this.#snapshot = committed.snapshot
           this.#sessionHistory.invalidate(manifest.sessionId)
           this.#syncArtifactWatchers()
