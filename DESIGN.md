@@ -279,6 +279,35 @@ entry in the fleet transport order; and the `Account & relay` settings pane. Hos
 billing, and relay surfaces are Goal 3 work, and no product surface may claim account or relay
 behavior that is not implemented.
 
+**Paired devices, decided 2026-09-04.** The signed handoff draws machines as cards and never draws
+a paired-device table, so this surface was designed in a comparison round against the handoff's
+Fleet language and approved by fetzy. The decisions, so they are not re-argued:
+
+- One table, one row shape, with a leading Kind column. A phone and a machine are told apart by
+  the Kind word, its icon, and the machine id chip in JetBrains Mono. Never by the label, which a
+  person can edit to say anything.
+- Labels are the person's word and are set in the sans face. JetBrains Mono is reserved for
+  values the daemon owns: machine ids, timestamps, credentials. The split means exactly one thing.
+- Revoke is the handoff's quiet control: bare faint text pushed to the trailing edge, destructive
+  only on hover. Rotate is the handoff's bordered ghost. Destructive actions are quiet until
+  approached; the loudest control in a row is never the most dangerous one.
+- The consequence of revoking is stated before the confirmation, as a tooltip on the Revoke
+  control, with different sentences for a client device and a machine. On coarse-pointer devices,
+  where hover does not exist, the same sentence renders as standing text under the controls so
+  the consequence of a destructive action is never reachable only by mouse.
+- Both migration revocation reasons render as one story: this pairing predates bound credentials,
+  pair the device again. The distinction stays in the record for audit, not in the interface.
+- A new credential after rotation is masked by default with a fixed run of dots that does not
+  leak its length. Copy is the primary action and reveal is secondary, so the value is usable
+  without ever being read. Copy confirms it worked; the reveal state resets when a new receipt
+  replaces the old one.
+- Rename edits the label in place, inline in the row, with Save and Cancel inside the field so the
+  row height never changes. It is not destructive, confirms nothing, and offers Undo after
+  committing. It changes the label only, never a hostname, machine id, or anything derived.
+- The design system readme records no Tooltip because no surface used one; this surface now does,
+  through the repo's existing tooltip primitive. Radix tooltips do not open on touch, which is
+  why the coarse-pointer fallback above exists rather than being optional.
+
 ## Do's and Don'ts
 
 ### Do

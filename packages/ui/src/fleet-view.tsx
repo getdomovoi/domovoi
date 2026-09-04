@@ -1,8 +1,24 @@
-import { useCallback, useEffect, useState } from "react"
-import { CircleStopIcon, KeyRoundIcon, PlusIcon, ServerIcon } from "lucide-react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  CheckIcon,
+  CircleStopIcon,
+  CopyIcon,
+  EyeIcon,
+  EyeOffIcon,
+  GlobeIcon,
+  MonitorIcon,
+  PlusIcon,
+  ServerIcon,
+  SmartphoneIcon,
+  TabletIcon,
+  TerminalIcon,
+  UnplugIcon,
+} from "lucide-react"
 
 import {
   transportPreference,
+  type ClientKind,
+  type DeviceCredentialBinding,
   type DevicePairResult,
   type FleetHealth,
   type FleetMachine,
@@ -26,6 +42,7 @@ import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
+import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import type { DomovoiRequestOptions } from "./client"
@@ -68,6 +85,106 @@ type DeviceRevocationReason = NonNullable<PairedDeviceSummary["revocationReason"
 const revokedByUpgradeReason: Record<DeviceRevocationReason, boolean> = {
   "legacy-unbound-credential": true,
   "legacy-unbound-client-kind": true,
+}
+
+const migrationNote =
+  "This pairing predates bound credentials. Pair this device again to restore it."
+
+// The handoff's Fleet idioms: eyebrow labels at 9px and .1em in --faint, values
+// under them in the machine face at 11.5px.
+const eyebrow = "text-[9px] tracking-[.1em] text-faint uppercase"
+const panelEyebrow = "text-[9.5px] tracking-[.1em] text-faint uppercase"
+const monoValue = "font-machine text-[11.5px]"
+
+// The handoff's secondary control: a bordered ghost, 7px 11px, 11px in
+// --muted-foreground, hovering one neutral step to --accent.
+const secondaryControl =
+  "h-auto rounded-sm border-border bg-transparent px-[11px] py-[7px] text-[11px] font-normal text-muted-foreground hover:bg-accent hover:text-accent-foreground dark:border-border dark:bg-transparent dark:hover:bg-accent"
+
+// Revoke stays quiet until approached: bare 11px --faint text that turns
+// destructive only on hover. Padding gives the hover tint a shape to fill.
+const destructiveControl =
+  "h-auto rounded-sm px-[7px] py-[5px] text-[11px] font-normal text-faint hover:bg-[color-mix(in_oklab,var(--destructive)_18%,transparent)] hover:text-destructive dark:hover:bg-[color-mix(in_oklab,var(--destructive)_18%,transparent)]"
+
+// The handoff's primary control: 8px 15px, radius-md, 11.5px at 500.
+const primaryControl =
+  "h-auto gap-1.5 rounded-md px-[15px] py-[8px] text-[11.5px] font-medium hover:bg-[color-mix(in_oklab,var(--primary)_90%,transparent)]"
+
+const dangerControl =
+  "h-auto rounded-md border border-[var(--danger-border)] bg-[var(--danger-bg)] px-[15px] py-[8px] text-[11.5px] font-medium text-[var(--danger-fg)] hover:bg-[color-mix(in_oklab,var(--danger-bg),var(--destructive)_25%)]"
+
+// Radix tooltips open on hover and on keyboard focus, and never on touch. The
+// same sentence is a tooltip wherever a pointer can hover, and standing text
+// wherever one cannot: pointer-coarse is the tablet and phone case.
+const coarseFallback = "hidden pointer-coarse:block"
+
+// A run of a fixed length, so the mask never leaks how long the secret is.
+const maskedRun = "•".repeat(20)
+
+const clientIcon: Record<ClientKind, typeof SmartphoneIcon> = {
+  phone: SmartphoneIcon,
+  tablet: TabletIcon,
+  web: GlobeIcon,
+  desktop: MonitorIcon,
+  cli: TerminalIcon,
+}
+
+const clientWord: Record<ClientKind, string> = {
+  phone: "Phone",
+  tablet: "Tablet",
+  web: "Browser",
+  desktop: "Desktop",
+  cli: "Terminal",
+}
+
+function kindIcon(binding: DeviceCredentialBinding): typeof SmartphoneIcon {
+  if (binding.kind === "client") return clientIcon[binding.client]
+  if (binding.kind === "machine") return ServerIcon
+  return UnplugIcon
+}
+
+function kindWord(binding: DeviceCredentialBinding): string {
+  if (binding.kind === "client") return clientWord[binding.client]
+  if (binding.kind === "machine") return "Machine"
+  return "Unbound"
+}
+
+// The word for the thing a person holds, in a sentence: "that phone", "that browser".
+function heldWord(binding: DeviceCredentialBinding): string {
+  return binding.kind === "client" ? clientWord[binding.client].toLowerCase() : "device"
+}
+
+// The one sentence an operator needs before the confirmation opens, not after.
+// A person's device and a fleet machine lose different things.
+function revokeConsequence(binding: DeviceCredentialBinding): string {
+  if (binding.kind === "machine") {
+    return "Cuts this machine off. Its sessions keep running there; transfers to it are refused."
+  }
+  return "Signs this device out. Someone has to pair it again from the device."
+}
+
+function rotationInstruction(binding: DeviceCredentialBinding): string {
+  if (binding.kind === "machine") {
+    return "Nobody has to be at that machine. Save it on the machine itself. It is shown once, the old credential no longer works, and sessions already running there are untouched."
+  }
+  return `Enter it on that ${heldWord(binding)}. It is shown once, and the old credential no longer works.`
+}
+
+const timestamp = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+})
+
+function when(value: string | undefined): string {
+  if (value === undefined) return "never"
+  return timestamp.format(new Date(value)).replace(",", "")
+}
+
+function shortMachineId(machineId: string): string {
+  return `${machineId.slice(0, 16)}…`
 }
 
 function sessionSummary(count: number): string {
@@ -157,6 +274,369 @@ function MachineCard({
   )
 }
 
+
+function StatusChip({ tone, children }: { tone: "warning" | "destructive"; children: ReactNode }) {
+  const skin =
+    tone === "warning"
+      ? "bg-[color-mix(in_oklab,var(--warning)_16%,transparent)] text-warning"
+      : "bg-[color-mix(in_oklab,var(--destructive)_16%,transparent)] text-destructive"
+  return (
+    <span
+      className={`inline-flex items-center rounded-[4px] px-[7px] py-[2px] text-[9px] tracking-[.06em] uppercase ${skin}`}
+    >
+      {children}
+    </span>
+  )
+}
+
+const headCell = `border-b py-2 pr-3 text-left align-bottom font-normal ${eyebrow}`
+
+function DeviceTableHead() {
+  return (
+    <thead>
+      <tr>
+        <th scope="col" className={`${headCell} w-[14%]`}>Kind</th>
+        <th scope="col" className={headCell}>Device</th>
+        <th scope="col" className={`${headCell} w-[11%]`}>Paired</th>
+        <th scope="col" className={`${headCell} w-[14%]`}>Last seen</th>
+        <th scope="col" className={`${headCell} w-[22%] pr-0`}>Actions</th>
+      </tr>
+    </thead>
+  )
+}
+
+function LoadingRow({ wide }: { wide: boolean }) {
+  return (
+    <tr aria-hidden="true">
+      <td className="border-b py-2.5 pr-3 align-top">
+        <span className="block h-3 w-16 rounded-sm bg-muted" />
+        <span className="mt-1.5 block h-3 w-24 rounded-sm bg-muted/60" />
+      </td>
+      <td className="border-b py-2.5 pr-3 align-top">
+        <span className={`block h-3 rounded-sm bg-muted ${wide ? "w-56" : "w-32"}`} />
+      </td>
+      <td className="border-b py-2.5 pr-3 align-top">
+        <span className="block h-3 w-20 rounded-sm bg-muted/60" />
+      </td>
+      <td className="border-b py-2.5 pr-3 align-top">
+        <span className="block h-3 w-20 rounded-sm bg-muted/60" />
+      </td>
+      <td className="border-b py-2.5 align-top">
+        <span className="block h-8 w-40 rounded-sm bg-muted/60" />
+      </td>
+    </tr>
+  )
+}
+
+const rowCell = "border-b py-2.5"
+
+function KindCell({ binding, dimmed }: { binding: DeviceCredentialBinding; dimmed: boolean }) {
+  const Icon = kindIcon(binding)
+  return (
+    <td className={`${rowCell} pr-3 align-top ${dimmed ? "opacity-55" : ""}`}>
+      <span className="flex items-center gap-1.5 leading-none">
+        <Icon aria-hidden="true" className="size-4 text-muted-foreground" />
+        <span className="text-[12px] font-medium text-foreground">{kindWord(binding)}</span>
+      </span>
+      <span className="mt-1.5 block">
+        {binding.kind === "machine" ? (
+          <Badge variant="machine" title={binding.machineId}>
+            {shortMachineId(binding.machineId)}
+          </Badge>
+        ) : (
+          <span className="font-machine text-[10px] text-faint">
+            {binding.kind === "client"
+              ? "client"
+              : binding.previousRole === "unknown" ? "role not recorded" : `was ${binding.previousRole}`}
+          </span>
+        )}
+      </span>
+    </td>
+  )
+}
+
+// The label is only ever what a person calls this row, so it is set in the sans
+// face. The machine id in the Kind column stays in the machine face and cannot
+// be edited, so a renamed row can never borrow a machine's identity.
+function LabelCell({ device }: { device: PairedDeviceSummary }) {
+  const revoked = device.revokedAt !== undefined
+  const revokedByUpgrade = device.revocationReason !== undefined
+    && revokedByUpgradeReason[device.revocationReason]
+  return (
+    <th scope="row" className={`${rowCell} pr-3 text-left align-top font-medium`}>
+      {/* The approved design edits this label in place, with Save and Cancel inside
+          the field and Undo after committing. That control needs a device.rename
+          RPC, which the protocol does not have yet; it lands here once it exists. */}
+      <span
+        className={`block max-w-[34ch] text-[12.5px] leading-snug font-medium ${
+          revoked ? "text-muted-foreground" : "text-strong"
+        }`}
+      >
+        {device.label}
+      </span>
+      {revoked && !revokedByUpgrade ? (
+        <span className="mt-2 block">
+          <StatusChip tone="destructive">Revoked</StatusChip>
+        </span>
+      ) : null}
+      {revokedByUpgrade ? (
+        <>
+          <span className="mt-2 block">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="rounded-[4px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+                >
+                  <StatusChip tone="warning">Revoked by upgrade</StatusChip>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="max-w-[42ch] text-[11.5px] leading-relaxed">
+                {migrationNote}
+              </TooltipContent>
+            </Tooltip>
+          </span>
+          <p
+            className={`${coarseFallback} mt-2 max-w-[46ch] text-[11px] leading-relaxed font-normal text-muted-foreground`}
+          >
+            {migrationNote}
+          </p>
+        </>
+      ) : null}
+    </th>
+  )
+}
+
+function DeviceRow({
+  device,
+  disabled,
+  onRotate,
+  onRevoke,
+}: {
+  device: PairedDeviceSummary
+  disabled: boolean
+  onRotate: () => void
+  onRevoke: () => void
+}) {
+  const revoked = device.revokedAt !== undefined
+  const isMachine = device.binding.kind === "machine"
+  return (
+    <tr>
+      <KindCell binding={device.binding} dimmed={revoked} />
+      <LabelCell device={device} />
+      <td className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`} title={device.pairedAt}>
+        {when(device.pairedAt)}
+      </td>
+      <td
+        className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`}
+        title={revoked ? device.revokedAt : device.lastSeenAt}
+      >
+        {revoked ? `revoked ${when(device.revokedAt)}` : when(device.lastSeenAt)}
+      </td>
+      <td className={`${rowCell} align-top`}>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            className={secondaryControl}
+            disabled={disabled || revoked}
+            aria-label={
+              isMachine
+                ? `Rotate the credential ${device.label} uses`
+                : `Rotate the credential on ${device.label}`
+            }
+            onClick={onRotate}
+          >
+            Rotate
+          </Button>
+          <span className="flex-1" />
+          {revoked ? (
+            <Button
+              variant="ghost"
+              className={destructiveControl}
+              disabled
+              aria-label={`Revoke ${device.label}`}
+            >
+              Revoke
+            </Button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className={destructiveControl}
+                  disabled={disabled}
+                  aria-label={`Revoke ${device.label}`}
+                  onClick={onRevoke}
+                >
+                  Revoke
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="max-w-[38ch] text-[11.5px] leading-relaxed">
+                {revokeConsequence(device.binding)}
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        {revoked ? null : (
+          <p className={`${coarseFallback} mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground`}>
+            {revokeConsequence(device.binding)}
+          </p>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+function CredentialPanel({ token }: { token: string }) {
+  const [revealed, setRevealed] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(token)
+      setCopied(true)
+      setCopyFailed(false)
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 2500)
+    } catch {
+      setCopyFailed(true)
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-border bg-accent px-[15px] py-[14px]">
+      <div className={panelEyebrow}>New credential, shown once</div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-3">
+        <span
+          className={`flex-1 font-machine text-[15px] tracking-[.1em] ${
+            revealed ? "break-all text-primary" : "text-faint"
+          }`}
+        >
+          {revealed ? token : <span aria-hidden="true">{maskedRun}</span>}
+          {revealed ? null : <span className="sr-only">Credential hidden</span>}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button className={primaryControl} onClick={() => void copy()}>
+            {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
+            {copied ? "Copied" : "Copy"}
+          </Button>
+          <Button
+            variant="outline"
+            className={`${secondaryControl} px-[9px]`}
+            aria-pressed={revealed}
+            aria-label={revealed ? "Hide the credential" : "Show the credential"}
+            onClick={() => setRevealed(!revealed)}
+          >
+            {revealed ? <EyeOffIcon aria-hidden="true" /> : <EyeIcon aria-hidden="true" />}
+          </Button>
+        </div>
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+        {copyFailed
+          ? "This browser refused the clipboard. Reveal it and copy it by hand."
+          : copied
+            ? "Copied to the clipboard."
+            : "Copy it without reading it. Nothing here needs the value on screen."}
+      </p>
+    </div>
+  )
+}
+
+// The receipt is one live region, so a rotation announces itself and a copy
+// confirmation is announced through the same region rather than a nested one.
+function RotationReceipt({ device, token }: { device: PairedDeviceSummary; token: string }) {
+  return (
+    <tr>
+      <td colSpan={5} className="border-b py-2.5">
+        <div role="status" className="rounded-xl border border-border bg-card px-[15px] py-[14px]">
+          <div className="text-[13.5px] font-medium">New credential for {device.label}</div>
+          <p className="mt-1.5 max-w-[72ch] text-[11.5px] leading-[1.6] text-muted-foreground">
+            {rotationInstruction(device.binding)}
+          </p>
+          <CredentialPanel token={token} />
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function RevokeConfirmation({
+  device,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  device: PairedDeviceSummary | null
+  busy: boolean
+  onConfirm: (device: PairedDeviceSummary) => void
+  onClose: () => void
+}) {
+  const binding = device?.binding
+  const isMachine = binding?.kind === "machine"
+  return (
+    <AlertDialog open={device !== null} onOpenChange={(next) => { if (!next) onClose() }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <div className="flex w-full items-center gap-2.5">
+            <AlertDialogTitle className="min-w-0 flex-1 break-words text-[13.5px]">
+              Revoke {device?.label}
+            </AlertDialogTitle>
+            {binding?.kind === "machine" ? (
+              <Badge variant="machine" className="shrink-0" title={binding.machineId}>
+                {shortMachineId(binding.machineId)}
+              </Badge>
+            ) : null}
+          </div>
+          <AlertDialogDescription asChild>
+            <div className="text-[12px] leading-[1.6] text-muted-foreground [&>p+p]:mt-2.5">
+              {isMachine ? (
+                <>
+                  <p className="m-0">
+                    This machine stops accepting that one. Sessions running there keep running and
+                    stay reachable from that machine, but this one can no longer reach them, and a
+                    transfer to it is refused rather than queued.
+                  </p>
+                  <p className="m-0">
+                    Pairing it again needs someone with access to that machine, not to this one.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="m-0">
+                    That {binding ? heldWord(binding) : "device"} loses access to this machine
+                    immediately and has to be paired again, from the
+                    {" "}{binding ? heldWord(binding) : "device"}, to come back.
+                  </p>
+                  <p className="m-0">Sessions already on this machine are untouched.</p>
+                </>
+              )}
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className={secondaryControl}>
+            {isMachine ? "Keep machine" : "Keep device"}
+          </AlertDialogCancel>
+          <AlertDialogAction
+            className={dangerControl}
+            disabled={busy}
+            onClick={(event) => {
+              event.preventDefault()
+              if (device) onConfirm(device)
+            }}
+          >
+            {isMachine ? "Revoke machine" : "Revoke device"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 export function FleetView({
   connected,
   machines,
@@ -189,7 +669,7 @@ export function FleetView({
   const [actionError, setActionError] = useState("")
   const [pendingDeviceId, setPendingDeviceId] = useState("")
   const [revoking, setRevoking] = useState<PairedDeviceSummary | null>(null)
-  const [rotated, setRotated] = useState<{ label: string; token: string } | null>(null)
+  const [receipt, setReceipt] = useState<{ device: PairedDeviceSummary; token: string } | null>(null)
   const [pairing, setPairing] = useState(false)
 
   const loadDevices = useCallback(async () => {
@@ -231,11 +711,11 @@ export function FleetView({
   const rotateDevice = async (device: PairedDeviceSummary) => {
     setPendingDeviceId(device.id)
     setActionError("")
-    setRotated(null)
+    setReceipt(null)
     try {
       const result = await onRotateDevice({ deviceId: device.id })
       replaceDevice(result.device)
-      setRotated({ label: result.device.label, token: result.token })
+      setReceipt({ device: result.device, token: result.token })
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : "That device credential could not be rotated")
     } finally {
@@ -273,27 +753,6 @@ export function FleetView({
             ) : null}
           </div>
 
-          {actionError ? (
-            <Alert variant="destructive" className="mt-4">
-              <CircleStopIcon />
-              <AlertTitle>Device action failed</AlertTitle>
-              <AlertDescription>{actionError}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          {rotated ? (
-            <Alert role="status" className="mt-4">
-              <KeyRoundIcon />
-              <AlertTitle>New credential for {rotated.label}</AlertTitle>
-              <AlertDescription>
-                Enter it on that device. It is shown once and the old credential no longer works.
-                <span className="mt-1.5 block break-all font-machine text-[11px] text-strong">
-                  {rotated.token}
-                </span>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-
           <section className="mt-5 flex flex-col gap-2.5" aria-label="Machines">
             <h2 className="m-0 text-[13px] font-semibold">Machines</h2>
             {machines.map((machine) => (
@@ -311,96 +770,60 @@ export function FleetView({
           </section>
 
           <section className="mt-7" aria-label="Paired devices">
-            <h2 className="m-0 text-[13px] font-semibold">Paired devices</h2>
-            <p className="mt-1.5 max-w-[68ch] text-[12px] leading-relaxed text-muted-foreground">
-              A revoked device cannot reconnect. Rotating issues a new credential and retires the
-              old one.
+            <h2 className="m-0 text-[13.5px] font-medium">Paired devices</h2>
+            <p className="mt-1.5 max-w-[620px] text-[12.5px] leading-[1.6] text-muted-foreground">
+              Every credential this machine accepts, and what holds it. A revoked credential cannot
+              reconnect. Rotating issues a new one and retires the old one.
             </p>
 
+            {actionError ? (
+              <Alert variant="destructive" className="mt-4">
+                <CircleStopIcon />
+                <AlertTitle>Device action failed</AlertTitle>
+                <AlertDescription>{actionError}</AlertDescription>
+              </Alert>
+            ) : null}
+
             {devicesError ? (
-              <Alert variant="destructive" className="mt-3">
+              <Alert variant="destructive" className="mt-4">
                 <CircleStopIcon />
                 <AlertTitle>Paired devices unavailable</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-3">
                   {devicesError}
-                  <Button variant="outline" size="sm" onClick={() => void loadDevices()}>Retry</Button>
+                  <Button variant="outline" className={secondaryControl} onClick={() => void loadDevices()}>
+                    Retry
+                  </Button>
                 </AlertDescription>
               </Alert>
             ) : null}
 
             {devices && devices.length > 0 ? (
-              <table className="mt-3 w-full border-collapse text-[12px]">
+              <table className="mt-4 w-full border-collapse">
                 <caption className="sr-only">Devices paired with this machine</caption>
-                <thead>
-                  <tr className="text-left text-faint">
-                    <th scope="col" className="border-b py-2 pr-3 font-medium">Device</th>
-                    <th scope="col" className="border-b py-2 pr-3 font-medium">Paired</th>
-                    <th scope="col" className="border-b py-2 pr-3 font-medium">Last seen</th>
-                    <th scope="col" className="border-b py-2 font-medium">Actions</th>
-                  </tr>
-                </thead>
+                <DeviceTableHead />
                 <tbody>
-                  {devices.map((paired) => {
-                    const revoked = paired.revokedAt !== undefined
-                    const revokedByUpgrade = paired.revocationReason !== undefined
-                      && revokedByUpgradeReason[paired.revocationReason]
-                    const busy = pendingDeviceId === paired.id
-                    return (
-                      <tr key={paired.id}>
-                        <th scope="row" className="border-b py-2 pr-3 text-left font-medium text-strong">
-                          {paired.label}
-                          {revoked ? (
-                            <Badge
-                              variant={revokedByUpgrade ? "warning" : "destructive"}
-                              className="ml-2"
-                            >
-                              {revokedByUpgrade ? "Revoked by upgrade" : "Revoked"}
-                            </Badge>
-                          ) : null}
-                          {revokedByUpgrade ? (
-                            <p className="mt-1 max-w-[52ch] text-[11px] font-normal leading-relaxed text-muted-foreground">
-                              This pairing predates bound credentials. Pair this device again to
-                              restore it.
-                            </p>
-                          ) : null}
-                        </th>
-                        <td className="border-b py-2 pr-3 font-machine text-[10px] text-faint">
-                          {paired.pairedAt}
-                        </td>
-                        <td className="border-b py-2 pr-3 font-machine text-[10px] text-faint">
-                          {paired.lastSeenAt ?? "never"}
-                        </td>
-                        <td className="border-b py-2">
-                          <div className="flex flex-wrap gap-1.5">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={!connected || revoked || busy}
-                              aria-label={`Rotate ${paired.label}`}
-                              onClick={() => void rotateDevice(paired)}
-                            >
-                              Rotate
-                            </Button>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              disabled={!connected || revoked || busy}
-                              aria-label={`Revoke ${paired.label}`}
-                              onClick={() => setRevoking(paired)}
-                            >
-                              Revoke
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
+                  {devices.flatMap((paired) => {
+                    const row = (
+                      <DeviceRow
+                        key={paired.id}
+                        device={paired}
+                        disabled={!connected || pendingDeviceId === paired.id}
+                        onRotate={() => void rotateDevice(paired)}
+                        onRevoke={() => setRevoking(paired)}
+                      />
                     )
+                    // Keyed by the credential, so a fresh receipt mounts fresh and
+                    // never inherits the last one's revealed state.
+                    return receipt?.device.id === paired.id
+                      ? [row, <RotationReceipt key={`${paired.id}:${receipt.token}`} device={receipt.device} token={receipt.token} />]
+                      : [row]
                   })}
                 </tbody>
               </table>
             ) : null}
 
             {devices && devices.length === 0 ? (
-              <Empty className="mt-3 min-h-40 border">
+              <Empty className="mt-4 min-h-40 border">
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
                   <EmptyTitle>No device is paired with this machine</EmptyTitle>
@@ -413,40 +836,31 @@ export function FleetView({
             ) : null}
 
             {!devices && !devicesError ? (
-              <p role="status" className="p-6 text-center font-machine text-[10px] text-faint">
-                Loading paired devices
-              </p>
+              <>
+                <table className="mt-4 w-full animate-pulse border-collapse">
+                  <caption className="sr-only">Devices paired with this machine</caption>
+                  <DeviceTableHead />
+                  <tbody>
+                    <LoadingRow wide={false} />
+                    <LoadingRow wide />
+                    <LoadingRow wide={false} />
+                  </tbody>
+                </table>
+                <p role="status" className="mt-3 font-machine text-[11.5px] text-faint">
+                  Loading paired devices
+                </p>
+              </>
             ) : null}
           </section>
         </main>
       </ScrollArea>
 
-      <AlertDialog
-        open={revoking !== null}
-        onOpenChange={(next) => { if (!next) setRevoking(null) }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Revoke {revoking?.label}</AlertDialogTitle>
-            <AlertDialogDescription>
-              That device loses access to this machine immediately and has to be paired again to
-              come back. Sessions already on this machine are untouched.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep device</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={pendingDeviceId !== ""}
-              onClick={(event) => {
-                event.preventDefault()
-                if (revoking) void revokeDevice(revoking)
-              }}
-            >
-              Revoke device
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <RevokeConfirmation
+        device={revoking}
+        busy={pendingDeviceId !== ""}
+        onConfirm={(device) => void revokeDevice(device)}
+        onClose={() => setRevoking(null)}
+      />
 
       {onPairMachine ? (
         <PairMachineDialog
