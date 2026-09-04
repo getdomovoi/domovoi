@@ -877,19 +877,25 @@ describe("GitWorkspaceService bundle restore", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
+    const targetRepositoryPath = join(scratch, "target-project")
+    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
     await writeFile(join(workspace.path, "README.md"), "moved\n")
     const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
     const bundle = await source.bundleSession(workspace.path, join(scratch, "session.bundle"))
-    return { scratch, checkpoint, bundle }
+    return { scratch, targetRepositoryPath, checkpoint, bundle }
   }
 
   it("rebuilds the session worktree from a bundle", async () => {
-    const { scratch, checkpoint, bundle } = await sourceWithBundle("domovoi-restore-")
+    const { scratch, targetRepositoryPath, checkpoint, bundle } = await sourceWithBundle("domovoi-restore-")
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
 
-    const restored = await target.restoreSessionFromBundle(bundle.path, "session-1")
+    const restored = await target.restoreSessionFromBundle(
+      bundle.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    )
 
     expect(restored.baseCommit).toBe(checkpoint.commit)
     expect(restored.branch).toBe("domovoi/session-1")
@@ -899,11 +905,28 @@ describe("GitWorkspaceService bundle restore", () => {
     expect(contents.replace(/\r\n/g, "\n")).toBe("moved\n")
   })
 
+  it("restores a bundle as a managed worktree that can be archived", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-managed-")
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    const restored = await target.restoreSessionFromBundle(
+      bundle.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    )
+
+    await expect(target.archiveSessionWorkspace(restored.path)).resolves.toBeUndefined()
+    await expect(readFile(join(restored.path, "README.md"), "utf8")).rejects.toThrow()
+  })
+
   it("keeps the transferred checkpoint restorable on the target", async () => {
-    const { scratch, checkpoint, bundle } = await sourceWithBundle("domovoi-restore-ref-")
+    const { scratch, targetRepositoryPath, checkpoint, bundle } = await sourceWithBundle("domovoi-restore-ref-")
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
 
-    const restored = await target.restoreSessionFromBundle(bundle.path, "session-1")
+    const restored = await target.restoreSessionFromBundle(
+      bundle.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    )
 
     // Restoring later asks for the checkpoint by its Domovoi ref, so the
     // transfer has to carry that ref, not only the commit.
@@ -915,26 +938,42 @@ describe("GitWorkspaceService bundle restore", () => {
   })
 
   it("never destroys a session worktree that is already there", async () => {
-    const { scratch, bundle } = await sourceWithBundle("domovoi-restore-occupied-")
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-occupied-")
     const targetRoot = join(scratch, "target-worktrees")
     const target = new GitWorkspaceService(targetRoot)
-    await target.restoreSessionFromBundle(bundle.path, "session-1")
+    await target.restoreSessionFromBundle(
+      bundle.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    )
     const occupied = join(targetRoot, "session-1")
     await writeFile(join(occupied, "uncommitted.txt"), "work in progress\n")
 
-    await expect(target.restoreSessionFromBundle(bundle.path, "session-1"))
+    await expect(target.restoreSessionFromBundle(
+      bundle.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    ))
       .rejects.toThrow("Session worktree already exists")
     await expect(readFile(join(occupied, "uncommitted.txt"), "utf8"))
       .resolves.toContain("work in progress")
   })
 
   it("lets only one concurrent restore claim a session", async () => {
-    const { scratch, bundle } = await sourceWithBundle("domovoi-restore-race-")
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-race-")
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
 
     const [first, second] = await Promise.allSettled([
-      target.restoreSessionFromBundle(bundle.path, "session-1"),
-      target.restoreSessionFromBundle(bundle.path, "session-1"),
+      target.restoreSessionFromBundle(
+        bundle.path,
+        "session-1",
+        { repositoryPath: targetRepositoryPath },
+      ),
+      target.restoreSessionFromBundle(
+        bundle.path,
+        "session-1",
+        { repositoryPath: targetRepositoryPath },
+      ),
     ])
 
     const outcomes = [first, second].map((settled) => settled.status)
@@ -949,20 +988,28 @@ describe("GitWorkspaceService bundle restore", () => {
   })
 
   it("refuses a bundle it cannot verify", async () => {
-    const { scratch } = await sourceWithBundle("domovoi-restore-bad-")
+    const { scratch, targetRepositoryPath } = await sourceWithBundle("domovoi-restore-bad-")
     const damaged = join(scratch, "damaged.bundle")
     await writeFile(damaged, "not a bundle\n")
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
 
-    await expect(target.restoreSessionFromBundle(damaged, "session-1"))
+    await expect(target.restoreSessionFromBundle(
+      damaged,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    ))
       .rejects.toThrow("Bundle could not be verified")
   })
 
   it("refuses a session id that could escape the worktree root", async () => {
-    const { scratch, bundle } = await sourceWithBundle("domovoi-restore-escape-")
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-escape-")
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
 
-    await expect(target.restoreSessionFromBundle(bundle.path, "../escape"))
+    await expect(target.restoreSessionFromBundle(
+      bundle.path,
+      "../escape",
+      { repositoryPath: targetRepositoryPath },
+    ))
       .rejects.toThrow("Session id is not safe for a worktree")
   })
 })
@@ -1142,6 +1189,8 @@ describe("GitWorkspaceService incremental restore", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
+    const targetRepositoryPath = join(scratch, "target-project")
+    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
 
     // The source moves the session once, so both machines share a base.
     const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
@@ -1150,7 +1199,11 @@ describe("GitWorkspaceService incremental restore", () => {
     const first = await source.checkpoint(workspace.path, "first")
     const full = await source.bundleSession(workspace.path, join(scratch, "full.bundle"))
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
-    const restored = await target.restoreSessionFromBundle(full.path, "session-1")
+    const restored = await target.restoreSessionFromBundle(
+      full.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    )
     expect(restored.baseCommit).toBe(first.commit)
 
     // More work, then only what the target is missing travels.
@@ -1162,7 +1215,11 @@ describe("GitWorkspaceService incremental restore", () => {
       first.commit,
     )
 
-    const updated = await target.restoreSessionFromBundle(incremental.path, "session-1")
+    const updated = await target.restoreSessionFromBundle(
+      incremental.path,
+      "session-1",
+      { repositoryPath: targetRepositoryPath },
+    )
 
     expect(updated.baseCommit).toBe(second.commit)
     const contents = await readFile(join(updated.path, "README.md"), "utf8")

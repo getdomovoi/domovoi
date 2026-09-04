@@ -306,6 +306,11 @@ describe("target transfer commit", () => {
       checkpointCommit,
       ownershipGeneration: 3,
     })
+    expect(restoreSessionFromBundle).toHaveBeenCalledWith(
+      expect.any(String),
+      "session-billing",
+      { repositoryPath: "/target/project" },
+    )
     expect(writeTransferredArtifactSource).toHaveBeenCalledWith(
       "/target/session-billing",
       "previews/preview.html",

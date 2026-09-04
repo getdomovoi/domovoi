@@ -3868,8 +3868,10 @@ export class DomovoiDaemon {
           ),
           workspace: {
             ...(this.#workspaceService.restoreSessionFromBundle
-              ? { restoreSessionFromBundle: (path: string, sessionId: string) => (
-                  this.#workspaceService.restoreSessionFromBundle!(path, sessionId, signal)
+              ? { restoreSessionFromBundle: (path: string, sessionId: string, options: {
+                  repositoryPath: string
+                }) => (
+                  this.#workspaceService.restoreSessionFromBundle!(path, sessionId, options, signal)
                 ) }
               : {}),
             ...(this.#workspaceService.restoreSessionFromRef

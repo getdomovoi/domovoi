@@ -24,6 +24,7 @@ type TargetWorkspaceOperations = {
   restoreSessionFromBundle?: (
     bundlePath: string,
     sessionId: string,
+    options: { repositoryPath: string },
   ) => Promise<RestoredWorkspace>
   restoreSessionFromRef?: (
     repositoryPath: string,
@@ -209,7 +210,9 @@ async function restoreRepository(
       manifestDigest,
       manifest.repository.memberId,
     )
-    return workspace.restoreSessionFromBundle(bundlePath, manifest.sessionId)
+    return workspace.restoreSessionFromBundle(bundlePath, manifest.sessionId, {
+      repositoryPath: snapshot.project.path,
+    })
   }
   if (!workspace.restoreSessionFromRef) {
     throw new Error("This machine cannot restore a transferred Git ref")
