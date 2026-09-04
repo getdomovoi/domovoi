@@ -19,6 +19,10 @@ const secondTransferId = `transfer-${"d".repeat(32)}`
 const sourceMachineId = `machine-${"b".repeat(32)}`
 const targetMachineId = `machine-${"c".repeat(32)}`
 const sha256 = (character: string) => `sha256:${character.repeat(64)}`
+const memberJournalKey = (memberId: string) => createHash("sha256")
+  .update("domovoi.transfer-member-path.v1\0")
+  .update(memberId)
+  .digest("hex")
 
 afterEach(async () => {
   await Promise.all(scratchDirectories.splice(0).map((path) => (
@@ -191,7 +195,7 @@ describe("file transfer transaction journal", () => {
     const manifest = manifestFor(stateBytes, Buffer.from("repository"))
     const manifestDigest = sessionTransferManifestDigest(manifest)
     await transactions.prepare(manifest, manifestDigest)
-    const chunkPath = join(root, transferId, "chunks", "state")
+    const chunkPath = join(root, transferId, "chunks", memberJournalKey("state"))
     await mkdir(chunkPath)
     await writeFile(join(chunkPath, "0-1.chunk"), stateBytes, { mode: 0o600 })
 
@@ -205,6 +209,37 @@ describe("file transfer transaction journal", () => {
       client: "desktop",
     })).resolves.toEqual({ state: "member-received", transferId, memberId: "state" })
     await expect(reopened.readMember(transferId, manifestDigest, "state"))
+      .resolves.toEqual(stateBytes)
+  })
+
+  it("stores maximum-length member ids without using them as filesystem names", async () => {
+    const { transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const longMemberId = "a".repeat(256)
+    const base = manifestFor(stateBytes, Buffer.from("repository"))
+    const manifest = sessionTransferManifestSchema.parse({
+      ...base,
+      stateMemberId: longMemberId,
+      members: base.members.map((member) => (
+        member.kind === "session-state" ? { ...member, memberId: longMemberId } : member
+      )),
+    })
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+
+    await expect(transactions.acceptMember({
+      transferId,
+      memberId: longMemberId,
+      sequence: 0,
+      bytes: stateBytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })).resolves.toEqual({
+      state: "member-received",
+      transferId,
+      memberId: longMemberId,
+    })
+    await expect(transactions.readMember(transferId, manifestDigest, longMemberId))
       .resolves.toEqual(stateBytes)
   })
 

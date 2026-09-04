@@ -426,11 +426,18 @@ export class FileTransferTransactions {
   }
 
   #completedPath(transferId: string, memberId: string): string {
-    return join(this.#path(transferId), membersDirectory, `${memberId}.member`)
+    return join(this.#path(transferId), membersDirectory, `${this.#memberKey(memberId)}.member`)
   }
 
   #chunkPath(transferId: string, memberId: string): string {
-    return join(this.#path(transferId), chunksDirectory, memberId)
+    return join(this.#path(transferId), chunksDirectory, this.#memberKey(memberId))
+  }
+
+  #memberKey(memberId: string): string {
+    return createHash("sha256")
+      .update("domovoi.transfer-member-path.v1\0")
+      .update(memberId)
+      .digest("hex")
   }
 
   async #stored(transferId: string): Promise<StoredManifest> {
