@@ -85,8 +85,8 @@ action in `.github/actions`. Container steps must carry a full `@sha256:` image 
 ## Workspace overrides
 
 `pnpm-workspace.yaml` overrides `esbuild` to `0.28.2` for the whole workspace, so every consumer
-shares one copy. Two consumers declare ranges that exclude it: `electron-vite@4.0.1` wants
-`^0.25.5` and `tsup@8.5.1` wants `^0.27.0`, and `tsup` builds the `dist/` that the publishable
+shares one copy. Two consumers declare ranges that exclude it: `electron-vite@5.0.0` wants
+`^0.25.11` and `tsup@8.5.1` wants `^0.27.0`, and `tsup` builds the `dist/` that the publishable
 packages ship. esbuild is pre-1.0, so a minor is a breaking change by its own versioning, and a
 toolchain failure after a dependency bump should be checked against this pin first. Remove the
 override once both `electron-vite` and `tsup` declare ranges that include `0.28`, then run
