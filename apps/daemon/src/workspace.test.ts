@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } from "./workspace.js"
 
@@ -867,6 +867,15 @@ describe("GitWorkspaceService transfer resources", () => {
 })
 
 describe("GitWorkspaceService bundle restore", () => {
+  function restoreGate() {
+    let release = () => {}
+    const promise = new Promise<void>((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error("Restore test gate deadline expired")), 2_000)
+      release = () => { clearTimeout(timer); resolvePromise() }
+    })
+    return { promise, release }
+  }
+
   async function sourceWithBundle(prefix: string) {
     const scratch = await mkdtemp(join(tmpdir(), prefix))
     scratchDirectories.push(scratch)
@@ -1037,6 +1046,50 @@ describe("GitWorkspaceService bundle restore", () => {
     const claimed = join(scratch, "target-worktrees", "session-1")
     const contents = await readFile(join(claimed, "README.md"), "utf8")
     expect(contents.replace(/\r\n/g, "\n")).toBe("moved\n")
+  })
+
+  it("rejects an overlapping restore even when its HEAD lookup follows the winner", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-late-head-")
+    const root = join(scratch, "target-worktrees")
+    const target = new GitWorkspaceService(root)
+    const competing = new GitWorkspaceService(root)
+    const reachedHead = restoreGate()
+    const releaseFirst = restoreGate()
+    const firstHead = target.sessionHeadCommit.bind(target)
+    const firstLookup = vi.spyOn(target, "sessionHeadCommit").mockImplementation(async (...args) => {
+      reachedHead.release()
+      await releaseFirst.promise
+      return firstHead(...args)
+    })
+    const first = target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+    const firstSettled = Promise.allSettled([first])
+    const secondHead = competing.sessionHeadCommit.bind(competing)
+    const secondLookup = vi.spyOn(competing, "sessionHeadCommit").mockImplementation(async (...args) => {
+      // Force the reported CI interleaving without relying on Git timing:
+      // the competing call sees the clean worktree the winner just created.
+      await first
+      return secondHead(...args)
+    })
+    const competingInspect = vi.spyOn(competing, "inspect")
+    try {
+      await reachedHead.promise
+      const second = competing.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+      const settled = Promise.allSettled([first, second])
+      releaseFirst.release()
+      const results = await settled
+      expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"])
+      expect(results[1]).toMatchObject({ reason: { message: expect.stringContaining("Session worktree already exists") } })
+      expect(competingInspect).not.toHaveBeenCalled()
+      expect(secondLookup).not.toHaveBeenCalled()
+      await expect(readFile(join(root, "session-1", "README.md"), "utf8")).resolves.toMatch(/^moved\r?\n$/u)
+    } finally {
+      reachedHead.release()
+      releaseFirst.release()
+      await firstSettled
+      firstLookup.mockRestore()
+      secondLookup.mockRestore()
+      competingInspect.mockRestore()
+    }
   })
 
   it("refuses a bundle it cannot verify", async () => {
