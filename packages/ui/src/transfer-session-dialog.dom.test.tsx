@@ -217,6 +217,16 @@ it("states the reason the daemon refused rather than a generic failure", async (
   expect(onTransferred).not.toHaveBeenCalled()
 })
 
+it("tells the operator to pair the target again when its credential was retired", async () => {
+  const refused: SessionTransferResult = { outcome: "refused", reason: "target-pairing-required" }
+  const { user } = renderDialog({ onTransfer: () => Promise.resolve(refused) })
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  expect(screen.getByRole("alert").textContent)
+    .toContain("That machine must be paired again before a session can move to it")
+})
+
 it("keeps the session where it is when the move fails", async () => {
   const { user, onTransferred } = renderDialog({
     onTransfer: () => Promise.resolve({
