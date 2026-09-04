@@ -60,18 +60,23 @@ async function openRpc(handle: ProductionDaemonHandle) {
 
   const call = (id: number, method: string, params: Record<string, unknown>) => {
     const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const settle = (finish: () => void) => {
+        socket.off("message", receive)
+        socket.off("close", closed)
+        socket.off("error", fail)
+        finish()
+      }
       const receive = (data: WebSocket.RawData) => {
         const message = JSON.parse(data.toString()) as { id?: number }
         if (message.id !== id) return
-        socket.off("message", receive)
-        socket.off("error", fail)
-        resolve(message as Record<string, unknown>)
+        settle(() => resolve(message as Record<string, unknown>))
       }
-      const fail = (error: Error) => {
-        socket.off("message", receive)
-        reject(error)
-      }
+      const closed = () => settle(() => reject(
+        new Error(`Daemon closed before answering ${method}`),
+      ))
+      const fail = (error: Error) => settle(() => reject(error))
       socket.on("message", receive)
+      socket.once("close", closed)
       socket.once("error", fail)
     })
     socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
