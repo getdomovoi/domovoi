@@ -8,6 +8,7 @@ import { ConfirmSheet } from "./components/confirm-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
 import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
+import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
@@ -74,7 +75,7 @@ export function App() {
     setFleetLoading(true)
     setFleetProblem("")
     try {
-      const result = await call("fleet.list", { client: "phone" })
+      const result = await call("fleet.list", { client: clientKind })
       setFleet(fleetSnapshotSchema.parse(result).machines)
     } catch (cause) {
       setFleetProblem(cause instanceof Error ? cause.message : "The fleet could not be listed")
@@ -96,7 +97,7 @@ export function App() {
       await call("approval.resolve", {
         approvalId: openApproval.id,
         decision,
-        client: "phone",
+        client: clientKind,
       })
       setOpenApprovalId(undefined)
     } finally {
@@ -107,7 +108,7 @@ export function App() {
   const pauseSession = async (sessionId: string) => {
     setPausing(true)
     try {
-      await call("session.pause", { sessionId, client: "phone" })
+      await call("session.pause", { sessionId, client: clientKind })
     } finally {
       setPausing(false)
     }
@@ -224,7 +225,7 @@ export function App() {
           confirmLabel="Pause all sessions"
           onConfirm={() => {
             setConfirmPause(false)
-            void call("system.emergencyStop", { client: "phone" })
+            void call("system.emergencyStop", { client: clientKind })
           }}
           onCancel={() => setConfirmPause(false)}
         />

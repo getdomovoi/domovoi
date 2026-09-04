@@ -5,7 +5,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import { clientVersion, protocolVersionForClient } from "./protocol-facts"
+import { clientKind, clientVersion, protocolVersionForClient } from "./protocol-facts"
 
 type Pending = { resolve: (value: unknown) => void, reject: (error: Error) => void }
 
@@ -40,7 +40,7 @@ export class DaemonConnection {
 
     socket.onopen = () => {
       void this.call("system.hello", {
-        client: "phone",
+        client: clientKind,
         clientId: `phone-${Math.random().toString(16).slice(2, 10)}`,
         clientVersion,
         protocolVersion: protocolVersionForClient,
