@@ -1,4 +1,6 @@
-import { boundedClientThread, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { boundedClientThread } from "./performance.js"
+import type { WorkspaceDelta } from "./rpc.js"
+import type { WorkspaceSnapshot } from "./schema.js"
 
 export function applyWorkspaceDelta(
   snapshot: WorkspaceSnapshot,
