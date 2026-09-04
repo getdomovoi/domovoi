@@ -276,11 +276,12 @@ Every ledger entry is now merged.
 
 The desktop handoff specifies these; `main` does not implement them yet.
 
-- [ ] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
+- [x] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
   Terminal, and Revoke actions
-  - Transport order, machine cards, pairing, revocation, rotation, and the Use and Terminal card
-    actions all ship in `packages/ui/src/fleet-view.tsx`. The `UPDATE` badge for a machine running
-    an older daemon than the fleet is the remaining work.
+  - The `UPDATE` badge is a patch-level fact and deliberately separate from protocol health: a
+    machine one patch behind still speaks the protocol, so it is marked as behind rather than
+    reported as a version mismatch. A machine whose version cannot be read is left unmarked, since
+    an unreadable version is an unknown and a badge is a claim.
 - [x] Settings shell: Appearance & window (System, Dark, and Light theme; window decoration with
   system fallback), Permissions & rules, External editor, and Notifications
 - [x] Cost and token readouts in the app bar and session header from `session.usage`
