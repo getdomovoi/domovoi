@@ -62,7 +62,7 @@ describe("session transfer request", () => {
       outcome: "succeeded",
       workspacePath: "/worktrees/session-1",
       checkpointCommit: "c".repeat(40),
-    }).success).toBe(true)
+    }).success).toBe(false)
     expect(sessionTransferResultSchema.safeParse({
       outcome: "succeeded",
       workspacePath: "/worktrees/session-1",
@@ -81,8 +81,8 @@ describe("session transfer request", () => {
     }).success).toBe(true)
   })
 
-  it("reports a transfer that broke without inventing a reason", () => {
-    expect(sessionTransferResultSchema.safeParse({ outcome: "failed" }).success).toBe(true)
+  it("rejects the legacy unclassified transfer failure", () => {
+    expect(sessionTransferResultSchema.safeParse({ outcome: "failed" }).success).toBe(false)
     expect(sessionTransferResultSchema.safeParse({
       outcome: "failed",
       reason: "target-unreachable",

@@ -91,26 +91,11 @@ const succeededTransferResultSchema = z.object({
   outcome: z.literal("succeeded"),
   workspacePath: z.string().min(1),
   checkpointCommit: commitShaSchema,
-  contractVersion: sessionTransferContractVersionSchema.optional(),
-  transferId: transferIdSchema.optional(),
-  ownershipGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-  coverage: sessionTransferCoverageSchema.optional(),
-}).strict().superRefine((result, context) => {
-  const versionedFields = [
-    result.contractVersion,
-    result.transferId,
-    result.ownershipGeneration,
-    result.coverage,
-  ]
-  const count = versionedFields.filter((field) => field !== undefined).length
-  if (count !== 0 && count !== versionedFields.length) {
-    context.addIssue({
-      code: "custom",
-      path: ["contractVersion"],
-      message: "A versioned transfer result must carry all ownership and coverage fields",
-    })
-  }
-})
+  contractVersion: sessionTransferContractVersionSchema,
+  transferId: transferIdSchema,
+  ownershipGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  coverage: sessionTransferCoverageSchema,
+}).strict()
 
 const refusedTransferResultSchema = z.object({
   // A refusal always says why, because the answer decides what the operator
@@ -127,7 +112,6 @@ const refusedTransferResultSchema = z.object({
 export const sessionTransferResultSchema = z.union([
   succeededTransferResultSchema,
   refusedTransferResultSchema,
-  z.object({ outcome: z.literal("failed") }).strict(),
   z.object({
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
