@@ -7,6 +7,7 @@ import {
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
+  fleetChangedNotificationSchema,
   terminalAcceptedSchema,
   terminalClosedNotificationSchema,
   terminalOwnershipNotificationSchema,
@@ -21,13 +22,13 @@ import {
   type ArtifactAccess,
   type AuditExportParams,
   type AuditExportResult,
-  type DeviceMachineCredentialParams,
   type DevicePairResult,
   type DevicesResult,
+  type FleetEnrollParams,
+  type FleetEnrollResult,
+  type FleetForgetParams,
+  type FleetForgetResult,
   type FleetSnapshot,
-  type DeviceMachineCredentialResult,
-  type DeviceSaveCredentialParams,
-  type DeviceSaveCredentialResult,
   type AuditQueryPage,
   type AuditQueryParams,
   type ProviderModel,
@@ -776,18 +777,20 @@ export class DomovoiClient extends EventTarget {
     return this.request("device.rotate", { ...params, client: this.kind }, options)
   }
 
-  machineCredential(
-    params: DeviceMachineCredentialParams,
+  // The daemon claims, greets and stores on the client's behalf, so the only
+  // thing this connection ever carries is the one-time code and the answer.
+  enrollMachine(
+    params: Omit<FleetEnrollParams, "client">,
     options?: DomovoiRequestOptions,
-  ): Promise<DeviceMachineCredentialResult> {
-    return this.request("device.machineCredential", params, options)
+  ): Promise<FleetEnrollResult> {
+    return this.request("fleet.enroll", { ...params, client: this.kind }, options)
   }
 
-  saveMachineCredential(
-    params: DeviceSaveCredentialParams,
+  forgetMachine(
+    params: Omit<FleetForgetParams, "client">,
     options?: DomovoiRequestOptions,
-  ): Promise<DeviceSaveCredentialResult> {
-    return this.request("device.saveCredential", params, options)
+  ): Promise<FleetForgetResult> {
+    return this.request("fleet.forget", { ...params, client: this.kind }, options)
   }
 
   exportAudit(
@@ -901,6 +904,17 @@ export class DomovoiClient extends EventTarget {
         } else {
           this.#reportProtocolError(
             "Daemon sent a system.emergencyStopped notification this client could not parse",
+          )
+        }
+        return
+      }
+      if (notification.data.method === "fleet.changed") {
+        const fleet = fleetChangedNotificationSchema.safeParse(notification.data.params)
+        if (fleet.success) {
+          this.dispatchEvent(new CustomEvent("fleet-changed", { detail: fleet.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a fleet.changed notification this client could not parse",
           )
         }
         return

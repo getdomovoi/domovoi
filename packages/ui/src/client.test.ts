@@ -1592,8 +1592,27 @@ describe("DomovoiClient", () => {
   })
 })
 
-describe("DomovoiClient machine credentials", () => {
+describe("DomovoiClient fleet enrollment", () => {
   const NativeWebSocket = globalThis.WebSocket
+  const machineId = `machine-${"c".repeat(32)}`
+  const remote = {
+    id: machineId,
+    label: "workshop",
+    platform: "linux",
+    arch: "x64",
+    version: "0.4.2",
+    capabilities: ["sessions"],
+    protocolVersion,
+    transports: [],
+    connection: "direct",
+    verifiedRoute: {
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      lastAuthenticatedAt: "2026-09-04T12:00:00.000Z",
+    },
+    heartbeat: { state: "online", lastSeenAt: "2026-09-04T12:00:00.000Z" },
+    health: "healthy",
+    self: false,
+  }
 
   beforeEach(() => {
     FakeWebSocket.instances = []
@@ -1604,60 +1623,116 @@ describe("DomovoiClient machine credentials", () => {
     globalThis.WebSocket = NativeWebSocket
   })
 
-  it("lists the fleet through the daemon", async () => {
+  async function connected() {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
+    return { client, socket }
+  }
+
+  it("lists the fleet through the daemon", async () => {
+    const { client, socket } = await connected()
 
     const listing = client.listFleet()
     const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
-    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { machines: [] } })
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { entries: [] } })
 
-    await expect(listing).resolves.toEqual({ machines: [] })
+    await expect(listing).resolves.toEqual({ entries: [] })
     expect(sent.method).toBe("fleet.list")
     expect(sent.params).toEqual({})
   })
 
-  it("reads a kept machine credential through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
-    const connecting = client.connect()
-    const socket = FakeWebSocket.instances[0]!
-    socket.open()
-    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
-    await connecting
+  it("enrolls a machine through the daemon as the client it greeted as", async () => {
+    const { client, socket } = await connected()
 
-    const reading = client.machineCredential({ machineId: `machine-${"c".repeat(32)}` })
-    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string }
-    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { credential: "n".repeat(43) } })
-
-    await expect(reading).resolves.toEqual({ credential: "n".repeat(43) })
-    expect(sent.method).toBe("device.machineCredential")
-  })
-
-  it("saves a machine credential through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
-    const connecting = client.connect()
-    const socket = FakeWebSocket.instances[0]!
-    socket.open()
-    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
-    await connecting
-
-    const saving = client.saveMachineCredential({
-      machineId: `machine-${"c".repeat(32)}`,
-      credential: "n".repeat(43),
+    const enrolling = client.enrollMachine({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
     })
     const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
-    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { saved: true } })
-
-    await expect(saving).resolves.toEqual({ saved: true })
-    expect(sent.method).toBe("device.saveCredential")
-    expect(sent.params).toEqual({
-      machineId: `machine-${"c".repeat(32)}`,
-      credential: "n".repeat(43),
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: { outcome: "enrolled", machineId, fleet: { entries: [{ kind: "machine", machine: remote }] } },
     })
+
+    await expect(enrolling).resolves.toMatchObject({ outcome: "enrolled", machineId })
+    expect(sent.method).toBe("fleet.enroll")
+    expect(sent.params).toEqual({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
+      client: "web",
+    })
+  })
+
+  it("rejects an enrollment answer the protocol does not describe", async () => {
+    const { client, socket } = await connected()
+
+    const enrolling = client.enrollMachine({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
+    })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { outcome: "enrolled", machineId, fleet: { entries: [] } } })
+
+    await expect(enrolling).rejects.toThrow()
+  })
+
+  it("forgets a machine through the daemon and keeps the revocation verdict", async () => {
+    const { client, socket } = await connected()
+
+    const forgetting = client.forgetMachine({ machineId })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: { outcome: "forgotten", machineId, remoteRevocation: "unconfirmed", fleet: { entries: [] } },
+    })
+
+    await expect(forgetting).resolves.toEqual({
+      outcome: "forgotten",
+      machineId,
+      remoteRevocation: "unconfirmed",
+      fleet: { entries: [] },
+    })
+    expect(sent.method).toBe("fleet.forget")
+    expect(sent.params).toEqual({ machineId, client: "web" })
+  })
+
+  it("replaces the fleet when the daemon says it changed", async () => {
+    const { client, socket } = await connected()
+    const changes: unknown[] = []
+    client.addEventListener("fleet-changed", (event) => {
+      changes.push((event as CustomEvent).detail)
+    })
+
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "fleet.changed",
+      params: { entries: [{ kind: "unenrolled", machineId }] },
+    })
+
+    expect(changes).toEqual([{ entries: [{ kind: "unenrolled", machineId }] }])
+  })
+
+  it("reports a fleet.changed notification it cannot parse", async () => {
+    const { client, socket } = await connected()
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    socket.receive({ jsonrpc: "2.0", method: "fleet.changed", params: { machines: [] } })
+
+    expect(protocolErrors).toEqual([
+      "Daemon sent a fleet.changed notification this client could not parse",
+    ])
   })
 })
 
