@@ -3,9 +3,11 @@ packages:
   - packages/*
 
 allowBuilds:
+  '@parcel/watcher': true
   electron: true
   esbuild: true
   node-pty: true
+  unrs-resolver: true
 
 overrides:
   # Pins every consumer to one esbuild copy. electron-vite 4.0.1 declares ^0.25.5 and

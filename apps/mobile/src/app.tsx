@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { View } from "react-native"
 import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
-import type { ApprovalDecision } from "@getdomovoi/protocol"
+import { fleetSnapshotSchema, type ApprovalDecision, type FleetMachine } from "@getdomovoi/protocol"
 
+import { ConfirmSheet } from "./components/confirm-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
 import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
@@ -23,6 +24,10 @@ export function App() {
   const [restoring, setRestoring] = useState(true)
   const [openApprovalId, setOpenApprovalId] = useState<string | undefined>(undefined)
   const [deciding, setDeciding] = useState(false)
+  const [fleet, setFleet] = useState<FleetMachine[] | undefined>(undefined)
+  const [fleetLoading, setFleetLoading] = useState(false)
+  const [fleetProblem, setFleetProblem] = useState("")
+  const [confirmPause, setConfirmPause] = useState(false)
 
   // The saved credential is what makes the app usable the second time it is
   // opened, so it is restored before anything is drawn.
@@ -47,6 +52,25 @@ export function App() {
     () => snapshot?.approvals.find((approval) => approval.id === openApprovalId),
     [openApprovalId, snapshot],
   )
+
+  const loadFleet = useCallback(async () => {
+    setFleetLoading(true)
+    setFleetProblem("")
+    try {
+      const result = await call("fleet.list", { client: "phone" })
+      setFleet(fleetSnapshotSchema.parse(result).machines)
+    } catch (cause) {
+      setFleetProblem(cause instanceof Error ? cause.message : "The fleet could not be listed")
+    } finally {
+      setFleetLoading(false)
+    }
+  }, [call])
+
+  // The list is asked for when the tab is opened rather than kept warm, because
+  // a phone should not hold a subscription it is not showing.
+  useEffect(() => {
+    if (tab === "fleet" && status === "open") void loadFleet()
+  }, [loadFleet, status, tab])
 
   const decide = async (decision: ApprovalDecision) => {
     if (!openApproval) return
@@ -95,7 +119,7 @@ export function App() {
                   const next = snapshot.approvals.find((approval) => approval.sessionId === sessionId)
                   if (next) setOpenApprovalId(next.id)
                 }}
-                onPauseAll={() => { void call("system.emergencyStop", { client: "phone" }) }}
+                onPauseAll={() => setConfirmPause(true)}
               />
             ) : (
               <View className="flex-1 items-center justify-center gap-2 p-6">
@@ -108,7 +132,14 @@ export function App() {
               </View>
             )
           ) : null}
-          {tab === "fleet" ? <FleetScreen fleet={[]} /> : null}
+          {tab === "fleet" ? (
+            <FleetScreen
+              fleet={fleet}
+              loading={fleetLoading}
+              problem={fleetProblem}
+              onRefresh={() => void loadFleet()}
+            />
+          ) : null}
           {tab === "settings" ? (
             <SettingsScreen
               url={url}
@@ -132,6 +163,17 @@ export function App() {
           ) : null}
         </View>
         <TabBar active={tab} waiting={waiting} onSelect={setTab} />
+        <ConfirmSheet
+          open={confirmPause}
+          title="Pause every session?"
+          detail="This stops every running agent on the machine at once. Work already done is kept, and each session has to be started again by hand."
+          confirmLabel="Pause all sessions"
+          onConfirm={() => {
+            setConfirmPause(false)
+            void call("system.emergencyStop", { client: "phone" })
+          }}
+          onCancel={() => setConfirmPause(false)}
+        />
       </SafeAreaView>
     </SafeAreaProvider>
   )
