@@ -37,7 +37,7 @@ describe("pairMachine", () => {
   it("saves the claimed credential for the identity the machine reports", async () => {
     const io = pairing()
 
-    const paired = await pairMachine({ request, ...io })
+    const paired = await pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, ...io })
 
     expect(io.saved).toEqual([{ machineId, credential }])
     expect(paired).toEqual({ machineId, label: "workshop" })
@@ -47,7 +47,7 @@ describe("pairMachine", () => {
   it("refuses to save a credential for an identity the protocol does not describe", async () => {
     const io = pairing({ identify: vi.fn(async () => ({ id: "machine-nonsense", name: "workshop" })) })
 
-    await expect(pairMachine({ request, ...io })).rejects.toThrow(MachinePairingError)
+    await expect(pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, ...io })).rejects.toThrow(MachinePairingError)
     expect(io.saved).toEqual([])
   })
 
@@ -58,7 +58,7 @@ describe("pairMachine", () => {
       }),
     })
 
-    await expect(pairMachine({ request, ...io })).rejects.toThrow(
+    await expect(pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, ...io })).rejects.toThrow(
       "The machine did not name itself after pairing",
     )
     expect(io.saved).toEqual([])
@@ -71,7 +71,7 @@ describe("pairMachine", () => {
       }),
     })
 
-    await expect(pairMachine({ request, ...io })).rejects.toThrow(
+    await expect(pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, ...io })).rejects.toThrow(
       "The machine paired but its credential could not be stored",
     )
   })

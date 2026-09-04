@@ -22,6 +22,7 @@ export type PairedMachine = {
 
 export async function pairMachine(input: {
   request: PairMachineRequest
+  machineId: string
   open: (endpoint: string) => Promise<ClaimConnection>
   identify: (input: { endpoint: string; credential: string }) => Promise<{ id: string; name: string }>
   saveCredential: (input: { machineId: string; credential: string }) => Promise<void>
@@ -30,6 +31,7 @@ export async function pairMachine(input: {
     endpoint: input.request.endpoint,
     code: input.request.code,
     label: input.request.label,
+    machineId: input.machineId,
     open: input.open,
   })
 

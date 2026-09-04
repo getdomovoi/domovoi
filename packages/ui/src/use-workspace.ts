@@ -503,8 +503,13 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   const pairMachine = useCallback(async (request: PairMachineRequest): Promise<PairedMachine> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
+    const localMachineId = snapshot?.machine.id
+    if (!localMachineId) throw new Error("This machine has no identity yet")
     return completePairing({
       request,
+      // The credential is issued to this daemon, so the target binds it to this
+      // machine rather than to whoever happens to present it later.
+      machineId: localMachineId,
       open: openClaimConnection,
       identify: async ({ endpoint, credential }) => {
         const paired = new DomovoiClient(endpoint, kind, { authToken: credential })

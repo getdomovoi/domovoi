@@ -1,4 +1,4 @@
-import { devicePairResultSchema, type DevicePairResult } from "@getdomovoi/protocol"
+import { devicePairResultSchema, type DevicePairResult, type RpcParams } from "@getdomovoi/protocol"
 
 import { isLoopbackEndpoint } from "./transport-dial.js"
 
@@ -10,7 +10,12 @@ export class MachineClaimError extends Error {
 }
 
 export type ClaimConnection = {
-  call: (method: string, params: Record<string, unknown>) => Promise<unknown>
+  // Typed against the protocol so a parameter the daemon requires cannot go
+  // missing here and fail only against a running machine.
+  call: <Method extends "device.claim">(
+    method: Method,
+    params: RpcParams<Method>,
+  ) => Promise<unknown>
   close: () => void
 }
 
@@ -18,6 +23,7 @@ export async function claimMachine(input: {
   endpoint: string
   code: string
   label: string
+  machineId: string
   open: (endpoint: string) => Promise<ClaimConnection>
 }): Promise<DevicePairResult> {
   // Parsed rather than prefix-matched, so an address with no machine behind it
@@ -40,7 +46,13 @@ export async function claimMachine(input: {
   const connection = await input.open(input.endpoint)
   let claimed: unknown
   try {
-    claimed = await connection.call("device.claim", { code: input.code, label: input.label })
+    claimed = await connection.call("device.claim", {
+      code: input.code,
+      label: input.label,
+      // The credential is bound to this machine at enrolment, so a paired token
+      // cannot later present as a different machine or as a person's client.
+      machineId: input.machineId,
+    })
   } catch (error) {
     // The daemon's own refusal is kept, but nothing else: a transport error can
     // quote the request, and the request carries the code.
