@@ -1,0 +1,30 @@
+{
+  "name": "@getdomovoi/mobile",
+  "version": "0.0.1",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@getdomovoi/protocol": "workspace:*",
+    "expo": "~57.0.20",
+    "expo-status-bar": "~57.0.1",
+    "nativewind": "^4.2.6",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-reanimated": "~4.2.1",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "@vitest/coverage-v8": "catalog:",
+    "tailwindcss": "^3.4.17",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
