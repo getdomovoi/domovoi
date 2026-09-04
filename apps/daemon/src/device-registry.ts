@@ -9,6 +9,7 @@ export type PairedDevice = {
   pairedAt: string
   lastSeenAt?: string
   revokedAt?: string
+  revocationReason?: "legacy-unbound-credential"
 }
 
 export type DevicePairing = {
@@ -57,6 +58,7 @@ type StoredDevice = {
   paired_at: string
   last_seen_at: string | null
   revoked_at: string | null
+  revocation_reason: string | null
   credential_role: string
   machine_id: string | null
 }
@@ -80,6 +82,9 @@ function toPairedDevice(row: StoredDevice): PairedDevice {
     pairedAt: row.paired_at,
     ...(row.last_seen_at === null ? {} : { lastSeenAt: row.last_seen_at }),
     ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+    ...(row.revocation_reason === "legacy-unbound-credential"
+      ? { revocationReason: row.revocation_reason }
+      : {}),
   }
 }
 
@@ -103,6 +108,7 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         paired_at TEXT NOT NULL,
         last_seen_at TEXT,
         revoked_at TEXT,
+        revocation_reason TEXT,
         credential_role TEXT NOT NULL,
         machine_id TEXT
       );
@@ -118,9 +124,13 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     if (!columns.some((column) => column.name === "machine_id")) {
       this.#database.exec("ALTER TABLE paired_devices ADD COLUMN machine_id TEXT")
     }
+    if (!columns.some((column) => column.name === "revocation_reason")) {
+      this.#database.exec("ALTER TABLE paired_devices ADD COLUMN revocation_reason TEXT")
+    }
     this.#database.prepare(`
       UPDATE paired_devices
-      SET revoked_at = COALESCE(revoked_at, ?)
+      SET revoked_at = COALESCE(revoked_at, ?),
+          revocation_reason = 'legacy-unbound-credential'
       WHERE credential_role = 'legacy'
     `).run(new Date().toISOString())
   }

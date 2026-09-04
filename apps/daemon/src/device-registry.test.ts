@@ -81,6 +81,7 @@ describe("SqliteDeviceRegistry", () => {
     expect(devices.list()).toContainEqual(expect.objectContaining({
       label: "legacy peer",
       revokedAt: expect.any(String),
+      revocationReason: "legacy-unbound-credential",
     }))
     expect(devices.verify(paired.token)?.binding).toEqual({ kind: "client" })
     expect(database.prepare("SELECT credential_role, machine_id FROM paired_devices WHERE id = ?")
