@@ -24,6 +24,9 @@ import {
   type CommittedTransferOwnership,
   type TransferOwnership,
 } from "./transfer-ownership.js"
+import {
+  SqliteTransferConflicts,
+} from "./transfer-conflicts.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
 
 type StoredWorkspace = {
@@ -76,6 +79,7 @@ export interface WorkspaceStore {
   readonly fleet?: FleetRegistry
   readonly transferReceipts?: TransferReceipts
   readonly transferOwnership?: TransferOwnership
+  readonly transferConflicts?: SqliteTransferConflicts
   readonly skillReviews?: SkillReviews
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
@@ -473,6 +477,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly fleet: SqliteFleetRegistry
   readonly transferReceipts: SqliteTransferReceipts
   readonly transferOwnership: SqliteTransferOwnership
+  readonly transferConflicts: SqliteTransferConflicts
   readonly skillReviews: SqliteSkillReviews
   readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
@@ -509,6 +514,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.fleet = new SqliteFleetRegistry(this.#database)
     this.transferReceipts = new SqliteTransferReceipts(this.#database)
     this.transferOwnership = new SqliteTransferOwnership(this.#database)
+    this.transferConflicts = new SqliteTransferConflicts(this.#database)
     this.skillReviews = new SqliteSkillReviews(this.#database)
 
     const existing = this.#database
@@ -556,10 +562,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         this.save(migrated.snapshot)
         this.#recordRuleInactivations(migrated.inactivatedRules)
       } catch {
-        return migrated.snapshot
+        return this.transferConflicts.restore(migrated.snapshot)
       }
     }
-    return migrated.snapshot
+    return this.transferConflicts.restore(migrated.snapshot)
   }
 
   save(snapshot: WorkspaceSnapshot): void {
@@ -634,9 +640,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       machine: this.load().machine,
       skillEnablements: [],
     } as unknown as WorkspaceSnapshot
-    return projectWorkspaceState(
+    return projectWorkspaceState(this.transferConflicts.restore(
       workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate)),
-    )
+    ))
   }
 
   #seedProjectRow(snapshot: WorkspaceSnapshot): void {

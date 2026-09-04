@@ -29,6 +29,7 @@ import {
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
   protocolVersion,
+  sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
   rpcMethods,
@@ -66,6 +67,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
+import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
   collectSessionTransferState,
   createSessionTransferPackage,
@@ -2001,6 +2003,16 @@ export class DomovoiDaemon {
       detectedAt,
     ).plans
     const authoritative = workspaceSnapshotSchema.parse(conflicted)
+    const conflictProof: DetectedTransferConflict = {
+      version: sessionTransferContractVersion,
+      sessionId: session.id,
+      sourceMachineId: this.#snapshot.machine.id,
+      sourceProjectId: session.projectId,
+      workspacePath: session.workspacePath!,
+      sourceRecovery: recovery,
+      ...authoritative.sessions.find((candidate) => candidate.id === session.id)!
+        .ownershipConflict!,
+    }
 
     // Proof of another owner changes the in-memory authority boundary before
     // any fallible cleanup or disk write. The machine that made the unverified
@@ -2009,6 +2021,19 @@ export class DomovoiDaemon {
     this.#sessionHistory.invalidate(session.id)
     this.#syncArtifactWatchers()
     this.#broadcastSnapshot()
+    try {
+      if (!this.#store.transferConflicts) {
+        throw new Error("Durable transfer conflict storage is unavailable")
+      }
+      this.#store.transferConflicts.record(conflictProof)
+    } catch (error) {
+      // A conflict proof is a machine-ownership boundary, not an ordinary
+      // snapshot update. One failed durable write makes every later mutation
+      // unsafe until a successful full snapshot save proves persistence again.
+      this.#persistenceFailures = persistenceFailureThreshold
+      this.#persistenceFailed(error)
+      this.#reportError("Domovoi could not persist ownership conflict proof", error)
+    }
     try {
       this.#closeSessionTerminals(session.id)
     } catch (error) {

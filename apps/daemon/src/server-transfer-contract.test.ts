@@ -818,7 +818,10 @@ describe("transactional session transfer RPC", () => {
       })])
   })
 
-  it("fails closed in memory when a proven ownership conflict cannot persist", async () => {
+  it("restores a proven ownership conflict after its snapshot write fails and the daemon restarts", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-conflict-restart-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
     const { staged, packaged } = await stagedTransferFixture()
     const recovered = recoverUnconfirmedSourceTransfer(staged, {
       sessionId: packaged.manifest.sessionId,
@@ -826,7 +829,7 @@ describe("transactional session transfer RPC", () => {
       client: "desktop",
       recoveredAt: "2026-09-03T22:10:00.000Z",
     })
-    const store = new SqliteWorkspaceStore(":memory:", recovered)
+    const store = new SqliteWorkspaceStore(databasePath, recovered)
     vi.spyOn(store, "saveAsync").mockRejectedValue(new Error("disk unavailable"))
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -861,8 +864,27 @@ describe("transactional session transfer RPC", () => {
     })).resolves.toMatchObject({
       error: { code: -32602, message: "This session has conflicting owners and is read-only" },
     })
-    expect(store.load().sessions[0]?.state).toBe("idle")
+    expect(store.saveAsync).toHaveBeenCalled()
+    expect(store.load().sessions[0]?.state).toBe("ownership-conflict")
     socket.close()
+
+    await daemon.stop()
+    running.splice(running.indexOf(daemon), 1)
+    const reopened = new SqliteWorkspaceStore(databasePath, recovered)
+    expect(reopened.load().sessions[0]).toMatchObject({
+      state: "ownership-conflict",
+      sourceRecovery: { transferId: packaged.manifest.transferId },
+      ownershipConflict: {
+        transferId: packaged.manifest.transferId,
+        otherMachineId: targetMachineId,
+        otherGeneration: 2,
+      },
+    })
+    expect(reopened.loadProject(recovered.project!.id)?.sessions[0]).toMatchObject({
+      state: "ownership-conflict",
+      ownershipConflict: { transferId: packaged.manifest.transferId },
+    })
+    reopened.close()
   })
 
   it("reconciles an ambiguous live transfer after returning the incomplete result", async () => {
