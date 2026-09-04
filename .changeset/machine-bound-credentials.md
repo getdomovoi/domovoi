@@ -17,9 +17,11 @@ retired pre-contract transfer RPC family is removed.
 
 One migration handles both legacy shapes: credentials that could act as either
 a machine or a person, and client credentials that did not record a client
-kind. Any such pairing is revoked once and must be made again. The paired-device
-list preserves why it was retired, while authentication remains deliberately
-uniform so it does not reveal whether a presented credential ever existed.
+kind. Any such pairing is revoked once and must be made again. The record keeps
+the two legacy shapes apart for auditing, and the paired-device list tells one
+upgrade story for both, so a person who skipped both migrations is not told the
+pairing broke twice. Authentication remains deliberately uniform so it does not
+reveal whether a presented credential ever existed.
 
 Daemon and device credentials are now fixed-width 256-bit base64url values. A
 configured daemon credential in the older weak shape is rejected at startup

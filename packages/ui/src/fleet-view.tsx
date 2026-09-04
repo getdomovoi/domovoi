@@ -57,6 +57,19 @@ export function orderedMachineTransports(machine: FleetMachine): TransportCandid
       transportPreference.indexOf(left.kind) - transportPreference.indexOf(right.kind))
 }
 
+type DeviceRevocationReason = NonNullable<PairedDeviceSummary["revocationReason"]>
+
+// An upgrade revokes credentials that predate identity binding. That is not the
+// operator revoking a device, and it has a different remedy, so the row says so
+// instead of leaving a bare Revoked badge to explain it. Both migration reasons
+// read identically to the person: one upgrade with one remedy, rather than two
+// stories that sound like the pairing broke twice. The distinction stays in the
+// record for auditing. A reason added here has to decide its own copy.
+const revokedByUpgradeReason: Record<DeviceRevocationReason, boolean> = {
+  "legacy-unbound-credential": true,
+  "legacy-unbound-client-kind": true,
+}
+
 function sessionSummary(count: number): string {
   return `${count} ${count === 1 ? "session" : "sessions"}`
 }
@@ -329,10 +342,8 @@ export function FleetView({
                 <tbody>
                   {devices.map((paired) => {
                     const revoked = paired.revokedAt !== undefined
-                    // An upgrade revokes credentials that predate machine binding. That is
-                    // not the operator revoking a device, and it has a different remedy, so
-                    // the row says so instead of leaving a bare Revoked badge to explain it.
-                    const revokedByUpgrade = paired.revocationReason === "legacy-unbound-credential"
+                    const revokedByUpgrade = paired.revocationReason !== undefined
+                      && revokedByUpgradeReason[paired.revocationReason]
                     const busy = pendingDeviceId === paired.id
                     return (
                       <tr key={paired.id}>
@@ -348,8 +359,8 @@ export function FleetView({
                           ) : null}
                           {revokedByUpgrade ? (
                             <p className="mt-1 max-w-[52ch] text-[11px] font-normal leading-relaxed text-muted-foreground">
-                              This pairing predates machine-bound credentials. Pair this device
-                              again to restore it.
+                              This pairing predates bound credentials. Pair this device again to
+                              restore it.
                             </p>
                           ) : null}
                         </th>
