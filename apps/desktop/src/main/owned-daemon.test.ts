@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { OwnedDaemonLifecycle, startDesktop, startOwnedDaemon } from "./owned-daemon.js"
+import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -8,20 +8,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
-describe("startOwnedDaemon", () => {
-  it("refuses to adopt a listener it did not start", async () => {
-    const conflict = Object.assign(new Error("address in use"), { code: "EADDRINUSE" })
-    const daemon = { start: vi.fn(async () => { throw conflict }) }
-
-    await expect(startOwnedDaemon(daemon)).rejects.toBe(conflict)
-  })
-
-  it("returns the daemon after claiming its listener", async () => {
-    const daemon = { start: vi.fn(async () => ({ host: "127.0.0.1", port: 47831 })) }
-
-    await expect(startOwnedDaemon(daemon)).resolves.toBe(daemon)
-  })
-
+describe("startDesktop", () => {
   it("creates the window before waiting for the owned daemon", async () => {
     let releaseDaemon!: () => void
     const daemonStarted = new Promise<void>((resolve) => { releaseDaemon = resolve })
@@ -39,6 +26,20 @@ describe("startOwnedDaemon", () => {
 })
 
 describe("OwnedDaemonLifecycle", () => {
+  it("refuses to adopt a listener it did not start", async () => {
+    const conflict = Object.assign(new Error("address in use"), { code: "EADDRINUSE" })
+    const daemon = { start: vi.fn(async () => { throw conflict }), stop: vi.fn(async () => {}) }
+
+    await expect(new OwnedDaemonLifecycle().start(daemon)).rejects.toBe(conflict)
+  })
+
+  it("returns the address the daemon claimed", async () => {
+    const address = { host: "127.0.0.1", port: 47831, url: "ws://127.0.0.1:47831/rpc" }
+    const daemon = { start: vi.fn(async () => address), stop: vi.fn(async () => {}) }
+
+    await expect(new OwnedDaemonLifecycle().start(daemon)).resolves.toBe(address)
+  })
+
   it("waits for the owned daemon to stop before allowing a normal quit", async () => {
     const stopped = deferred()
     const daemon = {
