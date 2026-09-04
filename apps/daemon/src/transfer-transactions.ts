@@ -35,6 +35,7 @@ const activityFile = "activity.json"
 const membersDirectory = "members"
 const chunksDirectory = "chunks"
 const chunkName = /^(0|[1-9][0-9]*)-(0|1)\.chunk$/u
+const publicationTails = new Map<string, Promise<void>>()
 
 export const defaultTransferJournalRetentionMs = 7 * 24 * 60 * 60 * 1_000
 
@@ -71,14 +72,28 @@ export async function writeAllTransferBytes(
   }
 }
 
-async function writeJson(path: string, value: unknown): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`
+async function serializePublication<T>(path: string, publish: () => Promise<T>): Promise<T> {
+  const previous = publicationTails.get(path) ?? Promise.resolve()
+  const result = previous.catch(() => {}).then(publish)
+  const tail = result.then(() => {}, () => {})
+  publicationTails.set(path, tail)
   try {
-    await writeFile(temporary, JSON.stringify(value), { flag: "wx", mode: 0o600, flush: true })
-    await rename(temporary, path)
+    return await result
   } finally {
-    await rm(temporary, { force: true }).catch(() => {})
+    if (publicationTails.get(path) === tail) publicationTails.delete(path)
   }
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+  await serializePublication(path, async () => {
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify(value), { flag: "wx", mode: 0o600, flush: true })
+      await rename(temporary, path)
+    } finally {
+      await rm(temporary, { force: true }).catch(() => {})
+    }
+  })
 }
 
 export class FileTransferTransactions {
@@ -134,8 +149,16 @@ export class FileTransferTransactions {
       try {
         await rename(temporary, path)
       } catch (error) {
-        if (!new Set(["EEXIST", "ENOTEMPTY"]).has((error as NodeJS.ErrnoException).code ?? "")) {
-          throw error
+        const code = (error as NodeJS.ErrnoException).code ?? ""
+        if (!new Set(["EEXIST", "ENOTEMPTY"]).has(code)) {
+          // Windows reports EPERM, rather than EEXIST, when a prior process
+          // already published this non-empty journal directory. Adopt only a
+          // complete, valid journal; otherwise preserve the original failure.
+          try {
+            await this.#stored(manifest.transferId)
+          } catch {
+            throw error
+          }
         }
       }
     } finally {
@@ -593,24 +616,32 @@ export class FileTransferTransactions {
     expectedBytes: number,
     expectedDigest: string,
   ): Promise<boolean> {
-    try {
-      return await this.#publishMember(
-        chunkPath,
-        completedPath,
-        chunks,
-        expectedBytes,
-        expectedDigest,
-      )
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== "ENOENT" && code !== "EEXIST" && code !== "ENOTEMPTY") throw error
+    return serializePublication(completedPath, async () => {
       try {
         await this.#verifyMember(completedPath, expectedBytes, expectedDigest)
         return true
-      } catch {
-        throw error
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
       }
-    }
+      try {
+        return await this.#publishMember(
+          chunkPath,
+          completedPath,
+          chunks,
+          expectedBytes,
+          expectedDigest,
+        )
+      } catch (error) {
+        // Another process may have won between verification and publication.
+        // Adopt its bytes only when they match the signed manifest.
+        try {
+          await this.#verifyMember(completedPath, expectedBytes, expectedDigest)
+          return true
+        } catch {
+          throw error
+        }
+      }
+    })
   }
 
   async #verifyMember(path: string, expectedBytes: number, expectedDigest: string): Promise<void> {

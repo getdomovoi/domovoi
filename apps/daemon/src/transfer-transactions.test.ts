@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   sessionTransferManifestSchema,
@@ -13,6 +13,43 @@ import {
 
 import { sessionTransferManifestDigest } from "./session-transfer-package.js"
 import { FileTransferTransactions, writeAllTransferBytes } from "./transfer-transactions.js"
+
+const renameSimulation = vi.hoisted(() => ({
+  existingDirectoryIsBusy: false,
+  rejectOverlappingTargets: false,
+  activeTargets: new Set<string>(),
+}))
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return {
+    ...actual,
+    rename: async (oldPath: string, newPath: string) => {
+      if (renameSimulation.existingDirectoryIsBusy) {
+        try {
+          if ((await actual.stat(newPath)).isDirectory()) {
+            throw Object.assign(new Error("destination directory is busy"), { code: "EPERM" })
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+        }
+      }
+      if (renameSimulation.rejectOverlappingTargets) {
+        if (renameSimulation.activeTargets.has(newPath)) {
+          throw Object.assign(new Error("destination file is busy"), { code: "EPERM" })
+        }
+        renameSimulation.activeTargets.add(newPath)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        try {
+          return await actual.rename(oldPath, newPath)
+        } finally {
+          renameSimulation.activeTargets.delete(newPath)
+        }
+      }
+      return actual.rename(oldPath, newPath)
+    },
+  }
+})
 
 const scratchDirectories: string[] = []
 const transferId = `transfer-${"a".repeat(32)}`
@@ -26,6 +63,9 @@ const memberJournalKey = (memberId: string) => createHash("sha256")
   .digest("hex")
 
 afterEach(async () => {
+  renameSimulation.existingDirectoryIsBusy = false
+  renameSimulation.rejectOverlappingTargets = false
+  renameSimulation.activeTargets.clear()
   await Promise.all(scratchDirectories.splice(0).map((path) => (
     rm(path, { recursive: true, force: true })
   )))
@@ -120,6 +160,38 @@ describe("file transfer transaction journal", () => {
     })
   })
 
+  it("adopts an existing journal when Windows reports its directory as busy", async () => {
+    const { root, transactions } = await journal()
+    const manifest = manifestFor(Buffer.from("state"), Buffer.from("repository"))
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    renameSimulation.existingDirectoryIsBusy = true
+
+    await expect(new FileTransferTransactions(root).prepare(manifest, manifestDigest))
+      .resolves.toEqual({
+        state: "receiving",
+        transferId,
+        missingMemberIds: ["state", "repository"],
+      })
+  })
+
+  it("serializes concurrent durable journal publications by destination", async () => {
+    const { transactions } = await journal()
+    const manifest = manifestFor(Buffer.from("state"), Buffer.from("repository"))
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    renameSimulation.rejectOverlappingTargets = true
+
+    await expect(Promise.all(Array.from({ length: 32 }, () => (
+      transactions.markFailed(transferId, manifestDigest, "state-import-failed")
+    )))).resolves.toHaveLength(32)
+    await expect(transactions.status(transferId, manifestDigest)).resolves.toEqual({
+      state: "failed",
+      transferId,
+      reason: "state-import-failed",
+    })
+  })
+
   it("streams members durably, refuses gaps, and verifies their digest", async () => {
     const { root, transactions } = await journal()
     const stateBytes = Buffer.from("state")
@@ -199,6 +271,7 @@ describe("file transfer transaction journal", () => {
       final: true,
       client: "desktop" as const,
     }
+    renameSimulation.rejectOverlappingTargets = true
     const results = await Promise.allSettled(
       Array.from({ length: 256 }, () => transactions.acceptMember(chunk)),
     )
