@@ -4,6 +4,8 @@ import type {
   SkillCapabilityManifest,
   SkillDocument,
   SkillEnablementReview,
+  TurnSkillSelection,
+  TurnSkillSelectionRefusal,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import { maximumDeliveredPromptSkills } from "@getdomovoi/protocol"
@@ -30,9 +32,27 @@ export type InjectedSkill = {
 }
 
 export type PreparedProjectSkillContext = {
+  retention: "elastic"
   selection: "project-default"
   deliverable: InjectedSkill[]
   omitted: OmittedPromptSkills
+}
+
+export type PreparedTurnSkillContext = PreparedProjectSkillContext | {
+  retention: "required"
+  selection: "turn-explicit"
+  deliverable: InjectedSkill[]
+  omitted: OmittedPromptSkills
+}
+
+export class TurnSkillSelectionError extends Error {
+  readonly refusal: TurnSkillSelectionRefusal
+
+  constructor(refusal: TurnSkillSelectionRefusal, message: string) {
+    super(message)
+    this.name = "TurnSkillSelectionError"
+    this.refusal = refusal
+  }
 }
 
 type ReviewedSkillResult =
@@ -97,6 +117,22 @@ function emptyOmissions(): OmittedPromptSkills {
   return { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] }
 }
 
+function selectionError(
+  skillId: string,
+  reason: TurnSkillSelectionRefusal["reason"],
+): TurnSkillSelectionError {
+  const action = {
+    "not-enabled": "Enable and review it for this project, or remove it from this turn",
+    unavailable: "Restore it on this machine, or remove it from this turn",
+    "review-changed": "Review and reselect it, or remove it from this turn",
+    policy: "Review its trust state, or remove it from this turn",
+  }[reason]
+  return new TurnSkillSelectionError(
+    { kind: "turn-skill-selection-refused", skillId, reason },
+    `Cannot send this turn: selected skill ${skillId} is ${reason.replaceAll("-", " ")}. ${action} and try again.`,
+  )
+}
+
 export async function prepareProjectSkillContext(
   catalog: SkillCatalog,
   snapshot: SkillContextSnapshot,
@@ -104,7 +140,9 @@ export async function prepareProjectSkillContext(
 ): Promise<PreparedProjectSkillContext> {
   const omitted = emptyOmissions()
   const projectId = snapshot.project?.id
-  if (!projectId) return { selection: "project-default", deliverable: [], omitted }
+  if (!projectId) {
+    return { retention: "elastic", selection: "project-default", deliverable: [], omitted }
+  }
   const reviews = snapshot.skillEnablements
     .filter((review) => review.projectId === projectId && review.enabled)
     .sort((left, right) => left.skillId.localeCompare(right.skillId))
@@ -130,14 +168,65 @@ export async function prepareProjectSkillContext(
   )
   omitted.limit.push(...loaded.slice(maximumInjectedSkills).map((skill) => skill.id))
   return {
+    retention: "elastic",
     selection: "project-default",
     deliverable: loaded.slice(0, maximumInjectedSkills),
     omitted,
   }
 }
 
+export async function prepareTurnSkillContext(
+  catalog: SkillCatalog,
+  snapshot: SkillContextSnapshot,
+  selection: TurnSkillSelection | undefined,
+  options: { requireTrusted?: boolean } = {},
+): Promise<PreparedTurnSkillContext> {
+  if (!selection) return prepareProjectSkillContext(catalog, snapshot, options)
+
+  const projectId = snapshot.project?.id
+  const selected = [...selection.skills].sort((left, right) =>
+    left.skillId.localeCompare(right.skillId),
+  )
+  const reviews = selected.map((reference) => {
+    const review = snapshot.skillEnablements.find((candidate) =>
+      candidate.projectId === projectId
+      && candidate.skillId === reference.skillId
+      && candidate.enabled,
+    )
+    if (!review) throw selectionError(reference.skillId, "not-enabled")
+    if (
+      review.contentDigest !== reference.review.contentDigest
+      || !exactManifest(review.manifest, reference.review.manifest)
+    ) throw selectionError(reference.skillId, "review-changed")
+    return review
+  })
+
+  const current = await Promise.all(reviews.map((review) => reviewedSkill(catalog, review)))
+  const loaded = current.map((result) => {
+    if (result.status === "unavailable") throw selectionError(result.skillId, "unavailable")
+    if (result.status === "review-changed") throw selectionError(result.skillId, "review-changed")
+    if (
+      options.requireTrusted
+        ? result.skill.trust.state !== "trusted"
+        : result.skill.trust.state === "blocked"
+    ) throw selectionError(result.skill.id, "policy")
+    return result.skill
+  })
+  loaded.sort((left, right) =>
+    left.name.localeCompare(right.name)
+    || left.path.localeCompare(right.path)
+    || left.id.localeCompare(right.id),
+  )
+  return {
+    retention: "required",
+    selection: "turn-explicit",
+    deliverable: loaded,
+    omitted: emptyOmissions(),
+  }
+}
+
 function skillPromptContext(
-  prepared: PreparedProjectSkillContext,
+  prepared: PreparedTurnSkillContext,
   includedCount: number,
 ): { context: string; delivery: ProviderPromptSkillDelivery } {
   const included = prepared.deliverable.slice(0, includedCount)
@@ -171,7 +260,7 @@ function skillPromptContext(
 }
 
 export function renderProjectSkillContext(
-  prepared: PreparedProjectSkillContext,
+  prepared: PreparedTurnSkillContext,
   includedCount: number,
   userPrompt: string,
 ): { prompt: string; delivery: ProviderPromptSkillDelivery } {
