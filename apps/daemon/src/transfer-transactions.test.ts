@@ -152,6 +152,39 @@ describe("file transfer transaction journal", () => {
       .resolves.toEqual({ state: "prepared", transferId })
   })
 
+  it("handles concurrent retries of the same chunk without throwing", async () => {
+    const { transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const repositoryBytes = Buffer.from("repository")
+    const manifest = manifestFor(stateBytes, repositoryBytes)
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    await transactions.acceptMember({
+      transferId,
+      memberId: "state",
+      sequence: 0,
+      bytes: stateBytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+
+    const chunk = {
+      transferId,
+      memberId: "repository",
+      sequence: 0,
+      bytes: repositoryBytes.toString("base64"),
+      final: true,
+      client: "desktop" as const,
+    }
+    const results = await Promise.allSettled(
+      Array.from({ length: 256 }, () => transactions.acceptMember(chunk)),
+    )
+
+    expect(results.filter((result) => result.status === "rejected")).toEqual([])
+    await expect(transactions.status(transferId, manifestDigest))
+      .resolves.toEqual({ state: "prepared", transferId })
+  })
+
   it("does not publish a member whose bytes miss its declared digest", async () => {
     const { transactions } = await journal()
     const stateBytes = Buffer.from("state")

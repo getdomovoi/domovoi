@@ -201,7 +201,17 @@ export class FileTransferTransactions {
     }
 
     const nextChunk = join(chunkPath, `${params.sequence}-${params.final ? 1 : 0}.chunk`)
-    await writeFile(nextChunk, bytes, { flag: "wx", mode: 0o600, flush: true })
+    try {
+      await writeFile(nextChunk, bytes, { flag: "wx", mode: 0o600, flush: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        // Another retry won the exclusive chunk claim after this request read
+        // the journal. Refuse safely; a subsequent retry adopts the durable
+        // chunk or completed member through the ordinary idempotent paths.
+        return this.#memberRefusal(params, "chunk-out-of-order")
+      }
+      throw error
+    }
     if (!params.final) {
       return transferMemberResultSchema.parse({
         state: "receiving",
@@ -458,7 +468,7 @@ export class FileTransferTransactions {
         name,
         sequence: Number(match[1]),
         final: match[2] === "1",
-        byteLength: (await readFile(join(path, name))).byteLength,
+        byteLength: (await stat(join(path, name))).size,
       }
     }))
     chunks.sort((left, right) => left.sequence - right.sequence)
