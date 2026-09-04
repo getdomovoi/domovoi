@@ -591,11 +591,14 @@ describe("transactional session transfer RPC", () => {
       recoveredAt: "2026-09-03T22:10:00.000Z",
     })
     const store = new SqliteWorkspaceStore(":memory:", recovered)
+    let matchingTransfer = false
     const remoteCall = vi.fn(async (method: string) => {
       if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
       return {
         state: "committed",
-        transferId: packaged.manifest.transferId,
+        transferId: matchingTransfer
+          ? packaged.manifest.transferId
+          : `transfer-${"0".repeat(32)}`,
         workspacePath: `/target/${packaged.manifest.sessionId}`,
         checkpointCommit,
         ownershipGeneration: 2,
@@ -611,6 +614,11 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
 
     await daemon.start()
+    await vi.waitFor(() => expect(remoteCall).toHaveBeenCalledOnce())
+    expect(store.load().sessions[0]?.state).toBe("idle")
+    matchingTransfer = true
+    const socket = await openClient(daemon)
+    await rpc(socket)("fleet.list", {})
     await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
 
     expect(store.load().sessions[0]).toMatchObject({
@@ -631,6 +639,7 @@ describe("transactional session transfer RPC", () => {
       kind: "system",
       body: "Session ownership conflict detected.",
     })
+    socket.close()
   })
 
   it("reconciles an ambiguous live transfer after returning the incomplete result", async () => {

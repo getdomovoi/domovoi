@@ -1910,7 +1910,8 @@ export class DomovoiDaemon {
       return
     }
     if (
-      remote.state !== "committed"
+      remote.transferId !== recovery.transferId
+      || remote.state !== "committed"
       || remote.ownershipGeneration <= (session.ownershipGeneration ?? 0)
     ) return
 
