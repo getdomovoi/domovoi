@@ -1424,7 +1424,7 @@ describe("transactional session transfer RPC", () => {
       result: {
         outcome: "incomplete",
         state: "unknown",
-        recoveryAction: "check-status",
+        recoveryAction: "none",
       },
     })
     await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))

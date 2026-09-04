@@ -93,11 +93,11 @@ describe("session transfer request", () => {
   it("reports an incomplete target recovery without claiming success", () => {
     const transferId = `transfer-${"d".repeat(32)}`
     for (const incomplete of [
-      { state: "unknown", recoveryAction: "check-status" },
-      { state: "receiving", recoveryAction: "resume" },
-      { state: "prepared", recoveryAction: "resume" },
+      { state: "unknown", recoveryAction: "none" },
+      { state: "receiving", recoveryAction: "none" },
+      { state: "prepared", recoveryAction: "none" },
       { state: "recovering", stage: "persistence", recoveryAction: "none" },
-      { state: "failed", reason: "persistence-failed", recoveryAction: "retry" },
+      { state: "failed", reason: "persistence-failed", recoveryAction: "none" },
       { state: "ownership-unconfirmed", recoveryAction: "confirm-source-recovery" },
       { state: "ownership-conflict", recoveryAction: "keep-target-session" },
     ] as const) {
@@ -111,7 +111,7 @@ describe("session transfer request", () => {
       outcome: "incomplete",
       transferId,
       state: "unknown",
-      recoveryAction: "resume",
+      recoveryAction: "check-status",
     }).success).toBe(false)
   })
 

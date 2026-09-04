@@ -121,23 +121,26 @@ const refusedTransferResultSchema = z.object({
 export const sessionTransferResultSchema = z.union([
   succeededTransferResultSchema,
   refusedTransferResultSchema,
+  // The source daemon keeps these transactions frozen and reconciles them in
+  // the background. They must not advertise client actions with no RPC behind
+  // them, or invite a person to race the ownership check.
   z.object({
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
     state: z.literal("unknown"),
-    recoveryAction: z.literal("check-status"),
+    recoveryAction: z.literal("none"),
   }).strict(),
   z.object({
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
     state: z.literal("receiving"),
-    recoveryAction: z.literal("resume"),
+    recoveryAction: z.literal("none"),
   }).strict(),
   z.object({
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
     state: z.literal("prepared"),
-    recoveryAction: z.literal("resume"),
+    recoveryAction: z.literal("none"),
   }).strict(),
   z.object({
     outcome: z.literal("incomplete"),
@@ -151,7 +154,7 @@ export const sessionTransferResultSchema = z.union([
     transferId: transferIdSchema,
     state: z.literal("failed"),
     reason: transferFailureReasonSchema,
-    recoveryAction: z.literal("retry"),
+    recoveryAction: z.literal("none"),
   }).strict(),
   z.object({
     outcome: z.literal("incomplete"),

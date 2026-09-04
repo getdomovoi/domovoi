@@ -2568,7 +2568,7 @@ export class DomovoiDaemon {
           transferId,
           state: "failed",
           reason: remote.reason,
-          recoveryAction: "retry",
+          recoveryAction: "none",
         }
       }
       if (remote.state === "unknown") {
@@ -2576,14 +2576,14 @@ export class DomovoiDaemon {
           outcome: "incomplete",
           transferId,
           state: "unknown",
-          recoveryAction: "check-status",
+          recoveryAction: "none",
         }
       }
       return {
         outcome: "incomplete",
         transferId,
         state: remote.state === "prepared" ? "prepared" : "receiving",
-        recoveryAction: "resume",
+        recoveryAction: "none",
       }
     } catch (error) {
       if (targetDeliveryStarted) {
@@ -2591,7 +2591,7 @@ export class DomovoiDaemon {
           outcome: "incomplete",
           transferId,
           state: "unknown",
-          recoveryAction: "check-status",
+          recoveryAction: "none",
         }
       }
       const completedAt = new Date().toISOString()
