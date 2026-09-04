@@ -728,6 +728,7 @@ export type DaemonServerOptions = {
   port?: number
   allowedOrigins?: string[]
   statePath?: string
+  manageStateDirectoryPermissions?: boolean
   store?: WorkspaceStore
   agent?: AgentAdapter
   agents?: Readonly<Record<string, AgentAdapter>>
@@ -967,7 +968,8 @@ export class DomovoiDaemon {
       initialSnapshot,
       {
         legacySnapshots: [demoWorkspace],
-        manageDirectoryPermissions: options.statePath === undefined,
+        manageDirectoryPermissions: options.manageStateDirectoryPermissions
+          ?? options.statePath === undefined,
       },
     )
     const usagePath = options.store || statePath === ":memory:"

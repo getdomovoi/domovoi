@@ -2,12 +2,8 @@
 import { readFileSync } from "node:fs"
 import { homedir, hostname, userInfo } from "node:os"
 
-import { DomovoiDaemon } from "./server.js"
-import { CliProviderProbe } from "./providers.js"
+import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
-import { loadOrCreateMachineIdentity } from "./machine-identity.js"
-import { loadTlsMaterial } from "./tls-material.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
@@ -283,39 +279,23 @@ async function main() {
     return
   }
 
-  const config = parseDaemonEnvironment(process.env, homedir())
-  const authToken = config.authToken
-    ?? await loadOrCreateDaemonToken(config.credentialPath)
-  const machineIdentity = await loadOrCreateMachineIdentity(config.machineIdentityPath, {
-    label: hostname(),
-  })
-  const tls = config.tls ? await loadTlsMaterial(config.tls) : undefined
-  const daemon = new DomovoiDaemon({
-    host: config.host,
-    port: config.port,
-    ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
-    authToken,
-    ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
-    providerProbe: new CliProviderProbe(),
-    machineIdentity,
-    ...(tls ? { tls } : {}),
-    ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
-    machineCredentials: new MachineCredentialStore(),
+  const daemon = await createProductionDaemon({
+    environment: process.env,
+    homeDirectory: homedir(),
+    machineLabel: hostname(),
   })
 
   const address = await daemon.start()
-  process.stdout.write(
-    `domovoid listening on ${tls ? "wss" : "ws"}://${address.host}:${address.port}/rpc\n`,
-  )
-  if (!config.authToken) {
-    process.stdout.write(`domovoid credential stored at ${config.credentialPath}\n`)
+  process.stdout.write(`domovoid listening on ${address.url}\n`)
+  if (daemon.credential.source === "file") {
+    process.stdout.write(`domovoid credential stored at ${daemon.credential.path}\n`)
   }
 
   // A daemon inside a WSL distribution is found by its endpoint file, which is
   // why it is published only once the listener is actually up, and taken away
   // when it stops.
   const published = isLoopbackListener(address.host)
-    ? { host: address.host, port: address.port, token: authToken }
+    ? { host: address.host, port: address.port, token: daemon.authToken }
     : undefined
   if (published) await publishEndpointFile({ home: homedir(), ...published })
 
