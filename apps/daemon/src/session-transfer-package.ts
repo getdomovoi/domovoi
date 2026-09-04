@@ -306,6 +306,7 @@ export function createSessionTransferPackage(
     },
     project: {
       sourceProjectId: intent.preview.project.sourceProjectId,
+      targetProjectId: intent.preview.project.targetProjectId,
       lineageCommit: intent.preview.project.lineageCommit,
       checkpointCommit: input.checkpointCommit,
     },

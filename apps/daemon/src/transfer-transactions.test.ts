@@ -45,6 +45,7 @@ function manifestFor(stateBytes: Buffer, repositoryBytes: Buffer): SessionTransf
     ownership: { fromGeneration: 1, toGeneration: 2 },
     project: {
       sourceProjectId: "project-source",
+      targetProjectId: "project-target",
       lineageCommit: "e".repeat(40),
       checkpointCommit: "f".repeat(40),
     },

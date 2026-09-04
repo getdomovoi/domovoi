@@ -14,10 +14,25 @@ import { redactWorkspaceCopies } from "./workspace-redaction.js"
 export class SessionTransferStateError extends Error {
   readonly reason: SessionTransferContractRefusal
 
-  constructor(reason: SessionTransferContractRefusal) {
-    super(reason)
+  constructor(reason: SessionTransferContractRefusal, options?: { cause?: unknown }) {
+    super(reason, options)
     this.name = "SessionTransferStateError"
     this.reason = reason
+  }
+}
+
+function transferArrivalThreadItem(
+  session: WorkspaceSnapshot["sessions"][number],
+): WorkspaceSnapshot["thread"][number] {
+  const origin = session.transferredFrom
+  if (!origin) throw new SessionTransferStateError("session-state-invalid")
+  return {
+    id: `system-transfer-${randomUUID()}`,
+    sessionId: session.id,
+    kind: "system",
+    body: `Transferred from machine ${origin.sourceMachineId}.`,
+    detail: `Ownership generation ${origin.generation} arrived at checkpoint ${origin.checkpointCommit}. Native provider state, machine authority, and automatic execution did not transfer.`,
+    createdAt: origin.completedAt,
   }
 }
 
@@ -70,6 +85,9 @@ export function portableSessionTransferState(
           sourceMachineId: durableSession.forkedFrom.sourceMachineId ?? snapshot.machine.id,
         },
       } : {}),
+      ...(durableSession.transferredFrom
+        ? { transferredFrom: durableSession.transferredFrom }
+        : {}),
     },
     thread: durable.thread.filter((item) => item.sessionId === sessionId),
     artifacts: durable.artifacts.filter((artifact) => artifact.sessionId === sessionId),
@@ -91,6 +109,7 @@ export function importSessionTransferState(
     workspacePath: string
     transferId: string
     ownershipGeneration: number
+    checkpointCommit: string
     completedAt: string
   },
 ): WorkspaceSnapshot {
@@ -106,7 +125,7 @@ export function importSessionTransferState(
   }
 
   const candidate = structuredClone(snapshot)
-  candidate.sessions.push({
+  const importedSession: WorkspaceSnapshot["sessions"][number] = {
     id: state.session.id,
     projectId: input.targetProjectId,
     title: state.session.title,
@@ -117,18 +136,21 @@ export function importSessionTransferState(
     testsFailed: state.session.testsFailed,
     updatedAt: input.completedAt,
     workspacePath: input.workspacePath,
-    baseCommit: state.session.baseCommit,
+    // The repository restore lands on the transfer checkpoint, which may be
+    // newer than the base recorded when the portable state was captured.
+    baseCommit: input.checkpointCommit,
     ownershipGeneration: input.ownershipGeneration,
+    transferredFrom: {
+      transferId: input.transferId,
+      sourceMachineId: input.sourceMachineId,
+      generation: input.ownershipGeneration,
+      checkpointCommit: input.checkpointCommit,
+      completedAt: input.completedAt,
+    },
     ...(state.session.forkedFrom ? { forkedFrom: state.session.forkedFrom } : {}),
-  })
-  candidate.thread.push(...state.thread, {
-    id: `system-transfer-${randomUUID()}`,
-    sessionId: state.session.id,
-    kind: "system",
-    body: "Transferred from another machine.",
-    detail: `Session state moved from ${input.sourceMachineId}. Native provider state, machine authority, and automatic execution did not transfer.`,
-    createdAt: input.completedAt,
-  })
+  }
+  candidate.sessions.push(importedSession)
+  candidate.thread.push(...state.thread, transferArrivalThreadItem(importedSession))
   candidate.artifacts.push(...state.artifacts)
   if (state.workingPlan) candidate.workingPlans.push(state.workingPlan)
   candidate.annotations.push(...state.annotations)

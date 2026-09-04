@@ -125,6 +125,7 @@ describe("portable session transfer state", () => {
       workspacePath: "/target/session-billing",
       transferId: `transfer-${"d".repeat(32)}`,
       ownershipGeneration: 5,
+      checkpointCommit,
       completedAt: "2026-09-03T20:00:00.000Z",
     })
     const session = imported.sessions.find((candidate) => candidate.id === "session-billing")!
@@ -142,7 +143,8 @@ describe("portable session transfer state", () => {
     expect(imported.thread.at(-1)).toMatchObject({
       sessionId: "session-billing",
       kind: "system",
-      body: "Transferred from another machine.",
+      body: `Transferred from machine ${sourceMachineId}.`,
+      detail: `Ownership generation 5 arrived at checkpoint ${checkpointCommit}. Native provider state, machine authority, and automatic execution did not transfer.`,
     })
     expect(imported.approvalRules).toEqual(target.approvalRules)
     expect(imported.skillEnablements).toEqual(target.skillEnablements)

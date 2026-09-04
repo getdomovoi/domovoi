@@ -134,6 +134,7 @@ describe("session transfer package", () => {
     expect(sessionTransferManifestSchema.parse(packaged.manifest)).toEqual(packaged.manifest)
     expect(packaged.manifestDigest).toBe(sessionTransferManifestDigest(packaged.manifest))
     expect(packaged.manifest.ownership).toEqual({ fromGeneration: 2, toGeneration: 3 })
+    expect(packaged.manifest.project.targetProjectId).toBe("project-target")
     expect(packaged.members.find((member) => member.member.kind === "repository-bundle")?.bytes)
       .toEqual(repositoryBytes)
     const stateBytes = packaged.members.find((member) => member.member.kind === "session-state")!.bytes
