@@ -46,12 +46,12 @@ export function freezeSourceSessionTransfer(
   startedAt: string,
 ): WorkspaceSnapshot {
   const session = sourceSession(snapshot, intent.state.session.id)
+  const resumeState = session.state
   if (
     intent.preview.sourceMachineId !== snapshot.machine.id
     || intent.preview.targetMachineId === snapshot.machine.id
     || intent.preview.project.sourceProjectId !== snapshot.project?.id
-    || session.state === "transferring"
-    || session.state === "transferred"
+    || (resumeState !== "idle" && resumeState !== "done" && resumeState !== "failed")
     || session.activeTurnId !== undefined
     || !session.workspacePath
     || session.baseCommit !== intent.state.session.baseCommit
@@ -70,6 +70,7 @@ export function freezeSourceSessionTransfer(
     intentDigest: intent.preview.intentDigest,
     nextGeneration: intent.state.session.ownershipGeneration + 1,
     startedAt,
+    resumeState,
     package: { state: "preparing" },
   }
   return workspaceSnapshotSchema.parse(candidate)

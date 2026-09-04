@@ -97,6 +97,7 @@ describe("source transfer lifecycle", () => {
         targetMachineId,
         intentDigest: intent.preview.intentDigest,
         nextGeneration: 5,
+        resumeState: "idle",
         package: { state: "preparing" },
       },
     })
