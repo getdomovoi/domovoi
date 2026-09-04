@@ -13,11 +13,7 @@ import {
 import { commitShaSchema, machineIdSchema, sha256DigestSchema } from "./identifiers.js"
 import { sourceRefusalSchema } from "./transfer.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
-import {
-  sessionTransferContractRefusalMessage,
-  sessionTransferContractRefusalSchema,
-  type SessionTransferContractRefusal,
-} from "./transfer-contract-refusals.js"
+import { sessionTransferContractRefusalSchema } from "./transfer-contract-refusals.js"
 
 export {
   sessionTransferContractRefusalMessage,
