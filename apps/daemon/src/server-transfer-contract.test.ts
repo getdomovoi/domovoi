@@ -383,6 +383,79 @@ describe("transactional session transfer RPC", () => {
     expect(store.load().sessions[0]).not.toHaveProperty("transfer")
   })
 
+  it("keeps a restarted source frozen on a status for another transfer", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-wrong-status-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const remoteCall = vi.fn(async () => ({
+      state: "aborted",
+      transferId: `transfer-${"0".repeat(32)}`,
+    }))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    await vi.waitFor(() => expect(remoteCall).toHaveBeenCalledOnce())
+
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferring",
+      transfer: { transferId: packaged.manifest.transferId },
+    })
+  })
+
+  it("keeps recovery frozen when a retry or abort response names another transfer", async () => {
+    for (const scenario of ["commit", "abort"] as const) {
+      const scratch = await mkdtemp(join(tmpdir(), `domovoi-transfer-wrong-${scenario}-`))
+      scratchDirectories.push(scratch)
+      const { staged, packaged } = await stagedTransferFixture()
+      const store = new SqliteWorkspaceStore(":memory:", staged)
+      const remoteCall = vi.fn(async (method: string) => {
+        if (method === "transfer.status") {
+          return scenario === "commit"
+            ? {
+                state: "failed",
+                transferId: packaged.manifest.transferId,
+                reason: "persistence-failed",
+              }
+            : { state: "prepared", transferId: packaged.manifest.transferId }
+        }
+        expect(method).toBe(scenario === "commit" ? "transfer.commit" : "transfer.abort")
+        return {
+          state: "refused",
+          transferId: `transfer-${"0".repeat(32)}`,
+          reason: "session-state-changed",
+        }
+      })
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store,
+        authToken: "correct-horse-battery-staple",
+        outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+        connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+        errorSink: () => {},
+        artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+      })
+      running.push(daemon)
+
+      await daemon.start()
+      await vi.waitFor(() => expect(remoteCall).toHaveBeenCalledTimes(2))
+      expect(store.load().sessions[0]).toMatchObject({
+        state: "transferring",
+        transfer: { transferId: packaged.manifest.transferId },
+      })
+      await daemon.stop()
+      running.splice(running.indexOf(daemon), 1)
+    }
+  })
+
   it("resumes a staged package after both daemons lost volatile transfer state", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-resume-"))
     scratchDirectories.push(scratch)
@@ -576,6 +649,52 @@ describe("transactional session transfer RPC", () => {
       packaged.manifest.transferId,
       packaged.manifestDigest,
     )).resolves.toMatchObject({ state: "unknown" })
+    socket.close()
+  })
+
+  it("does not recover a source from a status for another transfer", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-wrong-recovery-status-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    let calls = 0
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine: async () => ({
+        call: async () => {
+          calls += 1
+          if (calls === 1) throw new Error("startup status unavailable")
+          return { state: "unknown", transferId: `transfer-${"0".repeat(32)}` }
+        },
+        close: () => {},
+      }),
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    await vi.waitFor(() => expect(calls).toBe(1))
+    const socket = await openClient(daemon, "studio-mac")
+
+    const response = await rpc(socket)("session.transferRecoverSource", {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      confirmation: "target-does-not-have-session",
+      client: "desktop",
+    })
+
+    expect(response).toMatchObject({
+      error: { code: -32602, message: "Target transfer identity changed" },
+    })
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferring",
+      transfer: { transferId: packaged.manifest.transferId },
+    })
     socket.close()
   })
 

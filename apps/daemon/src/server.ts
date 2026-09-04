@@ -245,11 +245,22 @@ const unauditedRpcMethods = new Set<RpcMethod>([
 ])
 
 class RuntimeValidationError extends Error {}
+class TransferResponseIdentityError extends Error {}
 class OperationTimeoutError extends PublicRpcError {
   constructor(message: string) {
     super(internalError, message)
     this.name = "OperationTimeoutError"
   }
+}
+
+function matchingTransferResponse<T extends { transferId: string }>(
+  transferId: string,
+  response: T,
+): T {
+  if (response.transferId !== transferId) {
+    throw new TransferResponseIdentityError("Target transfer identity changed")
+  }
+  return response
 }
 
 function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | undefined {
@@ -1713,15 +1724,18 @@ export class DomovoiDaemon {
         const remote = await this.#withAbortTimeout(async (signal) => {
           const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
           try {
-            return rpcMethods["transfer.status"].result.parse(await connection.call(
-              "transfer.status",
-              {
-                transferId: lifecycle.transferId,
-                manifestDigest,
-                client: lifecycle.requestedBy.client,
-              },
-              signal,
-            ))
+            return matchingTransferResponse(
+              lifecycle.transferId,
+              rpcMethods["transfer.status"].result.parse(await connection.call(
+                "transfer.status",
+                {
+                  transferId: lifecycle.transferId,
+                  manifestDigest,
+                  client: lifecycle.requestedBy.client,
+                },
+                signal,
+              )),
+            )
           } finally {
             connection.close()
           }
@@ -1747,15 +1761,18 @@ export class DomovoiDaemon {
           const retried = await this.#withAbortTimeout(async (signal) => {
             const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
             try {
-              return rpcMethods["transfer.commit"].result.parse(await connection.call(
-                "transfer.commit",
-                {
-                  transferId: lifecycle.transferId,
-                  manifestDigest,
-                  client: lifecycle.requestedBy.client,
-                },
-                signal,
-              ))
+              return matchingTransferResponse(
+                lifecycle.transferId,
+                rpcMethods["transfer.commit"].result.parse(await connection.call(
+                  "transfer.commit",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: lifecycle.requestedBy.client,
+                  },
+                  signal,
+                )),
+              )
             } finally {
               connection.close()
             }
@@ -1804,15 +1821,18 @@ export class DomovoiDaemon {
             const aborted = await this.#withAbortTimeout(async (signal) => {
               const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
               try {
-                return rpcMethods["transfer.abort"].result.parse(await connection.call(
-                  "transfer.abort",
-                  {
-                    transferId: lifecycle.transferId,
-                    manifestDigest,
-                    client: lifecycle.requestedBy.client,
-                  },
-                  signal,
-                ))
+                return matchingTransferResponse(
+                  lifecycle.transferId,
+                  rpcMethods["transfer.abort"].result.parse(await connection.call(
+                    "transfer.abort",
+                    {
+                      transferId: lifecycle.transferId,
+                      manifestDigest,
+                      client: lifecycle.requestedBy.client,
+                    },
+                    signal,
+                  )),
+                )
               } finally {
                 connection.close()
               }
@@ -3479,24 +3499,31 @@ export class DomovoiDaemon {
               statusSignal,
             )
             try {
-              return rpcMethods["transfer.status"].result.parse(await connection.call(
-                "transfer.status",
-                {
-                  transferId: lifecycle.transferId,
-                  manifestDigest,
-                  client: actor.client,
-                },
-                statusSignal,
-              ))
+              return matchingTransferResponse(
+                lifecycle.transferId,
+                rpcMethods["transfer.status"].result.parse(await connection.call(
+                  "transfer.status",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: actor.client,
+                  },
+                  statusSignal,
+                )),
+              )
             } finally {
               connection.close()
             }
           }, Math.min(this.#sessionTransferTimeoutMs, this.#agentTimeoutMs),
           "Target ownership confirmation timed out")
-        } catch {
+        } catch (error) {
           // A request cancellation or daemon shutdown is not evidence about
           // the target and must never authorize another owner.
           signal?.throwIfAborted()
+          if (error instanceof TransferResponseIdentityError) {
+            this.#error(socket, request.id, invalidParams, error.message)
+            return
+          }
         }
         if (remote?.state === "committed") {
           await this.#completeVersionedSourceTransfer(
