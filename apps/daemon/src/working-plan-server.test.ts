@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   demoWorkspace,
+  protocolVersion,
   type RpcMethod,
   type RpcResult,
 } from "@getdomovoi/protocol"
@@ -88,7 +89,7 @@ async function startedDaemon(
     client: "desktop",
     clientId: "desktop-plan-test",
     clientVersion: "0.0.1",
-    protocolVersion: "0.1.0",
+    protocolVersion,
   })
   return {
     daemon,

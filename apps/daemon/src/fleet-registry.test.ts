@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
   maximumFleetMachines,
   offlineHeartbeatMs,
+  protocolVersion,
   staleHeartbeatMs,
   type MachineCapability,
 } from "@getdomovoi/protocol"
@@ -19,7 +20,7 @@ const localMachine = {
   version: "0.0.1",
   connection: "local" as const,
   capabilities: ["sessions", "terminals"] as const,
-  protocolVersion: "0.1.0",
+  protocolVersion,
   transports: [
     { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const },
   ],

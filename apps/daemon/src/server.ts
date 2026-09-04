@@ -2457,6 +2457,7 @@ export class DomovoiDaemon {
         params?: {
           annotationId?: unknown
           approvalId?: unknown
+          manifest?: { transferId?: unknown }
           sessionId?: unknown
           terminalId?: unknown
           transferId?: unknown
@@ -2471,6 +2472,12 @@ export class DomovoiDaemon {
         sessionResourceMethods.has(request.method)
         && typeof request.params?.sessionId === "string"
       ) return `session:${request.params.sessionId}`
+      if (request.method.startsWith("transfer.")) {
+        const transferId = request.params?.transferId
+          ?? request.params?.manifest?.transferId
+          ?? request.params?.sessionId
+        if (typeof transferId === "string") return `transfer:${transferId}`
+      }
       if (
         (request.method === "annotation.reply" || request.method === "annotation.setStatus")
         && typeof request.params?.annotationId === "string"
