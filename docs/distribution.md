@@ -73,7 +73,7 @@ recorded bump applies to every workspace package. `pnpm release:status` reports 
 packages still lack metadata; `pnpm release:version` consumes the accumulated changesets, writes
 changelogs, and rewrites the manifests.
 
-The first public alpha is `0.1.0-alpha.1`. Until the release workflow is enabled,
+The first public alpha is `0.1.0-alpha.0`, because Changesets pre-release mode numbers from zero and the workflow does not set versions by hand. Until the release workflow is enabled,
 `pnpm release:version` is run only deliberately, and no package is published from this repository.
 
 ## Release workflow
