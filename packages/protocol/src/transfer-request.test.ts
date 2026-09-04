@@ -4,6 +4,10 @@ import { sourceRefusalSchema } from "./transfer.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
 import { transferStreamRefusalSchema } from "./transfer-stream.js"
 import {
+  sessionTransferContractRefusalSchema,
+  sessionTransferPreviewSchema,
+} from "./transfer-contract.js"
+import {
   sessionTransferParamsSchema,
   sessionTransferPreviewParamsSchema,
   sessionTransferRefusalMessage,
@@ -79,12 +83,26 @@ describe("session transfer request", () => {
   })
 
   it("reports an incomplete target recovery without claiming success", () => {
+    const transferId = `transfer-${"d".repeat(32)}`
+    for (const incomplete of [
+      { state: "unknown", recoveryAction: "check-status" },
+      { state: "receiving", recoveryAction: "resume" },
+      { state: "prepared", recoveryAction: "resume" },
+      { state: "recovering", stage: "persistence", recoveryAction: "none" },
+      { state: "failed", reason: "persistence-failed", recoveryAction: "retry" },
+    ] as const) {
+      expect(sessionTransferResultSchema.safeParse({
+        outcome: "incomplete",
+        transferId,
+        ...incomplete,
+      }).success).toBe(true)
+    }
     expect(sessionTransferResultSchema.safeParse({
       outcome: "incomplete",
-      transferId: `transfer-${"d".repeat(32)}`,
-      state: "recovering",
-      stage: "persistence",
-    }).success).toBe(true)
+      transferId,
+      state: "unknown",
+      recoveryAction: "resume",
+    }).success).toBe(false)
   })
 })
 
@@ -114,6 +132,27 @@ describe("session transfer refusal messages", () => {
     ]
     for (const reason of reasons) {
       expect(sessionTransferRefusalMessage(reason).length).toBeGreaterThan(0)
+    }
+  })
+
+  it("keeps preview refusal keys disjoint and accepts every source of refusal", () => {
+    const reasonSets = [
+      sessionTransferContractRefusalSchema.options,
+      sourceRefusalSchema.options,
+      transferRefusalSchema.options,
+    ]
+    const reasons = reasonSets.flat()
+    expect(new Set(reasons).size).toBe(reasons.length)
+    for (const reason of reasons) {
+      expect(sessionTransferPreviewSchema.safeParse({
+        allowed: false,
+        contractVersion: 1,
+        sessionId: "session-1",
+        sourceMachineId: `machine-${"a".repeat(32)}`,
+        targetMachineId: `machine-${"b".repeat(32)}`,
+        coverage: { included: [], excluded: [], warnings: [] },
+        reason,
+      }).success).toBe(true)
     }
   })
 })

@@ -129,14 +129,34 @@ export const sessionTransferResultSchema = z.union([
   z.object({
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
+    state: z.literal("unknown"),
+    recoveryAction: z.literal("check-status"),
+  }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
+    state: z.literal("receiving"),
+    recoveryAction: z.literal("resume"),
+  }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
+    state: z.literal("prepared"),
+    recoveryAction: z.literal("resume"),
+  }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
     state: z.literal("recovering"),
     stage: transferRecoveryStageSchema,
+    recoveryAction: z.literal("none"),
   }).strict(),
   z.object({
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
     state: z.literal("failed"),
     reason: transferFailureReasonSchema,
+    recoveryAction: z.literal("retry"),
   }).strict(),
 ])
 

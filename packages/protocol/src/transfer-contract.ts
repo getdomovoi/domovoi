@@ -11,6 +11,8 @@ import {
   workingPlanSchema,
 } from "./schema.js"
 import { commitShaSchema, machineIdSchema, sha256DigestSchema } from "./identifiers.js"
+import { sourceRefusalSchema } from "./transfer.js"
+import { transferRefusalSchema } from "./transfer-preflight.js"
 
 export const sessionTransferContractVersion = 1 as const
 export const sessionTransferContractVersionSchema = z.literal(sessionTransferContractVersion)
@@ -286,6 +288,12 @@ export const sessionTransferContractRefusalSchema = z.enum([
 
 export type SessionTransferContractRefusal = z.infer<typeof sessionTransferContractRefusalSchema>
 
+export const sessionTransferPreviewRefusalSchema = z.union([
+  sessionTransferContractRefusalSchema,
+  sourceRefusalSchema,
+  transferRefusalSchema,
+])
+
 export const sessionTransferContractRefusalMessage: Record<SessionTransferContractRefusal, string> = {
   "session-approval-pending": "Resolve the open approval before moving this session",
   "session-transfer-in-progress": "This session is already moving to another machine",
@@ -324,7 +332,7 @@ export const sessionTransferPreviewSchema = z.discriminatedUnion("allowed", [
   z.object({
     ...previewCommon,
     allowed: z.literal(false),
-    reason: sessionTransferContractRefusalSchema,
+    reason: sessionTransferPreviewRefusalSchema,
   }).strict(),
 ])
 
@@ -337,4 +345,5 @@ export type SessionTransferIncludedKind = z.infer<typeof sessionTransferIncluded
 export type SessionTransferExcludedKind = z.infer<typeof sessionTransferExcludedKindSchema>
 export type SessionTransferWarningKind = z.infer<typeof sessionTransferWarningKindSchema>
 export type SessionTransferCoverage = z.infer<typeof sessionTransferCoverageSchema>
+export type SessionTransferPreviewRefusal = z.infer<typeof sessionTransferPreviewRefusalSchema>
 export type SessionTransferPreview = z.infer<typeof sessionTransferPreviewSchema>
