@@ -1396,6 +1396,7 @@ export class DomovoiDaemon {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
+        && this.#authenticatedActors.get(client)?.kind === "client"
         && this.#deviceCredentialActive(client)
       ) {
         this.#rpcOutbound.notify(
@@ -5877,9 +5878,13 @@ export class DomovoiDaemon {
         ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
         : workspaceSnapshotForClient(this.#snapshot)
       const helloConnectionId = this.#connectionIds.get(socket)
+      const actor = this.#authenticatedActors.get(socket)
+      const visibleSnapshot = method === "system.hello" && actor?.kind === "machine"
+        ? workspaceSnapshotForClient(createEmptyWorkspace(this.#snapshot.machine))
+        : clientSnapshot
       const result = method === "system.hello"
         ? {
-            ...clientSnapshot,
+            ...visibleSnapshot,
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
         : clientSnapshot

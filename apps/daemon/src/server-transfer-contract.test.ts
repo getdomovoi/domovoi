@@ -222,6 +222,81 @@ describe("transactional session transfer RPC", () => {
     socket.close()
   })
 
+  it("does not disclose workspace state or client broadcasts to a machine connection", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.machine.id = targetMachineId
+    snapshot.project!.machineId = targetMachineId
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      authToken: "correct-horse-battery-staple",
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const address = daemon.address!
+    const machineSocket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      machineSocket.once("open", resolve)
+      machineSocket.once("error", reject)
+    })
+    const hello = await rpc(machineSocket)("system.hello", {
+      client: "machine",
+      machineId: sourceMachineId,
+      clientVersion: "0.0.1",
+      protocolVersion: "0.1.0",
+    })
+    expect(hello.result).toMatchObject({
+      project: null,
+      activeSessionId: null,
+      sessions: [],
+      thread: [],
+      artifacts: [],
+      annotations: [],
+      workingPlans: [],
+      approvals: [],
+      approvalRules: [],
+      skillEnablements: [],
+    })
+
+    const notifications: string[] = []
+    machineSocket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { id?: unknown; method?: unknown }
+      if (message.id === undefined && typeof message.method === "string") {
+        notifications.push(message.method)
+      }
+    })
+    const unidentifiedSocket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      unidentifiedSocket.once("open", resolve)
+      unidentifiedSocket.once("error", reject)
+    })
+    const unidentifiedNotifications: string[] = []
+    unidentifiedSocket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { id?: unknown; method?: unknown }
+      if (message.id === undefined && typeof message.method === "string") {
+        unidentifiedNotifications.push(message.method)
+      }
+    })
+    const clientSocket = await openClient(daemon)
+    const annotation = snapshot.annotations[0]!
+    await rpc(clientSocket)("annotation.setStatus", {
+      annotationId: annotation.id,
+      status: annotation.status === "open" ? "resolved" : "open",
+      client: "desktop",
+    })
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+    expect(notifications).toEqual([])
+    expect(unidentifiedNotifications).toEqual([])
+    clientSocket.close()
+    unidentifiedSocket.close()
+    machineSocket.close()
+  })
+
   it("requires a matching authenticated client to preview or move a source", async () => {
     const { source } = await transferFixture()
     const store = new SqliteWorkspaceStore(":memory:", source)
