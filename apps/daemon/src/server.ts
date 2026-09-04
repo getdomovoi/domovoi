@@ -50,6 +50,7 @@ import {
   type SessionTransferCoverage,
   type SessionTransferPreview,
   type SessionTransferResult,
+  type TransferStatusResult,
   type SystemEmergencyStopResult,
   type ClientKind,
   type Runtime,
@@ -1039,6 +1040,7 @@ export class DomovoiDaemon {
       this.#transferTransactions.pruneExpired(),
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
+    await this.#recoverSessionTransfers()
     await this.#recoverSessionArchives()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
@@ -1595,6 +1597,7 @@ export class DomovoiDaemon {
     targetMachineId: string
     method: "git-bundle" | "remote-ref"
     client: ClientKind
+    clientId?: string
     checkpointCommit: string
     outcome: "succeeded" | "failed" | "refused"
     reason?: TransferReceipt["reason"]
@@ -1612,12 +1615,124 @@ export class DomovoiDaemon {
         recoveryCheckpointRetained: true,
         outcome: input.outcome,
         ...(input.reason ? { reason: input.reason } : {}),
-        decidedBy: { client: input.client },
+        decidedBy: {
+          client: input.client,
+          ...(input.clientId ? { clientId: input.clientId } : {}),
+        },
         startedAt: input.startedAt,
         completedAt: input.completedAt,
       })
     } catch (error) {
       this.#reportError("Domovoi could not record a transfer receipt", error)
+    }
+  }
+
+  async #completeVersionedSourceTransfer(
+    sessionId: string,
+    committed: Extract<TransferStatusResult, { state: "committed" }>,
+    completedAt: string,
+  ): Promise<void> {
+    const source = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    if (
+      source?.state !== "transferring"
+      || source.transfer?.phase !== "transferring"
+    ) {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+    const lifecycle = source.transfer
+    const transferPackage = lifecycle.package
+    if (transferPackage.state !== "staged") {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+    const manifestDigest = transferPackage.manifestDigest
+    const providerThread = source.providerThreadId
+    const provider = source.runtime.provider
+    const completed = completeSourceSessionTransfer(this.#snapshot, committed, completedAt)
+    completed.thread.push({
+      id: `system-transfer-sent-${randomUUID()}`,
+      sessionId: source.id,
+      kind: "system",
+      body: `Transferred to machine ${lifecycle.targetMachineId}.`,
+      detail: `Ownership generation ${committed.ownershipGeneration} moved at checkpoint ${committed.checkpointCommit}. This recovery worktree is read-only.`,
+      createdAt: completedAt,
+    })
+    await this.#persistTransferSnapshot(workspaceSnapshotSchema.parse(completed))
+    await this.#outgoingTransferTransactions.remove(
+      lifecycle.transferId,
+      manifestDigest,
+    ).catch((error) => this.#reportError(
+      "Domovoi could not remove an outgoing transfer package",
+      error,
+    ))
+    this.#recordVersionedTransferReceipt({
+      sessionId: source.id,
+      targetMachineId: lifecycle.targetMachineId,
+      method: lifecycle.method,
+      client: lifecycle.requestedBy.client,
+      ...(lifecycle.requestedBy.clientId
+        ? { clientId: lifecycle.requestedBy.clientId }
+        : {}),
+      checkpointCommit: committed.checkpointCommit,
+      outcome: "succeeded",
+      startedAt: lifecycle.startedAt,
+      completedAt,
+    })
+    if (providerThread) {
+      this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      void this.#agents.require(provider).stopThread(providerThread).catch((error) => {
+        this.#reportError("Domovoi could not stop a transferred provider thread", error)
+      })
+    }
+  }
+
+  async #recoverSessionTransfers(): Promise<void> {
+    const frozenSessions = this.#snapshot.sessions.filter(
+      (session) => session.state === "transferring" && session.transfer?.phase === "transferring",
+    )
+    for (const frozen of frozenSessions) {
+      const lifecycle = frozen.transfer
+      if (lifecycle?.phase !== "transferring") continue
+      try {
+        if (lifecycle.package.state === "preparing") {
+          // Target contact is forbidden until the staged digest is durable, so
+          // a crash in preparing cannot have transferred ownership.
+          await this.#persistTransferSnapshot(thawSourceSessionTransfer(
+            this.#snapshot,
+            lifecycle.transferId,
+            new Date().toISOString(),
+          ))
+          continue
+        }
+        const manifestDigest = lifecycle.package.manifestDigest
+        const remote = await this.#withAbortTimeout(async (signal) => {
+          const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+          try {
+            return rpcMethods["transfer.status"].result.parse(await connection.call(
+              "transfer.status",
+              {
+                transferId: lifecycle.transferId,
+                manifestDigest,
+                client: lifecycle.requestedBy.client,
+              },
+              signal,
+            ))
+          } finally {
+            connection.close()
+          }
+        }, this.#sessionTransferTimeoutMs, "Transfer status check timed out")
+        if (remote.state === "committed") {
+          await this.#completeVersionedSourceTransfer(
+            frozen.id,
+            remote,
+            new Date().toISOString(),
+          )
+        }
+      } catch (error) {
+        // Unreachable is not evidence that ownership stayed here. The source
+        // remains frozen until target status becomes authoritative or a person
+        // explicitly accepts the double-owner risk.
+        this.#reportError(`Domovoi could not reconcile transfer ${lifecycle.transferId}`, error)
+      }
     }
   }
 
@@ -1635,8 +1750,6 @@ export class DomovoiDaemon {
     const sourceSession = this.#snapshot.sessions.find(
       (candidate) => candidate.id === params.sessionId,
     )!
-    const providerThread = sourceSession.providerThreadId
-    const provider = sourceSession.runtime.provider
     const frozen = freezeSourceSessionTransfer(
       this.#snapshot,
       prepared.intent,
@@ -1738,34 +1851,7 @@ export class DomovoiDaemon {
 
       if (remote.state === "committed") {
         const completedAt = new Date().toISOString()
-        const completed = completeSourceSessionTransfer(this.#snapshot, remote, completedAt)
-        completed.thread.push({
-          id: `system-transfer-sent-${randomUUID()}`,
-          sessionId: sourceSession.id,
-          kind: "system",
-          body: `Transferred to machine ${prepared.target.id}.`,
-          detail: `Ownership generation ${remote.ownershipGeneration} moved at checkpoint ${remote.checkpointCommit}. This recovery worktree is read-only.`,
-          createdAt: completedAt,
-        })
-        await this.#persistTransferSnapshot(workspaceSnapshotSchema.parse(completed))
-        await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
-          .catch((error) => this.#reportError("Domovoi could not remove an outgoing transfer package", error))
-        this.#recordVersionedTransferReceipt({
-          sessionId: sourceSession.id,
-          targetMachineId: prepared.target.id,
-          method: params.method,
-          client: params.client,
-          checkpointCommit: remote.checkpointCommit,
-          outcome: "succeeded",
-          startedAt,
-          completedAt,
-        })
-        if (providerThread) {
-          this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
-          void this.#agents.require(provider).stopThread(providerThread).catch((error) => {
-            this.#reportError("Domovoi could not stop a transferred provider thread", error)
-          })
-        }
+        await this.#completeVersionedSourceTransfer(sourceSession.id, remote, completedAt)
         return rpcMethods["session.transfer"].result.parse({
           outcome: "succeeded",
           workspacePath: remote.workspacePath,

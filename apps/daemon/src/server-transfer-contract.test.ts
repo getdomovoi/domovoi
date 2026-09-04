@@ -16,6 +16,11 @@ import {
   createSessionTransferPackage,
   prepareSessionTransferIntent,
 } from "./session-transfer-package.js"
+import {
+  freezeSourceSessionTransfer,
+  stageOutgoingSessionTransferPackage,
+  stageSourceSessionCheckpoint,
+} from "./session-transfer-source.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { WorkspaceService } from "./workspace.js"
@@ -53,7 +58,7 @@ function targetSnapshot(): WorkspaceSnapshot {
   return snapshot
 }
 
-async function packagedTransfer() {
+async function transferFixture() {
   const source = structuredClone(demoWorkspace)
   source.machine.id = sourceMachineId
   source.project!.machineId = sourceMachineId
@@ -91,12 +96,17 @@ async function packagedTransfer() {
     readIgnoredArtifactSource: async () => undefined,
     readAnnotationCrop: async () => { throw new Error("no crops") },
   })
-  return createSessionTransferPackage(intent, {
+  const packaged = createSessionTransferPackage(intent, {
     transferId: `transfer-${"f".repeat(32)}`,
     checkpointCommit,
     repository: { method: "git-bundle", bytes: Buffer.from("repository") },
     createdAt: "2026-09-03T22:00:00.000Z",
   })
+  return { source, intent, packaged }
+}
+
+async function packagedTransfer() {
+  return (await transferFixture()).packaged
 }
 
 function rpc(socket: WebSocket) {
@@ -175,6 +185,62 @@ describe("transactional session transfer RPC", () => {
 
     expect(pruneIncoming).toHaveBeenCalledOnce()
     expect(pruneOutgoing).toHaveBeenCalledOnce()
+  })
+
+  it("finishes a committed staged transfer after the source restarts", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-"))
+    scratchDirectories.push(scratch)
+    const { source, intent, packaged } = await transferFixture()
+    const staged = stageSourceSessionCheckpoint(
+      freezeSourceSessionTransfer(
+        source,
+        intent,
+        packaged.manifest.transferId,
+        "2026-09-03T22:00:00.000Z",
+        { client: "desktop", clientId: "studio-mac" },
+      ),
+      packaged.manifest,
+    )
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    const remoteCall = vi.fn(async (method: string) => {
+      if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
+      return {
+        state: "committed",
+        transferId: packaged.manifest.transferId,
+        workspacePath: `/target/${packaged.manifest.sessionId}`,
+        checkpointCommit,
+        ownershipGeneration: 2,
+      }
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    expect(remoteCall).toHaveBeenCalledOnce()
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferred",
+      ownershipGeneration: 2,
+      runtime: { auto: false },
+      transfer: {
+        phase: "transferred",
+        transferId: packaged.manifest.transferId,
+        manifestDigest: packaged.manifestDigest,
+      },
+    })
+    await expect(outgoing.status(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )).resolves.toMatchObject({ state: "unknown" })
   })
 
   it("accepts, restores, and idempotently commits a transfer from its source machine", async () => {
