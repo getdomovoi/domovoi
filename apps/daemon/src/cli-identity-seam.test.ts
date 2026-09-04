@@ -56,6 +56,10 @@ async function runCli(daemon: DomovoiDaemon, args: readonly string[]) {
     const child = spawn(process.execPath, [cliPath, ...args], {
       env: {
         ...process.env,
+        // Node 22 reports node:sqlite as experimental on CI. Keep stderr as a
+        // strict CLI failure channel without coupling this seam to that runtime
+        // warning, which is unrelated to the bytes sent over the socket.
+        NODE_NO_WARNINGS: "1",
         DOMOVOI_HOST: address.host,
         DOMOVOI_PORT: String(address.port),
         DOMOVOI_AUTH_TOKEN: daemon.authToken,
