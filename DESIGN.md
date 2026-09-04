@@ -99,6 +99,13 @@ signed `.dc.html` surfaces decide anything the design system does not state, inc
 sidebar groups, and approval labels. The tracked handoff README is the oldest of the three and
 loses to both where they disagree.
 
+The design system's own contract now lives in the repository at
+`design/design_system_domovoi/readme.md`, alongside its tokens. Read that before asking the
+Claude Design project: content rules, the colour and type contract, the fixed chrome values,
+motion, interaction states, and the component inventory are all there. The project remains the
+source of truth for anything the vendored contract does not spell out, and for the canonical
+interactive surfaces.
+
 **Shell geometry follows the design system, not the tracked handoff README.**
 
 | Region | Design system | Tracked handoff README |

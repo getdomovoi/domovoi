@@ -47,29 +47,27 @@ it("offers only skills the project reviewed and enabled", () => {
 })
 
 it("sends nothing at all when the person has not chosen", () => {
-  expect(turnSkillSelectionFor(undefined, [alpha])).toBeUndefined()
+  expect(turnSkillSelectionFor(undefined, [alpha])).toEqual({ selection: undefined, missing: [] })
 })
 
 it("pins each chosen skill to the review it was chosen against", () => {
   expect(turnSkillSelectionFor(new Set([alpha.id]), [alpha, beta])).toEqual({
-    mode: "turn-explicit",
-    skills: [{ skillId: alpha.id, review: { contentDigest: alpha.contentDigest, manifest } }],
+    selection: {
+      mode: "turn-explicit",
+      skills: [{ skillId: alpha.id, review: { contentDigest: alpha.contentDigest, manifest } }],
+    },
+    missing: [],
   })
 })
 
 it("sends an explicit empty selection when every skill was unchecked", () => {
   expect(turnSkillSelectionFor(new Set<string>(), [alpha])).toEqual({
-    mode: "turn-explicit",
-    skills: [],
+    selection: { mode: "turn-explicit", skills: [] },
+    missing: [],
   })
 })
 
-it("drops a chosen skill the catalog no longer offers rather than inventing a review", () => {
-  expect(turnSkillSelectionFor(new Set([alpha.id, "skill-cccccccccccc"]), [alpha])).toEqual({
-    mode: "turn-explicit",
-    skills: [{ skillId: alpha.id, review: { contentDigest: alpha.contentDigest, manifest } }],
-  })
-})
+
 
 it("reads a refusal out of a failed send and ignores anything else", () => {
   const refused = Object.assign(new Error("Selected skill changed"), {
@@ -87,4 +85,21 @@ it("reads a refusal out of a failed send and ignores anything else", () => {
   })
   expect(turnSkillRefusalFrom(new Error("Daemon connection is not open"))).toBeUndefined()
   expect(turnSkillRefusalFrom(undefined)).toBeUndefined()
+})
+
+it("reports a chosen skill the catalog lost rather than sending a smaller selection", () => {
+  expect(turnSkillSelectionFor(new Set([alpha.id, "skill-cccccccccccc"]), [alpha])).toEqual({
+    selection: {
+      mode: "turn-explicit",
+      skills: [{ skillId: alpha.id, review: { contentDigest: alpha.contentDigest, manifest } }],
+    },
+    missing: ["skill-cccccccccccc"],
+  })
+})
+
+it("reports every chosen skill as missing rather than sending an explicit none", () => {
+  expect(turnSkillSelectionFor(new Set([alpha.id]), [])).toEqual({
+    selection: { mode: "turn-explicit", skills: [] },
+    missing: [alpha.id],
+  })
 })

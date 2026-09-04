@@ -49,7 +49,7 @@ describe("openClaimConnection", () => {
     socket.open()
     const connection = await connecting
 
-    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad" })
+    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad", machineId: `machine-${"b".repeat(32)}` })
     const sent = JSON.parse(socket.sent[0]!) as { id: number; method: string }
     socket.receive({ jsonrpc: "2.0", id: sent.id + 1, result: { wrong: true } })
     socket.receive({ jsonrpc: "2.0", id: sent.id, result: { claimed: true } })
@@ -63,7 +63,7 @@ describe("openClaimConnection", () => {
     FakeWebSocket.instances[0]!.open()
     const connection = await connecting
 
-    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad" })
+    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad", machineId: `machine-${"b".repeat(32)}` })
     const sent = JSON.parse(FakeWebSocket.instances[0]!.sent[0]!) as { id: number }
     FakeWebSocket.instances[0]!.receive({
       jsonrpc: "2.0",
@@ -79,7 +79,7 @@ describe("openClaimConnection", () => {
     FakeWebSocket.instances[0]!.open()
     const connection = await connecting
 
-    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad" })
+    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad", machineId: `machine-${"b".repeat(32)}` })
     FakeWebSocket.instances[0]!.close()
 
     await expect(claiming).rejects.toThrow("The machine closed the connection")

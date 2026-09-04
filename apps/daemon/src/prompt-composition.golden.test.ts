@@ -13,6 +13,7 @@ import { afterEach, expect, it } from "vitest"
 
 import {
   demoWorkspace,
+  protocolVersion,
   type RpcMethod,
   type RpcResult,
   type SkillEnablementReview,
@@ -207,7 +208,7 @@ async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
     client: "desktop",
     clientId: "desktop-golden",
     clientVersion: "0.0.1",
-    protocolVersion: "0.1.0",
+    protocolVersion,
   })
   const sent = await rpc("session.send", {
     sessionId: snapshot.sessions[0]!.id,

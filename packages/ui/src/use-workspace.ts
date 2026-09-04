@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
+import { rpcMethods } from "@getdomovoi/protocol"
 import { openClaimConnection } from "./claim-socket"
-import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
+import { machineHelloParams, pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { applyWorkspaceDelta } from "./workspace-delta"
 
 type WorkspaceSnapshotState = {
@@ -454,6 +455,15 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
 
   // Moving a session lands on the target machine, so the answer is returned to
   // the caller rather than folded into this machine's snapshot.
+  const previewTransfer = useCallback(async (
+    params: Omit<SessionTransferPreviewParams, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<SessionTransferPreview> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.previewSessionTransfer(params, options)
+  }, [])
+
   const transferSession = useCallback(async (
     params: Omit<SessionTransferParams, "client">,
     options?: DomovoiRequestOptions,
@@ -461,6 +471,19 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.transferSession(params, options)
+  }, [])
+
+  const releaseSession = useCallback(async (
+    params: {
+      sessionId: string
+      transferId: string
+      confirmation: "target-does-not-have-session" | "keep-target-session"
+    },
+    options?: DomovoiRequestOptions,
+  ): Promise<unknown> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.releaseSession(params, options)
   }, [])
 
   const listDevices = useCallback(async (
@@ -494,21 +517,32 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   const pairMachine = useCallback(async (request: PairMachineRequest): Promise<PairedMachine> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
+    const localMachineId = snapshot?.machine.id
+    if (!localMachineId) throw new Error("This machine has no identity yet")
     return completePairing({
       request,
+      // The credential is issued to this daemon, so the target binds it to this
+      // machine rather than to whoever happens to present it later.
+      machineId: localMachineId,
       open: openClaimConnection,
       identify: async ({ endpoint, credential }) => {
-        const paired = new DomovoiClient(endpoint, kind, { authToken: credential })
+        // The credential that came back is bound to a machine, and the daemon
+        // refuses a machine credential presented as a person's client, so this
+        // greets as a machine rather than as this desktop or browser.
+        const connection = await openClaimConnection(endpoint)
         try {
-          const snapshot = await paired.connect()
-          return { id: snapshot.machine.id, name: snapshot.machine.name }
+          const greeting = rpcMethods["system.hello"].result.parse(await connection.call(
+            "system.hello",
+            machineHelloParams(credential),
+          ))
+          return { id: greeting.machine.id, name: greeting.machine.name }
         } finally {
-          paired.disconnect()
+          connection.close()
         }
       },
       saveCredential: (saved) => client.saveMachineCredential(saved).then(() => {}),
     })
-  }, [kind])
+  }, [snapshot?.machine.id])
 
   const authorizeArtifact = useCallback(async (
     input: {
@@ -690,6 +724,8 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     revokeDevice,
     rotateDevice,
     transferSession,
+    previewTransfer,
+    releaseSession,
     subscribeTerminal,
     terminalClientId: clientIdRef.current,
     writeTerminal,

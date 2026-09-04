@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http"
 import { createServer as createSecureServer } from "node:https"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
 import { arch, homedir, hostname, platform, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
@@ -9,6 +9,7 @@ import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   type MachineCapability,
+  type FleetMachine,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
@@ -28,6 +29,7 @@ import {
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
   protocolVersion,
+  sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
   rpcMethods,
@@ -46,6 +48,12 @@ import {
   type SessionHistoryPage,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
+  type SessionTransferReconciliationReason,
+  type SessionTransferCoverage,
+  type SessionTransferPreview,
+  type SessionTransferResult,
+  type SourceRefusal,
+  type TransferStatusResult,
   type SystemEmergencyStopResult,
   type ClientKind,
   type Runtime,
@@ -58,10 +66,41 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
-import { TransferAssembler } from "./transfer-assembler.js"
 import { createMachineDialer } from "./machine-dial.js"
-import { openMachineSocket } from "./machine-socket.js"
-import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-source.js"
+import { MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
+import { FileTransferTransactions } from "./transfer-transactions.js"
+import type { DetectedTransferConflict } from "./transfer-conflicts.js"
+import {
+  collectSessionTransferState,
+  createSessionTransferPackage,
+  finalizeSessionTransferIntent,
+  type PreparedSessionTransferIntent,
+} from "./session-transfer-package.js"
+import {
+  sessionTransferCheckpointCommits,
+  SessionTransferStateError,
+} from "./session-transfer-state.js"
+import {
+  clearSourceTransferReconciliation,
+  clearConfirmedSourceRecovery,
+  completeSourceSessionTransfer,
+  freezeSourceSessionTransfer,
+  markSourceTransferReconciliationFailure,
+  markSourceOwnershipConflict,
+  markTargetSessionOwnershipConflict,
+  recoverUnconfirmedSourceTransfer,
+  recordPreparingSourceCheckpoint,
+  releaseSourceOwnershipConflict,
+  sendPreparedSessionTransfer,
+  stageOutgoingSessionTransferPackage,
+  stageSourceSessionCheckpoint,
+  thawSourceSessionTransfer,
+} from "./session-transfer-source.js"
+import {
+  commitPreparedSessionTransfer,
+  preflightSessionTransferTarget,
+  type TargetTransferCapabilities,
+} from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
 } from "./codex.js"
@@ -105,6 +144,7 @@ import type { ProviderProbe } from "./providers.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
+import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
   PublicRpcError,
@@ -117,7 +157,10 @@ import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
-import { DeviceLimitReachedError } from "./device-registry.js"
+import {
+  DeviceLimitReachedError,
+  type VerifiedDeviceCredential,
+} from "./device-registry.js"
 import type { MachineCredentials } from "./machine-credentials.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
@@ -162,12 +205,6 @@ import {
 const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
-// A machine accepts a bounded number of arriving transfers, so a source cannot
-// fill this machine with half-delivered worktrees.
-export const maximumIncomingTransfers = 4
-// An arrival that goes quiet for this long has been abandoned, and its slot
-// belongs to the next machine that needs it.
-const incomingTransferIdleMs = 60_000
 // A transfer that has stopped making progress is abandoned rather than left
 // holding the request that asked for it.
 const defaultSessionTransferTimeoutMs = 600_000
@@ -211,6 +248,8 @@ const sessionResourceMethods = new Set([
   "session.restartProviderThread",
   "session.setRuntime",
   "session.transfer",
+  "session.transferRecoverSource",
+  "session.transferResolveConflict",
   "transfer.fromRef",
 ])
 const unauditedRpcMethods = new Set<RpcMethod>([
@@ -223,13 +262,41 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "session.evidence",
   "audit.query",
 ])
+const machineRpcMethods = new Set<RpcMethod>([
+  "system.hello",
+  "transfer.preflight",
+  "transfer.prepare",
+  "transfer.member",
+  "transfer.commit",
+  "transfer.status",
+  "transfer.abort",
+])
 
 class RuntimeValidationError extends Error {}
+class TransferResponseIdentityError extends Error {}
 class OperationTimeoutError extends PublicRpcError {
   constructor(message: string) {
     super(internalError, message)
     this.name = "OperationTimeoutError"
   }
+}
+
+function sourceTransferReconciliationReason(
+  error: unknown,
+): SessionTransferReconciliationReason {
+  if (error instanceof MachinePairingRequiredError) return "target-pairing-required"
+  if (error instanceof OperationTimeoutError) return "target-timeout"
+  return "target-unreachable"
+}
+
+function matchingTransferResponse<T extends { transferId: string }>(
+  transferId: string,
+  response: T,
+): T {
+  if (response.transferId !== transferId) {
+    throw new TransferResponseIdentityError("Target transfer identity changed")
+  }
+  return response
 }
 
 function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | undefined {
@@ -243,10 +310,28 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
   return `${providerName} does not support enforceable Build auto`
 }
 
-function sessionIsArchiveReadOnly(
+function sessionReadOnlyMessage(
+  session: WorkspaceSnapshot["sessions"][number] | undefined,
+): string | undefined {
+  if (session?.state === "archiving" || session?.state === "archived") {
+    return "Archived sessions are read-only"
+  }
+  if (session?.state === "transferring") {
+    return "Session ownership is moving, so this session is read-only"
+  }
+  if (session?.state === "transferred") {
+    return "This session belongs to another machine and is read-only here"
+  }
+  if (session?.state === "ownership-conflict") {
+    return "This session has conflicting owners and is read-only"
+  }
+  return undefined
+}
+
+function sessionIsReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
-  return session?.state === "archiving" || session?.state === "archived"
+  return sessionReadOnlyMessage(session) !== undefined
 }
 
 function webSocketPayloadByteLength(data: WebSocket.RawData): number {
@@ -604,6 +689,22 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
   "capture" | "storeUpload"
 >
 
+type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "close"> & Partial<
+  Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
+>
+
+type PreparedTransferPreview = {
+  preview: SessionTransferPreview
+  target?: FleetMachine
+  intent?: PreparedSessionTransferIntent
+}
+
+const emptyTransferCoverage: SessionTransferCoverage = {
+  included: [],
+  excluded: [],
+  warnings: [],
+}
+
 export function protectedAnnotationCropRefs(snapshot: WorkspaceSnapshot): string[] {
   const refs = new Set<string>()
   for (const annotation of snapshot.annotations) {
@@ -640,7 +741,7 @@ export type DaemonServerOptions = {
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
-  usageLedger?: Pick<UsageLedger, "record" | "session" | "close">
+  usageLedger?: DaemonUsageLedger
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
   errorSink?: DaemonErrorSink
@@ -652,7 +753,10 @@ export type DaemonServerOptions = {
   advertiseHost?: string
   machineCredentials?: MachineCredentials
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
+  transferTransactions?: FileTransferTransactions
+  outgoingTransferTransactions?: FileTransferTransactions
   sessionTransferTimeoutMs?: number
+  sessionTransferRetryMs?: number
   connectToMachine?: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -702,6 +806,7 @@ export class DomovoiDaemon {
   #store: WorkspaceStore
   #persistenceFailures = 0
   #persistenceUnavailable = false
+  #snapshotPersistenceTail: Promise<void> = Promise.resolve()
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -725,7 +830,10 @@ export class DomovoiDaemon {
   #terminalReapGraceMs: number
   #authToken: string
   #authenticatedClients = new WeakSet<WebSocket>()
-  #deviceCredentials = new WeakMap<WebSocket, string>()
+  #deviceCredentials = new WeakMap<WebSocket, {
+    token: string
+    verified: VerifiedDeviceCredential
+  }>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
   #connectionIds = new WeakMap<WebSocket, string>()
   #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
@@ -738,7 +846,7 @@ export class DomovoiDaemon {
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status">
-  #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
+  #usageLedger: DaemonUsageLedger
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
@@ -758,7 +866,12 @@ export class DomovoiDaemon {
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
+  #transferTransactions: FileTransferTransactions
+  #outgoingTransferTransactions: FileTransferTransactions
   #sessionTransferTimeoutMs: number
+  #sessionTransferRetryMs: number
+  #transferReconciliationTimer: ReturnType<typeof setTimeout> | undefined
+  #transferRecoveries = new Set<string>()
   #connectToMachine: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -766,14 +879,9 @@ export class DomovoiDaemon {
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
-  #incomingTransfers = new Map<string, {
-    sessionId: string
-    assembler: TransferAssembler
-    socket: WebSocket
-    idle: ReturnType<typeof setTimeout>
-  }>()
   #rpcOutbound: RpcOutboundBackpressure
   #sessionHistory = new SessionHistoryIndex()
+  #ownershipChecks = new Set<string>()
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -785,6 +893,10 @@ export class DomovoiDaemon {
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
+    this.#sessionTransferRetryMs = options.sessionTransferRetryMs ?? 30_000
+    if (!Number.isSafeInteger(this.#sessionTransferRetryMs) || this.#sessionTransferRetryMs <= 0) {
+      throw new RangeError("Transfer retry interval must be a positive integer")
+    }
     // With nothing supplied, this daemon reaches other machines itself: the
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
@@ -794,9 +906,9 @@ export class DomovoiDaemon {
         Date.now(),
       ).machines ?? [],
       credentials: this.#machineCredentials,
-      open: ({ endpoint, machineId, credential, signal }) => openMachineSocket({
+      open: ({ endpoint, expectedMachineId, credential, signal }) => openMachineSocket({
         endpoint,
-        machineId,
+        expectedMachineId,
         credential,
         ...(signal ? { signal } : {}),
       }),
@@ -823,6 +935,16 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    const transferRoot = statePath === ":memory:"
+      ? join(tmpdir(), `domovoi-transfer-transactions-${randomUUID()}`)
+      : join(dirname(statePath), "transfers")
+    this.#transferTransactions = options.transferTransactions ?? new FileTransferTransactions(
+      join(transferRoot, "incoming"),
+    )
+    this.#outgoingTransferTransactions = options.outgoingTransferTransactions
+      ?? new FileTransferTransactions(
+        join(transferRoot, "outgoing"),
+      )
     this.#annotationVisualContext = options.annotationVisualContext
       ?? new AnnotationVisualContextService({
         root: join(dirname(statePath), "annotation-crops"),
@@ -926,8 +1048,9 @@ export class DomovoiDaemon {
   #credentialAccepted(socket: WebSocket, token: string | undefined): boolean {
     if (secureTokenMatch(this.#authToken, token)) return true
     if (!token) return false
-    if (this.#store.devices?.verify(token) === undefined) return false
-    this.#deviceCredentials.set(socket, token)
+    const verified = this.#store.devices?.verify(token)
+    if (verified === undefined) return false
+    this.#deviceCredentials.set(socket, { token, verified })
     return true
   }
 
@@ -945,9 +1068,9 @@ export class DomovoiDaemon {
   // A paired device can be revoked or rotated while it holds an open socket, so
   // its credential is rechecked for every request rather than only at connect.
   #deviceCredentialActive(socket: WebSocket): boolean {
-    const token = this.#deviceCredentials.get(socket)
-    if (token === undefined) return true
-    return this.#store.devices?.isActive(token) === true
+    const credential = this.#deviceCredentials.get(socket)
+    if (credential === undefined) return true
+    return this.#store.devices?.isActive(credential.token) === true
   }
 
   issuePairingCode(): { code: string; expiresAt: string } {
@@ -963,6 +1086,10 @@ export class DomovoiDaemon {
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
 
+    await Promise.all([
+      this.#transferTransactions.pruneExpired(),
+      this.#outgoingTransferTransactions.pruneExpired(),
+    ])
     await this.#recoverSessionArchives()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
@@ -1081,6 +1208,10 @@ export class DomovoiDaemon {
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
 
+    // A dead target must not hold daemon startup hostage. Each frozen source
+    // remains read-only while its own resource queue reconciles in background.
+    this.#scheduleSessionTransferRecovery()
+    this.#scheduleRecoveredOwnershipChecks()
     if (this.#providerProbe) this.#queueProviderRefresh(true)
 
     return this.address!
@@ -1089,6 +1220,10 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    if (this.#transferReconciliationTimer) {
+      clearTimeout(this.#transferReconciliationTimer)
+      this.#transferReconciliationTimer = undefined
+    }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
     const stopping = this.#finishStop()
@@ -1286,6 +1421,7 @@ export class DomovoiDaemon {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
+        && this.#authenticatedActors.get(client)?.kind === "client"
         && this.#deviceCredentialActive(client)
       ) {
         this.#rpcOutbound.notify(
@@ -1349,51 +1485,1184 @@ export class DomovoiDaemon {
     })
   }
 
-  #recordTransferRefusal(
+  #refusedTransferPreview(
+    params: RpcParams<"session.transferPreview">,
+    reason: Extract<SessionTransferPreview, { allowed: false }>["reason"],
+    coverage: SessionTransferPreview["coverage"] = emptyTransferCoverage,
+  ): PreparedTransferPreview {
+    return {
+      preview: rpcMethods["session.transferPreview"].result.parse({
+        allowed: false,
+        contractVersion: 1,
+        sessionId: params.sessionId,
+        sourceMachineId: this.#snapshot.machine.id,
+        targetMachineId: params.targetMachineId,
+        coverage,
+        reason,
+      }),
+    }
+  }
+
+  #targetTransferCapabilities(): TargetTransferCapabilities {
+    return {
+      verifyLineage: this.#workspaceService.projectHasLineage !== undefined,
+      restoreGitBundle: this.#workspaceService.restoreSessionFromBundle !== undefined,
+      restoreGitRef: this.#workspaceService.restoreSessionFromRef !== undefined,
+      importArtifactSources: this.#workspaceService.writeTransferredArtifactSource !== undefined,
+      importUsage: this.#usageLedger.replaceTransferredSession !== undefined,
+      persistOwnership: this.#store.saveTransferredSnapshot !== undefined
+        && this.#store.transferOwnership !== undefined,
+    }
+  }
+
+  #sourceTransferCapabilityRefusal(
+    method: "git-bundle" | "remote-ref",
+  ): SourceRefusal | undefined {
+    if (method === "git-bundle") {
+      if (!this.#workspaceService.bundleSession) return "source-bundle-create-unavailable"
+      return undefined
+    }
+    return this.#workspaceService.pushSessionRef
+      ? undefined
+      : "source-ref-push-unavailable"
+  }
+
+  async #prepareTransferPreview(
+    params: RpcParams<"session.transferPreview">,
+    signal?: AbortSignal,
+  ): Promise<PreparedTransferPreview> {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+    if (!session) return this.#refusedTransferPreview(params, "session-state-invalid")
+    const sourceReady = sourcePreflight({ session })
+    if (!sourceReady.allowed) return this.#refusedTransferPreview(params, sourceReady.reason)
+    const sourceCapability = this.#sourceTransferCapabilityRefusal(params.method)
+    if (sourceCapability) return this.#refusedTransferPreview(params, sourceCapability)
+
+    const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
+    const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
+    if (!target) return this.#refusedTransferPreview(params, "target-unreachable")
+    const reachable = transferPreflight({
+      source: { ...target, id: this.#snapshot.machine.id },
+      target,
+    })
+    if (!reachable.allowed) return this.#refusedTransferPreview(params, reachable.reason)
+    if (
+      !this.#snapshot.project
+      || !session.workspacePath
+      || !this.#usageLedger.transferSession
+      || !this.#workspaceService.transferFingerprint
+      || !this.#workspaceService.readIgnoredArtifactSource
+    ) {
+      return this.#refusedTransferPreview(params, "session-resource-unavailable")
+    }
+
+    let collected: Awaited<ReturnType<typeof collectSessionTransferState>>
+    let projectHead: string
+    let fingerprint: { headCommit: string; digest: string }
+    try {
+      [collected, projectHead, fingerprint] = await Promise.all([
+        collectSessionTransferState({
+          snapshot: this.#snapshot,
+          sessionId: session.id,
+          usage: this.#usageLedger.transferSession(session.id),
+          readIgnoredArtifactSource: (_artifactId, path) => (
+            this.#workspaceService.readIgnoredArtifactSource!(session.workspacePath!, path, signal)
+          ),
+          readAnnotationCrop: (ref, mimeType) => this.#annotationVisualContext.read(ref, mimeType),
+        }),
+        this.#workspaceService.inspect(this.#snapshot.project.path, signal)
+          .then((project) => project.head),
+        this.#workspaceService.transferFingerprint(session.workspacePath, signal),
+      ])
+    } catch (error) {
+      signal?.throwIfAborted()
+      const reason = error instanceof SessionTransferStateError
+        ? error.reason
+        : "session-resource-unavailable"
+      return this.#refusedTransferPreview(params, reason)
+    }
+
+    let connection: {
+      call: (
+        method: string,
+        params: Record<string, unknown>,
+        signal?: AbortSignal,
+      ) => Promise<unknown>
+      close: () => void
+    }
+    try {
+      connection = await this.#connectToMachine(target.id, signal)
+    } catch (error) {
+      signal?.throwIfAborted()
+      return this.#refusedTransferPreview(
+        params,
+        error instanceof MachinePairingRequiredError
+          ? "target-pairing-required"
+          : "target-not-responding",
+        collected.coverage,
+      )
+    }
+    try {
+      const targetReady = rpcMethods["transfer.preflight"].result.parse(
+        await connection.call("transfer.preflight", {
+          contractVersion: sessionTransferContractVersion,
+          sessionId: session.id,
+          sourceMachineId: this.#snapshot.machine.id,
+          sourceProjectId: this.#snapshot.project.id,
+          lineageCommit: projectHead,
+          ownershipGeneration: session.ownershipGeneration ?? 0,
+          method: params.method,
+          coverage: collected.coverage,
+          client: params.client,
+        }, signal),
+      )
+      if (!targetReady.allowed) {
+        return this.#refusedTransferPreview(params, targetReady.reason, collected.coverage)
+      }
+      const intent = finalizeSessionTransferIntent({
+        snapshot: this.#snapshot,
+        sourceMachineId: this.#snapshot.machine.id,
+        targetMachineId: target.id,
+        sourceProjectId: this.#snapshot.project.id,
+        targetProjectId: targetReady.targetProjectId,
+        lineageCommit: targetReady.lineageCommit,
+        sourceHeadCommit: fingerprint.headCommit,
+        worktreeDigest: fingerprint.digest,
+        method: params.method,
+        ...(params.remote ? { remote: params.remote } : {}),
+        collected,
+      })
+      return { preview: intent.preview, target, intent }
+    } catch (error) {
+      signal?.throwIfAborted()
+      return this.#refusedTransferPreview(
+        params,
+        error instanceof MachinePairingRequiredError
+          ? "target-pairing-required"
+          : "target-not-responding",
+        collected.coverage,
+      )
+    } finally {
+      connection.close()
+    }
+  }
+
+  #serializeSnapshotPersistence<T>(operation: () => Promise<T>): Promise<T> {
+    const running = this.#snapshotPersistenceTail.then(operation, operation)
+    this.#snapshotPersistenceTail = running.then(() => undefined, () => undefined)
+    return running
+  }
+
+  async #persistTransferSnapshot(
+    candidate: WorkspaceSnapshot,
     sessionId: string,
-    targetMachineId: string,
-    client: ClientKind,
-    reason: TransferReceipt["reason"],
-  ): void {
-    const at = new Date().toISOString()
-    // A receipt is a record of what happened, not part of the answer: a daemon
-    // that cannot store one still has to tell the caller it refused.
+  ): Promise<void> {
+    await this.#serializeSnapshotPersistence(async () => {
+      // Different session resource queues may move concurrently. Resolve this
+      // session-owned write against the latest snapshot at the serialization
+      // point; assigning the remembered whole snapshot would erase whichever
+      // transfer persisted first.
+      const persisted = workspaceSnapshotSchema.parse(
+        mergeSessionSnapshotSlice(this.#snapshot, candidate, sessionId),
+      )
+      try {
+        if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+        else this.#store.save(persisted)
+      } catch (error) {
+        this.#persistenceFailed(error)
+        throw error
+      }
+      this.#persistenceSucceeded()
+      // An unrelated session can keep streaming while the disk write awaits.
+      // Merge once more instead of replacing those newer in-memory changes.
+      this.#snapshot = workspaceSnapshotSchema.parse(
+        mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
+      )
+      this.#sessionHistory.invalidate(sessionId)
+      this.#syncArtifactWatchers()
+      this.#broadcastSnapshot()
+    })
+  }
+
+  async #removeIncomingTransferPackage(
+    transferId: string,
+    manifestDigest: string,
+  ): Promise<void> {
+    try {
+      await this.#transferTransactions.remove(transferId, manifestDigest)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.#reportError("Domovoi could not remove an imported transfer package", error)
+      }
+    }
+  }
+
+  #recordVersionedTransferReceipt(input: {
+    sessionId: string
+    targetMachineId: string
+    method: "git-bundle" | "remote-ref"
+    client: ClientKind
+    clientId?: string
+    checkpointCommit: string
+    outcome: "succeeded" | "failed" | "refused" | "source-recovered"
+    reason?: TransferReceipt["reason"]
+    startedAt: string
+    completedAt: string
+  }): void {
     try {
       this.#store.transferReceipts?.record({
-        sessionId,
+        sessionId: input.sessionId,
         sourceMachineId: this.#snapshot.machine.id,
-        targetMachineId,
-        method: "git-bundle",
-        checkpointId: `checkpoint-${"0".repeat(40)}`,
-        checkpointCommit: "0".repeat(40),
+        targetMachineId: input.targetMachineId,
+        method: input.method,
+        checkpointId: `checkpoint-${input.checkpointCommit}`,
+        checkpointCommit: input.checkpointCommit,
         recoveryCheckpointRetained: true,
-        outcome: "refused",
-        ...(reason ? { reason } : {}),
-        decidedBy: { client },
-        startedAt: at,
-        completedAt: at,
+        outcome: input.outcome,
+        ...(input.reason ? { reason: input.reason } : {}),
+        decidedBy: {
+          client: input.client,
+          ...(input.clientId ? { clientId: input.clientId } : {}),
+        },
+        startedAt: input.startedAt,
+        completedAt: input.completedAt,
       })
     } catch (error) {
       this.#reportError("Domovoi could not record a transfer receipt", error)
     }
   }
 
-  #scheduleTransferExpiry(transferId: string): ReturnType<typeof setTimeout> {
-    const expiry = setTimeout(() => this.#forgetTransfer(transferId), incomingTransferIdleMs)
-    expiry.unref?.()
-    return expiry
+  async #completeVersionedSourceTransfer(
+    sessionId: string,
+    committed: Extract<TransferStatusResult, { state: "committed" }>,
+    completedAt: string,
+  ): Promise<void> {
+    const source = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    if (
+      source?.state !== "transferring"
+      || source.transfer?.phase !== "transferring"
+    ) {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+    const lifecycle = source.transfer
+    const transferPackage = lifecycle.package
+    if (transferPackage.state !== "staged") {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+    const manifestDigest = transferPackage.manifestDigest
+    const providerThread = source.providerThreadId
+    const provider = source.runtime.provider
+    const completed = completeSourceSessionTransfer(this.#snapshot, committed, completedAt)
+    completed.thread.push({
+      id: `system-transfer-sent-${randomUUID()}`,
+      sessionId: source.id,
+      kind: "system",
+      body: `Transferred to machine ${lifecycle.targetMachineId}.`,
+      detail: `Ownership generation ${committed.ownershipGeneration} moved at checkpoint ${committed.checkpointCommit}. This recovery worktree is read-only.`,
+      createdAt: completedAt,
+    })
+    await this.#persistTransferSnapshot(
+      workspaceSnapshotSchema.parse(completed),
+      source.id,
+    )
+    await this.#outgoingTransferTransactions.remove(
+      lifecycle.transferId,
+      manifestDigest,
+    ).catch((error) => this.#reportError(
+      "Domovoi could not remove an outgoing transfer package",
+      error,
+    ))
+    this.#recordVersionedTransferReceipt({
+      sessionId: source.id,
+      targetMachineId: lifecycle.targetMachineId,
+      method: lifecycle.method,
+      client: lifecycle.requestedBy.client,
+      ...(lifecycle.requestedBy.clientId
+        ? { clientId: lifecycle.requestedBy.clientId }
+        : {}),
+      checkpointCommit: committed.checkpointCommit,
+      outcome: "succeeded",
+      startedAt: lifecycle.startedAt,
+      completedAt,
+    })
+    if (providerThread) {
+      this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      void this.#agents.require(provider).stopThread(providerThread).catch((error) => {
+        this.#reportError("Domovoi could not stop a transferred provider thread", error)
+      })
+    }
   }
 
-  #forgetTransfer(transferId: string): void {
-    const incoming = this.#incomingTransfers.get(transferId)
-    if (!incoming) return
-    clearTimeout(incoming.idle)
-    this.#incomingTransfers.delete(transferId)
+  async #thawVersionedSourceTransfer(
+    sessionId: string,
+    outcome: "failed" | "refused",
+    reason: TransferReceipt["reason"],
+    completedAt: string,
+  ): Promise<void> {
+    const source = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    if (source?.state !== "transferring" || source.transfer?.phase !== "transferring") {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+    const lifecycle = source.transfer
+    const checkpointCommit = source.baseCommit
+    if (!checkpointCommit) throw new SessionTransferStateError("session-state-changed")
+    await this.#persistTransferSnapshot(
+      thawSourceSessionTransfer(
+        this.#snapshot,
+        lifecycle.transferId,
+        completedAt,
+      ),
+      source.id,
+    )
+    if (lifecycle.package.state === "staged") {
+      await this.#outgoingTransferTransactions.remove(
+        lifecycle.transferId,
+        lifecycle.package.manifestDigest,
+      ).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.#reportError("Domovoi could not remove an outgoing transfer package", error)
+        }
+      })
+    }
+    this.#recordVersionedTransferReceipt({
+      sessionId: source.id,
+      targetMachineId: lifecycle.targetMachineId,
+      method: lifecycle.method,
+      client: lifecycle.requestedBy.client,
+      ...(lifecycle.requestedBy.clientId
+        ? { clientId: lifecycle.requestedBy.clientId }
+        : {}),
+      checkpointCommit,
+      outcome,
+      reason,
+      startedAt: lifecycle.startedAt,
+      completedAt,
+    })
   }
 
-  #forgetTransfersFrom(socket: WebSocket): void {
-    for (const [transferId, incoming] of this.#incomingTransfers) {
-      if (incoming.socket === socket) this.#forgetTransfer(transferId)
+  async #freezeTargetOwnershipConflict(
+    sessionId: string,
+    refusal: {
+      reason: "target-session-newer" | "target-session-diverged"
+      existingGeneration: number
+    },
+    detectedAt: string,
+  ): Promise<void> {
+    const source = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    const lifecycle = source?.transfer
+    if (
+      source?.state !== "transferring"
+      || lifecycle?.phase !== "transferring"
+      || lifecycle.package.state !== "staged"
+      || !source.workspacePath
+      || !source.baseCommit
+    ) {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+
+    const providerThread = source.providerThreadId
+    const provider = source.runtime.provider
+    const conflicted = markTargetSessionOwnershipConflict(this.#snapshot, {
+      sessionId: source.id,
+      transferId: lifecycle.transferId,
+      reason: refusal.reason,
+      otherGeneration: refusal.existingGeneration,
+      detectedAt,
+    })
+    const removedApprovalIds = new Set(conflicted.approvals.flatMap((approval) => (
+      approval.sessionId === source.id ? [approval.id] : []
+    )))
+    conflicted.approvals = conflicted.approvals.filter(
+      (approval) => !removedApprovalIds.has(approval.id),
+    )
+    conflicted.workingPlans = clearWorkingPlanApprovalBlockers(
+      conflicted.workingPlans,
+      removedApprovalIds,
+      detectedAt,
+    ).plans
+    const authoritative = workspaceSnapshotSchema.parse(conflicted)
+    const conflict = authoritative.sessions.find(
+      (candidate) => candidate.id === source.id,
+    )!.ownershipConflict!
+    const proof: DetectedTransferConflict = {
+      version: sessionTransferContractVersion,
+      sessionId: source.id,
+      sourceMachineId: this.#snapshot.machine.id,
+      sourceProjectId: source.projectId,
+      workspacePath: source.workspacePath,
+      ownershipGeneration: source.ownershipGeneration ?? 0,
+      conflict,
+    }
+
+    // Target ownership evidence changes authority immediately. The source is
+    // frozen in memory before any fallible journal, cleanup, or snapshot write.
+    this.#snapshot = authoritative
+    this.#sessionHistory.invalidate(source.id)
+    this.#syncArtifactWatchers()
+    this.#broadcastSnapshot()
+
+    let proofDurable = false
+    try {
+      if (!this.#store.transferConflicts) {
+        throw new Error("Durable transfer conflict storage is unavailable")
+      }
+      this.#store.transferConflicts.record(proof)
+      proofDurable = true
+    } catch (error) {
+      this.#persistenceFailures = persistenceFailureThreshold
+      this.#persistenceFailed(error)
+      this.#reportError("Domovoi could not persist direct ownership conflict proof", error)
+    }
+    try {
+      this.#closeSessionTerminals(source.id)
+    } catch (error) {
+      this.#reportError("Domovoi could not stop terminals after detecting target ownership", error)
+    }
+    this.#appendAudit({
+      actor: { kind: "daemon", component: "transfer-transaction" },
+      action: "session.ownership-conflict",
+      outcome: "denied",
+      sessionId: source.id,
+      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      target: lifecycle.targetMachineId,
+      detail: `Source stopped because target reported ${refusal.reason} at generation ${refusal.existingGeneration} for transfer ${lifecycle.transferId}`,
+    })
+    if (providerThread) {
+      this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      void withTimeout(
+        this.#agents.require(provider).stopThread(providerThread),
+        this.#agentTimeoutMs,
+        "Target ownership conflict provider shutdown timed out",
+      ).catch((error) => this.#reportError(
+        "Domovoi could not stop a provider after detecting target ownership",
+        error,
+      ))
+    }
+
+    let snapshotDurable = false
+    try {
+      await this.#persistTransferSnapshot(authoritative, source.id)
+      snapshotDurable = true
+    } catch (error) {
+      this.#reportError("Domovoi could not persist a direct ownership conflict", error)
+    }
+    if (proofDurable || snapshotDurable) {
+      await this.#outgoingTransferTransactions.remove(
+        lifecycle.transferId,
+        lifecycle.package.manifestDigest,
+      ).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.#reportError("Domovoi could not remove a conflicted transfer package", error)
+        }
+      })
+    }
+    this.#recordVersionedTransferReceipt({
+      sessionId: source.id,
+      targetMachineId: lifecycle.targetMachineId,
+      method: lifecycle.method,
+      client: lifecycle.requestedBy.client,
+      ...(lifecycle.requestedBy.clientId
+        ? { clientId: lifecycle.requestedBy.clientId }
+        : {}),
+      checkpointCommit: source.baseCommit,
+      outcome: "refused",
+      reason: refusal.reason,
+      startedAt: lifecycle.startedAt,
+      completedAt: detectedAt,
+    })
+  }
+
+  async #recoverSessionTransfer(
+    sessionId: string,
+    parentSignal?: AbortSignal,
+  ): Promise<void> {
+    const frozen = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    const lifecycle = frozen?.transfer
+    if (frozen?.state !== "transferring" || lifecycle?.phase !== "transferring") return
+    try {
+        if (lifecycle.package.state === "preparing") {
+          // Target contact is forbidden until the staged digest is durable, so
+          // a crash in preparing cannot have transferred ownership. The Git
+          // checkpoint may still have committed before its snapshot write, so
+          // reconcile the actual HEAD before making the source writable.
+          if (!frozen.workspacePath || !this.#workspaceService.transferFingerprint) {
+            throw new SessionTransferStateError("session-resource-unavailable")
+          }
+          const fingerprint = await this.#workspaceService.transferFingerprint(
+            frozen.workspacePath,
+            parentSignal,
+          )
+          const reconciled = recordPreparingSourceCheckpoint(
+            this.#snapshot,
+            lifecycle.transferId,
+            fingerprint.headCommit,
+          )
+          await this.#persistTransferSnapshot(
+            thawSourceSessionTransfer(
+              reconciled,
+              lifecycle.transferId,
+              new Date().toISOString(),
+            ),
+            frozen.id,
+          )
+          return
+        }
+        const manifestDigest = lifecycle.package.manifestDigest
+        let remote: TransferStatusResult
+        try {
+          remote = await this.#withAbortTimeout(async (signal) => {
+            const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+            try {
+              return matchingTransferResponse(
+                lifecycle.transferId,
+                rpcMethods["transfer.status"].result.parse(await connection.call(
+                  "transfer.status",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: lifecycle.requestedBy.client,
+                  },
+                  signal,
+                )),
+              )
+            } finally {
+              connection.close()
+            }
+          }, this.#sessionTransferTimeoutMs, "Transfer status check timed out", parentSignal)
+        } catch (error) {
+          parentSignal?.throwIfAborted()
+          if (error instanceof TransferResponseIdentityError) throw error
+          await this.#persistTransferSnapshot(
+            markSourceTransferReconciliationFailure(this.#snapshot, {
+              sessionId: frozen.id,
+              transferId: lifecycle.transferId,
+              reason: sourceTransferReconciliationReason(error),
+              failedAt: new Date().toISOString(),
+            }),
+            frozen.id,
+          )
+          throw error
+        }
+        const cleared = clearSourceTransferReconciliation(this.#snapshot, {
+          sessionId: frozen.id,
+          transferId: lifecycle.transferId,
+        })
+        if (cleared !== this.#snapshot) {
+          await this.#persistTransferSnapshot(cleared, frozen.id)
+        }
+        if (remote.state === "committed") {
+          await this.#completeVersionedSourceTransfer(
+            frozen.id,
+            remote,
+            new Date().toISOString(),
+          )
+          return
+        }
+        if (remote.state === "aborted") {
+          await this.#thawVersionedSourceTransfer(
+            frozen.id,
+            "refused",
+            "session-state-changed",
+            new Date().toISOString(),
+          )
+          return
+        }
+        if (remote.state === "recovering" || remote.state === "failed") {
+          const retried = await this.#withAbortTimeout(async (signal) => {
+            const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+            try {
+              return matchingTransferResponse(
+                lifecycle.transferId,
+                rpcMethods["transfer.commit"].result.parse(await connection.call(
+                  "transfer.commit",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: lifecycle.requestedBy.client,
+                  },
+                  signal,
+                )),
+              )
+            } finally {
+              connection.close()
+            }
+          }, this.#sessionTransferTimeoutMs, "Transfer recovery timed out", parentSignal)
+          if (retried.state === "committed") {
+            await this.#completeVersionedSourceTransfer(
+              frozen.id,
+              retried,
+              new Date().toISOString(),
+            )
+          } else if ("existingGeneration" in retried) {
+            await this.#freezeTargetOwnershipConflict(
+              frozen.id,
+              retried,
+              new Date().toISOString(),
+            )
+          } else {
+            await this.#thawVersionedSourceTransfer(
+              frozen.id,
+              "refused",
+              retried.reason,
+              new Date().toISOString(),
+            )
+          }
+          return
+        }
+        if (
+          remote.state === "unknown"
+          || remote.state === "receiving"
+          || remote.state === "prepared"
+        ) {
+          let packageAvailable = true
+          try {
+            await this.#outgoingTransferTransactions.manifest(
+              lifecycle.transferId,
+              manifestDigest,
+            )
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+            packageAvailable = false
+          }
+          if (!packageAvailable) {
+            if (remote.state === "unknown") {
+              await this.#thawVersionedSourceTransfer(
+                frozen.id,
+                "failed",
+                "session-resource-unavailable",
+                new Date().toISOString(),
+              )
+              return
+            }
+            const aborted = await this.#withAbortTimeout(async (signal) => {
+              const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+              try {
+                return matchingTransferResponse(
+                  lifecycle.transferId,
+                  rpcMethods["transfer.abort"].result.parse(await connection.call(
+                    "transfer.abort",
+                    {
+                      transferId: lifecycle.transferId,
+                      manifestDigest,
+                      client: lifecycle.requestedBy.client,
+                    },
+                    signal,
+                  )),
+                )
+              } finally {
+                connection.close()
+              }
+            }, this.#sessionTransferTimeoutMs, "Transfer abort timed out", parentSignal)
+            if (aborted.state === "committed") {
+              await this.#completeVersionedSourceTransfer(
+                frozen.id,
+                aborted,
+                new Date().toISOString(),
+              )
+            } else {
+              await this.#thawVersionedSourceTransfer(
+                frozen.id,
+                "failed",
+                "session-resource-unavailable",
+                new Date().toISOString(),
+              )
+            }
+            return
+          }
+          const resumed = await this.#withAbortTimeout(async (signal) => {
+            const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+            try {
+              return sendPreparedSessionTransfer({
+                transactions: this.#outgoingTransferTransactions,
+                transferId: lifecycle.transferId,
+                manifestDigest,
+                client: lifecycle.requestedBy.client,
+                call: (method, params) => connection.call(method, params, signal),
+              })
+            } finally {
+              connection.close()
+            }
+          }, this.#sessionTransferTimeoutMs, "Transfer resume timed out", parentSignal)
+          if (resumed.state === "committed") {
+            await this.#completeVersionedSourceTransfer(
+              frozen.id,
+              resumed,
+              new Date().toISOString(),
+            )
+          } else if (
+            resumed.state === "refused"
+            && "existingGeneration" in resumed
+          ) {
+            await this.#freezeTargetOwnershipConflict(
+              frozen.id,
+              resumed,
+              new Date().toISOString(),
+            )
+          } else if (resumed.state === "refused" || resumed.state === "aborted") {
+            await this.#thawVersionedSourceTransfer(
+              frozen.id,
+              "refused",
+              resumed.state === "refused" ? resumed.reason : "session-state-changed",
+              new Date().toISOString(),
+            )
+          }
+        }
+    } catch (error) {
+      // Unreachable is not evidence that ownership stayed here. The source
+      // remains frozen until target status becomes authoritative or a person
+      // explicitly accepts the double-owner risk.
+      this.#reportError(`Domovoi could not reconcile transfer ${lifecycle.transferId}`, error)
+    }
+  }
+
+  #scheduleSessionTransferRecovery(): void {
+    for (const session of this.#snapshot.sessions) {
+      if (session.state !== "transferring" || session.transfer?.phase !== "transferring") continue
+      if (this.#transferRecoveries.has(session.id)) continue
+      this.#transferRecoveries.add(session.id)
+      void this.#mutations.enqueue(
+        `session:${session.id}`,
+        (signal) => this.#recoverSessionTransfer(session.id, signal),
+      ).catch((error) => this.#reportError(
+        `Domovoi could not schedule transfer recovery ${session.transfer!.transferId}`,
+        error,
+      )).finally(() => {
+        this.#transferRecoveries.delete(session.id)
+        this.#armTransferReconciliation()
+      })
+    }
+  }
+
+  async #checkRecoveredSourceOwnership(
+    sessionId: string,
+    parentSignal?: AbortSignal,
+  ): Promise<void> {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    const recovery = session?.sourceRecovery
+    if (!session || !recovery || sessionIsReadOnly(session)) return
+    let remote: TransferStatusResult
+    try {
+      remote = await this.#withAbortTimeout(async (signal) => {
+        const connection = await this.#connectToMachine(recovery.targetMachineId, signal)
+        try {
+          return rpcMethods["transfer.status"].result.parse(await connection.call(
+            "transfer.status",
+            {
+              transferId: recovery.transferId,
+              manifestDigest: recovery.manifestDigest,
+              client: recovery.decidedBy.client,
+            },
+            signal,
+          ))
+        } finally {
+          connection.close()
+        }
+      }, Math.min(this.#sessionTransferTimeoutMs, this.#agentTimeoutMs),
+      "Recovered ownership check timed out", parentSignal)
+    } catch {
+      return
+    }
+    if (remote.transferId !== recovery.transferId) return
+    if (remote.state === "unknown" || remote.state === "aborted") {
+      const confirmedAt = new Date().toISOString()
+      await this.#persistTransferSnapshot(
+        clearConfirmedSourceRecovery(this.#snapshot, {
+          sessionId: session.id,
+          transferId: recovery.transferId,
+          targetMachineId: recovery.targetMachineId,
+          confirmedAt,
+        }),
+        session.id,
+      )
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "transfer-reconciliation" },
+        action: "session.source-recovery-cleared",
+        outcome: "succeeded",
+        sessionId: session.id,
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        target: recovery.targetMachineId,
+        detail: `Target confirmed no committed ownership for transfer ${recovery.transferId}`,
+      })
+      return
+    }
+    if (
+      remote.state !== "committed"
+      || remote.ownershipGeneration <= (session.ownershipGeneration ?? 0)
+    ) return
+
+    const providerThread = session.providerThreadId
+    const provider = session.runtime.provider
+    const detectedAt = new Date().toISOString()
+    const conflicted = markSourceOwnershipConflict(this.#snapshot, {
+      sessionId: session.id,
+      transferId: recovery.transferId,
+      otherMachineId: recovery.targetMachineId,
+      otherGeneration: remote.ownershipGeneration,
+      detectedAt,
+    })
+    const removedApprovalIds = new Set(conflicted.approvals.flatMap((approval) => (
+      approval.sessionId === session.id ? [approval.id] : []
+    )))
+    conflicted.approvals = conflicted.approvals.filter(
+      (approval) => !removedApprovalIds.has(approval.id),
+    )
+    conflicted.workingPlans = clearWorkingPlanApprovalBlockers(
+      conflicted.workingPlans,
+      removedApprovalIds,
+      detectedAt,
+    ).plans
+    const authoritative = workspaceSnapshotSchema.parse(conflicted)
+    const conflictProof: DetectedTransferConflict = {
+      version: sessionTransferContractVersion,
+      sessionId: session.id,
+      sourceMachineId: this.#snapshot.machine.id,
+      sourceProjectId: session.projectId,
+      workspacePath: session.workspacePath!,
+      ownershipGeneration: session.ownershipGeneration ?? 0,
+      sourceRecovery: recovery,
+      conflict: authoritative.sessions.find((candidate) => candidate.id === session.id)!
+        .ownershipConflict!,
+    }
+
+    // Proof of another owner changes the in-memory authority boundary before
+    // any fallible cleanup or disk write. The machine that made the unverified
+    // recovery claim stops, even when persistence or provider cleanup fails.
+    this.#snapshot = authoritative
+    this.#sessionHistory.invalidate(session.id)
+    this.#syncArtifactWatchers()
+    this.#broadcastSnapshot()
+    try {
+      if (!this.#store.transferConflicts) {
+        throw new Error("Durable transfer conflict storage is unavailable")
+      }
+      this.#store.transferConflicts.record(conflictProof)
+    } catch (error) {
+      // A conflict proof is a machine-ownership boundary, not an ordinary
+      // snapshot update. One failed durable write makes every later mutation
+      // unsafe until a successful full snapshot save proves persistence again.
+      this.#persistenceFailures = persistenceFailureThreshold
+      this.#persistenceFailed(error)
+      this.#reportError("Domovoi could not persist ownership conflict proof", error)
+    }
+    try {
+      this.#closeSessionTerminals(session.id)
+    } catch (error) {
+      this.#reportError("Domovoi could not stop terminals after detecting duplicate ownership", error)
+    }
+    this.#appendAudit({
+      actor: { kind: "daemon", component: "transfer-reconciliation" },
+      action: "session.ownership-conflict",
+      outcome: "denied",
+      sessionId: session.id,
+      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      target: recovery.targetMachineId,
+      detail: `Recovered source stopped because transfer ${recovery.transferId} is committed at generation ${remote.ownershipGeneration}`,
+    })
+    if (providerThread) {
+      this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      void withTimeout(
+        this.#agents.require(provider).stopThread(providerThread),
+        this.#agentTimeoutMs,
+        "Ownership conflict provider shutdown timed out",
+      ).catch((error) => this.#reportError(
+        "Domovoi could not stop a provider after detecting duplicate ownership",
+        error,
+      ))
+    }
+    try {
+      if (this.#store.saveAsync) await this.#store.saveAsync(authoritative)
+      else this.#store.save(authoritative)
+      this.#persistenceSucceeded()
+    } catch (error) {
+      this.#persistenceFailed(error)
+      this.#reportError("Domovoi could not persist a detected ownership conflict", error)
+    }
+  }
+
+  #scheduleRecoveredOwnershipChecks(): void {
+    for (const session of this.#snapshot.sessions) {
+      if (!session.sourceRecovery || sessionIsReadOnly(session)) continue
+      if (this.#ownershipChecks.has(session.id)) continue
+      this.#ownershipChecks.add(session.id)
+      void this.#mutations.enqueue(
+        `session:${session.id}`,
+        (signal) => this.#checkRecoveredSourceOwnership(session.id, signal),
+      ).catch((error) => this.#reportError(
+        `Domovoi could not schedule recovered ownership check ${session.id}`,
+        error,
+      )).finally(() => {
+        this.#ownershipChecks.delete(session.id)
+        this.#armTransferReconciliation()
+      })
+    }
+  }
+
+  #armTransferReconciliation(): void {
+    if (this.#stopping || this.#stopped || this.#transferReconciliationTimer) return
+    const pending = this.#snapshot.sessions.some((session) => (
+      (session.state === "transferring" && session.transfer?.phase === "transferring")
+      || (session.sourceRecovery !== undefined && !sessionIsReadOnly(session))
+    ))
+    if (!pending) return
+    this.#transferReconciliationTimer = setTimeout(() => {
+      this.#transferReconciliationTimer = undefined
+      this.#scheduleSessionTransferRecovery()
+      this.#scheduleRecoveredOwnershipChecks()
+    }, this.#sessionTransferRetryMs)
+    this.#transferReconciliationTimer.unref?.()
+  }
+
+  async #sendVersionedSessionTransfer(
+    params: RpcParams<"session.transfer"> & { contractVersion: 1; intentDigest: string },
+    prepared: PreparedTransferPreview & {
+      target: FleetMachine
+      intent: PreparedSessionTransferIntent
+    },
+    clientId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<SessionTransferResult> {
+    const startedAt = new Date().toISOString()
+    const transferId = `transfer-${randomUUID().replaceAll("-", "")}`
+    const sourceSession = this.#snapshot.sessions.find(
+      (candidate) => candidate.id === params.sessionId,
+    )!
+    const frozen = freezeSourceSessionTransfer(
+      this.#snapshot,
+      prepared.intent,
+      transferId,
+      startedAt,
+      { client: params.client, ...(clientId ? { clientId } : {}) },
+    )
+    await this.#persistTransferSnapshot(frozen, sourceSession.id)
+
+    let packaged: ReturnType<typeof createSessionTransferPackage> | undefined
+    let checkpointCommit = sourceSession.baseCommit ?? "0".repeat(40)
+    let targetDeliveryStarted = false
+    try {
+      this.#closeSessionTerminals(sourceSession.id)
+      const checkpoint = await this.#workspaceService.checkpoint(
+        sourceSession.workspacePath!,
+        "before-transfer",
+        signal,
+      )
+      checkpointCommit = checkpoint.commit
+      const checkpointCommits = sessionTransferCheckpointCommits(
+        prepared.intent.state,
+        checkpoint.commit,
+      )
+      await this.#persistTransferSnapshot(
+        recordPreparingSourceCheckpoint(this.#snapshot, transferId, checkpoint.commit),
+        sourceSession.id,
+      )
+      const fingerprint = await this.#workspaceService.transferFingerprint!(
+        sourceSession.workspacePath!,
+        signal,
+      )
+      if (
+        fingerprint.headCommit !== checkpoint.commit
+        || fingerprint.digest !== prepared.intent.worktreeDigest
+      ) {
+        throw new SessionTransferStateError("session-state-changed")
+      }
+
+      if (params.method === "git-bundle") {
+        const bundleSession = this.#workspaceService.bundleSession
+        const readBundle = this.#readTransferBundle
+        if (!bundleSession || !readBundle) {
+          throw new SessionTransferStateError("session-resource-unavailable")
+        }
+        const temporary = await mkdtemp(join(tmpdir(), "domovoi-transfer-package-"))
+        try {
+          const bundle = await bundleSession(
+            sourceSession.workspacePath!,
+            join(temporary, "repository.bundle"),
+            undefined,
+            signal,
+            checkpointCommits,
+          )
+          const bytes = await readBundle(bundle.path)
+          packaged = createSessionTransferPackage(prepared.intent, {
+            transferId,
+            checkpointCommit: checkpoint.commit,
+            repository: { method: "git-bundle", bytes },
+            createdAt: startedAt,
+          })
+        } finally {
+          await rm(temporary, { recursive: true, force: true }).catch(() => {})
+        }
+      } else {
+        const pushSessionRef = this.#workspaceService.pushSessionRef
+        if (!pushSessionRef || !params.remote) {
+          throw new SessionTransferStateError("session-resource-unavailable")
+        }
+        const pushed = await pushSessionRef(
+          sourceSession.workspacePath!,
+          params.remote,
+          sourceSession.id,
+          signal,
+          checkpointCommits,
+        )
+        packaged = createSessionTransferPackage(prepared.intent, {
+          transferId,
+          checkpointCommit: checkpoint.commit,
+          repository: {
+            method: "remote-ref",
+            remote: pushed.remote,
+            ref: pushed.ref,
+            commit: pushed.commit,
+          },
+          createdAt: startedAt,
+        })
+      }
+
+      await stageOutgoingSessionTransferPackage(this.#outgoingTransferTransactions, packaged)
+      await this.#persistTransferSnapshot(
+        stageSourceSessionCheckpoint(this.#snapshot, packaged.manifest),
+        sourceSession.id,
+      )
+
+      const connection = await this.#connectToMachine(prepared.target.id, signal)
+      let remote
+      try {
+        targetDeliveryStarted = true
+        remote = await sendPreparedSessionTransfer({
+          transactions: this.#outgoingTransferTransactions,
+          transferId,
+          manifestDigest: packaged.manifestDigest,
+          client: params.client,
+          call: (method, remoteParams) => connection.call(method, remoteParams, signal),
+        })
+      } finally {
+        connection.close()
+      }
+
+      if (remote.state === "committed") {
+        const completedAt = new Date().toISOString()
+        await this.#completeVersionedSourceTransfer(sourceSession.id, remote, completedAt)
+        return rpcMethods["session.transfer"].result.parse({
+          outcome: "succeeded",
+          workspacePath: remote.workspacePath,
+          checkpointCommit: remote.checkpointCommit,
+          contractVersion: 1,
+          transferId,
+          ownershipGeneration: remote.ownershipGeneration,
+          coverage: packaged.manifest.coverage,
+        })
+      }
+
+      if (remote.state === "refused" && "existingGeneration" in remote) {
+        const completedAt = new Date().toISOString()
+        await this.#freezeTargetOwnershipConflict(sourceSession.id, remote, completedAt)
+        return rpcMethods["session.transfer"].result.parse({
+          outcome: "incomplete",
+          transferId,
+          state: "ownership-conflict",
+          recoveryAction: "keep-target-session",
+        })
+      }
+
+      if (remote.state === "refused" || remote.state === "aborted") {
+        const reason = remote.state === "refused" ? remote.reason : "session-state-changed"
+        const completedAt = new Date().toISOString()
+        await this.#persistTransferSnapshot(
+          thawSourceSessionTransfer(this.#snapshot, transferId, completedAt),
+          sourceSession.id,
+        )
+        await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
+          .catch((cleanupError) => this.#reportError(
+            "Domovoi could not remove a refused outgoing transfer package",
+            cleanupError,
+          ))
+        this.#recordVersionedTransferReceipt({
+          sessionId: sourceSession.id,
+          targetMachineId: prepared.target.id,
+          method: params.method,
+          client: params.client,
+          checkpointCommit,
+          outcome: "refused",
+          reason,
+          startedAt,
+          completedAt,
+        })
+        return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
+      }
+
+      if (remote.state === "recovering") {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "recovering",
+          stage: remote.stage,
+          recoveryAction: "none",
+        }
+      }
+      if (remote.state === "failed") {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "failed",
+          reason: remote.reason,
+          recoveryAction: "none",
+        }
+      }
+      if (remote.state === "unknown") {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "unknown",
+          recoveryAction: "none",
+        }
+      }
+      return {
+        outcome: "incomplete",
+        transferId,
+        state: remote.state === "prepared" ? "prepared" : "receiving",
+        recoveryAction: "none",
+      }
+    } catch (error) {
+      if (targetDeliveryStarted) {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "unknown",
+          recoveryAction: "none",
+        }
+      }
+      const completedAt = new Date().toISOString()
+      const currentSource = this.#snapshot.sessions.find(
+        (session) => session.id === sourceSession.id,
+      )
+      const sourceForThaw = currentSource?.transfer?.phase === "transferring"
+        && currentSource.transfer.transferId === transferId
+        && currentSource.transfer.package.state === "preparing"
+        ? recordPreparingSourceCheckpoint(this.#snapshot, transferId, checkpointCommit)
+        : this.#snapshot
+      await this.#persistTransferSnapshot(
+        thawSourceSessionTransfer(sourceForThaw, transferId, completedAt),
+        sourceSession.id,
+      )
+      if (packaged) {
+        await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
+          .catch((cleanupError) => this.#reportError(
+            "Domovoi could not remove a refused outgoing transfer package",
+            cleanupError,
+          ))
+      }
+      const reason = error instanceof SessionTransferStateError
+        ? error.reason
+        : "session-resource-unavailable"
+      this.#recordVersionedTransferReceipt({
+        sessionId: sourceSession.id,
+        targetMachineId: prepared.target.id,
+        method: params.method,
+        client: params.client,
+        checkpointCommit,
+        outcome: "refused",
+        reason,
+        startedAt,
+        completedAt,
+      })
+      return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
     }
   }
 
@@ -1433,6 +2702,7 @@ export class DomovoiDaemon {
         params?: {
           annotationId?: unknown
           approvalId?: unknown
+          manifest?: { transferId?: unknown }
           sessionId?: unknown
           terminalId?: unknown
           transferId?: unknown
@@ -1447,6 +2717,12 @@ export class DomovoiDaemon {
         sessionResourceMethods.has(request.method)
         && typeof request.params?.sessionId === "string"
       ) return `session:${request.params.sessionId}`
+      if (request.method.startsWith("transfer.")) {
+        const transferId = request.params?.transferId
+          ?? request.params?.manifest?.transferId
+          ?? request.params?.sessionId
+        if (typeof transferId === "string") return `transfer:${transferId}`
+      }
       if (
         (request.method === "annotation.reply" || request.method === "annotation.setStatus")
         && typeof request.params?.annotationId === "string"
@@ -1461,10 +2737,6 @@ export class DomovoiDaemon {
           (candidate) => candidate.id === request.params!.approvalId,
         )
         if (approval) return `session:${approval.sessionId}`
-      }
-      if (request.method === "transfer.chunk" && typeof request.params?.transferId === "string") {
-        const incoming = this.#incomingTransfers.get(request.params.transferId)
-        if (incoming) return `session:${incoming.sessionId}`
       }
       return undefined
     } catch {
@@ -1811,8 +3083,30 @@ export class DomovoiDaemon {
         return
       }
       if (hello.client === "machine") {
-        this.#authenticatedActors.set(socket, { kind: "machine", machineId: hello.machineId })
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (credential?.binding.kind !== "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Machine connections require a machine-paired credential",
+          )
+          return
+        }
+        this.#authenticatedActors.set(socket, {
+          kind: "machine",
+          machineId: credential.binding.machineId,
+        })
       } else {
+        if (this.#deviceCredentials.get(socket)?.verified.binding.kind === "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Machine credentials cannot identify as a client",
+          )
+          return
+        }
         this.#authenticatedActors.set(socket, {
           kind: "client",
           client: hello.client,
@@ -1832,7 +3126,10 @@ export class DomovoiDaemon {
         return
       }
       try {
-        const paired = this.#pairing.claim(params.code, { label: params.label }, Date.now())
+        const paired = this.#pairing.claim(params.code, {
+          label: params.label,
+          machineId: params.machineId,
+        }, Date.now())
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
@@ -1874,6 +3171,12 @@ export class DomovoiDaemon {
       return
     }
 
+    if (!this.#authenticatedActors.has(socket)) {
+      this.#appendPreAuthAudit("authentication")
+      this.#rejectAuthentication(socket, request.id, "Connection identity is required")
+      return
+    }
+
     if (!this.#registerAudit(socket, request.id, method, paramsResult.data)) {
       this.#appendAudit({
         actor: this.#authenticatedActors.get(socket) ?? { kind: "daemon", component: "rpc" },
@@ -1885,6 +3188,17 @@ export class DomovoiDaemon {
         id: request.id,
         error: { code: invalidRequest, message: "Request id is already in flight" },
       })
+      return
+    }
+
+    const authenticatedActor = this.#authenticatedActors.get(socket)
+    if (authenticatedActor?.kind === "machine" && !machineRpcMethods.has(method)) {
+      this.#error(
+        socket,
+        request.id,
+        daemonAuthenticationErrorCode,
+        "Machine connections may only use transfer RPCs",
+      )
       return
     }
 
@@ -1975,8 +3289,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -2340,6 +3654,608 @@ export class DomovoiDaemon {
         return
       }
 
+      if (
+        method === "transfer.preflight"
+        || method === "transfer.prepare"
+        || method === "transfer.member"
+        || method === "transfer.commit"
+        || method === "transfer.status"
+        || method === "transfer.abort"
+      ) {
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires a machine connection",
+          )
+          return
+        }
+
+        if (method === "transfer.preflight") {
+          const params = paramsResult.data as RpcParams<"transfer.preflight">
+          if (params.sourceMachineId !== actor.machineId) {
+            this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+            return
+          }
+          const result = await preflightSessionTransferTarget(
+            this.#snapshot,
+            params,
+            (path, commit) => this.#workspaceService.projectHasLineage
+              ? this.#workspaceService.projectHasLineage(path, commit, signal)
+              : Promise.resolve(false),
+            this.#targetTransferCapabilities(),
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(result),
+          })
+          return
+        }
+
+        if (method === "transfer.prepare") {
+          const params = paramsResult.data as RpcParams<"transfer.prepare">
+          if (params.manifest.sourceMachineId !== actor.machineId) {
+            this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+            return
+          }
+          if (params.manifest.targetMachineId !== this.#snapshot.machine.id) {
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                state: "refused",
+                transferId: params.manifest.transferId,
+                reason: "session-state-invalid",
+              }),
+            })
+            return
+          }
+          const durable = this.#store.transferOwnership?.find({
+            transferId: params.manifest.transferId,
+            manifestDigest: params.manifestDigest,
+            sourceMachineId: actor.machineId,
+          })
+          if (durable?.targetMachineId === this.#snapshot.machine.id) {
+            await this.#removeIncomingTransferPackage(
+              params.manifest.transferId,
+              params.manifestDigest,
+            )
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                state: "committed",
+                transferId: durable.transferId,
+                workspacePath: durable.workspacePath,
+                checkpointCommit: durable.checkpointCommit,
+                ownershipGeneration: durable.generation,
+              }),
+            })
+            return
+          }
+          const ready = await preflightSessionTransferTarget(this.#snapshot, {
+            contractVersion: params.manifest.version,
+            sessionId: params.manifest.sessionId,
+            sourceMachineId: params.manifest.sourceMachineId,
+            sourceProjectId: params.manifest.project.sourceProjectId,
+            lineageCommit: params.manifest.project.lineageCommit,
+            ownershipGeneration: params.manifest.ownership.fromGeneration,
+            method: params.manifest.repository.method,
+            coverage: params.manifest.coverage,
+            client: params.client,
+          }, (path, commit) => this.#workspaceService.projectHasLineage
+            ? this.#workspaceService.projectHasLineage(path, commit, signal)
+            : Promise.resolve(false), this.#targetTransferCapabilities())
+          const result = ready.allowed
+            ? ready.targetProjectId === params.manifest.project.targetProjectId
+              ? await this.#transferTransactions.prepare(params.manifest, params.manifestDigest)
+              : {
+                  state: "refused" as const,
+                  transferId: params.manifest.transferId,
+                  reason: "target-project-changed" as const,
+                }
+            : {
+                state: "refused" as const,
+                transferId: params.manifest.transferId,
+                reason: ready.reason,
+                ...("existingGeneration" in ready
+                  ? { existingGeneration: ready.existingGeneration }
+                  : {}),
+              }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(result),
+          })
+          return
+        }
+
+        if (method === "transfer.member") {
+          const params = paramsResult.data as RpcParams<"transfer.member">
+          let sourceMachineId: string
+          try {
+            sourceMachineId = await this.#transferTransactions.sourceMachineId(params.transferId)
+          } catch {
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                state: "refused",
+                transferId: params.transferId,
+                reason: "digest-mismatch",
+              }),
+            })
+            return
+          }
+          if (sourceMachineId !== actor.machineId) {
+            this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+            return
+          }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(
+              await this.#transferTransactions.acceptMember(params),
+            ),
+          })
+          return
+        }
+
+        const params = paramsResult.data as
+          | RpcParams<"transfer.commit">
+          | RpcParams<"transfer.status">
+          | RpcParams<"transfer.abort">
+        const durable = this.#store.transferOwnership?.find({
+          transferId: params.transferId,
+          manifestDigest: params.manifestDigest,
+          sourceMachineId: actor.machineId,
+        })
+        if (durable?.targetMachineId === this.#snapshot.machine.id) {
+          await this.#removeIncomingTransferPackage(
+            params.transferId,
+            params.manifestDigest,
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({
+              state: "committed",
+              transferId: durable.transferId,
+              workspacePath: durable.workspacePath,
+              checkpointCommit: durable.checkpointCommit,
+              ownershipGeneration: durable.generation,
+            }),
+          })
+          return
+        }
+        if (method === "transfer.status") {
+          const result = await this.#transferTransactions.status(
+            params.transferId,
+            params.manifestDigest,
+          )
+          if (result.state === "unknown") {
+            // The imported session, not the bounded transaction journal, is
+            // the durable ownership record. Status therefore remains
+            // authoritative after journal retention removes the package.
+            const imported = this.#snapshot.sessions.find((session) => (
+              session.transferredFrom?.transferId === params.transferId
+              && session.transferredFrom.manifestDigest === params.manifestDigest
+              && session.transferredFrom.sourceMachineId === actor.machineId
+            ))
+            const origin = imported?.transferredFrom
+            const durable = imported?.workspacePath
+              && origin
+              && imported.baseCommit === origin.checkpointCommit
+              && imported.ownershipGeneration === origin.generation
+              ? rpcMethods[method].result.parse({
+                  state: "committed",
+                  transferId: params.transferId,
+                  workspacePath: imported.workspacePath,
+                  checkpointCommit: origin.checkpointCommit,
+                  ownershipGeneration: origin.generation,
+                })
+              : result
+            this.#send(socket, { jsonrpc: "2.0", id: request.id, result: durable })
+            return
+          }
+        }
+        const manifest = await this.#transferTransactions.manifest(
+          params.transferId,
+          params.manifestDigest,
+        )
+        if (manifest.sourceMachineId !== actor.machineId) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+          return
+        }
+        if (method === "transfer.status") {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await this.#transferTransactions.status(
+              params.transferId,
+              params.manifestDigest,
+            )),
+          })
+          return
+        }
+        if (method === "transfer.abort") {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await this.#transferTransactions.abort(
+              params.transferId,
+              params.manifestDigest,
+            )),
+          })
+          return
+        }
+        if (
+          !this.#workspaceService.projectHasLineage
+          || !this.#usageLedger.replaceTransferredSession
+          || !this.#store.saveTransferredSnapshot
+        ) {
+          this.#error(socket, request.id, internalError, "This machine cannot commit session transfers")
+          return
+        }
+        const before = this.#snapshot
+        const committed = await commitPreparedSessionTransfer({
+          snapshot: before,
+          transferId: params.transferId,
+          manifestDigest: params.manifestDigest,
+          transactions: this.#transferTransactions,
+          projectHasLineage: (path, commit) => (
+            this.#workspaceService.projectHasLineage!(path, commit, signal)
+          ),
+          workspace: {
+            ...(this.#workspaceService.restoreSessionFromBundle
+              ? { restoreSessionFromBundle: (path: string, sessionId: string, options: {
+                  repositoryPath: string
+                  checkpointCommits: readonly string[]
+                }) => (
+                  this.#workspaceService.restoreSessionFromBundle!(path, sessionId, options, signal)
+                ) }
+              : {}),
+            ...(this.#workspaceService.restoreSessionFromRef
+              ? { restoreSessionFromRef: (
+                  path: string,
+                  remote: string,
+                  sessionId: string,
+                  expectedCommit?: string,
+                  checkpointCommits?: readonly string[],
+                ) => this.#workspaceService.restoreSessionFromRef!(
+                  path,
+                  remote,
+                  sessionId,
+                  expectedCommit,
+                  signal,
+                  checkpointCommits,
+                ) }
+              : {}),
+            ...(this.#workspaceService.writeTransferredArtifactSource
+              ? { writeTransferredArtifactSource: (
+                  path: string,
+                  artifactPath: string,
+                  bytes: Uint8Array,
+                ) => this.#workspaceService.writeTransferredArtifactSource!(
+                  path,
+                  artifactPath,
+                  bytes,
+                  signal,
+                ) }
+              : {}),
+          },
+          annotationVisualContext: this.#annotationVisualContext,
+          usageLedger: {
+            replaceTransferredSession: (sessionId, records) => (
+              this.#usageLedger.replaceTransferredSession!(sessionId, records)
+            ),
+          },
+          save: async (candidate, ownership) => {
+            try {
+              await this.#store.saveTransferredSnapshot!(candidate, ownership)
+            } catch (error) {
+              this.#persistenceFailed(error)
+              throw error
+            }
+            this.#persistenceSucceeded()
+            // Once the imported snapshot and ownership acknowledgement commit
+            // atomically, this process must adopt them before touching the
+            // disposable transaction journal. A later journal failure cannot
+            // make the target overwrite its now-authoritative imported state.
+            this.#snapshot = candidate
+            this.#sessionHistory.invalidate(manifest.sessionId)
+            this.#syncArtifactWatchers()
+            this.#broadcastSnapshot()
+          },
+          now: () => new Date().toISOString(),
+        })
+        if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
+          this.#snapshot = committed.snapshot
+          this.#sessionHistory.invalidate(manifest.sessionId)
+          this.#syncArtifactWatchers()
+          this.#broadcastSnapshot()
+        }
+        if (committed.result.state === "committed") {
+          // The imported session and ownership row are now authoritative.
+          // Keep replay idempotent through that canonical state instead of
+          // retaining a second complete copy in the transaction journal.
+          await this.#removeIncomingTransferPackage(
+            params.transferId,
+            params.manifestDigest,
+          )
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(committed.result),
+        })
+        return
+      }
+
+      if (method === "session.transferPreview") {
+        const params = paramsResult.data as RpcParams<"session.transferPreview">
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "client") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Previewing a session move requires a client connection",
+          )
+          return
+        }
+        if (actor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Transfer preview requires the authenticated client identity",
+          )
+          return
+        }
+        const prepared = await this.#prepareTransferPreview(params, signal)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: prepared.preview,
+        })
+        return
+      }
+
+      if (method === "session.transferResolveConflict") {
+        const params = paramsResult.data as RpcParams<"session.transferResolveConflict">
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Releasing source ownership requires the daemon credential",
+          )
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "client" || actor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Conflict resolution requires the authenticated client identity",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        if (
+          session?.state !== "ownership-conflict"
+          || session.ownershipConflict?.transferId !== params.transferId
+        ) {
+          this.#error(socket, request.id, invalidParams, "Session has no matching ownership conflict")
+          return
+        }
+        const conflict = session.ownershipConflict
+        const manifestDigest = conflict.kind === "target-session-detected"
+          ? conflict.manifestDigest
+          : session.sourceRecovery?.manifestDigest
+        if (!manifestDigest) {
+          this.#error(socket, request.id, invalidParams, "Ownership conflict has no transfer digest")
+          return
+        }
+        const releasedAt = new Date().toISOString()
+        await this.#persistTransferSnapshot(releaseSourceOwnershipConflict(this.#snapshot, {
+          sessionId: session.id,
+          transferId: params.transferId,
+          client: actor.client,
+          ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          releasedAt,
+        }), session.id)
+        await this.#outgoingTransferTransactions.remove(
+          params.transferId,
+          manifestDigest,
+        ).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            this.#reportError("Domovoi could not remove a released conflict package", error)
+          }
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: workspaceSnapshotForClient(this.#snapshot),
+        })
+        return
+      }
+
+      if (method === "session.transferRecoverSource") {
+        const params = paramsResult.data as RpcParams<"session.transferRecoverSource">
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Recovering source ownership requires the daemon credential",
+          )
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "client" || actor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Source recovery requires the authenticated client identity",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        const lifecycle = session?.transfer
+        if (
+          session?.state !== "transferring"
+          || lifecycle?.phase !== "transferring"
+          || lifecycle.transferId !== params.transferId
+          || lifecycle.package.state !== "staged"
+          || lifecycle.package.reconciliation?.state !== "ownership-unconfirmed"
+        ) {
+          this.#error(socket, request.id, invalidParams, "Session has no matching frozen transfer")
+          return
+        }
+        const manifestDigest = lifecycle.package.manifestDigest
+        let remote: TransferStatusResult | undefined
+        try {
+          remote = await this.#withAbortTimeout(async (statusSignal) => {
+            const connection = await this.#connectToMachine(
+              lifecycle.targetMachineId,
+              statusSignal,
+            )
+            try {
+              return matchingTransferResponse(
+                lifecycle.transferId,
+                rpcMethods["transfer.status"].result.parse(await connection.call(
+                  "transfer.status",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: actor.client,
+                  },
+                  statusSignal,
+                )),
+              )
+            } finally {
+              connection.close()
+            }
+          }, Math.min(this.#sessionTransferTimeoutMs, this.#agentTimeoutMs),
+          "Target ownership confirmation timed out")
+        } catch (error) {
+          // A request cancellation or daemon shutdown is not evidence about
+          // the target and must never authorize another owner.
+          signal?.throwIfAborted()
+          if (error instanceof TransferResponseIdentityError) {
+            this.#error(socket, request.id, invalidParams, error.message)
+            return
+          }
+          await this.#persistTransferSnapshot(
+            markSourceTransferReconciliationFailure(this.#snapshot, {
+              sessionId: session.id,
+              transferId: lifecycle.transferId,
+              reason: sourceTransferReconciliationReason(error),
+              failedAt: new Date().toISOString(),
+            }),
+            session.id,
+          )
+        }
+        if (remote !== undefined) {
+          const cleared = clearSourceTransferReconciliation(this.#snapshot, {
+            sessionId: session.id,
+            transferId: lifecycle.transferId,
+          })
+          if (cleared !== this.#snapshot) {
+            await this.#persistTransferSnapshot(cleared, session.id)
+          }
+        }
+        if (remote?.state === "committed") {
+          await this.#completeVersionedSourceTransfer(
+            session.id,
+            remote,
+            new Date().toISOString(),
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: workspaceSnapshotForClient(this.#snapshot),
+          })
+          return
+        }
+        if (remote?.state === "unknown") {
+          await this.#thawVersionedSourceTransfer(
+            session.id,
+            "failed",
+            "session-resource-unavailable",
+            new Date().toISOString(),
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: workspaceSnapshotForClient(this.#snapshot),
+          })
+          return
+        }
+        if (remote !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "The target still holds transfer state, so source recovery was refused",
+          )
+          return
+        }
+
+        signal?.throwIfAborted()
+        const recoveredAt = new Date().toISOString()
+        const checkpointCommit = session.baseCommit
+        if (!checkpointCommit) {
+          this.#error(socket, request.id, invalidParams, "Frozen source has no checkpoint")
+          return
+        }
+        const recovered = recoverUnconfirmedSourceTransfer(this.#snapshot, {
+          sessionId: session.id,
+          transferId: lifecycle.transferId,
+          client: actor.client,
+          ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          recoveredAt,
+        })
+        await this.#persistTransferSnapshot(recovered, session.id)
+        await this.#outgoingTransferTransactions.remove(
+          lifecycle.transferId,
+          manifestDigest,
+        ).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            this.#reportError("Domovoi could not remove a recovered transfer package", error)
+          }
+        })
+        this.#recordVersionedTransferReceipt({
+          sessionId: session.id,
+          targetMachineId: lifecycle.targetMachineId,
+          method: lifecycle.method,
+          client: actor.client,
+          ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          checkpointCommit,
+          outcome: "source-recovered",
+          reason: "target-ownership-unconfirmed",
+          startedAt: lifecycle.startedAt,
+          completedAt: recoveredAt,
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: workspaceSnapshotForClient(this.#snapshot),
+        })
+        return
+      }
+
       if (method === "session.transfer") {
         const params = paramsResult.data as RpcParams<"session.transfer">
         // Moving a session hands a worktree to another machine, so a device
@@ -2350,6 +4266,25 @@ export class DomovoiDaemon {
             request.id,
             daemonAuthenticationErrorCode,
             "Moving a session requires the daemon credential",
+          )
+          return
+        }
+        const transferActor = this.#authenticatedActors.get(socket)
+        if (transferActor?.kind !== "client") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Moving a session requires a client connection",
+          )
+          return
+        }
+        if (transferActor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Moving a session requires the authenticated client identity",
           )
           return
         }
@@ -2366,131 +4301,52 @@ export class DomovoiDaemon {
           return
         }
 
-        const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-        const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
-        if (!target) {
-          // A machine this daemon cannot see is a machine it cannot reach now,
-          // and a transfer is refused rather than queued.
+        const prepared = await this.#prepareTransferPreview({
+          sessionId: params.sessionId,
+          targetMachineId: params.targetMachineId,
+          client: params.client,
+          method: params.method,
+          ...(params.remote ? { remote: params.remote } : {}),
+        }, signal)
+        if (!prepared.preview.allowed || !prepared.target || !prepared.intent) {
+          const reason = prepared.preview.allowed
+            ? "session-state-invalid"
+            : prepared.preview.reason
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse({ outcome: "refused", reason }),
+          })
+          return
+        }
+        if (prepared.preview.intentDigest !== params.intentDigest) {
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
               outcome: "refused",
-              reason: "target-unreachable",
+              reason: "session-state-changed",
             }),
           })
           return
         }
-
-        // Nothing reaches for the other machine until the transfer is allowed:
-        // an ineligible session or an unusable target is settled here.
-        const sourceReady = sourcePreflight({ session })
-        if (!sourceReady.allowed) {
-          this.#recordTransferRefusal(session.id, target.id, params.client, sourceReady.reason)
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({
-              outcome: "refused",
-              reason: sourceReady.reason,
-            }),
-          })
-          return
-        }
-        const targetReady = transferPreflight({
-          source: { ...target, id: this.#snapshot.machine.id },
-          target,
-        })
-        if (!targetReady.allowed) {
-          this.#recordTransferRefusal(session.id, target.id, params.client, targetReady.reason)
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({
-              outcome: "refused",
-              reason: targetReady.reason,
-            }),
-          })
-          return
-        }
-
-        // A target that stops answering must not hold this request open, and a
-        // cancelled request must not keep talking to the other machine.
         const transferDeadline = new AbortController()
         const timeout = setTimeout(() => transferDeadline.abort(), this.#sessionTransferTimeoutMs)
         timeout.unref?.()
         const transferSignal = signal
           ? AbortSignal.any([signal, transferDeadline.signal])
           : transferDeadline.signal
-        const connection = await this.#connectToMachine(target.id, transferSignal)
         try {
-          if (params.method === "remote-ref") {
-            const outcome = await sendSessionThroughRemote({
-              session,
-              sourceMachineId: this.#snapshot.machine.id,
-              target,
-              client: params.client,
-              remote: params.remote!,
-              call: (remoteMethod, remoteParams) =>
-                connection.call(remoteMethod, remoteParams, transferSignal),
-              // The git work runs under the transfer's own deadline, so a call
-              // that hangs cannot outlive the transfer and hold the queue.
-              checkpoint: (worktreePath, label) =>
-                this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
-              pushSessionRef: this.#workspaceService.pushSessionRef
-                ? (worktreePath, remote, sessionId) =>
-                  this.#workspaceService.pushSessionRef!(
-                    worktreePath,
-                    remote,
-                    sessionId,
-                    transferSignal,
-                  )
-                : undefined,
-              recordReceipt: (receipt) => {
-                try {
-                  this.#store.transferReceipts?.record(receipt)
-                } catch (error) {
-                  this.#reportError("Domovoi could not record a transfer receipt", error)
-                }
-              },
-              now: () => new Date().toISOString(),
-            })
-            this.#send(socket, {
-              jsonrpc: "2.0",
-              id: request.id,
-              result: rpcMethods[method].result.parse(outcome),
-            })
-            return
-          }
-          const readBundle = this.#readTransferBundle
-          const bundleSession = this.#workspaceService.bundleSession
-          if (!readBundle || !bundleSession) {
-            this.#error(socket, request.id, internalError, "This machine cannot send transfers")
-            return
-          }
-          const outcome = await sendSessionToMachine({
-            session,
-            sourceMachineId: this.#snapshot.machine.id,
-            target,
-            client: params.client,
-            call: (remoteMethod, remoteParams) =>
-              connection.call(remoteMethod, remoteParams, transferSignal),
-            checkpoint: (worktreePath, label) =>
-              this.#workspaceService.checkpoint(worktreePath, label, transferSignal),
-            bundleSession: (worktreePath, bundlePath, sinceCommit) =>
-              bundleSession(worktreePath, bundlePath, sinceCommit, transferSignal),
-            readBundle,
-            recordReceipt: (receipt) => {
-              // The receipt records what happened; it does not decide it. A
-              // daemon that cannot store one still answers with the outcome.
-              try {
-                this.#store.transferReceipts?.record(receipt)
-              } catch (error) {
-                this.#reportError("Domovoi could not record a transfer receipt", error)
-              }
+          const outcome = await this.#sendVersionedSessionTransfer(
+            params as RpcParams<"session.transfer"> & {
+              contractVersion: 1
+              intentDigest: string
             },
-            now: () => new Date().toISOString(),
-          })
+            { ...prepared, target: prepared.target, intent: prepared.intent },
+            transferActor.clientId,
+            transferSignal,
+          )
+          if (outcome.outcome === "incomplete") this.#scheduleSessionTransferRecovery()
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -2498,170 +4354,6 @@ export class DomovoiDaemon {
           })
         } finally {
           clearTimeout(timeout)
-          connection.close()
-        }
-        return
-      }
-
-      if (method === "transfer.have") {
-        const params = paramsResult.data as RpcParams<"transfer.have">
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
-        const held = await this.#workspaceService.sessionHeadCommit?.(params.sessionId, signal)
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse(held ? { commit: held } : {}),
-        })
-        return
-      }
-
-      if (method === "transfer.fromRef") {
-        const params = paramsResult.data as RpcParams<"transfer.fromRef">
-        // Taking a session writes a worktree here, which is machine management.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
-        const repositoryPath = this.#snapshot.project?.path
-        if (!this.#workspaceService.restoreSessionFromRef || !repositoryPath) {
-          this.#error(socket, request.id, internalError, "This machine cannot take a session from a remote")
-          return
-        }
-        const workspace = await this.#workspaceService.restoreSessionFromRef(
-          repositoryPath,
-          params.remote,
-          params.sessionId,
-          signal,
-        )
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({
-            workspacePath: workspace.path,
-            checkpointCommit: workspace.baseCommit,
-          }),
-        })
-        return
-      }
-
-      if (method === "transfer.begin" || method === "transfer.chunk") {
-        // Accepting a session writes a worktree on this machine, which is
-        // machine management, so a device credential must not reach it and only
-        // a peer daemon may ask.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
-        const actor = this.#authenticatedActors.get(socket)
-        if (actor?.kind !== "machine") {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires a machine connection",
-          )
-          return
-        }
-        if (!this.#workspaceService.restoreSessionFromBundle) {
-          this.#error(socket, request.id, internalError, "This machine cannot accept transfers")
-          return
-        }
-
-        if (method === "transfer.begin") {
-          const params = paramsResult.data as RpcParams<"transfer.begin">
-          if (this.#incomingTransfers.size >= maximumIncomingTransfers) {
-            this.#error(socket, request.id, invalidParams, "Too many transfers are already arriving")
-            return
-          }
-          const transferId = `transfer-${randomBytes(16).toString("hex")}`
-          this.#incomingTransfers.set(transferId, {
-            sessionId: params.sessionId,
-            assembler: new TransferAssembler({
-              digest: params.digest,
-              totalBytes: params.totalBytes,
-            }),
-            socket,
-            idle: this.#scheduleTransferExpiry(transferId),
-          })
-          // A source that stops sending, or goes away, must not hold a slot
-          // that other machines need.
-          socket.once("close", () => this.#forgetTransfersFrom(socket))
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({ transferId }),
-          })
-          return
-        }
-
-        const params = paramsResult.data as RpcParams<"transfer.chunk">
-        const incoming = this.#incomingTransfers.get(params.transferId)
-        if (!incoming) {
-          this.#error(socket, request.id, invalidParams, "That transfer is not arriving")
-          return
-        }
-        clearTimeout(incoming.idle)
-        incoming.idle = this.#scheduleTransferExpiry(params.transferId)
-        const accepted = incoming.assembler.accept(params)
-        if (accepted.state === "refused") {
-          this.#forgetTransfer(params.transferId)
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse(accepted),
-          })
-          return
-        }
-        if (accepted.state === "receiving") {
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse(accepted),
-          })
-          return
-        }
-
-        // The bundle is only reported as restored once it actually is, so the
-        // source never learns a session moved before it did.
-        this.#forgetTransfer(params.transferId)
-        const directory = await mkdtemp(join(tmpdir(), "domovoi-transfer-"))
-        const bundlePath = join(directory, "session.bundle")
-        try {
-          await writeFile(bundlePath, incoming.assembler.bytes(), { mode: 0o600 })
-          const workspace = await this.#workspaceService.restoreSessionFromBundle(
-            bundlePath,
-            incoming.sessionId,
-            signal,
-          )
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({
-              state: "restored",
-              workspacePath: workspace.path,
-              checkpointCommit: workspace.baseCommit,
-            }),
-          })
-        } finally {
-          await rm(directory, { recursive: true, force: true })
         }
         return
       }
@@ -2754,7 +4446,10 @@ export class DomovoiDaemon {
           return
         }
         const result = method === "device.pair"
-          ? devices.pair({ label: (params as { label: string }).label })
+          ? devices.pair({
+              label: (params as { label: string }).label,
+              binding: { kind: "client" },
+            })
           : method === "device.list"
             ? { devices: devices.list() }
             : method === "device.revoke"
@@ -2773,6 +4468,8 @@ export class DomovoiDaemon {
 
       if (method === "fleet.list") {
         this.#recordThisMachine()
+        this.#scheduleSessionTransferRecovery()
+        this.#scheduleRecoveredOwnershipChecks()
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -2990,7 +4687,7 @@ export class DomovoiDaemon {
       if (method === "system.pauseAll") {
         const params = paramsResult.data as RpcParams<"system.pauseAll">
         changed = await this.#pauseSessions(this.#snapshot.sessions.filter(
-          (session) => !sessionIsArchiveReadOnly(session)
+          (session) => !sessionIsReadOnly(session)
             && session.providerThreadId
             && session.activeTurnId,
         ), params.client)
@@ -3003,8 +4700,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         changed = await this.#pauseSessions(
@@ -3020,6 +4717,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
+          return
+        }
         await this.#archiveSession(session.id, params.client)
         changed = true
       }
@@ -3029,8 +4730,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const artifact = this.#snapshot.artifacts.find(
@@ -3121,8 +4822,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === annotation.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const createdAt = new Date().toISOString()
@@ -3148,8 +4849,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === annotation.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const changedAt = new Date().toISOString()
@@ -3180,8 +4881,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const currentIndex = this.#snapshot.workingPlans.findIndex(
@@ -3276,8 +4977,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const currentIndex = this.#snapshot.workingPlans.findIndex(
@@ -3352,8 +5053,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (approval.risk === "hard-gate" && params.decision === "always-project") {
@@ -3494,8 +5195,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const crossesAskBoundary = (session.runtime.permissionMode === "ask")
@@ -3658,8 +5359,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session.workspacePath) {
@@ -3970,8 +5671,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(source)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(source)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(source)!)
           return
         }
         if (source.activeTurnId || source.state === "active") {
@@ -4154,8 +5855,8 @@ export class DomovoiDaemon {
       if (method === "session.send") {
         const params = paramsResult.data as RpcParams<"session.send">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath || !session.providerThreadId) {
@@ -4387,8 +6088,8 @@ export class DomovoiDaemon {
       if (method === "checkpoint.create") {
         const params = paramsResult.data as RpcParams<"checkpoint.create">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -4433,8 +6134,8 @@ export class DomovoiDaemon {
       if (method === "checkpoint.restore") {
         const params = paramsResult.data as RpcParams<"checkpoint.restore">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -4516,8 +6217,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -4611,9 +6312,13 @@ export class DomovoiDaemon {
         ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
         : workspaceSnapshotForClient(this.#snapshot)
       const helloConnectionId = this.#connectionIds.get(socket)
+      const actor = this.#authenticatedActors.get(socket)
+      const visibleSnapshot = method === "system.hello" && actor?.kind === "machine"
+        ? workspaceSnapshotForClient(createEmptyWorkspace(this.#snapshot.machine))
+        : clientSnapshot
       const result = method === "system.hello"
         ? {
-            ...clientSnapshot,
+            ...visibleSnapshot,
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
         : clientSnapshot
@@ -4624,6 +6329,10 @@ export class DomovoiDaemon {
       })
 
       if (changed) this.#broadcastNotification("workspace.changed", clientSnapshot)
+      if (method === "project.open") {
+        this.#scheduleSessionTransferRecovery()
+        this.#scheduleRecoveredOwnershipChecks()
+      }
     } catch (error) {
       if (signal?.aborted) {
         this.#error(socket, request.id, internalError, "Operation cancelled by emergency stop")
@@ -4659,7 +6368,7 @@ export class DomovoiDaemon {
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
     if (!session) return
-    if (session.state === "archiving" || session.state === "archived") return
+    if (sessionIsReadOnly(session)) return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
     if (event.type === "usage") {
@@ -5199,7 +6908,7 @@ export class DomovoiDaemon {
     const failures: SystemEmergencyStopResult["failures"] = []
     const affectedSessionIds = new Set<string>()
     const active = this.#snapshot.sessions.filter(
-      (session) => !sessionIsArchiveReadOnly(session)
+      (session) => !sessionIsReadOnly(session)
         && session.providerThreadId
         && session.activeTurnId,
     )
@@ -5361,7 +7070,7 @@ export class DomovoiDaemon {
 
     for (const sessionId of affectedSessionIds) {
       const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
-      if (!session || sessionIsArchiveReadOnly(session)) continue
+      if (!session || sessionIsReadOnly(session)) continue
       this.#snapshot.thread.push({
         id: `system-${randomUUID()}`,
         sessionId,
@@ -5404,8 +7113,12 @@ export class DomovoiDaemon {
     operation: (signal: AbortSignal) => Promise<T>,
     timeoutMs: number,
     message: string,
+    parentSignal?: AbortSignal,
   ): Promise<T> {
-    return withAbortTimeout(operation, timeoutMs, message, this.#workspaceAbort.signal)
+    const signal = parentSignal
+      ? AbortSignal.any([this.#workspaceAbort.signal, parentSignal])
+      : this.#workspaceAbort.signal
+    return withAbortTimeout(operation, timeoutMs, message, signal)
   }
 
   #emergencyFailureMessage(error: unknown, fallback: string): string {
@@ -5828,7 +7541,7 @@ export class DomovoiDaemon {
 
   #syncArtifactWatchers(): void {
     const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
-      session.workspacePath && !sessionIsArchiveReadOnly(session)
+      session.workspacePath && !sessionIsReadOnly(session)
         ? [[session.id, resolve(session.workspacePath)] as const]
         : []
     ))
@@ -5867,7 +7580,7 @@ export class DomovoiDaemon {
       candidate.id === sessionId
       && candidate.workspacePath
       && resolve(candidate.workspacePath) === root
-      && !sessionIsArchiveReadOnly(candidate)
+      && !sessionIsReadOnly(candidate)
     )
     if (!session) return
     const lexicalPath = resolveInside(root, change.path)
@@ -5982,15 +7695,17 @@ export class DomovoiDaemon {
   }
 
   async #persistSnapshot(): Promise<void> {
-    this.#sessionHistory.invalidate()
-    try {
-      if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
-      else this.#store.save(this.#snapshot)
-    } catch (error) {
-      this.#persistenceFailed(error)
-      throw error
-    }
-    this.#persistenceSucceeded()
+    await this.#serializeSnapshotPersistence(async () => {
+      this.#sessionHistory.invalidate()
+      try {
+        if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
+        else this.#store.save(this.#snapshot)
+      } catch (error) {
+        this.#persistenceFailed(error)
+        throw error
+      }
+      this.#persistenceSucceeded()
+    })
   }
 
   #persistenceFailed(error: unknown): void {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readFile, realpath } from "node:fs/promises"
+import { lstat, readFile, realpath } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
@@ -89,18 +89,26 @@ async function canonicalCwd(
 }
 
 async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
-  const lexical = resolve(cwd, path)
-  if (!inside(root, lexical)) return false
-  let existing = lexical
-  while (inside(root, existing)) {
+  let existing = resolve(cwd, path)
+  while (true) {
     try {
       return inside(root, await realpath(existing))
-    } catch {
-      if (existing === root) return false
-      existing = dirname(existing)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "ENOENT" && code !== "ENOTDIR") return false
+      // A broken link is an existing path whose target cannot be resolved. Do
+      // not climb past it: the link could later point outside the worktree.
+      try {
+        if ((await lstat(existing)).isSymbolicLink()) return false
+      } catch (metadataError) {
+        const metadataCode = (metadataError as NodeJS.ErrnoException).code
+        if (metadataCode !== "ENOENT" && metadataCode !== "ENOTDIR") return false
+      }
+      const parent = dirname(existing)
+      if (parent === existing) return false
+      existing = parent
     }
   }
-  return false
 }
 
 function parseCommand(command: string): ParsedPart[] | undefined {

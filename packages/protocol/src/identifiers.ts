@@ -3,6 +3,8 @@ import { z } from "zod"
 export const clientKindSchema = z.enum(["desktop", "web", "tablet", "phone", "cli"])
 export const clientIdentityIdSchema = z.string().trim().min(1).max(128)
 export const machineIdSchema = z.string().regex(/^machine-[0-9a-f]{32}$/)
+export const transferIdSchema = z.string().regex(/^transfer-[0-9a-f]{32}$/)
+export const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 export const commitShaSchema = z.string().regex(/^[a-f0-9]{40}$/)
 export const credentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 export const annotationStatusSchema = z.enum(["open", "resolved"])

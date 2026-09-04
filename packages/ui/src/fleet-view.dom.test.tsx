@@ -151,6 +151,21 @@ it("revokes a device only after the confirmation is accepted", async () => {
   })
 })
 
+it("says why an upgrade revoked a pairing, so it is not read as a deliberate revoke", async () => {
+  renderFleet({
+    devices: [{
+      ...device,
+      revokedAt: "2026-09-03T08:00:00.000Z",
+      revocationReason: "legacy-unbound-credential",
+    }],
+  })
+
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  expect(row.textContent).toContain("Revoked by upgrade")
+  expect(row.textContent).toContain("Pair this device again")
+})
+
 it("keeps the device when the confirmation is cancelled", async () => {
   const { user, onRevokeDevice } = renderFleet()
   await screen.findByRole("row", { name: /studio-ipad/ })
@@ -257,4 +272,13 @@ it("does not offer machine actions while the daemon is unreachable", () => {
   const card = within(screen.getByRole("group", { name: "studio" }))
   expect(card.getByRole("button", { name: "Use studio" })).toHaveProperty("disabled", true)
   expect(card.getByRole("button", { name: "Terminal on studio" })).toHaveProperty("disabled", true)
+})
+
+it("marks a machine running an older daemon than the fleet", () => {
+  renderFleet({ machines: [local, { ...studio, version: "0.4.1" }] })
+
+  const behind = within(screen.getByRole("group", { name: "studio" }))
+  expect(behind.getByText("UPDATE 0.4.2")).toBeTruthy()
+  const current = within(screen.getByRole("group", { name: "workshop" }))
+  expect(current.queryByText(/^UPDATE/u)).toBeNull()
 })

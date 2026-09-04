@@ -251,6 +251,20 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
+<li>[x] Stop a paired machine reading another machine's workspace
+<ul>
+<li>A machine hello returns no workspace and machine sockets are excluded from workspace broadcasts. Machine connections get the transfer surface only.
+</li>
+</ul>
+</li>
+<li>[x] Bind a machine credential to the machine it was issued for
+<ul>
+<li>Enrolment records the machine a credential is for, and the actor is derived from the credential rather than asserted by the caller. <code>system.hello</code> no longer accepts a caller-supplied <code>machineId</code>, which is a wire change, so the shared protocol is <code>0.2.0</code> and peers speaking <code>0.1.0</code> fail at the handshake.
+</li>
+<li>Credentials issued before the binding could act as either a machine or a person and are revoked on migration, so every pairing made before this has to be made again. The paired devices list names an upgrade revocation, and a move to a machine whose credential was retired refuses with <code>target-pairing-required</code>.
+</li>
+</ul>
+</li>
 <li>[x] Protect embedded OpenCode and Kilo provider servers
 <ul>
 <li>Use provider-supported authentication or OS-protected IPC.
@@ -565,9 +579,9 @@ td { color: var(--ink2); }
 <h3 id="handoff-surfaces-not-yet-built">Handoff surfaces not yet built</h3>
 <p>The desktop handoff specifies these; <code>main</code> does not implement them yet.</p>
 <ul>
-<li>[ ] Fleet screen with transport order, machine cards, version and <code>UPDATE</code> state, and Use, Terminal, and Revoke actions
+<li>[x] Fleet screen with transport order, machine cards, version and <code>UPDATE</code> state, and Use, Terminal, and Revoke actions
 <ul>
-<li>Transport order, machine cards, pairing, revocation, rotation, and the Use and Terminal card actions all ship in <code>packages/ui/src/fleet-view.tsx</code>. The <code>UPDATE</code> badge for a machine running an older daemon than the fleet is the remaining work.
+<li>The <code>UPDATE</code> badge is a patch-level fact and deliberately separate from protocol health: a machine one patch behind still speaks the protocol, so it is marked as behind rather than reported as a version mismatch. A machine whose version cannot be read is left unmarked, since an unreadable version is an unknown and a badge is a claim.
 </li>
 </ul>
 </li>
@@ -631,7 +645,13 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract lives in the repository rather than only in the project
+<li>[x] Vendor the Claude Design system contract so it lives in the repository
+<ul>
+<li><code>design/design_system_domovoi/</code> holds the tokens and now <code>readme.md</code>, the system's own contract: content rules, the colour and type contract, the fixed chrome values, motion, interaction states, iconography, and the component inventory. <code>DESIGN.md</code> points at it.
+</li>
+<li>Specimen cards and per-component prompts stay in the project deliberately. They are static mirrors of components this repository does not implement, so vendoring them would add files nothing checks against and the recorded revision would then police drift in copies nobody reads. Read a component's <code>.prompt.md</code> from the project when implementing that component.
+</li>
+</ul>
 </li>
 <li>[x] Port the live terminal-pane restyle from the current design revision
 <ul>
@@ -650,6 +670,7 @@ td { color: var(--ink2); }
 </ul>
 <h2 id="goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</h2>
 <p>Priority: <code>P1</code>. Keep code and execution on the selected machine while one client controls the fleet.</p>
+<p>The items below were checked off before Claude Code and Codex began reviewing each other's work. Three holes found on 2026-09-04 were inside items already marked complete: a paired machine could read another machine's workspace, concurrent daemon starts raced on machine identity, and a credential could act as either a machine or a person. A second pass over the fleet surface underneath the transfer work is queued, weighted toward credential handling and transport ordering, where a mistake is both reachable from another machine and quiet.</p>
 <ul>
 <li>[x] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
 </li>
@@ -717,8 +738,14 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Carry session state, not only Git bytes, across a machine transfer
+<li>[x] Carry session state, not only Git bytes, across a machine transfer
 <ul>
+<li>A move is previewed first and refused unless it carries the contract version and intent digest the preview returned, so a session that changed cannot move on a stale description. Coverage is reported by the daemon rather than described by the client.
+</li>
+<li>Two machines can no longer both hold a writable copy: a target that already has the session freezes the source, conflicts record how they were found, and the only exit hands the session to the machine holding the verifiable ownership generation while leaving this machine's worktree readable. Nothing removes that worktree automatically.
+</li>
+<li>An interrupted move is reconciled by the daemon itself. Operator recovery is offered only once the daemon records that it cannot reach the target, and the call rechecks the target before releasing anything.
+</li>
 <li><code>transferBeginParams</code> in <code>packages/protocol/src/transfer-rpc.ts</code> carries the session id, the source machine, the method, a digest, a byte count, and an optional <code>sinceCommit</code>. Nothing else. The thread, artifacts, annotations, working plan, and usage ledger stay on the source machine, so a transferred session arrives with its worktree and none of its history.
 </li>
 <li>This contradicts the checked line above it: the dialog names what travels, and a person reading it reasonably expects their thread and artifacts on the other machine.

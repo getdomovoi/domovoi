@@ -30,14 +30,22 @@ function machine(overrides: Partial<FleetMachine> = {}): FleetMachine {
 function dialer(overrides: {
   machines?: FleetMachine[]
   forMachine?: (id: string) => string | undefined
-  open?: (input: { endpoint: string; machineId: string; credential: string }) => Promise<{
+  open?: (input: { endpoint: string; expectedMachineId: string; credential: string }) => Promise<{
     call: (method: string, params: Record<string, unknown>) => Promise<unknown>
     close: () => void
   }>
 } = {}) {
-  const opened: { endpoint: string; machineId: string; credential: string }[] = []
+  const opened: Array<{
+    endpoint: string
+    expectedMachineId: string
+    credential: string
+  }> = []
   const open = overrides.open
-    ?? (async (input: { endpoint: string; machineId: string; credential: string }) => {
+    ?? (async (input: {
+      endpoint: string
+      expectedMachineId: string
+      credential: string
+    }) => {
       opened.push(input)
       return { call: async () => ({}), close: () => {} }
     })
@@ -64,7 +72,7 @@ describe("createMachineDialer", () => {
 
     expect(io.opened).toEqual([{
       endpoint: "wss://studio.tailnet:47831/rpc",
-      machineId,
+      expectedMachineId: machineId,
       credential,
     }])
     connection.close()

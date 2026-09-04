@@ -10,6 +10,7 @@ import {
   type TransportCandidate,
 } from "@getdomovoi/protocol"
 
+import { fleetUpdateAvailable } from "./fleet-updates.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   AlertDialog,
@@ -62,6 +63,7 @@ function sessionSummary(count: number): string {
 
 function MachineCard({
   machine,
+  fleet,
   sessionCount,
   inUse,
   connected,
@@ -69,6 +71,7 @@ function MachineCard({
   onOpenTerminal,
 }: {
   machine: FleetMachine
+  fleet: readonly FleetMachine[]
   sessionCount: number | undefined
   inUse: boolean
   connected: boolean
@@ -76,12 +79,18 @@ function MachineCard({
   onOpenTerminal?: ((machineId: string) => void) | undefined
 }) {
   const transports = orderedMachineTransports(machine)
+  const updateVersion = fleetUpdateAvailable(machine, fleet)
   return (
     <div role="group" aria-label={machine.label} className="rounded-xl border bg-card p-3.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-semibold text-strong">{machine.label}</span>
         <Badge variant={healthVariant[machine.health]}>{healthLabel[machine.health]}</Badge>
         {machine.self ? <Badge variant="outline">This machine</Badge> : null}
+        {updateVersion ? (
+          <Badge variant="warning" title={`This machine runs ${machine.version}`}>
+            UPDATE {updateVersion}
+          </Badge>
+        ) : null}
         <span className="ml-auto flex items-center gap-1.5">
           {inUse ? (
             <span className="font-machine text-[10px] text-faint">In use</span>
@@ -278,6 +287,7 @@ export function FleetView({
               <MachineCard
                 key={machine.id}
                 machine={machine}
+                fleet={machines}
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
                 inUse={machine.id === currentMachineId}
                 connected={connected}
@@ -319,12 +329,29 @@ export function FleetView({
                 <tbody>
                   {devices.map((paired) => {
                     const revoked = paired.revokedAt !== undefined
+                    // An upgrade revokes credentials that predate machine binding. That is
+                    // not the operator revoking a device, and it has a different remedy, so
+                    // the row says so instead of leaving a bare Revoked badge to explain it.
+                    const revokedByUpgrade = paired.revocationReason === "legacy-unbound-credential"
                     const busy = pendingDeviceId === paired.id
                     return (
                       <tr key={paired.id}>
                         <th scope="row" className="border-b py-2 pr-3 text-left font-medium text-strong">
                           {paired.label}
-                          {revoked ? <Badge variant="destructive" className="ml-2">Revoked</Badge> : null}
+                          {revoked ? (
+                            <Badge
+                              variant={revokedByUpgrade ? "warning" : "destructive"}
+                              className="ml-2"
+                            >
+                              {revokedByUpgrade ? "Revoked by upgrade" : "Revoked"}
+                            </Badge>
+                          ) : null}
+                          {revokedByUpgrade ? (
+                            <p className="mt-1 max-w-[52ch] text-[11px] font-normal leading-relaxed text-muted-foreground">
+                              This pairing predates machine-bound credentials. Pair this device
+                              again to restore it.
+                            </p>
+                          ) : null}
                         </th>
                         <td className="border-b py-2 pr-3 font-machine text-[10px] text-faint">
                           {paired.pairedAt}

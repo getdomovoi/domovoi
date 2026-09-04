@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -48,6 +48,10 @@ const succeeded: SessionTransferResult = {
   outcome: "succeeded",
   workspacePath: "/worktrees/session-billing",
   checkpointCommit: "c".repeat(40),
+  contractVersion: 1,
+  transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  ownershipGeneration: 2,
+  coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
 }
 
 function renderDialog(overrides: {
@@ -56,10 +60,41 @@ function renderDialog(overrides: {
   onTransfer?: (params: unknown) => Promise<SessionTransferResult>
   onTransferred?: (machineId: string) => void
   onOutcome?: (result: SessionTransferResult) => void
+  coverage?: unknown
 } = {}) {
   const onTransfer = vi.fn(overrides.onTransfer ?? (() => Promise.resolve(succeeded)))
   const onTransferred = vi.fn(overrides.onTransferred ?? (() => {}))
   const onOutcome = vi.fn(overrides.onOutcome ?? (() => {}))
+  const onPreview = vi.fn(async () => ({
+    allowed: true as const,
+    contractVersion: 1 as const,
+    sessionId: session.id,
+    sourceMachineId: source.id,
+    targetMachineId: target.id,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    project: {
+      sourceProjectId: "project-ledger",
+      targetProjectId: "project-ledger-target",
+      lineageCommit: "b".repeat(40),
+      sourceHeadCommit: "c".repeat(40),
+    },
+    coverage: overrides.coverage ?? {
+      included: [
+        { kind: "repository" as const },
+        { kind: "thread" as const },
+        { kind: "working-plan" as const },
+        { kind: "annotations" as const },
+      ],
+      excluded: [
+        { kind: "terminals" as const },
+        { kind: "provider-credentials" as const },
+        { kind: "skill-authority" as const },
+        { kind: "approval-rules" as const },
+        { kind: "ignored-files" as const },
+      ],
+      warnings: [{ kind: "tracked-sensitive-files-may-travel" as const }],
+    },
+  }))
   const user = userEvent.setup()
   render(
     <TransferSessionDialog
@@ -68,12 +103,13 @@ function renderDialog(overrides: {
       session={overrides.session ?? session}
       source={source}
       target={overrides.target ?? target}
+      onPreview={onPreview as never}
       onTransfer={onTransfer as never}
       onTransferred={onTransferred}
       onOutcome={onOutcome}
     />,
   )
-  return { user, onTransfer, onTransferred, onOutcome }
+  return { user, onPreview, onTransfer, onTransferred, onOutcome }
 }
 
 it("names the machine the session would move to", () => {
@@ -106,32 +142,28 @@ it("refuses a target that needs an upgrade and says why", () => {
   expect(screen.getByRole("button", { name: "Move session" }).hasAttribute("disabled")).toBe(true)
 })
 
-it("lists what travels with the session", () => {
+it("lists what travels with the session", async () => {
   renderDialog()
 
-  const travels = screen.getByRole("group", { name: "Travels with the session" })
+  const travels = await screen.findByRole("group", { name: "Travels with the session" })
   for (const item of [
+    "Repository, at the checkpoint commit",
     "Thread",
-    "Plan",
-    "Tool and test results",
-    "Open annotations",
-    "Active skills",
-    "Permission mode",
-    "Tracked changes",
-    "Non-ignored untracked files",
+    "Working plan",
+    "Annotations",
   ]) expect(travels.textContent).toContain(item)
 })
 
-it("lists what does not travel with the session", () => {
+it("lists what does not travel with the session", async () => {
   renderDialog()
 
-  const stays = screen.getByRole("group", { name: "Does not travel" })
+  const stays = await screen.findByRole("group", { name: "Does not travel" })
   for (const item of [
-    "Running dev servers and PTYs, which restart there",
+    "Running dev servers and terminals, which restart there",
     "Provider credentials",
-    ".env and secrets",
-    "Database state",
-    "Ignored build artifacts",
+    "Skills enabled for this project, which are reviewed again there",
+    "Standing approval rules, which are approved again there",
+    "Ignored files, including ignored build output",
   ]) expect(stays.textContent).toContain(item)
 })
 
@@ -141,6 +173,8 @@ it("moves the session with a git bundle by default", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({
+    contractVersion: 1,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: "session-billing",
     targetMachineId: target.id,
     method: "git-bundle",
@@ -161,9 +195,15 @@ it("moves the session over the named remote", async () => {
 
   await user.click(screen.getByRole("radio", { name: /remote ref/i }))
   await user.type(screen.getByLabelText("Remote name"), "origin")
+  // The remote preview waits for typing to stop, so the move is not offered
+  // until that request has answered.
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Move session" }).hasAttribute("disabled")).toBe(false))
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({
+    contractVersion: 1,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: "session-billing",
     targetMachineId: target.id,
     method: "remote-ref",
@@ -194,15 +234,109 @@ it("states the reason the daemon refused rather than a generic failure", async (
   expect(onTransferred).not.toHaveBeenCalled()
 })
 
-it("keeps the session where it is when the move fails", async () => {
-  const { user, onTransferred } = renderDialog({
-    onTransfer: () => Promise.resolve({ outcome: "failed" }),
-  })
+it("tells the operator to pair the target again when its credential was retired", async () => {
+  const refused: SessionTransferResult = { outcome: "refused", reason: "target-pairing-required" }
+  const { user } = renderDialog({ onTransfer: () => Promise.resolve(refused) })
 
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(screen.getByRole("alert").textContent)
-    .toContain("The session did not move and stayed on workshop")
+    .toContain("That machine must be paired again before a session can move to it")
+})
+
+it("lists what the daemon says the move carries, not a list written here", async () => {
+  renderDialog({
+    coverage: {
+      included: [{ kind: "thread" }, { kind: "artifacts", count: 2 }],
+      excluded: [{ kind: "terminals" }],
+      warnings: [{ kind: "provider-restart-required" }],
+    },
+  })
+
+  const carried = await screen.findByRole("group", { name: "Travels with the session" })
+
+  expect(carried.textContent).toContain("Thread")
+  expect(carried.textContent).toContain("Artifacts (2)")
+  expect(carried.textContent).not.toContain("Repository")
+  expect(screen.getByRole("group", { name: "Does not travel" }).textContent)
+    .toContain("Running dev servers and terminals, which restart there")
+  expect(screen.getByText(/The provider has to be started again on the target/)).toBeTruthy()
+})
+
+it("previews again when the session changed under the preview", async () => {
+  const refused: SessionTransferResult = { outcome: "refused", reason: "session-state-changed" }
+  const { user, onPreview } = renderDialog({ onTransfer: () => Promise.resolve(refused) })
+  await screen.findByRole("group", { name: "Travels with the session" })
+  expect(onPreview).toHaveBeenCalledOnce()
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  expect(screen.getByRole("alert").textContent)
+    .toContain("The session changed after the transfer preview, so review the move again")
+  await waitFor(() => expect(onPreview).toHaveBeenCalledTimes(2))
+})
+
+it("says which stage an unfinished move reached and what answers it", async () => {
+  const stalled: SessionTransferResult = {
+    outcome: "incomplete",
+    transferId: `transfer-${"a".repeat(32)}`,
+    state: "failed",
+    reason: "resource-import-failed",
+    recoveryAction: "none",
+  }
+  const { user } = renderDialog({ onTransfer: () => Promise.resolve(stalled) })
+  await screen.findByRole("group", { name: "Travels with the session" })
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("The move failed")
+  expect(alert.textContent).toContain("artifacts and attachments could not be imported")
+  expect(alert.textContent).toContain("workshop")
+})
+
+it("explains a refusal caused by moving a session back where it came from", async () => {
+  const refused: SessionTransferResult = { outcome: "refused", reason: "target-session-diverged" }
+  renderDialog({
+    session: {
+      ...session,
+      transferredFrom: {
+        transferId: `transfer-${"e".repeat(32)}`,
+        sourceMachineId: target.id,
+        generation: 1,
+        manifestDigest: `sha256:${"f".repeat(64)}`,
+        checkpointCommit: "a".repeat(40),
+        completedAt: "2026-09-01T09:00:00.000Z",
+      },
+    } as typeof session,
+    onTransfer: () => Promise.resolve(refused),
+  })
+  const { user } = { user: userEvent.setup() }
+  await screen.findByRole("group", { name: "Travels with the session" })
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("needs manual recovery")
+  expect(alert.textContent).toContain("came from studio")
+})
+
+it("keeps the session where it is when the move fails", async () => {
+  const { user, onTransferred } = renderDialog({
+    onTransfer: () => Promise.resolve({
+      outcome: "incomplete" as const,
+      transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      state: "failed" as const,
+      reason: "persistence-failed" as const,
+      recoveryAction: "none" as const,
+    }),
+  })
+
+  await user.click(screen.getByRole("button", { name: "Move session" }))
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("The session stayed on workshop")
+  expect(alert.textContent).toContain("could not save the session it received")
   expect(onTransferred).not.toHaveBeenCalled()
 })
 
@@ -215,4 +349,68 @@ it("reports a transport error without claiming the session moved", async () => {
 
   expect(screen.getByRole("alert").textContent).toContain("Daemon connection is not open")
   expect(onTransferred).not.toHaveBeenCalled()
+})
+
+it("does not promise that secrets stay behind", async () => {
+  renderDialog()
+
+  await screen.findByRole("group", { name: "Does not travel" })
+  expect(screen.queryByText(".env and secrets")).toBeNull()
+  expect(screen.getByText(/travels regardless of its name/u)).toBeTruthy()
+})
+
+it("does not promise that skills travel", async () => {
+  renderDialog()
+
+  await screen.findByRole("group", { name: "Does not travel" })
+  expect(screen.queryByText("Active skills")).toBeNull()
+  expect(screen.getByText(/reviewed again there/u)).toBeTruthy()
+})
+
+it("waits for the daemon to allow the move before offering it", async () => {
+  const onPreview = vi.fn(() => new Promise(() => {}))
+  render(
+    <TransferSessionDialog
+      open
+      onOpenChange={() => {}}
+      session={session}
+      source={source}
+      target={target}
+      onPreview={onPreview as never}
+      onTransfer={vi.fn() as never}
+      onTransferred={() => {}}
+      onOutcome={() => {}}
+    />,
+  )
+
+  expect(screen.getByRole("button", { name: "Move session" })).toHaveProperty("disabled", true)
+  expect(onPreview).toHaveBeenCalledOnce()
+})
+
+it("offers no move when the daemon refuses to preview one", async () => {
+  const onPreview = vi.fn(async () => ({
+    allowed: false as const,
+    contractVersion: 1 as const,
+    sessionId: session.id,
+    sourceMachineId: source.id,
+    targetMachineId: target.id,
+    reason: "session-not-idle" as const,
+    coverage: { included: [], excluded: [], warnings: [] },
+  }))
+  render(
+    <TransferSessionDialog
+      open
+      onOpenChange={() => {}}
+      session={session}
+      source={source}
+      target={target}
+      onPreview={onPreview as never}
+      onTransfer={vi.fn() as never}
+      onTransferred={() => {}}
+      onOutcome={() => {}}
+    />,
+  )
+
+  await waitFor(() => expect(onPreview).toHaveBeenCalledOnce())
+  expect(screen.getByRole("button", { name: "Move session" })).toHaveProperty("disabled", true)
 })

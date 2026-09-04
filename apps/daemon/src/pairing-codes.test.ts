@@ -10,6 +10,9 @@ import {
   pairingCodeTtlMs,
 } from "./pairing-codes.js"
 
+const machineId = `machine-${"a".repeat(32)}`
+const claimant = { label: "studio-ipad", machineId }
+
 function service(options: { now?: number } = {}) {
   const devices = new SqliteDeviceRegistry(new DatabaseSync(":memory:"))
   const pairing = new PairingCodeService(devices)
@@ -30,18 +33,21 @@ describe("PairingCodeService", () => {
     const { pairing, devices, start } = service()
     const issued = pairing.issue(start)
 
-    const paired = pairing.claim(issued.code, { label: "studio-ipad" }, start + 1_000)
+    const paired = pairing.claim(issued.code, claimant, start + 1_000)
 
     expect(paired.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(devices.verify(paired.token)?.label).toBe("studio-ipad")
+    expect(devices.verify(paired.token)).toEqual({
+      device: expect.objectContaining({ label: "studio-ipad" }),
+      binding: { kind: "machine", machineId },
+    })
   })
 
   it("spends a code on the first successful pairing", () => {
     const { pairing, start } = service()
     const issued = pairing.issue(start)
-    pairing.claim(issued.code, { label: "studio-ipad" }, start)
+    pairing.claim(issued.code, claimant, start)
 
-    expect(() => pairing.claim(issued.code, { label: "second-ipad" }, start))
+    expect(() => pairing.claim(issued.code, { label: "second-ipad", machineId }, start))
       .toThrow(PairingCodeError)
   })
 
@@ -49,7 +55,7 @@ describe("PairingCodeService", () => {
     const { pairing, start } = service()
     const issued = pairing.issue(start)
 
-    expect(() => pairing.claim(issued.code, { label: "studio-ipad" }, start + pairingCodeTtlMs + 1))
+    expect(() => pairing.claim(issued.code, claimant, start + pairingCodeTtlMs + 1))
       .toThrow("Pairing code has expired")
   })
 
@@ -57,7 +63,7 @@ describe("PairingCodeService", () => {
     const { pairing, start } = service()
     pairing.issue(start)
 
-    expect(() => pairing.claim("wrong-wrong-wrong-11", { label: "studio-ipad" }, start))
+    expect(() => pairing.claim("wrong-wrong-wrong-11", claimant, start))
       .toThrow("Pairing code is not valid")
   })
 
@@ -66,11 +72,11 @@ describe("PairingCodeService", () => {
     const issued = pairing.issue(start)
 
     for (let attempt = 0; attempt < maximumPairingAttempts; attempt += 1) {
-      expect(() => pairing.claim("wrong-wrong-wrong-11", { label: "guess" }, start))
+      expect(() => pairing.claim("wrong-wrong-wrong-11", { label: "guess", machineId }, start))
         .toThrow(PairingCodeError)
     }
 
-    expect(() => pairing.claim(issued.code, { label: "studio-ipad" }, start))
+    expect(() => pairing.claim(issued.code, claimant, start))
       .toThrow("Pairing code is not valid")
   })
 
@@ -79,9 +85,9 @@ describe("PairingCodeService", () => {
     const first = pairing.issue(start)
     const second = pairing.issue(start + 1)
 
-    expect(() => pairing.claim(first.code, { label: "studio-ipad" }, start + 2))
+    expect(() => pairing.claim(first.code, claimant, start + 2))
       .toThrow("Pairing code is not valid")
-    expect(pairing.claim(second.code, { label: "studio-ipad" }, start + 2).token)
+    expect(pairing.claim(second.code, claimant, start + 2).token)
       .toMatch(/^[A-Za-z0-9_-]{43}$/)
   })
 
@@ -93,7 +99,7 @@ describe("PairingCodeService", () => {
     expect(pairing.pairingOpen(start)).toBe(true)
     expect(pairing.pairingOpen(start + pairingCodeTtlMs + 1)).toBe(false)
 
-    pairing.claim(issued.code, { label: "studio-ipad" }, start)
+    pairing.claim(issued.code, claimant, start)
     expect(pairing.pairingOpen(start)).toBe(false)
   })
 
@@ -110,7 +116,7 @@ describe("PairingCodeService", () => {
 
     const failure = (() => {
       try {
-        pairing.claim("wrong-wrong-wrong-11", { label: "guess" }, start)
+        pairing.claim("wrong-wrong-wrong-11", { label: "guess", machineId }, start)
         return undefined
       } catch (error) {
         return error as Error

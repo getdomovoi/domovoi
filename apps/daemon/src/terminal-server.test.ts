@@ -8,6 +8,7 @@ import { join } from "node:path"
 import {
   demoWorkspace,
   maximumTerminalReplayCharacters,
+  protocolVersion,
   type RpcMethod,
   type RpcResult,
 } from "@getdomovoi/protocol"
@@ -44,6 +45,82 @@ function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   }
 }
 
+function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
+  const socket = new WebSocket(url, {
+    headers: { authorization: `Bearer ${daemon.authToken}` },
+  })
+  const automaticHelloId = "test-automatic-client-identity"
+  const emit = socket.emit.bind(socket)
+  const send = socket.send.bind(socket)
+  const pending: Array<{ data: unknown; args: unknown[] }> = []
+  let identityState: "unsent" | "pending" | "established" = "unsent"
+
+  // Tests using this helper model a normal authenticated client. Send its
+  // immutable hello before the first ordinary RPC. Raw sockets still exercise
+  // authentication and missing-identity failures directly.
+  socket.emit = ((event: string | symbol, ...args: unknown[]) => {
+    if (event === "message") {
+      try {
+        const message = JSON.parse(String(args[0])) as { id?: unknown }
+        if (message.id === automaticHelloId) {
+          identityState = "established"
+          for (const queued of pending.splice(0)) {
+            Reflect.apply(send, socket, [queued.data, ...queued.args])
+          }
+          return true
+        }
+      } catch {
+        // Non-JSON frames still belong to the test that sent them.
+      }
+    }
+    return Reflect.apply(emit, socket, [event, ...args]) as boolean
+  }) as typeof socket.emit
+  socket.send = ((data: unknown, ...args: unknown[]) => {
+    try {
+      const request = JSON.parse(String(data)) as { method?: unknown }
+      if (request.method === "system.hello") {
+        identityState = "established"
+      } else if (identityState !== "established") {
+        pending.push({ data, args })
+        if (identityState === "pending") return
+        identityState = "pending"
+        send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: automaticHelloId,
+          method: "system.hello",
+          params: {
+            client: "desktop",
+            clientId: "desktop-terminal-test",
+            clientVersion: "0.0.1",
+            protocolVersion,
+          },
+        }))
+        return
+      }
+    } catch {
+      if (identityState !== "established") {
+        pending.push({ data, args })
+        if (identityState === "pending") return
+        identityState = "pending"
+        send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: automaticHelloId,
+          method: "system.hello",
+          params: {
+            client: "desktop",
+            clientId: "desktop-terminal-test",
+            clientVersion: "0.0.1",
+            protocolVersion,
+          },
+        }))
+        return
+      }
+    }
+    return Reflect.apply(send, socket, [data, ...args])
+  }) as typeof socket.send
+  return socket
+}
+
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
   await removeScratchDirectories(scratchDirectories.splice(0))
@@ -74,9 +151,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -149,9 +224,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -244,9 +317,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -319,9 +390,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -432,9 +501,7 @@ describe("terminal RPC", () => {
     running.push(daemon)
     const address = await daemon.start()
     activateTurns()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -648,7 +715,7 @@ describe("terminal RPC", () => {
     }
     await rpc("system.hello", {
       client: "desktop",
-      clientVersion: "0.0.1", protocolVersion: "0.1.0",
+      clientVersion: "0.0.1", protocolVersion,
       clientId: "desktop-emergency",
       authToken: daemon.authToken,
     })
@@ -672,7 +739,7 @@ describe("terminal RPC", () => {
       method: "system.hello",
       params: {
         client: "tablet",
-        clientVersion: "0.0.1", protocolVersion: "0.1.0",
+        clientVersion: "0.0.1", protocolVersion,
         clientId: "tablet-observer",
         authToken: daemon.authToken,
       },
@@ -839,9 +906,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -961,9 +1026,7 @@ describe("terminal RPC", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -1027,9 +1090,7 @@ describe("terminal RPC", () => {
     const address = await daemon.start()
 
     const open = async () => {
-      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-        headers: { authorization: `Bearer ${daemon.authToken}` },
-      })
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
       await new Promise<void>((resolve, reject) => {
         socket.once("open", resolve)
         socket.once("error", reject)
@@ -1056,12 +1117,12 @@ describe("terminal RPC", () => {
     const intruder = await open()
     await owner.rpc("system.hello", {
       client: "desktop",
-      clientVersion: "0.0.1", protocolVersion: "0.1.0",
+      clientVersion: "0.0.1", protocolVersion,
       clientId: "desktop-owner",
     })
     await intruder.rpc("system.hello", {
       client: "tablet",
-      clientVersion: "0.0.1", protocolVersion: "0.1.0",
+      clientVersion: "0.0.1", protocolVersion,
       clientId: "tablet-intruder",
     })
 
@@ -1137,9 +1198,7 @@ describe("terminal RPC", () => {
     running.push(daemon)
     const address = await daemon.start()
     const open = async () => {
-      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-        headers: { authorization: `Bearer ${daemon.authToken}` },
-      })
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
       await new Promise<void>((resolve, reject) => {
         socket.once("open", resolve)
         socket.once("error", reject)
@@ -1166,11 +1225,13 @@ describe("terminal RPC", () => {
     await owner.rpc("system.hello", {
       client: "desktop",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "desktop-reap-owner",
     })
     await survivor.rpc("system.hello", {
       client: "tablet",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "tablet-survivor",
     })
 
@@ -1216,9 +1277,7 @@ describe("terminal RPC", () => {
     running.push(daemon)
     const address = await daemon.start()
     const open = async () => {
-      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-        headers: { authorization: `Bearer ${daemon.authToken}` },
-      })
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
       await new Promise<void>((resolve, reject) => {
         socket.once("open", resolve)
         socket.once("error", reject)
@@ -1244,6 +1303,7 @@ describe("terminal RPC", () => {
     await owner.rpc("system.hello", {
       client: "desktop",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "desktop-reclaim",
     })
 
@@ -1262,6 +1322,7 @@ describe("terminal RPC", () => {
     await reconnected.rpc("system.hello", {
       client: "desktop",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "desktop-reclaim",
     })
     await reconnected.rpc("terminal.claim", {
@@ -1301,9 +1362,7 @@ describe("terminal RPC", () => {
     const address = await daemon.start()
 
     const open = async () => {
-      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-        headers: { authorization: `Bearer ${daemon.authToken}` },
-      })
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
       await new Promise<void>((resolve, reject) => {
         socket.once("open", resolve)
         socket.once("error", reject)
@@ -1330,6 +1389,7 @@ describe("terminal RPC", () => {
     await owner.rpc("system.hello", {
       client: "desktop",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "desktop-owner",
     })
     await expect(owner.rpc("terminal.create", {
@@ -1350,6 +1410,7 @@ describe("terminal RPC", () => {
     await watcher.rpc("system.hello", {
       client: "tablet",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "tablet-watcher",
     })
 
@@ -1360,6 +1421,7 @@ describe("terminal RPC", () => {
     await reconnected.rpc("system.hello", {
       client: "desktop",
       clientVersion: "0.0.1",
+      protocolVersion,
       clientId: "desktop-owner",
     })
     await expect(reconnected.rpc("terminal.create", {
@@ -1451,9 +1513,7 @@ describe("terminal RPC", () => {
     running.push(daemon)
     const address = await daemon.start()
     activateTurns()
-    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -1474,9 +1534,7 @@ describe("terminal RPC", () => {
       return response
     }
 
-    const tabletSocket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
-      headers: { authorization: `Bearer ${daemon.authToken}` },
-    })
+    const tabletSocket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       tabletSocket.once("open", resolve)
       tabletSocket.once("error", reject)

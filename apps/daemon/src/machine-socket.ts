@@ -1,6 +1,10 @@
 import { WebSocket } from "ws"
 
-import { protocolVersion, systemHelloResultSchema } from "@getdomovoi/protocol"
+import {
+  daemonAuthenticationErrorCode,
+  protocolVersion,
+  systemHelloResultSchema,
+} from "@getdomovoi/protocol"
 
 import type { MachineConnection } from "./machine-dial.js"
 
@@ -9,6 +13,13 @@ export const defaultMachineCallTimeoutMs = 120_000
 export const defaultMaximumPendingCalls = 64
 
 const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
+
+export class MachinePairingRequiredError extends Error {
+  constructor() {
+    super("That machine must be paired again")
+    this.name = "MachinePairingRequiredError"
+  }
+}
 
 // The dialer decides which endpoint to use; this refuses to carry a credential
 // over one that could be watched, whatever decided it.
@@ -39,7 +50,7 @@ type PendingCall = {
 // workspace client.
 export function openMachineSocket(input: {
   endpoint: string
-  machineId: string
+  expectedMachineId: string
   credential: string
   handshakeTimeoutMs?: number
   callTimeoutMs?: number
@@ -136,7 +147,11 @@ export function openMachineSocket(input: {
     })
 
     socket.on("message", (data) => {
-      let message: { id?: unknown; result?: unknown; error?: { message?: unknown } }
+      let message: {
+        id?: unknown
+        result?: unknown
+        error?: { code?: unknown; message?: unknown }
+      }
       try {
         message = JSON.parse(data.toString()) as typeof message
       } catch {
@@ -147,6 +162,10 @@ export function openMachineSocket(input: {
       if (!call) return
       pending.delete(message.id)
       if (message.error) {
+        if (message.error.code === daemonAuthenticationErrorCode) {
+          call.reject(new MachinePairingRequiredError())
+          return
+        }
         const described = typeof message.error.message === "string"
           ? message.error.message
           : "That machine refused the request"
@@ -169,7 +188,6 @@ export function openMachineSocket(input: {
       // anything else to it.
       send("system.hello", {
         client: "machine",
-        machineId: input.machineId,
         clientVersion: "0.0.1",
         protocolVersion,
         authToken: input.credential,
@@ -182,6 +200,12 @@ export function openMachineSocket(input: {
             reject(spoken === undefined
               ? new Error("That machine answered the handshake with an invalid result")
               : new Error(`That machine speaks protocol ${spoken}, this daemon speaks ${protocolVersion}`))
+            socket.close()
+            return
+          }
+          if (snapshot.data.machine.id !== input.expectedMachineId) {
+            scheduler.clearTimeout(handshake)
+            reject(new Error("The endpoint answered as a different machine"))
             socket.close()
             return
           }

@@ -8,6 +8,8 @@ import {
   type FleetMachine,
   type SessionSummary,
   type SessionTransferParams,
+  type SessionTransferPreview,
+  type SessionTransferPreviewParams,
   type SessionTransferResult,
   type TransferMethod,
 } from "@getdomovoi/protocol"
@@ -25,26 +27,15 @@ import {
 import { Field, FieldLabel } from "./components/ui/field"
 import { Input } from "./components/ui/input"
 
-// The two lists are a product promise about what a move does, so they are
-// fixed here rather than derived from whatever the session happens to hold.
-const travelsWithSession = [
-  "Thread",
-  "Plan",
-  "Tool and test results",
-  "Open annotations",
-  "Active skills",
-  "Permission mode",
-  "Tracked changes",
-  "Non-ignored untracked files",
-] as const
+// These lists are prose, and prose is how a promise outruns the product: the
+// earlier version claimed skills travelled and secrets did not, and neither was
+// true. Keep every line checkable against what a transfer actually sends.
+import { transferCoverageLists } from "./transfer-coverage.js"
+import { returnTransferExplanation, transferOutcomeNotice } from "./transfer-outcome.js"
 
-const staysBehind = [
-  "Running dev servers and PTYs, which restart there",
-  "Provider credentials",
-  ".env and secrets",
-  "Database state",
-  "Ignored build artifacts",
-] as const
+// Long enough that an ordinary remote name is typed in one go, short enough
+// that the preview feels like an answer rather than a delay.
+export const previewDebounceMs = 400
 
 type TransferCheck = { label: string; ready: boolean }
 
@@ -88,6 +79,7 @@ export function TransferSessionDialog({
   session,
   source,
   target,
+  onPreview,
   onTransfer,
   onTransferred,
   onOutcome,
@@ -97,6 +89,9 @@ export function TransferSessionDialog({
   session: SessionSummary
   source: FleetMachine
   target: FleetMachine
+  onPreview: (
+    params: Omit<SessionTransferPreviewParams, "client">,
+  ) => Promise<SessionTransferPreview>
   onTransfer: (
     params: Omit<SessionTransferParams, "client">,
   ) => Promise<SessionTransferResult>
@@ -106,28 +101,101 @@ export function TransferSessionDialog({
   const [method, setMethod] = useState<TransferMethod>("git-bundle")
   const [remote, setRemote] = useState("")
   const [pending, setPending] = useState(false)
-  const [problem, setProblem] = useState("")
+  const [problem, setProblem] = useState<{ title: string; detail: string; from: "preview" | "move" } | undefined>(undefined)
+  const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewAttempt, setPreviewAttempt] = useState(0)
+
+  // The daemon decides what this move would carry and whether it may happen at
+  // all. Asking it is not a nicety: session.transfer refuses anything without
+  // the contract version and intent digest this call returns.
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    // A preview is not a cheap read: it collects portable state, fingerprints
+    // the repository and calls the target. Typing a remote name would run one
+    // per keystroke, so the request waits for the typing to stop.
+    if (method === "remote-ref" && !remote.trim()) {
+      setPreview(undefined)
+      setPreviewing(false)
+      return
+    }
+    const run = () => {
+      setPreviewing(true)
+      setPreview(undefined)
+      void onPreview({
+        sessionId: session.id,
+        targetMachineId: target.id,
+        method,
+        ...(method === "remote-ref" ? { remote: remote.trim() } : {}),
+      }).then(
+        (next) => {
+          if (!active) return
+          setPreview(next)
+          // A preview that failed and then succeeded has nothing left to report,
+          // so its error goes. A refused move stays: the operator asked for it
+          // and the answer is what they are waiting to read.
+          setProblem((current) => current?.from === "preview" ? undefined : current)
+        },
+        (cause: unknown) => {
+          if (!active) return
+          setProblem({
+            title: "The move could not be previewed",
+            detail: cause instanceof Error ? cause.message : `${source.label} did not answer.`,
+            from: "preview",
+          })
+        },
+      ).finally(() => { if (active) setPreviewing(false) })
+    }
+    // Only the typed remote needs waiting on. Opening the dialog, or switching
+    // method, is a settled intent and asks at once.
+    if (method !== "remote-ref") {
+      run()
+      return () => { active = false }
+    }
+    const timer = setTimeout(run, previewDebounceMs)
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [method, onPreview, open, previewAttempt, remote, session.id, source.label, target.id])
+
+  // What the move carries is the daemon's answer, so it is read off the preview
+  // rather than described here. Before the preview lands there is nothing
+  // truthful to list, and the move is refused without it anyway.
+  const coverage = preview ? transferCoverageLists(preview.coverage) : undefined
 
   const wasOpen = useRef(open)
   useEffect(() => {
     if (wasOpen.current && !open) {
       setMethod("git-bundle")
       setRemote("")
-      setProblem("")
+      setProblem(undefined)
+      setPreview(undefined)
     }
     wasOpen.current = open
   }, [open])
 
   const checks = transferChecks({ session, source, target })
   const remoteReady = method === "git-bundle" || remote.trim().length > 0
-  const ready = checks.every((check) => check.ready) && remoteReady && !pending
+  const ready = checks.every((check) => check.ready)
+    && remoteReady
+    && !pending
+    && !previewing
+    && preview?.allowed === true
 
   const move = async () => {
     if (!ready) return
     setPending(true)
-    setProblem("")
+    setProblem(undefined)
     try {
+      if (!preview?.allowed) return
       const result = await onTransfer({
+        // Copied from the preview rather than composed here: the digest is the
+        // daemon's promise about what it inspected, and a value this client
+        // assembled would bind nothing.
+        contractVersion: preview.contractVersion,
+        intentDigest: preview.intentDigest,
         sessionId: session.id,
         targetMachineId: target.id,
         method,
@@ -139,11 +207,34 @@ export function TransferSessionDialog({
         onOpenChange(false)
         return
       }
-      setProblem(result.outcome === "refused"
-        ? sessionTransferRefusalMessage(result.reason)
-        : `The session did not move and stayed on ${source.label}`)
+      if (result.outcome === "refused") {
+        const returning = returnTransferExplanation(
+          session.transferredFrom?.sourceMachineId,
+          target.id,
+          target.label,
+        )
+        setProblem({
+          title: "Session did not move",
+          detail: [sessionTransferRefusalMessage(result.reason), returning]
+            .filter((part) => part !== undefined)
+            .join(" "),
+          from: "move",
+        })
+      } else {
+        setProblem({ ...transferOutcomeNotice(result, source.label), from: "move" })
+      }
+      // The digest describes a session that has since moved on, so the refusal
+      // is answered by asking again rather than by making the operator close
+      // the dialog and reopen it to get a digest the daemon will accept.
+      if (result.outcome === "refused" && result.reason === "session-state-changed") {
+        setPreviewAttempt((attempt) => attempt + 1)
+      }
     } catch (cause) {
-      setProblem(cause instanceof Error ? cause.message : `The session did not move and stayed on ${source.label}`)
+      setProblem({
+        title: "Session did not move",
+        detail: cause instanceof Error ? cause.message : `The session stayed on ${source.label}.`,
+        from: "move",
+      })
     } finally {
       setPending(false)
     }
@@ -162,8 +253,8 @@ export function TransferSessionDialog({
         {problem ? (
           <Alert variant="destructive">
             <CircleStopIcon />
-            <AlertTitle>Session did not move</AlertTitle>
-            <AlertDescription>{problem}</AlertDescription>
+            <AlertTitle>{problem.title}</AlertTitle>
+            <AlertDescription>{problem.detail}</AlertDescription>
           </Alert>
         ) : null}
 
@@ -229,10 +320,41 @@ export function TransferSessionDialog({
           </Field>
         ) : null}
 
-        <div className="flex flex-col gap-4 sm:flex-row">
-          <FixedList label="Travels with the session" items={travelsWithSession} />
-          <FixedList label="Does not travel" items={staysBehind} />
-        </div>
+        {coverage ? (
+          <>
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <FixedList label="Travels with the session" items={coverage.included} />
+              <FixedList label="Does not travel" items={coverage.excluded} />
+            </div>
+
+            {coverage.warnings.map((warning) => (
+              <p key={warning} className="m-0 text-[11px] leading-relaxed text-warning">{warning}</p>
+            ))}
+          </>
+        ) : (
+          <p className="m-0 text-[12px] leading-relaxed text-muted-foreground">
+            {previewing
+              ? `Asking ${source.label} what this move would carry`
+              : `${source.label} has not said what this move would carry`}
+          </p>
+        )}
+
+        {preview?.allowed === false ? (
+          <Alert variant="destructive">
+            <CircleStopIcon />
+            <AlertTitle>This move is refused</AlertTitle>
+            <AlertDescription>
+              {[
+                sessionTransferRefusalMessage(preview.reason),
+                returnTransferExplanation(
+                  session.transferredFrom?.sourceMachineId,
+                  target.id,
+                  target.label,
+                ),
+              ].filter((part) => part !== undefined).join(" ")}
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         <DialogFooter>
           <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>

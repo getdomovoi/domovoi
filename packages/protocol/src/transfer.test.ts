@@ -42,6 +42,22 @@ describe("sourcePreflight", () => {
     expect(sourcePreflight({ session: withoutWorktree as SessionSummary }))
       .toEqual({ allowed: false, reason: "session-has-no-worktree" })
   })
+
+  it("refuses to move an owner recovered without target confirmation", () => {
+    expect(sourcePreflight({
+      session: {
+        ...session,
+        sourceRecovery: {
+          transferId: `transfer-${"c".repeat(32)}`,
+          targetMachineId,
+          generation: session.ownershipGeneration ?? 0,
+          manifestDigest: `sha256:${"d".repeat(64)}`,
+          recoveredAt: "2026-09-03T22:00:00.000Z",
+          decidedBy: { client: "desktop" },
+        },
+      },
+    })).toEqual({ allowed: false, reason: "session-recovery-unresolved" })
+  })
 })
 
 describe("planTransfer", () => {
@@ -122,6 +138,43 @@ describe("transferReceiptSchema", () => {
       reason: "target-unreachable" as const,
     }
     expect(transferReceiptSchema.parse(refused).reason).toBe("target-unreachable")
+    expect(transferReceiptSchema.safeParse({
+      ...refused,
+      reason: "session-state-changed",
+    }).success).toBe(true)
+  })
+
+  it("couples every receipt outcome to an honest reason", () => {
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      reason: "target-unreachable",
+    }).success).toBe(false)
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      outcome: "refused",
+    }).success).toBe(false)
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      outcome: "failed",
+    }).success).toBe(false)
+  })
+
+  it("records who knowingly reclaimed a source without target confirmation", () => {
+    const recovered = {
+      ...receipt,
+      outcome: "source-recovered" as const,
+      reason: "target-ownership-unconfirmed" as const,
+      decidedBy: { client: "desktop" as const, clientId: "studio-mac" },
+    }
+    expect(transferReceiptSchema.parse(recovered)).toEqual(recovered)
+    expect(transferReceiptSchema.safeParse({
+      ...recovered,
+      reason: undefined,
+    }).success).toBe(false)
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      reason: "target-ownership-unconfirmed",
+    }).success).toBe(false)
   })
 
   it("rejects a checkpoint commit that is not a full object name", () => {
