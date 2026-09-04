@@ -140,11 +140,35 @@ export const sessionForkOriginSchema = z.object({
 
 const ownershipGenerationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 
+export const sessionTransferReconciliationReasonSchema = z.enum([
+  "target-unreachable",
+  "target-timeout",
+  "target-pairing-required",
+])
+
+export const sessionTransferReconciliationSchema = z.object({
+  state: z.literal("ownership-unconfirmed"),
+  reason: sessionTransferReconciliationReasonSchema,
+  firstFailedAt: z.string().datetime({ offset: true }),
+  lastFailedAt: z.string().datetime({ offset: true }),
+  attemptCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  recoveryAction: z.literal("confirm-source-recovery"),
+}).strict().superRefine((failure, context) => {
+  if (Date.parse(failure.firstFailedAt) > Date.parse(failure.lastFailedAt)) {
+    context.addIssue({
+      code: "custom",
+      path: ["lastFailedAt"],
+      message: "The last reconciliation failure cannot precede the first",
+    })
+  }
+})
+
 const sessionTransferPackageSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("preparing") }).strict(),
   z.object({
     state: z.literal("staged"),
     manifestDigest: sha256DigestSchema,
+    reconciliation: sessionTransferReconciliationSchema.optional(),
   }).strict(),
 ])
 
@@ -1077,6 +1101,10 @@ export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 export type SessionForkOrigin = z.infer<typeof sessionForkOriginSchema>
+export type SessionTransferReconciliation = z.infer<typeof sessionTransferReconciliationSchema>
+export type SessionTransferReconciliationReason = z.infer<
+  typeof sessionTransferReconciliationReasonSchema
+>
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>
 export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>

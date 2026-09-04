@@ -683,6 +683,49 @@ describe("workspace protocol", () => {
     expect(workspaceSnapshotSchema.safeParse(missingLifecycle).success).toBe(false)
   })
 
+  it("records bounded target reconciliation failures only on a staged transfer", () => {
+    const lifecycle = {
+      phase: "transferring",
+      transferId: `transfer-${"b".repeat(32)}`,
+      targetMachineId: `machine-${"c".repeat(32)}`,
+      intentDigest: `sha256:${"d".repeat(64)}`,
+      nextGeneration: 4,
+      startedAt: "2026-09-03T18:00:00.000Z",
+      resumeState: "idle",
+      method: "git-bundle",
+      requestedBy: { client: "desktop", clientId: "studio-mac" },
+      package: {
+        state: "staged",
+        manifestDigest: `sha256:${"e".repeat(64)}`,
+        reconciliation: {
+          state: "ownership-unconfirmed",
+          reason: "target-unreachable",
+          firstFailedAt: "2026-09-03T18:01:00.000Z",
+          lastFailedAt: "2026-09-03T18:02:00.000Z",
+          attemptCount: 2,
+          recoveryAction: "confirm-source-recovery",
+        },
+      },
+    }
+
+    expect(sessionTransferLifecycleSchema.parse(lifecycle)).toEqual(lifecycle)
+
+    const preparing = structuredClone(lifecycle)
+    preparing.package = {
+      state: "preparing",
+      reconciliation: lifecycle.package.reconciliation,
+    } as never
+    expect(sessionTransferLifecycleSchema.safeParse(preparing).success).toBe(false)
+
+    const reversedTimes = structuredClone(lifecycle)
+    reversedTimes.package.reconciliation.firstFailedAt = "2026-09-03T18:03:00.000Z"
+    expect(sessionTransferLifecycleSchema.safeParse(reversedTimes).success).toBe(false)
+
+    const rawFailure = structuredClone(lifecycle)
+    rawFailure.package.reconciliation.reason = "connect ECONNREFUSED token=secret" as never
+    expect(sessionTransferLifecycleSchema.safeParse(rawFailure).success).toBe(false)
+  })
+
   it("retains an attributed source recovery and freezes the claimant on detected conflict", () => {
     expect(sessionSourceRecoverySchema.safeParse({
       transferId: `transfer-${"a".repeat(32)}`,
