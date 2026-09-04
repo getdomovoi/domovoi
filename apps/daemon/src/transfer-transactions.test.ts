@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, rm, utimes } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -183,6 +183,29 @@ describe("file transfer transaction journal", () => {
     expect(results.filter((result) => result.status === "rejected")).toEqual([])
     await expect(transactions.status(transferId, manifestDigest))
       .resolves.toEqual({ state: "prepared", transferId })
+  })
+
+  it("publishes a final chunk retained across a process restart", async () => {
+    const { root, transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const manifest = manifestFor(stateBytes, Buffer.from("repository"))
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    const chunkPath = join(root, transferId, "chunks", "state")
+    await mkdir(chunkPath)
+    await writeFile(join(chunkPath, "0-1.chunk"), stateBytes, { mode: 0o600 })
+
+    const reopened = new FileTransferTransactions(root)
+    await expect(reopened.acceptMember({
+      transferId,
+      memberId: "state",
+      sequence: 0,
+      bytes: stateBytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })).resolves.toEqual({ state: "member-received", transferId, memberId: "state" })
+    await expect(reopened.readMember(transferId, manifestDigest, "state"))
+      .resolves.toEqual(stateBytes)
   })
 
   it("does not publish a member whose bytes miss its declared digest", async () => {

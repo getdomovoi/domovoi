@@ -181,6 +181,20 @@ export class FileTransferTransactions {
       if (!prior.equals(bytes) || existing.final !== params.final) {
         return this.#memberRefusal(params, "chunk-out-of-order")
       }
+      if (existing.final) {
+        const published = await this.#publishRetainedMember(
+          chunkPath,
+          completedPath,
+          chunks,
+          descriptor.byteLength,
+          descriptor.digest,
+        )
+        if (!published) {
+          await rm(join(chunkPath, existing.name), { force: true })
+          return this.#memberRefusal(params, "digest-mismatch")
+        }
+        return this.#completedMemberResult(stored.manifest, params)
+      }
       return transferMemberResultSchema.parse({
         state: "receiving",
         transferId: params.transferId,
@@ -227,7 +241,7 @@ export class FileTransferTransactions {
       final: true,
       byteLength: bytes.byteLength,
     }]
-    const published = await this.#publishMember(
+    const published = await this.#publishRetainedMember(
       chunkPath,
       completedPath,
       allChunks,
@@ -238,8 +252,15 @@ export class FileTransferTransactions {
       await rm(nextChunk, { force: true })
       return this.#memberRefusal(params, "digest-mismatch")
     }
-    await rm(chunkPath, { recursive: true, force: true })
-    const missing = await this.#missingMembers(stored.manifest)
+    return this.#completedMemberResult(stored.manifest, params)
+  }
+
+  async #completedMemberResult(
+    manifest: SessionTransferManifest,
+    params: Pick<TransferMemberParams, "transferId" | "memberId">,
+  ): Promise<TransferMemberResult> {
+    await rm(this.#chunkPath(params.transferId, params.memberId), { recursive: true, force: true })
+    const missing = await this.#missingMembers(manifest)
     if (missing.length === 0) {
       await this.#writeStatus(params.transferId, { state: "prepared", transferId: params.transferId })
       return transferMemberResultSchema.parse({ state: "prepared", transferId: params.transferId })
@@ -487,27 +508,55 @@ export class FileTransferTransactions {
   ): Promise<boolean> {
     const temporary = `${completedPath}.${randomUUID()}.tmp`
     const handle = await open(temporary, "wx", 0o600)
-    const digest = createHash("sha256")
-    let byteLength = 0
     try {
-      for (const chunk of chunks) {
-        const bytes = await readFile(join(chunkPath, chunk.name))
-        byteLength += bytes.byteLength
-        digest.update(bytes)
-        await handle.write(bytes)
+      const digest = createHash("sha256")
+      let byteLength = 0
+      try {
+        for (const chunk of chunks) {
+          const bytes = await readFile(join(chunkPath, chunk.name))
+          byteLength += bytes.byteLength
+          digest.update(bytes)
+          await handle.write(bytes)
+        }
+        await handle.sync()
+      } finally {
+        await handle.close()
       }
-      await handle.sync()
+      const matches = byteLength === expectedBytes
+        && `sha256:${digest.digest("hex")}` === expectedDigest
+      if (!matches) return false
+      await rename(temporary, completedPath)
+      return true
     } finally {
-      await handle.close()
+      await rm(temporary, { force: true }).catch(() => {})
     }
-    const matches = byteLength === expectedBytes
-      && `sha256:${digest.digest("hex")}` === expectedDigest
-    if (!matches) {
-      await rm(temporary, { force: true })
-      return false
+  }
+
+  async #publishRetainedMember(
+    chunkPath: string,
+    completedPath: string,
+    chunks: Array<{ name: string, byteLength: number }>,
+    expectedBytes: number,
+    expectedDigest: string,
+  ): Promise<boolean> {
+    try {
+      return await this.#publishMember(
+        chunkPath,
+        completedPath,
+        chunks,
+        expectedBytes,
+        expectedDigest,
+      )
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "ENOENT" && code !== "EEXIST" && code !== "ENOTEMPTY") throw error
+      try {
+        await this.#verifyMember(completedPath, expectedBytes, expectedDigest)
+        return true
+      } catch {
+        throw error
+      }
     }
-    await rename(temporary, completedPath)
-    return true
   }
 
   async #verifyMember(path: string, expectedBytes: number, expectedDigest: string): Promise<void> {
