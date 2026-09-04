@@ -143,6 +143,39 @@ describe("agentPromptWithSkills", () => {
     expect(skillCatalog.read).not.toHaveBeenCalled()
   })
 
+  it("treats reviewed capability order as non-semantic", async () => {
+    const current: SkillSummary = {
+      ...skill("skill-aaaaaaaaaaaa", "alpha"),
+      manifest: {
+        version: 1,
+        capabilities: ["filesystem.read", "network.connect"],
+      },
+    }
+    const currentReview = review("project-one", current)
+    const reorderedReview: SkillEnablementReview = {
+      ...currentReview,
+      manifest: {
+        version: 1,
+        capabilities: ["network.connect", "filesystem.read"],
+      },
+    }
+    const snapshot = {
+      project: { id: "project-one" },
+      skillEnablements: [reorderedReview],
+    } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+    const skillCatalog = catalog([{ skill: current, content: "Use alpha." }])
+
+    const prepared = await prepareTurnSkillContext(
+      skillCatalog,
+      snapshot,
+      explicitSelection(reorderedReview),
+    )
+
+    expect(prepared.deliverable).toEqual([
+      expect.objectContaining({ id: current.id, capabilities: current.manifest.capabilities }),
+    ])
+  })
+
   it("refuses an explicit skill whose enablement review changed before reading it", async () => {
     const current = skill("skill-aaaaaaaaaaaa", "alpha", digest("b"))
     const skillCatalog = catalog([{ skill: current, content: "Changed instructions." }])
