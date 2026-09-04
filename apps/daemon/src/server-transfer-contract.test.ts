@@ -143,7 +143,10 @@ function rpc(socket: WebSocket) {
   }
 }
 
-async function openMachine(daemon: DomovoiDaemon): Promise<WebSocket> {
+async function openMachine(
+  daemon: DomovoiDaemon,
+  machineId = sourceMachineId,
+): Promise<WebSocket> {
   const address = daemon.address!
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -155,14 +158,18 @@ async function openMachine(daemon: DomovoiDaemon): Promise<WebSocket> {
   const call = rpc(socket)
   await call("system.hello", {
     client: "machine",
-    machineId: sourceMachineId,
+    machineId,
     clientVersion: "0.0.1",
     protocolVersion: "0.1.0",
   })
   return socket
 }
 
-async function openClient(daemon: DomovoiDaemon, clientId?: string): Promise<WebSocket> {
+async function openClient(
+  daemon: DomovoiDaemon,
+  clientId?: string,
+  client: "desktop" | "web" = "desktop",
+): Promise<WebSocket> {
   const address = daemon.address!
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -172,7 +179,7 @@ async function openClient(daemon: DomovoiDaemon, clientId?: string): Promise<Web
     socket.once("error", reject)
   })
   await rpc(socket)("system.hello", {
-    client: "desktop",
+    client,
     ...(clientId ? { clientId } : {}),
     clientVersion: "0.0.1",
     protocolVersion: "0.1.0",
@@ -181,6 +188,100 @@ async function openClient(daemon: DomovoiDaemon, clientId?: string): Promise<Web
 }
 
 describe("transactional session transfer RPC", () => {
+  it("requires a matching authenticated client to preview or move a source", async () => {
+    const { source } = await transferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const connectToMachine = vi.fn(async () => ({
+      call: async () => ({
+        allowed: true,
+        targetProjectId: "project-target",
+        lineageCommit: baseCommit,
+      }),
+      close: () => {},
+    }))
+    const checkpoint = vi.fn(async () => ({ commit: checkpointCommit, changedFiles: [] }))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint,
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("repository"),
+      connectToMachine,
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const request = {
+      sessionId: source.sessions[0]!.id,
+      targetMachineId,
+      client: "desktop",
+    }
+
+    const machineSocket = await openMachine(daemon, targetMachineId)
+    await expect(rpc(machineSocket)("session.transferPreview", request)).resolves.toMatchObject({
+      error: { code: -32001 },
+    })
+    const webSocket = await openClient(daemon, undefined, "web")
+    await expect(rpc(webSocket)("session.transferPreview", request)).resolves.toMatchObject({
+      error: { code: -32602 },
+    })
+    expect(connectToMachine).not.toHaveBeenCalled()
+
+    const desktopSocket = await openClient(daemon)
+    const preview = await rpc(desktopSocket)("session.transferPreview", request)
+    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    expect(connectToMachine).toHaveBeenCalledOnce()
+    connectToMachine.mockClear()
+    const transfer = {
+      ...request,
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    }
+    await expect(rpc(machineSocket)("session.transfer", transfer)).resolves.toMatchObject({
+      error: { code: -32001 },
+    })
+    await expect(rpc(webSocket)("session.transfer", transfer)).resolves.toMatchObject({
+      error: { code: -32602 },
+    })
+    expect(connectToMachine).not.toHaveBeenCalled()
+    expect(checkpoint).not.toHaveBeenCalled()
+    machineSocket.close()
+    webSocket.close()
+    desktopSocket.close()
+  })
+
   it("prunes incoming and outgoing transfer journals before listening", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-retention-startup-"))
     scratchDirectories.push(scratch)

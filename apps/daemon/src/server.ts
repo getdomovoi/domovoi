@@ -3443,6 +3443,25 @@ export class DomovoiDaemon {
 
       if (method === "session.transferPreview") {
         const params = paramsResult.data as RpcParams<"session.transferPreview">
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "client") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Previewing a session move requires a client connection",
+          )
+          return
+        }
+        if (actor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Transfer preview requires the authenticated client identity",
+          )
+          return
+        }
         const prepared = await this.#prepareTransferPreview(params, signal)
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -3607,6 +3626,25 @@ export class DomovoiDaemon {
           )
           return
         }
+        const transferActor = this.#authenticatedActors.get(socket)
+        if (transferActor?.kind !== "client") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Moving a session requires a client connection",
+          )
+          return
+        }
+        if (transferActor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Moving a session requires the authenticated client identity",
+          )
+          return
+        }
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
         if (!session) {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
@@ -3656,14 +3694,13 @@ export class DomovoiDaemon {
           ? AbortSignal.any([signal, transferDeadline.signal])
           : transferDeadline.signal
         try {
-          const transferActor = this.#authenticatedActors.get(socket)
           const outcome = await this.#sendVersionedSessionTransfer(
             params as RpcParams<"session.transfer"> & {
               contractVersion: 1
               intentDigest: string
             },
             { ...prepared, target: prepared.target, intent: prepared.intent },
-            transferActor?.kind === "client" ? transferActor.clientId : undefined,
+            transferActor.clientId,
             transferSignal,
           )
           if (outcome.outcome === "incomplete") this.#scheduleSessionTransferRecovery()
