@@ -10,7 +10,7 @@ export type MachineSelection =
 const refusalByHealth: Partial<Record<FleetHealth, string>> = {
   degraded: "That machine is not responding",
   unreachable: "That machine cannot be reached",
-  "version-mismatch": "That machine speaks a different protocol version",
+  "version-mismatch": "That machine speaks an older protocol version, so update Domovoi on it",
   "upgrade-required": "That machine has to be upgraded first",
 }
 
