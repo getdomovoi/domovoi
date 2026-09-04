@@ -90,10 +90,10 @@ export function TransferSessionDialog({
   source: FleetMachine
   target: FleetMachine
   onPreview: (
-    params: Omit<SessionTransferPreviewParams, "client">,
+    params: Omit<SessionTransferPreviewParams, "initiatedByClient">,
   ) => Promise<SessionTransferPreview>
   onTransfer: (
-    params: Omit<SessionTransferParams, "client">,
+    params: Omit<SessionTransferParams, "initiatedByClient">,
   ) => Promise<SessionTransferResult>
   onTransferred: (machineId: string) => void
   onOutcome: (result: SessionTransferResult) => void
