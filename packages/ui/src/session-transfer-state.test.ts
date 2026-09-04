@@ -23,7 +23,7 @@ const session: SessionSummary = {
 it("gives every session state a status colour", () => {
   for (const state of [
     "active", "waiting", "idle", "done", "failed",
-    "archiving", "archived", "transferring", "transferred",
+    "archiving", "archived", "transferring", "transferred", "ownership-conflict",
   ] as const) {
     expect(sessionStatusClass({ ...session, state })).toBeTruthy()
   }
@@ -32,6 +32,7 @@ it("gives every session state a status colour", () => {
 it("treats a session that has moved away as read-only", () => {
   expect(sessionIsArchiveReadOnly({ ...session, state: "transferred" })).toBe(true)
   expect(sessionIsArchiveReadOnly({ ...session, state: "transferring" })).toBe(true)
+  expect(sessionIsArchiveReadOnly({ ...session, state: "ownership-conflict" })).toBe(true)
   expect(sessionIsArchiveReadOnly(session)).toBe(false)
 })
 
@@ -40,4 +41,6 @@ it("refuses to fork a session that has moved or is moving", () => {
     .toMatch(/moved|another machine/iu)
   expect(forkSessionBlockedReason({ ...session, state: "transferring" }, undefined))
     .toMatch(/moving|another machine/iu)
+  expect(forkSessionBlockedReason({ ...session, state: "ownership-conflict" }, undefined))
+    .toMatch(/two machines claim/iu)
 })

@@ -359,6 +359,9 @@ const statusClass: Record<SessionSummary["state"], string> = {
   // point on this machine and reads as quiet rather than failed.
   transferring: "bg-warning",
   transferred: "bg-faint",
+  // Two machines claim this session. That is not quiet like a moved session,
+  // and it is not in flight like a moving one, so it reads as a problem.
+  "ownership-conflict": "bg-destructive",
 }
 
 export function sessionStatusClass(session: Pick<SessionSummary, "state">): string {
@@ -1798,6 +1801,7 @@ const readOnlySessionStates = new Set<SessionSummary["state"]>([
   "archived",
   "transferring",
   "transferred",
+  "ownership-conflict",
 ])
 
 export function sessionIsArchiveReadOnly(
@@ -1818,6 +1822,9 @@ export function forkSessionBlockedReason(
   }
   if (session.state === "transferred") {
     return "This session moved to another machine"
+  }
+  if (session.state === "ownership-conflict") {
+    return "Two machines claim this session"
   }
   if (session.activeTurnId || session.state === "active") {
     return "Stop the active turn before forking"
