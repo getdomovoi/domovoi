@@ -1395,10 +1395,19 @@ export function Thread({
     setSendError("")
     setSkillRefusal(undefined)
     try {
-      const selection = turnSkillSelectionFor(
+      const { selection, missing } = turnSkillSelectionFor(
         skillSelection,
         selectableTurnSkills(skillCatalog ?? [], snapshot.skillEnablements, snapshot.project?.id),
       )
+      // Sending without them would quietly become a smaller selection, or an
+      // explicit "no skills" if every chosen skill has gone.
+      if (missing.length > 0) {
+        setSendError(
+          `${missing.length === 1 ? "A skill" : `${missing.length} skills`} you chose for this turn `
+          + "is no longer in this project's catalog. Open Skills to review, then choose again.",
+        )
+        return
+      }
       await onSend(active.id, nextPrompt, selection)
       setPrompt("")
       // The daemon accepted this selection, so it stops being a draft.
@@ -3652,7 +3661,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [connected, listProviderSecrets, surface])
 
   useEffect(() => {
-    if (surface !== "skills") return
+    // The composer names the skills a turn carries, so the catalog cannot wait
+    // for someone to open the Skills surface first.
+    if (surface !== "skills" && !snapshot?.project) return
     if (!connected) {
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{

@@ -1,13 +1,11 @@
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
-
-import type { SkillEnablementReview, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, type SkillEnablementReview, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ComposerSkillChip } from "./composer-skills.js"
+import { Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -77,11 +75,38 @@ it("says nothing at all without an open project", () => {
   expect(screen.queryByRole("button", { name: "Add a skill to this turn" })).toBeNull()
 })
 
-it("appears in the composer, not only as a component", () => {
-  const shell = readFileSync(join(import.meta.dirname, "workspace-shell.tsx"), "utf8")
+it("appears in the composer of a mounted shell", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.skillEnablements = [review("skill-aaaaaaaaaaaa")].map((entry) => ({
+    ...entry,
+    projectId: snapshot.project!.id,
+  }))
 
-  expect(shell).toContain("<ComposerSkillChip")
-  expect(shell).toContain("<PromptDeliveryNote")
+  render(
+    <TooltipProvider>
+      <Thread
+        snapshot={snapshot}
+        connected
+        onResolve={vi.fn()}
+        onSetRuntime={vi.fn()}
+        onRestartProviderThread={vi.fn()}
+        onForkSession={vi.fn()}
+        onListModels={vi.fn(async () => [])}
+        onNewSession={vi.fn()}
+        onSend={vi.fn(async () => {})}
+        onCheckpoint={vi.fn()}
+        onRestoreCheckpoint={vi.fn()}
+        onPauseSession={vi.fn()}
+        onArchiveSession={vi.fn()}
+        onOpenSkills={vi.fn()}
+        skillNames={{ "skill-aaaaaaaaaaaa": "plan-preview" }}
+      />
+    </TooltipProvider>,
+  )
+
+  const actions = document.querySelector("[data-workspace-composer-actions]")
+  expect(actions?.textContent).toContain("plan-preview")
+  expect(actions?.textContent).toContain("+ skill")
 })
 
 it("lets a person choose which reviewed skills this turn carries", async () => {

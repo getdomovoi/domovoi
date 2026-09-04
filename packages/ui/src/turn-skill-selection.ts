@@ -34,23 +34,31 @@ export function selectableTurnSkills(
  * An absent selection leaves today's project-default behaviour untouched. An
  * empty set is a deliberate "no skills this turn" and is sent as such.
  *
- * A chosen skill the catalog no longer offers is dropped rather than sent with
- * a guessed review: the daemon compares the digest and manifest a person chose
- * against, so inventing either would defeat that check.
+ * A chosen skill the catalog no longer offers is reported as missing rather
+ * than dropped. Dropping it would change what the person asked for into a
+ * smaller selection the daemon would accept without complaint, and an explicit
+ * selection that lost every skill would send "no skills this turn" instead.
+ * The review cannot be invented either: the daemon compares the digest and
+ * manifest a person chose against, so a guess would defeat that check.
  */
 export function turnSkillSelectionFor(
   chosen: ReadonlySet<string> | undefined,
   skills: readonly SelectableTurnSkill[],
-): TurnSkillSelection | undefined {
-  if (!chosen) return undefined
+): { selection: TurnSkillSelection | undefined, missing: string[] } {
+  if (!chosen) return { selection: undefined, missing: [] }
+  const offered = new Map(skills.map((skill) => [skill.id, skill]))
+  const missing = [...chosen].filter((skillId) => !offered.has(skillId)).sort()
   return {
-    mode: "turn-explicit",
-    skills: skills
-      .filter((skill) => chosen.has(skill.id))
-      .map((skill) => ({
-        skillId: skill.id,
-        review: { contentDigest: skill.contentDigest, manifest: skill.manifest },
-      })),
+    selection: {
+      mode: "turn-explicit",
+      skills: skills
+        .filter((skill) => chosen.has(skill.id))
+        .map((skill) => ({
+          skillId: skill.id,
+          review: { contentDigest: skill.contentDigest, manifest: skill.manifest },
+        })),
+    },
+    missing,
   }
 }
 
