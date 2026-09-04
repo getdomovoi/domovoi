@@ -4,10 +4,10 @@ import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, Flee
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
-import { rpcMethods } from "@getdomovoi/protocol"
+import { applyWorkspaceDelta, rpcMethods } from "@getdomovoi/protocol"
 import { openClaimConnection } from "./claim-socket"
 import { machineHelloParams, pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
-import { applyWorkspaceDelta } from "./workspace-delta"
+
 
 type WorkspaceSnapshotState = {
   target: string

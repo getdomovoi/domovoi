@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Domovoi",
+    "slug": "domovoi",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "domovoi",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.getdomovoi.domovoi" },
+    "android": { "package": "com.getdomovoi.domovoi", "edgeToEdgeEnabled": true }
+  }
+}

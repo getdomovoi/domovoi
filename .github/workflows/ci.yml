@@ -54,3 +54,7 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           fail-on-severity: high
+          # image-size has no published fix on either line it ships in; both
+          # advisories name a version npm does not have. The same two ids are
+          # ignored in pnpm-workspace.yaml with the reasoning. Lift together.
+          allow-ghsas: GHSA-5p2g-fcmc-qvqq, GHSA-w3rx-r6r6-pgpr
