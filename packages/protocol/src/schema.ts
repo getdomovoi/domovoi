@@ -171,6 +171,9 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
     generation: ownershipGenerationSchema,
     manifestDigest: sha256DigestSchema,
     completedAt: z.string().datetime({ offset: true }),
+    // Older snapshots predate the distinction, and every such record was a
+    // target-acknowledged commit. New conflict releases name themselves.
+    completion: z.enum(["committed", "conflict-released"]).default("committed"),
   }).strict(),
 ])
 
@@ -195,13 +198,31 @@ export const sessionSourceRecoverySchema = z.object({
   }).strict(),
 }).strict()
 
-export const sessionOwnershipConflictSchema = z.object({
+const sessionOwnershipConflictCommon = {
   transferId: transferIdSchema,
   otherMachineId: machineIdSchema,
   otherGeneration: ownershipGenerationSchema,
   detectedAt: z.string().datetime({ offset: true }),
-  recoveryAction: z.literal("none"),
-}).strict()
+  // `none` was persisted before the safe one-way release existed. Parsing it
+  // upgrades that stranded state without pretending the conflict is gone.
+  recoveryAction: z.union([
+    z.literal("keep-target-session"),
+    z.literal("none"),
+  ]).transform(() => "keep-target-session" as const),
+} as const
+
+export const sessionOwnershipConflictSchema = z.union([
+  z.object({
+    ...sessionOwnershipConflictCommon,
+    kind: z.literal("recovery-contradicted").default("recovery-contradicted"),
+  }).strict(),
+  z.object({
+    ...sessionOwnershipConflictCommon,
+    kind: z.literal("target-session-detected"),
+    reason: z.enum(["target-session-newer", "target-session-diverged"]),
+    manifestDigest: sha256DigestSchema,
+  }).strict(),
+])
 
 export const sessionSummarySchema = z.object({
   id: z.string().min(1),
@@ -348,17 +369,33 @@ export const sessionSummarySchema = z.object({
         path: ["ownershipConflict"],
         message: "An ownership conflict requires its competing owner",
       })
+    } else if (conflict.kind === "recovery-contradicted") {
+      if (
+        !recovery
+        || conflict.transferId !== recovery.transferId
+        || conflict.otherMachineId !== recovery.targetMachineId
+        || session.ownershipGeneration === undefined
+        || conflict.otherGeneration <= session.ownershipGeneration
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["ownershipConflict"],
+          message: "A recovery conflict must explain the source recovery it contradicted",
+        })
+      }
     } else if (
-      !recovery
-      || conflict.transferId !== recovery.transferId
-      || conflict.otherMachineId !== recovery.targetMachineId
+      recovery !== undefined
       || session.ownershipGeneration === undefined
-      || conflict.otherGeneration <= session.ownershipGeneration
+      || (
+        conflict.reason === "target-session-newer"
+          ? conflict.otherGeneration <= session.ownershipGeneration
+          : conflict.otherGeneration > session.ownershipGeneration
+      )
     ) {
       context.addIssue({
         code: "custom",
         path: ["ownershipConflict"],
-        message: "An ownership conflict must explain the source recovery it contradicted",
+        message: "A directly detected conflict must preserve the target ownership evidence",
       })
     }
     if (session.activeTurnId || session.providerThreadId || session.providerFailure) {

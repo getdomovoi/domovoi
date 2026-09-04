@@ -628,14 +628,22 @@ describe("workspace protocol", () => {
       generation: 4,
       manifestDigest: `sha256:${"e".repeat(64)}`,
       completedAt: "2026-09-03T18:01:00.000Z",
+      completion: "committed",
     }
     delete transferred.sessions[2]!.providerThreadId
     delete transferred.sessions[2]!.activeTurnId
     delete transferred.sessions[2]!.providerFailure
     expect(workspaceSnapshotSchema.parse(transferred).sessions[2]).toMatchObject({
       state: "transferred",
-      transfer: { phase: "transferred", generation: 4 },
+      transfer: { phase: "transferred", generation: 4, completion: "committed" },
     })
+    const legacyTransferred = structuredClone(transferred)
+    if (legacyTransferred.sessions[2]!.transfer?.phase !== "transferred") {
+      throw new Error("Expected a transferred session")
+    }
+    delete (legacyTransferred.sessions[2]!.transfer as { completion?: unknown }).completion
+    expect(workspaceSnapshotSchema.parse(legacyTransferred).sessions[2]?.transfer)
+      .toMatchObject({ phase: "transferred", completion: "committed" })
 
     const imported = structuredClone(demoWorkspace)
     const importedMachineId = `machine-${"1".repeat(32)}`
@@ -704,16 +712,33 @@ describe("workspace protocol", () => {
     const conflicted = structuredClone(recovered)
     conflicted.sessions[2]!.state = "ownership-conflict"
     conflicted.sessions[2]!.ownershipConflict = {
+      kind: "recovery-contradicted",
       transferId: session.sourceRecovery.transferId,
       otherMachineId: session.sourceRecovery.targetMachineId,
       otherGeneration: 4,
       detectedAt: "2026-09-03T19:00:00.000Z",
-      recoveryAction: "none",
+      recoveryAction: "keep-target-session",
     }
     expect(workspaceSnapshotSchema.parse(conflicted).sessions[2]).toMatchObject({
       state: "ownership-conflict",
-      ownershipConflict: { otherGeneration: 4, recoveryAction: "none" },
+      ownershipConflict: {
+        kind: "recovery-contradicted",
+        otherGeneration: 4,
+        recoveryAction: "keep-target-session",
+      },
     })
+    const legacyConflict = structuredClone(conflicted)
+    const legacyConflictRecord = legacyConflict.sessions[2]!.ownershipConflict as {
+      kind?: unknown
+      recoveryAction: string
+    }
+    delete legacyConflictRecord.kind
+    legacyConflictRecord.recoveryAction = "none"
+    expect(workspaceSnapshotSchema.parse(legacyConflict).sessions[2]?.ownershipConflict)
+      .toMatchObject({
+        kind: "recovery-contradicted",
+        recoveryAction: "keep-target-session",
+      })
     const conflictWithoutRecoveryWorktree = structuredClone(conflicted)
     delete conflictWithoutRecoveryWorktree.sessions[2]!.workspacePath
     expect(workspaceSnapshotSchema.safeParse(conflictWithoutRecoveryWorktree).success).toBe(false)
@@ -739,6 +764,30 @@ describe("workspace protocol", () => {
     const conflictOnIdle = structuredClone(recovered)
     conflictOnIdle.sessions[2]!.ownershipConflict = conflicted.sessions[2]!.ownershipConflict
     expect(workspaceSnapshotSchema.safeParse(conflictOnIdle).success).toBe(false)
+
+    const directlyDetected = structuredClone(recovered)
+    delete directlyDetected.sessions[2]!.sourceRecovery
+    directlyDetected.sessions[2]!.state = "ownership-conflict"
+    directlyDetected.sessions[2]!.ownershipConflict = {
+      kind: "target-session-detected",
+      reason: "target-session-newer",
+      transferId: `transfer-${"d".repeat(32)}`,
+      otherMachineId: `machine-${"e".repeat(32)}`,
+      otherGeneration: 4,
+      manifestDigest: `sha256:${"f".repeat(64)}`,
+      detectedAt: "2026-09-03T20:00:00.000Z",
+      recoveryAction: "keep-target-session",
+    }
+    expect(workspaceSnapshotSchema.parse(directlyDetected).sessions[2]).toMatchObject({
+      state: "ownership-conflict",
+      ownershipConflict: {
+        kind: "target-session-detected",
+        reason: "target-session-newer",
+        otherGeneration: 4,
+      },
+    })
+    directlyDetected.sessions[2]!.ownershipConflict.reason = "target-session-diverged"
+    expect(workspaceSnapshotSchema.safeParse(directlyDetected).success).toBe(false)
   })
 
   it("reserves a stable daemon shutdown error code", () => {

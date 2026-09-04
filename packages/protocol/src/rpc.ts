@@ -5,6 +5,8 @@ import {
   sessionTransferPreviewParamsSchema,
   sessionTransferRecoverSourceParamsSchema,
   sessionTransferRecoverSourceResultSchema,
+  sessionTransferResolveConflictParamsSchema,
+  sessionTransferResolveConflictResultSchema,
   sessionTransferResultSchema,
 } from "./transfer-request.js"
 import { sessionTransferPreviewSchema } from "./transfer-contract.js"
@@ -1162,6 +1164,10 @@ export const rpcMethods = {
     params: sessionTransferRecoverSourceParamsSchema,
     result: sessionTransferRecoverSourceResultSchema,
   },
+  "session.transferResolveConflict": {
+    params: sessionTransferResolveConflictParamsSchema,
+    result: sessionTransferResolveConflictResultSchema,
+  },
   "transfer.prepare": {
     params: transferPrepareParamsSchema,
     result: transferPrepareResultSchema,
@@ -1346,6 +1352,7 @@ export const rpcMethodMutations = {
   "device.rotate": "mutating",
   "session.transfer": "mutating",
   "session.transferRecoverSource": "mutating",
+  "session.transferResolveConflict": "mutating",
   "transfer.prepare": "mutating",
   "transfer.member": "mutating",
   "transfer.commit": "mutating",

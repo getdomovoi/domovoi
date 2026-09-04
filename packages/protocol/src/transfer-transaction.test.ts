@@ -4,6 +4,7 @@ import { isMutatingRpcMethod, rpcMethods } from "./rpc.js"
 import {
   sessionTransferPreviewParamsSchema,
   sessionTransferRecoverSourceParamsSchema,
+  sessionTransferResolveConflictParamsSchema,
 } from "./transfer-request.js"
 import {
   transferAbortParamsSchema,
@@ -152,6 +153,8 @@ describe("transactional transfer rpc", () => {
     expect(rpcMethods["session.transferPreview"].params).toBe(sessionTransferPreviewParamsSchema)
     expect(rpcMethods["session.transferRecoverSource"].params)
       .toBe(sessionTransferRecoverSourceParamsSchema)
+    expect(rpcMethods["session.transferResolveConflict"].params)
+      .toBe(sessionTransferResolveConflictParamsSchema)
     expect(rpcMethods["transfer.preflight"].params).toBe(transferTargetPreflightParamsSchema)
     expect(rpcMethods["transfer.prepare"].params).toBe(transferPrepareParamsSchema)
     expect(rpcMethods["transfer.member"].params).toBe(transferMemberParamsSchema)
@@ -161,6 +164,7 @@ describe("transactional transfer rpc", () => {
 
     expect(isMutatingRpcMethod("session.transferPreview")).toBe(false)
     expect(isMutatingRpcMethod("session.transferRecoverSource")).toBe(true)
+    expect(isMutatingRpcMethod("session.transferResolveConflict")).toBe(true)
     expect(isMutatingRpcMethod("transfer.preflight")).toBe(false)
     expect(isMutatingRpcMethod("transfer.status")).toBe(false)
     for (const method of [
@@ -207,6 +211,26 @@ describe("transactional transfer rpc", () => {
     ] as const) {
       expect(transferTargetPreflightResultSchema.safeParse({ allowed: false, reason }).success)
         .toBe(true)
+    }
+    for (const reason of ["target-session-newer", "target-session-diverged"] as const) {
+      expect(transferTargetPreflightResultSchema.safeParse({
+        allowed: false,
+        reason,
+        existingGeneration: 3,
+      }).success).toBe(true)
+      expect(transferTargetPreflightResultSchema.safeParse({ allowed: false, reason }).success)
+        .toBe(false)
+      expect(transferPrepareResultSchema.safeParse({
+        state: "refused",
+        transferId,
+        reason,
+        existingGeneration: 3,
+      }).success).toBe(true)
+      expect(transferPrepareResultSchema.safeParse({
+        state: "refused",
+        transferId,
+        reason,
+      }).success).toBe(false)
     }
     expect(transferTargetPreflightResultSchema.safeParse({
       allowed: false,
@@ -263,19 +287,24 @@ describe("transactional transfer rpc", () => {
   })
 
   it("bounds durable member fragments with full non-final chunks", () => {
-    const request = (bytes: Buffer, final: boolean) => transferMemberParamsSchema.safeParse({
+    const zeroBytesBase64 = (byteLength: number) => (
+      `${"AAAA".repeat(Math.floor(byteLength / 3))}${
+        byteLength % 3 === 1 ? "AA==" : byteLength % 3 === 2 ? "AAA=" : ""
+      }`
+    )
+    const request = (byteLength: number, final: boolean) => transferMemberParamsSchema.safeParse({
       transferId,
       memberId: "repository",
       sequence: 0,
-      bytes: bytes.toString("base64"),
+      bytes: zeroBytesBase64(byteLength),
       final,
       client: "desktop",
     }).success
 
-    expect(request(Buffer.alloc(0), false)).toBe(false)
-    expect(request(Buffer.alloc(1), false)).toBe(false)
-    expect(request(Buffer.alloc(transferMemberChunkBytes), false)).toBe(true)
-    expect(request(Buffer.alloc(1), true)).toBe(true)
+    expect(request(0, false)).toBe(false)
+    expect(request(1, false)).toBe(false)
+    expect(request(transferMemberChunkBytes, false)).toBe(true)
+    expect(request(1, true)).toBe(true)
   })
 
   it("commits, queries, and aborts without guessing after a lost acknowledgement", () => {

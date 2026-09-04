@@ -82,6 +82,15 @@ export const sessionTransferRecoverSourceParamsSchema = z.object({
 
 export const sessionTransferRecoverSourceResultSchema = workspaceSnapshotSchema
 
+export const sessionTransferResolveConflictParamsSchema = z.object({
+  sessionId: z.string().trim().min(1).max(128),
+  transferId: transferIdSchema,
+  confirmation: z.literal("keep-target-session"),
+  client: clientKindSchema,
+}).strict()
+
+export const sessionTransferResolveConflictResultSchema = workspaceSnapshotSchema
+
 export const transferFromRefResultSchema = z.object({
   workspacePath: z.string().min(1),
   checkpointCommit: commitShaSchema,
@@ -154,7 +163,7 @@ export const sessionTransferResultSchema = z.union([
     outcome: z.literal("incomplete"),
     transferId: transferIdSchema,
     state: z.literal("ownership-conflict"),
-    recoveryAction: z.literal("none"),
+    recoveryAction: z.literal("keep-target-session"),
   }).strict(),
 ])
 
@@ -166,6 +175,12 @@ export type SessionTransferRecoverSourceParams = z.infer<
 >
 export type SessionTransferRecoverSourceResult = z.infer<
   typeof sessionTransferRecoverSourceResultSchema
+>
+export type SessionTransferResolveConflictParams = z.infer<
+  typeof sessionTransferResolveConflictParamsSchema
+>
+export type SessionTransferResolveConflictResult = z.infer<
+  typeof sessionTransferResolveConflictResultSchema
 >
 export type TransferFromRefParams = z.infer<typeof transferFromRefParamsSchema>
 export type TransferFromRefResult = z.infer<typeof transferFromRefResultSchema>

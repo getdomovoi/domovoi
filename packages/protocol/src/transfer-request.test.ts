@@ -12,6 +12,7 @@ import {
   sessionTransferPreviewParamsSchema,
   sessionTransferRecoverSourceParamsSchema,
   sessionTransferRefusalMessage,
+  sessionTransferResolveConflictParamsSchema,
   sessionTransferResultSchema,
 } from "./transfer-request.js"
 
@@ -98,7 +99,7 @@ describe("session transfer request", () => {
       { state: "recovering", stage: "persistence", recoveryAction: "none" },
       { state: "failed", reason: "persistence-failed", recoveryAction: "retry" },
       { state: "ownership-unconfirmed", recoveryAction: "confirm-source-recovery" },
-      { state: "ownership-conflict", recoveryAction: "none" },
+      { state: "ownership-conflict", recoveryAction: "keep-target-session" },
     ] as const) {
       expect(sessionTransferResultSchema.safeParse({
         outcome: "incomplete",
@@ -125,6 +126,20 @@ describe("session transfer request", () => {
     expect(sessionTransferRecoverSourceParamsSchema.safeParse({
       ...params,
       confirmation: "retry",
+    }).success).toBe(false)
+  })
+
+  it("requires an explicit literal before releasing a conflicted source", () => {
+    const params = {
+      sessionId: "session-1",
+      transferId: `transfer-${"d".repeat(32)}`,
+      confirmation: "keep-target-session" as const,
+      client: "desktop" as const,
+    }
+    expect(sessionTransferResolveConflictParamsSchema.parse(params)).toEqual(params)
+    expect(sessionTransferResolveConflictParamsSchema.safeParse({
+      ...params,
+      confirmation: "keep-source-session",
     }).success).toBe(false)
   })
 })

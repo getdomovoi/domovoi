@@ -93,6 +93,15 @@ export const sessionTransferTargetRefusalSchema = z.enum([
   "target-state-persistence-unavailable",
 ])
 
+export const sessionTransferTargetConflictReasonSchema = z.enum([
+  "target-session-newer",
+  "target-session-diverged",
+])
+const sessionTransferTargetNonConflictRefusalSchema = sessionTransferTargetRefusalSchema.exclude([
+  "target-session-newer",
+  "target-session-diverged",
+])
+
 export const transferTargetPreflightParamsSchema = z.object({
   contractVersion: sessionTransferContractVersionSchema,
   sessionId: z.string().trim().min(1).max(128),
@@ -105,7 +114,7 @@ export const transferTargetPreflightParamsSchema = z.object({
   client: clientKindSchema,
 }).strict()
 
-export const transferTargetPreflightResultSchema = z.discriminatedUnion("allowed", [
+export const transferTargetPreflightResultSchema = z.union([
   z.object({
     allowed: z.literal(true),
     targetProjectId: z.string().trim().min(1).max(512),
@@ -113,7 +122,12 @@ export const transferTargetPreflightResultSchema = z.discriminatedUnion("allowed
   }).strict(),
   z.object({
     allowed: z.literal(false),
-    reason: sessionTransferTargetRefusalSchema,
+    reason: sessionTransferTargetNonConflictRefusalSchema,
+  }).strict(),
+  z.object({
+    allowed: z.literal(false),
+    reason: sessionTransferTargetConflictReasonSchema,
+    existingGeneration: safeGenerationSchema,
   }).strict(),
 ])
 
@@ -224,6 +238,13 @@ export const sessionTransferTransactionRefusalSchema = z.union([
   sessionTransferContractRefusalSchema,
   transferStreamRefusalSchema,
 ])
+const sessionTransferTransactionNonConflictRefusalSchema = z.union([
+  sessionTransferContractRefusalSchema.exclude([
+    "target-session-newer",
+    "target-session-diverged",
+  ]),
+  transferStreamRefusalSchema,
+])
 
 const transactionCommon = {
   transferId: transferIdSchema,
@@ -241,7 +262,7 @@ export const transferPrepareParamsSchema = z.object({
   client: clientKindSchema,
 }).strict()
 
-export const transferPrepareResultSchema = z.discriminatedUnion("state", [
+export const transferPrepareResultSchema = z.union([
   z.object({
     ...transactionCommon,
     state: z.literal("receiving"),
@@ -252,7 +273,13 @@ export const transferPrepareResultSchema = z.discriminatedUnion("state", [
   z.object({
     ...transactionCommon,
     state: z.literal("refused"),
-    reason: sessionTransferTransactionRefusalSchema,
+    reason: sessionTransferTransactionNonConflictRefusalSchema,
+  }).strict(),
+  z.object({
+    ...transactionCommon,
+    state: z.literal("refused"),
+    reason: sessionTransferTargetConflictReasonSchema,
+    existingGeneration: safeGenerationSchema,
   }).strict(),
 ])
 
