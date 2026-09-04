@@ -9,6 +9,7 @@ import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
 import { approvalLead, sessionRows, type ApprovalLead, type SessionRow } from "../session-rows"
+import { colors } from "../theme/tokens.generated"
 
 const dotColour: Record<SessionRow["dot"], string> = {
   active: "bg-success",
@@ -31,8 +32,8 @@ function ApprovalLeadCard({ lead, onOpen }: {
       onPress={() => onOpen(lead.approvalId)}
     >
       <View className="flex-row items-center gap-2.5">
-        <View className="h-[7px] w-[7px] rounded-pill bg-warning" />
-        <Text className="flex-1 text-[12.5px] font-medium text-warn-fg">{lead.headline}</Text>
+        <View className="h-[7px] w-[7px] rounded-full bg-warning" />
+        <Text className="flex-1 text-[12.5px] font-sans-medium text-warn-fg">{lead.headline}</Text>
         {lead.waited
           ? <Text variant="machine" className="text-[10px] text-warn-dim">{lead.waited}</Text>
           : null}
@@ -47,7 +48,7 @@ function SessionCard({ row, onOpen }: { row: SessionRow, onOpen: (id: string) =>
   return (
     <PressableCard onPress={() => onOpen(row.id)} accessibilityLabel={row.title}>
       <View className="flex-row items-start gap-2.5">
-        <View className={cn("mt-1.5 h-2 w-2 rounded-pill", dotColour[row.dot])} />
+        <View className={cn("mt-1.5 h-2 w-2 rounded-full", dotColour[row.dot])} />
         <View className="flex-1 gap-2">
           <Text variant="title">{row.title}</Text>
           <View className="flex-row flex-wrap items-center gap-1.5">
@@ -55,7 +56,7 @@ function SessionCard({ row, onOpen }: { row: SessionRow, onOpen: (id: string) =>
             <Badge label={row.mode} />
             {row.attention ? (
               <Text className={cn(
-                "ml-auto font-machine text-[10px] uppercase tracking-[0.06em]",
+                "ml-auto font-mono text-[10px] uppercase tracking-[0.06em]",
                 row.attention === "approval" ? "text-warning" : "text-primary",
               )}>
                 {row.attention}
@@ -103,7 +104,7 @@ export function SessionsScreen({
       className="flex-1 bg-background"
       contentContainerClassName="gap-3 p-4 pb-8"
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#919198" />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.dark["muted-foreground"]} />
       }
     >
       <View className="flex-row items-center justify-between">

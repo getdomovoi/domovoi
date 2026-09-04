@@ -27,7 +27,7 @@ const textTone: Record<PlanRow["tone"], string> = {
 function Entry({ entry }: { entry: ThreadEntry }) {
   if (entry.voice === "you") {
     return (
-      <View className="max-w-[84%] self-end rounded-lg rounded-br border border-border bg-accent px-3.5 py-2.5">
+      <View className="max-w-[84%] self-end rounded-2xl rounded-br-xl border border-border bg-accent px-3.5 py-2.5">
         <Text className="text-[12.5px] leading-5">{entry.body}</Text>
       </View>
     )
@@ -35,7 +35,7 @@ function Entry({ entry }: { entry: ThreadEntry }) {
   if (entry.voice === "agent") {
     return (
       <View className="flex-row gap-2.5">
-        <View className="h-[22px] w-[22px] items-center justify-center rounded border border-border">
+        <View className="h-[22px] w-[22px] items-center justify-center rounded-xl border border-border">
           <Text className="text-[9.5px] text-primary">◆</Text>
         </View>
         <Text className="flex-1 text-[12.5px] leading-5">{entry.body}</Text>
@@ -43,8 +43,8 @@ function Entry({ entry }: { entry: ThreadEntry }) {
     )
   }
   return (
-    <View className="flex-row items-start gap-2.5 rounded-lg border border-info-border bg-info-bg px-3 py-2.5">
-      <View className="mt-1.5 h-1.5 w-1.5 rounded-pill bg-info" />
+    <View className="flex-row items-start gap-2.5 rounded-2xl border border-info-border bg-info-bg px-3 py-2.5">
+      <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-info" />
       <View className="flex-1 gap-1">
         <Text className="text-[11px] leading-4 text-info-fg">{entry.body}</Text>
         {entry.meta ? <Text variant="machine" className="text-[9px]">{entry.meta}</Text> : null}
@@ -57,16 +57,16 @@ function PlanCard({ plan }: { plan: PlanSummary }) {
   return (
     <Card className="gap-0 p-0">
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
-        <Text className="text-[11.5px] font-medium">Working plan</Text>
+        <Text className="text-[11.5px] font-sans-medium">Working plan</Text>
         <Text variant="machine" className="text-[10px]">{plan.progress}</Text>
       </View>
       {plan.rows.map((row) => (
         <View key={row.id} className="flex-row items-start gap-2.5 px-3 py-2.5">
           <View className={cn(
-            "mt-0.5 h-[17px] w-[17px] items-center justify-center rounded-pill border",
+            "mt-0.5 h-[17px] w-[17px] items-center justify-center rounded-full border",
             markTone[row.tone],
           )}>
-            <Text className={cn("font-machine text-[9px]", markTone[row.tone])}>{row.mark}</Text>
+            <Text className={cn("font-mono text-[9px]", markTone[row.tone])}>{row.mark}</Text>
           </View>
           <View className="flex-1 gap-1">
             <Text className={cn("text-[12px] leading-4", textTone[row.tone])}>{row.text}</Text>
@@ -97,7 +97,7 @@ function ArtifactList({
   return (
     <Card className="gap-0 p-0">
       <View className="border-b border-border px-3 py-2.5">
-        <Text className="text-[11.5px] font-medium">Artifacts</Text>
+        <Text className="text-[11.5px] font-sans-medium">Artifacts</Text>
       </View>
       {rows.map((row, index) => (
         <Pressable
@@ -191,7 +191,7 @@ export function SessionScreen({
             onPress={() => onOpenApproval(approvalId)}
           >
             <View className="flex-row items-center gap-2">
-              <Text className="flex-1 text-[13px] font-semibold text-warn-fg">
+              <Text className="flex-1 text-[13px] font-sans-semibold text-warn-fg">
                 An approval is waiting
               </Text>
               <Text className="text-[13px] text-warn-fg">›</Text>

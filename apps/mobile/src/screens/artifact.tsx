@@ -50,11 +50,11 @@ export function ArtifactScreen({
 
         {body.readable && artifact.type === "diff" ? (
           <ScrollView horizontal contentContainerClassName="min-w-full">
-            <View className="rounded-lg border border-border bg-code p-3">
+            <View className="rounded-2xl border border-border bg-code p-3">
               {diffLines(body.lines).map((line, index) => (
                 <Text
                   key={`${index}-${line.text}`}
-                  className={cn("font-machine text-[10px] leading-4", diffTone[line.tone])}
+                  className={cn("font-mono text-[10px] leading-4", diffTone[line.tone])}
                 >
                   {line.text === "" ? " " : line.text}
                 </Text>
@@ -64,9 +64,9 @@ export function ArtifactScreen({
         ) : null}
 
         {body.readable && artifact.type !== "diff" ? (
-          <View className="rounded-lg border border-border bg-code p-3">
+          <View className="rounded-2xl border border-border bg-code p-3">
             {body.lines.map((line, index) => (
-              <Text key={`${index}-${line}`} className="font-machine text-[10.5px] leading-4 text-foreground">
+              <Text key={`${index}-${line}`} className="font-mono text-[10.5px] leading-4 text-foreground">
                 {line === "" ? " " : line}
               </Text>
             ))}

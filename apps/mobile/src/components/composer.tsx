@@ -1,6 +1,7 @@
 import { Pressable, TextInput, View } from "react-native"
 
 import { cn } from "../lib/cn"
+import { colors } from "../theme/tokens.generated"
 import type { SendReadiness } from "../session-detail"
 import { Text } from "./ui/text"
 
@@ -56,10 +57,10 @@ export function Composer({
           value={draft}
           onChangeText={onChangeDraft}
           placeholder={blocked ? "This session cannot take a message" : "Reply…"}
-          placeholderTextColor="#6b6b72"
+          placeholderTextColor={colors.dark.faint}
           accessibilityLabel="Reply to this session"
           className={cn(
-            "max-h-32 min-h-tap flex-1 rounded-xl border border-border bg-card px-3.5 py-3 text-[12.5px] text-foreground",
+            "max-h-32 min-h-tap flex-1 rounded-2xl border border-border bg-card px-3.5 py-3 font-sans text-[12.5px] text-foreground",
             blocked && "opacity-50",
           )}
         />
@@ -70,7 +71,7 @@ export function Composer({
           disabled={!canSend}
           onPress={onSend}
           className={cn(
-            "min-h-tap min-w-tap items-center justify-center rounded-pill",
+            "min-h-tap min-w-tap items-center justify-center rounded-full",
             canSend ? "bg-primary" : "bg-accent",
           )}
         >

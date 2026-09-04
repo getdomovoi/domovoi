@@ -156,12 +156,17 @@ section covers what they do not state.
 - `--faint` has drifted. The design system sets `oklch(0.53 0.01 285)` for dark; production ships
   `oklch(0.59 0.01 285)` in `packages/ui/src/styles.css`. Machine metadata reads lighter than
   intended.
-- Seven tokens are absent from production: `--desk`, `--overlay`, `--danger-on`, and the whole
-  `--info-bg`, `--info-border`, `--info-fg`, `--info-dim` ramp. The info ramp is what a handoff
-  receipt should fill with, which is why those surfaces currently approximate with a translucent
-  accent.
+- `--desk`, `--overlay`, `--danger-on`, and the `--info-bg`, `--info-border`, `--info-fg`,
+  `--info-dim` ramp were added to production on 2026-09-04 with the design system's values. The
+  phone's session notices fill with the info ramp; the desktop and web handoff receipts still
+  approximate with a translucent accent and have not been moved onto it.
 - Production matches the design system on the other 39 dark tokens, counting the ten it expresses
   as `var()` aliases.
+- The phone reads the same stylesheet. `scripts/mobile-tokens.mjs` renders
+  `packages/ui/src/styles.css` to `apps/mobile/src/theme/tokens.generated.js` as sRGB hex, pixel
+  radii, and per-weight font names, and `pnpm release:invariants` fails when the two disagree.
+  Instrument Sans at 400, 500, and 600 and JetBrains Mono at 400 ship inside the phone bundle from
+  `@expo-google-fonts`, registered through `expo-font` before the first frame draws.
 - The live desktop surface restyles the terminal pane. Command rows carry a two pixel primary
   left edge over an eight percent primary wash with the prompt as a separate non-selectable span,
   failure rows sit in a ten percent destructive band using the danger foreground and dim ramps,

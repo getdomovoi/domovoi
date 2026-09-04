@@ -42,8 +42,8 @@ export function TabBar({
                 {tab.glyph}
               </Text>
               {tab.id === "sessions" && waiting > 0 ? (
-                <View className="min-w-[16px] items-center rounded-pill bg-warning px-1">
-                  <Text className="text-[10px] font-semibold text-background">{waiting}</Text>
+                <View className="min-w-[16px] items-center rounded-full bg-warning px-1">
+                  <Text className="text-[10px] font-sans-semibold text-background">{waiting}</Text>
                 </View>
               ) : null}
             </View>
