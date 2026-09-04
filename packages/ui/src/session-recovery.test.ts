@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { SessionSummary } from "@getdomovoi/protocol"
 
-import { readOnlySessionNotice, sessionConflictOffer, sessionRecoveryOffer } from "./session-recovery.js"
+import { readOnlySessionNotice, sessionConflictOffer, sessionRecoveryOffer, silenceFor } from "./session-recovery.js"
 
 const transferring: NonNullable<SessionSummary["transfer"]> = {
   phase: "transferring",
@@ -22,16 +22,77 @@ const session = {
   transfer: transferring,
 } as unknown as SessionSummary
 
+const reconciliation = {
+  state: "ownership-unconfirmed",
+  reason: "target-unreachable",
+  firstFailedAt: "2026-09-04T09:00:00.000Z",
+  lastFailedAt: "2026-09-04T11:00:00.000Z",
+  attemptCount: 7,
+  recoveryAction: "confirm-source-recovery",
+} as const
+
+const stranded = {
+  ...session,
+  transfer: {
+    ...transferring,
+    package: { state: "staged", manifestDigest: `sha256:${"d".repeat(64)}`, reconciliation },
+  },
+} as unknown as SessionSummary
+
+const now = new Date("2026-09-04T12:00:00.000Z")
+
 describe("sessionRecoveryOffer", () => {
-  it("offers nothing while no daemon state says recovery is appropriate", () => {
-    // package.state staged is reached by a healthy move too, so offering the
-    // release on it invited the operator to declare the target empty mid-move.
+  it("offers nothing until the daemon says it cannot reach the target", () => {
+    // A staged package is reached by a healthy move too, so staging alone must
+    // not expose a claim that the target is empty.
     for (const resumeState of ["idle", "done", "failed"] as const) {
       expect(sessionRecoveryOffer(
         { ...session, transfer: { ...transferring, resumeState } } as SessionSummary,
         "studio",
+        now,
       )).toBeUndefined()
     }
+  })
+
+  it("says how long the target has been silent and how often it was tried", () => {
+    const offer = sessionRecoveryOffer(stranded, "studio", now)
+
+    expect(offer?.kind).toBe("release-stranded")
+    expect(offer?.confirmation).toBe("target-does-not-have-session")
+    expect(offer?.detail).toContain("studio cannot be reached")
+    expect(offer?.detail).toContain("3 hours")
+    expect(offer?.detail).toContain("7 attempts")
+    expect(offer?.detail).toContain("diverge")
+  })
+
+  it("names each reason the daemon can report", () => {
+    for (const reason of ["target-unreachable", "target-timeout", "target-pairing-required"] as const) {
+      const offer = sessionRecoveryOffer({
+        ...stranded,
+        transfer: {
+          ...transferring,
+          package: {
+            state: "staged",
+            manifestDigest: `sha256:${"d".repeat(64)}`,
+            reconciliation: { ...reconciliation, reason },
+          },
+        },
+      } as unknown as SessionSummary, "studio", now)
+
+      expect(offer?.detail).not.toContain("undefined")
+      expect(offer?.detail.startsWith("studio ")).toBe(true)
+    }
+  })
+})
+
+describe("silenceFor", () => {
+  it("counts in the units a person waiting would use", () => {
+    const from = "2026-09-04T12:00:00.000Z"
+    expect(silenceFor(from, new Date("2026-09-04T12:00:30.000Z"))).toBe("less than a minute")
+    expect(silenceFor(from, new Date("2026-09-04T12:01:00.000Z"))).toBe("1 minute")
+    expect(silenceFor(from, new Date("2026-09-04T12:40:00.000Z"))).toBe("40 minutes")
+    expect(silenceFor(from, new Date("2026-09-04T13:00:00.000Z"))).toBe("1 hour")
+    expect(silenceFor(from, new Date("2026-09-06T12:00:00.000Z"))).toBe("2 days")
   })
 })
 

@@ -170,7 +170,7 @@ it("records a failed move without inventing a reason", async () => {
     transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     state: "failed",
     reason: "persistence-failed",
-    recoveryAction: "retry",
+    recoveryAction: "none",
   })
 
   await user.click(screen.getByRole("button", { name: "Move session" }))

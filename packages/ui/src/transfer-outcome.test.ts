@@ -14,14 +14,14 @@ const transferId = `transfer-${"a".repeat(32)}`
 describe("transferOutcomeNotice", () => {
   it("says what to do next for every state the daemon can report", () => {
     const states: Incomplete[] = [
-      { outcome: "incomplete", transferId, state: "unknown", recoveryAction: "check-status" },
-      { outcome: "incomplete", transferId, state: "receiving", recoveryAction: "resume" },
-      { outcome: "incomplete", transferId, state: "prepared", recoveryAction: "resume" },
+      { outcome: "incomplete", transferId, state: "unknown", recoveryAction: "none" },
+      { outcome: "incomplete", transferId, state: "receiving", recoveryAction: "none" },
+      { outcome: "incomplete", transferId, state: "prepared", recoveryAction: "none" },
       ...transferRecoveryStageSchema.options.map((stage): Incomplete => (
         { outcome: "incomplete", transferId, state: "recovering", stage, recoveryAction: "none" }
       )),
       ...transferFailureReasonSchema.options.map((reason): Incomplete => (
-        { outcome: "incomplete", transferId, state: "failed", reason, recoveryAction: "retry" }
+        { outcome: "incomplete", transferId, state: "failed", reason, recoveryAction: "none" }
       )),
       {
         outcome: "incomplete",
@@ -53,7 +53,7 @@ describe("transferOutcomeNotice", () => {
 
   it("names the stage a partial move failed at", () => {
     const notice = transferOutcomeNotice(
-      { outcome: "incomplete", transferId, state: "failed", reason: "resource-import-failed", recoveryAction: "retry" },
+      { outcome: "incomplete", transferId, state: "failed", reason: "resource-import-failed", recoveryAction: "none" },
       "workshop",
     )
 

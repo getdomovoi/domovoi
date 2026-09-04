@@ -1,4 +1,4 @@
-import type { SessionSummary } from "@getdomovoi/protocol"
+import type { SessionSummary, SessionTransferReconciliationReason } from "@getdomovoi/protocol"
 
 type OfferCommon = {
   transferId: string
@@ -16,17 +16,51 @@ export type SessionRecoveryOffer =
   | (OfferCommon & { kind: "release-stranded", confirmation: "target-does-not-have-session" })
   | (OfferCommon & { kind: "keep-target", confirmation: "keep-target-session" })
 
-// A stranded move has no offer yet, on purpose. transferRecoverSource is a
-// dangerous escape hatch: it releases the source on the operator's word that the
-// target did not take the session. Nothing in the snapshot says the daemon has
-// stopped trying, and it retries on its own, so any signal available here would
-// offer the hatch during a healthy move. It returns when the daemon records that
-// operator recovery is appropriate.
+const reconciliationCause: Record<SessionTransferReconciliationReason, string> = {
+  "target-unreachable": "cannot be reached",
+  "target-timeout": "is not answering",
+  "target-pairing-required": "needs pairing again",
+}
+
+// How long the silence has lasted decides whether a person believes the target
+// is gone, so it is said in the units they think in rather than as a timestamp.
+export function silenceFor(sinceIso: string, now: Date): string {
+  const minutes = Math.max(0, Math.floor((now.getTime() - Date.parse(sinceIso)) / 60_000))
+  if (minutes < 1) return "less than a minute"
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"}`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? "" : "s"}`
+}
+
+// The daemon keeps retrying a stalled move on its own, so the dangerous claim
+// appears only once it has tried and failed to reach the target and says so.
+// The RPC checks the target again on the click, so a machine that came back in
+// the meantime refuses or completes rather than being declared empty.
 export function sessionRecoveryOffer(
-  _session: SessionSummary,
-  _targetLabel: string | undefined,
+  session: SessionSummary,
+  targetLabel: string | undefined,
+  now: Date = new Date(),
 ): SessionRecoveryOffer | undefined {
-  return undefined
+  const transfer = session.transfer
+  if (session.state !== "transferring") return undefined
+  if (transfer?.phase !== "transferring") return undefined
+  if (transfer.package.state !== "staged") return undefined
+  const failure = transfer.package.reconciliation
+  if (failure?.state !== "ownership-unconfirmed") return undefined
+
+  const target = targetLabel ?? "the other machine"
+  const silence = silenceFor(failure.firstFailedAt, now)
+  return {
+    kind: "release-stranded",
+    transferId: transfer.transferId,
+    targetMachineId: transfer.targetMachineId,
+    title: "This session is frozen after a move that did not finish",
+    detail: `${target} ${reconciliationCause[failure.reason]}, and Domovoi has been trying for ${silence} across ${failure.attemptCount} attempt${failure.attemptCount === 1 ? "" : "s"}. Release this session only if ${target} did not take it, because two machines writing the same work will diverge.`,
+    confirmation: "target-does-not-have-session",
+    confirmLabel: `${target} does not have it`,
+  }
 }
 
 // Both machines hold a copy and only one may keep the session. The exit is one

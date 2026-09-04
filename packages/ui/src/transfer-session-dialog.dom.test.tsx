@@ -282,7 +282,7 @@ it("says which stage an unfinished move reached and what answers it", async () =
     transferId: `transfer-${"a".repeat(32)}`,
     state: "failed",
     reason: "resource-import-failed",
-    recoveryAction: "retry",
+    recoveryAction: "none",
   }
   const { user } = renderDialog({ onTransfer: () => Promise.resolve(stalled) })
   await screen.findByRole("group", { name: "Travels with the session" })
@@ -328,7 +328,7 @@ it("keeps the session where it is when the move fails", async () => {
       transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       state: "failed" as const,
       reason: "persistence-failed" as const,
-      recoveryAction: "retry" as const,
+      recoveryAction: "none" as const,
     }),
   })
 
