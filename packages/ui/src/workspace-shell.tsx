@@ -3725,6 +3725,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     machineCredential,
     skillMachine,
     skillsRefresh,
+    snapshot?.project,
     surface,
   ])
 
