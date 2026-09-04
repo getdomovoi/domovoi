@@ -1049,13 +1049,19 @@ export class GitWorkspaceService implements WorkspaceService {
       checkpointCommits,
       signal,
     )
-    await git(worktreePath, [
-      "push",
-      "--",
-      remote,
-      `${commit}:${ref}`,
-      ...checkpointRefs.map((checkpoint) => `${checkpoint}:${checkpoint}`),
-    ], signal)
+    // Content-addressed checkpoint refs go first. The session ref is the
+    // publication marker, so a remote that rejects one checkpoint never
+    // advertises an incomplete session transfer. This does not require the
+    // remote to support atomic pushes.
+    if (checkpointRefs.length > 0) {
+      await git(worktreePath, [
+        "push",
+        "--",
+        remote,
+        ...checkpointRefs.map((checkpoint) => `${checkpoint}:${checkpoint}`),
+      ], signal)
+    }
+    await git(worktreePath, ["push", "--", remote, `${commit}:${ref}`], signal)
     return { ref, commit, remote }
   }
 
@@ -1086,6 +1092,7 @@ export class GitWorkspaceService implements WorkspaceService {
     await git(repositoryPath, [
       "fetch",
       "--quiet",
+      "--atomic",
       "--",
       remote,
       `${ref}:${ref}`,
@@ -1221,6 +1228,7 @@ export class GitWorkspaceService implements WorkspaceService {
       await git(repository.root, [
         "fetch",
         "--quiet",
+        "--atomic",
         "--",
         bundlePath,
         `+HEAD:${incomingRef}`,
@@ -1291,7 +1299,7 @@ export class GitWorkspaceService implements WorkspaceService {
       return { path, branch, baseCommit: arrived }
     } finally {
       for (const ref of [incomingRef, ...incomingCheckpoints.map(({ target }) => target)]) {
-        await git(repository.root, ["update-ref", "-d", ref], signal).catch(() => {})
+        await git(repository.root, ["update-ref", "-d", ref]).catch(() => {})
       }
     }
   }
