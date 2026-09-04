@@ -119,6 +119,7 @@ export const sessionTransferManifestSchema = z.object({
   }).strict(),
   project: z.object({
     sourceProjectId: z.string().trim().min(1).max(512),
+    targetProjectId: z.string().trim().min(1).max(512),
     lineageCommit: commitShaSchema,
     checkpointCommit: commitShaSchema,
   }).strict(),

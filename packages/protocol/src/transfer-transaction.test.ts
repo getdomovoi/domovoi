@@ -80,6 +80,7 @@ const manifest = {
   ownership: { fromGeneration: 2, toGeneration: 3 },
   project: {
     sourceProjectId: "project-source",
+    targetProjectId: "project-target",
     lineageCommit: "6".repeat(40),
     checkpointCommit: "7".repeat(40),
   },
@@ -93,6 +94,11 @@ const manifest = {
 describe("session transfer manifest", () => {
   it("binds repository, portable state, and resources into one transfer", () => {
     expect(sessionTransferManifestSchema.parse(manifest)).toEqual(manifest)
+    const { targetProjectId: _targetProjectId, ...unboundProject } = manifest.project
+    expect(sessionTransferManifestSchema.safeParse({
+      ...manifest,
+      project: unboundProject,
+    }).success).toBe(false)
   })
 
   it("requires one ownership-generation advance", () => {
@@ -233,6 +239,11 @@ describe("transactional transfer rpc", () => {
   })
 
   it("commits, queries, and aborts without guessing after a lost acknowledgement", () => {
+    expect(transferCommitResultSchema.safeParse({
+      state: "refused",
+      transferId,
+      reason: "target-project-changed",
+    }).success).toBe(true)
     expect(transferCommitResultSchema.safeParse({
       state: "committed",
       transferId,
