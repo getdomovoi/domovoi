@@ -138,6 +138,12 @@ describe("session transfer refusal messages", () => {
   it("names why the source session could not be moved", () => {
     expect(sessionTransferRefusalMessage("session-turn-active"))
       .toBe("This session is mid turn, so it cannot move until the turn settles")
+    expect(sessionTransferRefusalMessage("source-bundle-create-unavailable"))
+      .toContain("cannot create the Git bundle")
+    expect(sessionTransferRefusalMessage("source-bundle-read-unavailable"))
+      .toContain("cannot read the Git bundle")
+    expect(sessionTransferRefusalMessage("source-ref-push-unavailable"))
+      .toContain("cannot publish the Git ref")
   })
 
   it("names why the arriving bytes were rejected", () => {

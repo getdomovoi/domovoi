@@ -24,6 +24,9 @@ export const sourceRefusalSchema = z.enum([
   "session-archived",
   "session-has-no-worktree",
   "session-recovery-unresolved",
+  "source-bundle-create-unavailable",
+  "source-bundle-read-unavailable",
+  "source-ref-push-unavailable",
 ])
 
 export type SourceRefusal = z.infer<typeof sourceRefusalSchema>
@@ -33,6 +36,9 @@ export const sourceRefusalMessage: Record<SourceRefusal, string> = {
   "session-archived": "This session is archived, so there is nothing left to move",
   "session-has-no-worktree": "This session has no worktree, so there is nothing to move",
   "session-recovery-unresolved": "Confirm the earlier target's ownership before moving this recovered session",
+  "source-bundle-create-unavailable": "This machine cannot create the Git bundle needed to move the session",
+  "source-bundle-read-unavailable": "This machine cannot read the Git bundle needed to move the session",
+  "source-ref-push-unavailable": "This machine cannot publish the Git ref needed to move the session",
 }
 export type TransferMethod = z.infer<typeof transferMethodSchema>
 export type TransferStep = z.infer<typeof transferStepSchema>
