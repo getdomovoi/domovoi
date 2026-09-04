@@ -26,6 +26,7 @@ import {
   stageSourceSessionCheckpoint,
 } from "./session-transfer-source.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import type { TerminalProcess } from "./terminal.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { WorkspaceService } from "./workspace.js"
 
@@ -1661,6 +1662,106 @@ describe("transactional session transfer RPC", () => {
       client: "desktop",
     })).resolves.toMatchObject({
       result: { allowed: false, reason: "target-pairing-required" },
+    })
+    socket.close()
+  })
+
+  it("thaws the source when terminal shutdown fails before target delivery", async () => {
+    const { source } = await transferFixture()
+    const session = source.sessions[0]!
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion,
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const checkpoint = vi.fn(async () => ({ commit: checkpointCommit, changedFiles: [] }))
+    const terminal = {
+      process: "bash",
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(() => { throw new Error("terminal kill failed") }),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      terminalService: { spawn: vi.fn(() => terminal) },
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint,
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      connectToMachine: async () => ({
+        call: async (method) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon, "studio-mac")
+    const call = rpc(socket)
+    await expect(call("terminal.create", {
+      terminalId: "terminal-transfer-shutdown",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "desktop",
+      clientId: "studio-mac",
+    })).resolves.toHaveProperty("result")
+    const preview = await call("session.transferPreview", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })
+    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+
+    await expect(call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    })).resolves.toMatchObject({
+      result: { outcome: "refused", reason: "session-resource-unavailable" },
+    })
+    expect(terminal.kill).toHaveBeenCalledOnce()
+    expect(checkpoint).not.toHaveBeenCalled()
+    expect(store.load().sessions[0]).toMatchObject({
+      id: session.id,
+      state: "idle",
+      baseCommit,
     })
     socket.close()
   })

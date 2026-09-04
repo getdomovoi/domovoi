@@ -2246,12 +2246,12 @@ export class DomovoiDaemon {
       { client: params.client, ...(clientId ? { clientId } : {}) },
     )
     await this.#persistTransferSnapshot(frozen, sourceSession.id)
-    this.#closeSessionTerminals(sourceSession.id)
 
     let packaged: ReturnType<typeof createSessionTransferPackage> | undefined
     let checkpointCommit = sourceSession.baseCommit ?? "0".repeat(40)
     let targetDeliveryStarted = false
     try {
+      this.#closeSessionTerminals(sourceSession.id)
       const checkpoint = await this.#workspaceService.checkpoint(
         sourceSession.workspacePath!,
         "before-transfer",
