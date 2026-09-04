@@ -16,7 +16,7 @@ describe("remote ref transfer", () => {
     const parsed = sessionTransferParamsSchema.parse({
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       ...approvedIntent,
     })
 
@@ -27,7 +27,7 @@ describe("remote ref transfer", () => {
     expect(sessionTransferParamsSchema.safeParse({
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       method: "remote-ref",
       remote: "origin",
       ...approvedIntent,
@@ -40,7 +40,7 @@ describe("remote ref transfer", () => {
     expect(sessionTransferParamsSchema.safeParse({
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       method: "remote-ref",
       ...approvedIntent,
     }).success).toBe(false)
@@ -50,7 +50,7 @@ describe("remote ref transfer", () => {
     expect(sessionTransferParamsSchema.safeParse({
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       method: "remote-ref",
       remote: "--upload-pack=touch",
       ...approvedIntent,
@@ -61,7 +61,7 @@ describe("remote ref transfer", () => {
     expect(sessionTransferParamsSchema.safeParse({
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       method: "git-bundle",
       remote: "origin",
       ...approvedIntent,
@@ -72,7 +72,7 @@ describe("remote ref transfer", () => {
     expect(transferFromRefParamsSchema.safeParse({
       sessionId: "session-1",
       remote: "origin",
-      client: "desktop",
+      initiatedByClient: "desktop",
     }).success).toBe(true)
     expect(transferFromRefResultSchema.safeParse({
       workspacePath: "/worktrees/session-1",
