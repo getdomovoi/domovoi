@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 
 import { claimMachine, MachineClaimError } from "./claim-machine.js"
 import { Deadline } from "./deadline.js"
 
 const code = "hearth-quiet-ember-42"
 const deadline = Deadline.start(2_147_483_647)
+afterAll(() => deadline.clear())
 const credential = "n".repeat(43)
 const device = {
   id: `device-${"a".repeat(32)}`,

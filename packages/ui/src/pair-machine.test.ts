@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 
 import { protocolVersion } from "@getdomovoi/protocol"
 
@@ -8,6 +8,7 @@ import { machineHelloParams, pairMachine, MachinePairingError } from "./pair-mac
 
 const code = "hearth-quiet-ember-42"
 const deadline = Deadline.start(2_147_483_647)
+afterAll(() => deadline.clear())
 const credential = "n".repeat(43)
 const machineId = `machine-${"c".repeat(32)}`
 const device = {
