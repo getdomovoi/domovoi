@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest"
 
 import { isMutatingRpcMethod, rpcMethods } from "./rpc.js"
-import { sessionTransferPreviewParamsSchema } from "./transfer-request.js"
+import {
+  sessionTransferPreviewParamsSchema,
+  sessionTransferRecoverSourceParamsSchema,
+} from "./transfer-request.js"
 import {
   transferAbortParamsSchema,
   sessionTransferManifestSchema,
@@ -146,6 +149,8 @@ describe("session transfer manifest", () => {
 describe("transactional transfer rpc", () => {
   it("registers preview and recovery queries as reads and transaction writes as mutations", () => {
     expect(rpcMethods["session.transferPreview"].params).toBe(sessionTransferPreviewParamsSchema)
+    expect(rpcMethods["session.transferRecoverSource"].params)
+      .toBe(sessionTransferRecoverSourceParamsSchema)
     expect(rpcMethods["transfer.preflight"].params).toBe(transferTargetPreflightParamsSchema)
     expect(rpcMethods["transfer.prepare"].params).toBe(transferPrepareParamsSchema)
     expect(rpcMethods["transfer.member"].params).toBe(transferMemberParamsSchema)
@@ -154,6 +159,7 @@ describe("transactional transfer rpc", () => {
     expect(rpcMethods["transfer.abort"].params).toBe(transferAbortParamsSchema)
 
     expect(isMutatingRpcMethod("session.transferPreview")).toBe(false)
+    expect(isMutatingRpcMethod("session.transferRecoverSource")).toBe(true)
     expect(isMutatingRpcMethod("transfer.preflight")).toBe(false)
     expect(isMutatingRpcMethod("transfer.status")).toBe(false)
     for (const method of [

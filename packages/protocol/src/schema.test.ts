@@ -559,6 +559,7 @@ describe("workspace protocol", () => {
       intentDigest: `sha256:${"d".repeat(64)}`,
       nextGeneration: 4,
       startedAt: "2026-09-03T18:00:00.000Z",
+      package: { state: "preparing" },
     }
     expect(workspaceSnapshotSchema.parse(transferring).sessions[2]).toMatchObject({
       state: "transferring",
@@ -572,6 +573,9 @@ describe("workspace protocol", () => {
     }
     wrongGeneration.sessions[2]!.transfer.nextGeneration = 5
     expect(workspaceSnapshotSchema.safeParse(wrongGeneration).success).toBe(false)
+    const unstagedWithoutPackage = structuredClone(transferring)
+    delete (unstagedWithoutPackage.sessions[2]!.transfer as { package?: unknown }).package
+    expect(workspaceSnapshotSchema.safeParse(unstagedWithoutPackage).success).toBe(false)
 
     const transferred = structuredClone(transferring)
     transferred.sessions[2]!.state = "transferred"
@@ -581,6 +585,7 @@ describe("workspace protocol", () => {
       transferId: `transfer-${"b".repeat(32)}`,
       targetMachineId: `machine-${"c".repeat(32)}`,
       generation: 4,
+      manifestDigest: `sha256:${"e".repeat(64)}`,
       completedAt: "2026-09-03T18:01:00.000Z",
     }
     delete transferred.sessions[2]!.providerThreadId
@@ -600,6 +605,7 @@ describe("workspace protocol", () => {
       transferId: `transfer-${"e".repeat(32)}`,
       sourceMachineId: `machine-${"f".repeat(32)}`,
       generation: 4,
+      manifestDigest: `sha256:${"1".repeat(64)}`,
       checkpointCommit: "a".repeat(40),
       completedAt: "2026-09-03T18:01:00.000Z",
     }
@@ -614,6 +620,10 @@ describe("workspace protocol", () => {
     const sameMachine = structuredClone(imported)
     sameMachine.sessions[2]!.transferredFrom!.sourceMachineId = importedMachineId
     expect(workspaceSnapshotSchema.safeParse(sameMachine).success).toBe(false)
+    const missingManifestIdentity = structuredClone(imported)
+    delete (missingManifestIdentity.sessions[2]!.transferredFrom as { manifestDigest?: unknown })
+      .manifestDigest
+    expect(workspaceSnapshotSchema.safeParse(missingManifestIdentity).success).toBe(false)
 
     const liveProvider = structuredClone(transferred)
     liveProvider.sessions[2]!.providerThreadId = "thread-still-live"
@@ -622,6 +632,60 @@ describe("workspace protocol", () => {
     const missingLifecycle = structuredClone(transferred)
     delete missingLifecycle.sessions[2]!.transfer
     expect(workspaceSnapshotSchema.safeParse(missingLifecycle).success).toBe(false)
+  })
+
+  it("retains an attributed source recovery and freezes the claimant on detected conflict", () => {
+    const recovered = structuredClone(demoWorkspace)
+    const session = recovered.sessions[2]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/session-audit"
+    session.ownershipGeneration = 3
+    delete session.activeTurnId
+    session.sourceRecovery = {
+      transferId: `transfer-${"a".repeat(32)}`,
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      generation: 3,
+      recoveredAt: "2026-09-03T18:10:00.000Z",
+      decidedBy: { client: "desktop", clientId: "studio-mac" },
+    }
+    expect(workspaceSnapshotSchema.parse(recovered).sessions[2]?.sourceRecovery)
+      .toEqual(session.sourceRecovery)
+
+    const conflicted = structuredClone(recovered)
+    conflicted.sessions[2]!.state = "ownership-conflict"
+    conflicted.sessions[2]!.ownershipConflict = {
+      transferId: session.sourceRecovery.transferId,
+      otherMachineId: session.sourceRecovery.targetMachineId,
+      otherGeneration: 4,
+      detectedAt: "2026-09-03T19:00:00.000Z",
+      recoveryAction: "none",
+    }
+    expect(workspaceSnapshotSchema.parse(conflicted).sessions[2]).toMatchObject({
+      state: "ownership-conflict",
+      ownershipConflict: { otherGeneration: 4, recoveryAction: "none" },
+    })
+
+    const hiddenConflict = structuredClone(conflicted)
+    hiddenConflict.sessions[2]!.state = "idle"
+    expect(workspaceSnapshotSchema.safeParse(hiddenConflict).success).toBe(false)
+    const unexplainedConflict = structuredClone(conflicted)
+    delete unexplainedConflict.sessions[2]!.sourceRecovery
+    expect(workspaceSnapshotSchema.safeParse(unexplainedConflict).success).toBe(false)
+    const runnableConflict = structuredClone(conflicted)
+    runnableConflict.sessions[2]!.activeTurnId = "turn-after-conflict"
+    expect(workspaceSnapshotSchema.safeParse(runnableConflict).success).toBe(false)
+    const staleClaim = structuredClone(recovered)
+    staleClaim.sessions[2]!.sourceRecovery!.generation = 4
+    expect(workspaceSnapshotSchema.safeParse(staleClaim).success).toBe(false)
+    const selfClaim = structuredClone(recovered)
+    selfClaim.sessions[2]!.sourceRecovery!.targetMachineId = recovered.machine.id
+    expect(workspaceSnapshotSchema.safeParse(selfClaim).success).toBe(false)
+    const selfConflict = structuredClone(conflicted)
+    selfConflict.sessions[2]!.ownershipConflict!.otherMachineId = conflicted.machine.id
+    expect(workspaceSnapshotSchema.safeParse(selfConflict).success).toBe(false)
+    const conflictOnIdle = structuredClone(recovered)
+    conflictOnIdle.sessions[2]!.ownershipConflict = conflicted.sessions[2]!.ownershipConflict
+    expect(workspaceSnapshotSchema.safeParse(conflictOnIdle).success).toBe(false)
   })
 
   it("reserves a stable daemon shutdown error code", () => {

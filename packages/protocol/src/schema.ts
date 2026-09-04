@@ -31,6 +31,7 @@ export const sessionStateSchema = z.enum([
   "failed",
   "transferring",
   "transferred",
+  "ownership-conflict",
   "archiving",
   "archived",
 ])
@@ -137,6 +138,14 @@ export const sessionForkOriginSchema = z.object({
 
 const ownershipGenerationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 
+const sessionTransferPackageSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("preparing") }).strict(),
+  z.object({
+    state: z.literal("staged"),
+    manifestDigest: sha256DigestSchema,
+  }).strict(),
+])
+
 export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
   z.object({
     phase: z.literal("transferring"),
@@ -145,12 +154,14 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
     intentDigest: sha256DigestSchema,
     nextGeneration: ownershipGenerationSchema,
     startedAt: z.string().datetime({ offset: true }),
+    package: sessionTransferPackageSchema,
   }).strict(),
   z.object({
     phase: z.literal("transferred"),
     transferId: transferIdSchema,
     targetMachineId: machineIdSchema,
     generation: ownershipGenerationSchema,
+    manifestDigest: sha256DigestSchema,
     completedAt: z.string().datetime({ offset: true }),
   }).strict(),
 ])
@@ -159,8 +170,28 @@ export const sessionTransferOriginSchema = z.object({
   transferId: transferIdSchema,
   sourceMachineId: machineIdSchema,
   generation: ownershipGenerationSchema,
+  manifestDigest: sha256DigestSchema,
   checkpointCommit: commitShaSchema,
   completedAt: z.string().datetime({ offset: true }),
+}).strict()
+
+export const sessionSourceRecoverySchema = z.object({
+  transferId: transferIdSchema,
+  targetMachineId: machineIdSchema,
+  generation: ownershipGenerationSchema,
+  recoveredAt: z.string().datetime({ offset: true }),
+  decidedBy: z.object({
+    client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
+  }).strict(),
+}).strict()
+
+export const sessionOwnershipConflictSchema = z.object({
+  transferId: transferIdSchema,
+  otherMachineId: machineIdSchema,
+  otherGeneration: ownershipGenerationSchema,
+  detectedAt: z.string().datetime({ offset: true }),
+  recoveryAction: z.literal("none"),
 }).strict()
 
 export const sessionSummarySchema = z.object({
@@ -185,6 +216,8 @@ export const sessionSummarySchema = z.object({
   ownershipGeneration: ownershipGenerationSchema.optional(),
   transfer: sessionTransferLifecycleSchema.optional(),
   transferredFrom: sessionTransferOriginSchema.optional(),
+  sourceRecovery: sessionSourceRecoverySchema.optional(),
+  ownershipConflict: sessionOwnershipConflictSchema.optional(),
 }).superRefine((session, context) => {
   const archiveState = session.state === "archiving" || session.state === "archived"
   if (!archiveState && (
@@ -282,6 +315,55 @@ export const sessionSummarySchema = z.object({
       code: "custom",
       path: ["transferredFrom", "generation"],
       message: "Transfer provenance cannot be newer than session ownership",
+    })
+  }
+  if (
+    session.sourceRecovery
+    && (
+      session.ownershipGeneration === undefined
+      || session.sourceRecovery.generation > session.ownershipGeneration
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceRecovery", "generation"],
+      message: "Source recovery cannot claim a newer ownership generation",
+    })
+  }
+  if (session.state === "ownership-conflict") {
+    const conflict = session.ownershipConflict
+    const recovery = session.sourceRecovery
+    if (!conflict) {
+      context.addIssue({
+        code: "custom",
+        path: ["ownershipConflict"],
+        message: "An ownership conflict requires its competing owner",
+      })
+    } else if (
+      !recovery
+      || conflict.transferId !== recovery.transferId
+      || conflict.otherMachineId !== recovery.targetMachineId
+      || session.ownershipGeneration === undefined
+      || conflict.otherGeneration <= session.ownershipGeneration
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["ownershipConflict"],
+        message: "An ownership conflict must explain the source recovery it contradicted",
+      })
+    }
+    if (session.activeTurnId || session.providerThreadId || session.providerFailure) {
+      context.addIssue({
+        code: "custom",
+        path: ["state"],
+        message: "The machine that made an unverified recovery claim stops on conflict",
+      })
+    }
+  } else if (session.ownershipConflict !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["ownershipConflict"],
+      message: "Ownership conflict metadata requires an ownership-conflict state",
     })
   }
 })
@@ -759,6 +841,20 @@ export const workspaceSnapshotSchema = z.object({
         code: "custom",
         message: "Transfer provenance must name another machine",
         path: ["sessions", index, "transferredFrom", "sourceMachineId"],
+      })
+    }
+    if (session.sourceRecovery?.targetMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Source recovery must name another machine",
+        path: ["sessions", index, "sourceRecovery", "targetMachineId"],
+      })
+    }
+    if (session.ownershipConflict?.otherMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "An ownership conflict must name another machine",
+        path: ["sessions", index, "ownershipConflict", "otherMachineId"],
       })
     }
     if (session.forkedFrom) {

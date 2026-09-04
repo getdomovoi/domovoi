@@ -32,6 +32,7 @@ const state = {
       transferId: `transfer-${"c".repeat(32)}`,
       sourceMachineId,
       generation: 3,
+      manifestDigest: `sha256:${"d".repeat(64)}`,
       checkpointCommit: "1".repeat(40),
       completedAt: "2026-09-03T17:30:00.000Z",
     },

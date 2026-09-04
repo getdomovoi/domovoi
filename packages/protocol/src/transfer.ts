@@ -111,13 +111,14 @@ export const transferReceiptSchema = z.object({
   // The source keeps its recovery checkpoint, so a transfer can always be
   // undone from the machine that sent it. A receipt cannot say otherwise.
   recoveryCheckpointRetained: z.literal(true),
-  outcome: z.enum(["succeeded", "failed", "refused"]),
+  outcome: z.enum(["succeeded", "failed", "refused", "source-recovered"]),
   // A transfer can be refused before it starts, or by the target once the
   // bytes arrive, and a receipt records whichever it was.
   reason: z.union([
     transferRefusalSchema,
     sourceRefusalSchema,
     transferStreamRefusalSchema,
+    z.literal("target-ownership-unconfirmed"),
   ]).optional(),
   decidedBy: z.object({
     client: clientKindSchema,
@@ -125,6 +126,27 @@ export const transferReceiptSchema = z.object({
   }).strict(),
   startedAt: z.string().datetime({ offset: true }),
   completedAt: z.string().datetime({ offset: true }),
-}).strict()
+}).strict().superRefine((receipt, context) => {
+  if (
+    receipt.outcome === "source-recovered"
+    && receipt.reason !== "target-ownership-unconfirmed"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "Source recovery must name its unconfirmed ownership risk",
+    })
+  }
+  if (
+    receipt.outcome !== "source-recovered"
+    && receipt.reason === "target-ownership-unconfirmed"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "Only an explicit source recovery can record unconfirmed ownership",
+    })
+  }
+})
 
 export type TransferReceipt = z.infer<typeof transferReceiptSchema>

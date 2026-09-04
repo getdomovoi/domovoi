@@ -11,6 +11,8 @@ import {
 import {
   sessionTransferParamsSchema,
   sessionTransferPreviewParamsSchema,
+  sessionTransferRecoverSourceParamsSchema,
+  sessionTransferRecoverSourceResultSchema,
   sessionTransferResultSchema,
   transferFromRefParamsSchema,
   transferFromRefResultSchema,
@@ -1167,6 +1169,10 @@ export const rpcMethods = {
     params: sessionTransferPreviewParamsSchema,
     result: sessionTransferPreviewSchema,
   },
+  "session.transferRecoverSource": {
+    params: sessionTransferRecoverSourceParamsSchema,
+    result: sessionTransferRecoverSourceResultSchema,
+  },
   "transfer.fromRef": {
     params: transferFromRefParamsSchema,
     result: transferFromRefResultSchema,
@@ -1367,6 +1373,7 @@ export const rpcMethodMutations = {
   "device.revoke": "mutating",
   "device.rotate": "mutating",
   "session.transfer": "mutating",
+  "session.transferRecoverSource": "mutating",
   "transfer.fromRef": "mutating",
   "transfer.begin": "mutating",
   "transfer.chunk": "mutating",

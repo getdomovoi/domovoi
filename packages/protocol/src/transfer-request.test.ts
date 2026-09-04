@@ -10,6 +10,7 @@ import {
 import {
   sessionTransferParamsSchema,
   sessionTransferPreviewParamsSchema,
+  sessionTransferRecoverSourceParamsSchema,
   sessionTransferRefusalMessage,
   sessionTransferResultSchema,
 } from "./transfer-request.js"
@@ -90,6 +91,8 @@ describe("session transfer request", () => {
       { state: "prepared", recoveryAction: "resume" },
       { state: "recovering", stage: "persistence", recoveryAction: "none" },
       { state: "failed", reason: "persistence-failed", recoveryAction: "retry" },
+      { state: "ownership-unconfirmed", recoveryAction: "confirm-source-recovery" },
+      { state: "ownership-conflict", recoveryAction: "none" },
     ] as const) {
       expect(sessionTransferResultSchema.safeParse({
         outcome: "incomplete",
@@ -102,6 +105,20 @@ describe("session transfer request", () => {
       transferId,
       state: "unknown",
       recoveryAction: "resume",
+    }).success).toBe(false)
+  })
+
+  it("requires an explicit literal before reclaiming an unverifiable source", () => {
+    const params = {
+      sessionId: "session-1",
+      transferId: `transfer-${"d".repeat(32)}`,
+      confirmation: "target-does-not-have-session" as const,
+      client: "desktop" as const,
+    }
+    expect(sessionTransferRecoverSourceParamsSchema.parse(params)).toEqual(params)
+    expect(sessionTransferRecoverSourceParamsSchema.safeParse({
+      ...params,
+      confirmation: "retry",
     }).success).toBe(false)
   })
 })

@@ -1,7 +1,7 @@
 import { z } from "zod"
 
 import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
-import { clientKindSchema } from "./schema.js"
+import { clientKindSchema, workspaceSnapshotSchema } from "./schema.js"
 import {
   sessionTransferContractRefusalMessage,
   sessionTransferContractRefusalSchema,
@@ -79,6 +79,15 @@ export const transferFromRefParamsSchema = z.object({
   remote: gitRemoteNameSchema,
   client: clientKindSchema,
 }).strict()
+
+export const sessionTransferRecoverSourceParamsSchema = z.object({
+  sessionId: z.string().trim().min(1).max(128),
+  transferId: transferIdSchema,
+  confirmation: z.literal("target-does-not-have-session"),
+  client: clientKindSchema,
+}).strict()
+
+export const sessionTransferRecoverSourceResultSchema = workspaceSnapshotSchema
 
 export const transferFromRefResultSchema = z.object({
   workspacePath: z.string().min(1),
@@ -158,11 +167,29 @@ export const sessionTransferResultSchema = z.union([
     reason: transferFailureReasonSchema,
     recoveryAction: z.literal("retry"),
   }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
+    state: z.literal("ownership-unconfirmed"),
+    recoveryAction: z.literal("confirm-source-recovery"),
+  }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
+    state: z.literal("ownership-conflict"),
+    recoveryAction: z.literal("none"),
+  }).strict(),
 ])
 
 export type SessionTransferPreviewParams = z.infer<typeof sessionTransferPreviewParamsSchema>
 export type SessionTransferParams = z.infer<typeof sessionTransferParamsSchema>
 export type SessionTransferResult = z.infer<typeof sessionTransferResultSchema>
+export type SessionTransferRecoverSourceParams = z.infer<
+  typeof sessionTransferRecoverSourceParamsSchema
+>
+export type SessionTransferRecoverSourceResult = z.infer<
+  typeof sessionTransferRecoverSourceResultSchema
+>
 export type TransferFromRefParams = z.infer<typeof transferFromRefParamsSchema>
 export type TransferFromRefResult = z.infer<typeof transferFromRefResultSchema>
 
