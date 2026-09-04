@@ -14,8 +14,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@expo-google-fonts/instrument-sans": "0.4.2",
+    "@expo-google-fonts/jetbrains-mono": "0.4.1",
     "@getdomovoi/protocol": "workspace:*",
     "expo": "~57.0.20",
+    "expo-font": "~57.0.3",
     "expo-secure-store": "^57.0.3",
     "expo-status-bar": "~57.0.1",
     "nativewind": "^4.2.6",
@@ -26,6 +29,7 @@
     "react-native-safe-area-context": "~5.7.0"
   },
   "devDependencies": {
+    "@types/node": "^26.4.0",
     "@types/react": "~19.2.2",
     "@vitest/coverage-v8": "catalog:",
     "tailwindcss": "^3.4.17",
