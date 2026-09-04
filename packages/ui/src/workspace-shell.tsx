@@ -67,6 +67,12 @@ import { boundedClientThread, protocolVersion, sessionTransferRefusalMessage } f
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
+  readOnlySessionNotice,
+  sessionConflictOffer,
+  sessionRecoveryOffer,
+  type SessionRecoveryOffer,
+} from "./session-recovery.js"
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -1266,6 +1272,58 @@ export function ArchiveSessionAction({
   )
 }
 
+export function SessionReadOnlyNotice({
+  session,
+  otherLabel,
+  disabled,
+  pending,
+  onRelease,
+}: {
+  session: SessionSummary
+  otherLabel: string | undefined
+  disabled: boolean
+  pending: boolean
+  onRelease: (offer: SessionRecoveryOffer) => void
+}) {
+  const notice = readOnlySessionNotice(session, otherLabel)
+  if (!notice) return null
+  // Only one of these can apply: a frozen move the daemon gave up on, or a
+  // conflict. Both end in a confirmation the operator has to make in words.
+  const offer = sessionRecoveryOffer(session, otherLabel) ?? sessionConflictOffer(session, otherLabel)
+  const destructive = session.state === "ownership-conflict"
+
+  return (
+    <Alert variant={destructive ? "destructive" : "default"} className="mx-auto max-w-[var(--shell-thread)]">
+      {destructive ? <CircleStopIcon /> : <ArchiveIcon />}
+      <AlertTitle>{notice.title}</AlertTitle>
+      <AlertDescription className="flex flex-col items-start gap-2">
+        {notice.detail}
+        {offer ? (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" disabled={disabled || pending}>
+                {offer.kind === "keep-target" ? "Settle this" : "Release this session"}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{offer.title}</AlertDialogTitle>
+                <AlertDialogDescription>{offer.detail}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={() => onRelease(offer)}>
+                  {offer.confirmLabel}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        ) : null}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 export function Thread({
   snapshot,
   connected,
@@ -1288,6 +1346,7 @@ export function Thread({
   onSelectMachine,
   onTransferSession,
   onPreviewTransfer,
+  onReleaseSession,
   externalEditor = "system",
   usage = null,
   onOpenSkills,
@@ -1327,6 +1386,13 @@ export function Thread({
   onPreviewTransfer?: ((
     params: Omit<SessionTransferPreviewParams, "client">,
   ) => Promise<SessionTransferPreview>) | undefined
+  // One handler for both exits. The confirmation says which the operator made,
+  // and the caller routes it, so this surface cannot send the wrong one.
+  onReleaseSession?: ((params: {
+    sessionId: string
+    transferId: string
+    confirmation: SessionRecoveryOffer["confirmation"]
+  }) => Promise<unknown>) | undefined
   externalEditor?: DesktopExternalEditor | undefined
   usage?: SessionUsage | null | undefined
   onOpenSkills?: (() => void) | undefined
@@ -1347,6 +1413,7 @@ export function Thread({
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
+  const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
@@ -1479,6 +1546,33 @@ export function Thread({
     }
   }
 
+  // The machine on the other side of a move or a conflict, named rather than
+  // shown as an id, when the fleet knows it.
+  const otherMachineLabel = (() => {
+    const otherId = active.state === "ownership-conflict"
+      ? active.ownershipConflict?.otherMachineId
+      : active.transfer?.targetMachineId
+    if (otherId === undefined) return undefined
+    return fleet?.find((machine) => machine.id === otherId)?.label
+  })()
+
+  const releaseSession = async (offer: SessionRecoveryOffer) => {
+    if (pending) return
+    setPending(true)
+    setRecoveryError("")
+    try {
+      await onReleaseSession?.({
+        sessionId: active.id,
+        transferId: offer.transferId,
+        confirmation: offer.confirmation,
+      })
+    } catch (cause) {
+      setRecoveryError(cause instanceof Error ? cause.message : "The session could not be released")
+    } finally {
+      setPending(false)
+    }
+  }
+
   const archiveSession = async () => {
     if (pending || archiveReadOnly) return
     setPending(true)
@@ -1561,7 +1655,11 @@ export function Thread({
             <SessionUsageSummary usage={usage} />
           </div>
         </div>
-        {archiveReadOnly ? <Badge variant="outline">{active.state === "archived" ? "Archived" : "Archiving"}</Badge> : (
+        {archiveReadOnly ? (
+          <Badge variant="outline">
+            {readOnlySessionNotice(active, otherMachineLabel)?.badge ?? "Read-only"}
+          </Badge>
+        ) : (
           <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
             <RuntimeControls
               runtime={active.runtime}
@@ -1644,15 +1742,20 @@ export function Thread({
       </ScrollArea>
       {archiveReadOnly ? (
         <div className="px-5 py-3">
-          <Alert className="mx-auto max-w-[var(--shell-thread)]">
-            <ArchiveIcon />
-            <AlertTitle>{active.state === "archived" ? "Archived" : "Archiving session"}</AlertTitle>
-            <AlertDescription>
-              {active.state === "archived"
-                ? "This session is read-only. Its history, checkpoints, artifacts, and annotations remain available."
-                : "Cleanup will resume safely if the daemon restarts."}
-            </AlertDescription>
-          </Alert>
+          {recoveryError ? (
+            <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]">
+              <CircleStopIcon />
+              <AlertTitle>Session could not be released</AlertTitle>
+              <AlertDescription>{recoveryError}</AlertDescription>
+            </Alert>
+          ) : null}
+          <SessionReadOnlyNotice
+            session={active}
+            otherLabel={otherMachineLabel}
+            disabled={!connected || onReleaseSession === undefined}
+            pending={pending}
+            onRelease={(offer) => void releaseSession(offer)}
+          />
         </div>
       ) : <div className="px-5 py-3 [mask-image:linear-gradient(to_bottom,transparent_0,black_12px)]">
         {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
@@ -3168,6 +3271,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     terminalClientId,
     transferSession,
     previewTransfer,
+    releaseSession,
     writeTerminal,
     authenticationRequired,
     protocolError,
@@ -3863,7 +3967,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}

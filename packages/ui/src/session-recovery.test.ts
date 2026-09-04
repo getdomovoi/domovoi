@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { SessionSummary } from "@getdomovoi/protocol"
 
-import { sessionConflictOffer, sessionRecoveryOffer } from "./session-recovery.js"
+import { readOnlySessionNotice, sessionConflictOffer, sessionRecoveryOffer } from "./session-recovery.js"
 
 const transferring: NonNullable<SessionSummary["transfer"]> = {
   phase: "transferring",
@@ -103,5 +103,52 @@ describe("sessionConflictOffer", () => {
       { ...conflicted, ownershipConflict: undefined } as SessionSummary,
       "studio",
     )).toBeUndefined()
+  })
+})
+
+describe("readOnlySessionNotice", () => {
+  it("does not tell a moved session that cleanup will resume after a restart", () => {
+    const moved = readOnlySessionNotice(
+      { ...session, state: "transferred" } as SessionSummary,
+      "studio",
+    )
+
+    expect(moved?.badge).toBe("Moved")
+    expect(moved?.title).toBe("Moved to studio")
+    expect(moved?.detail).not.toContain("Cleanup")
+  })
+
+  it("separates a release from a move and a conflict from both", () => {
+    const released = readOnlySessionNotice({
+      ...session,
+      state: "transferred",
+      transfer: {
+        phase: "transferred",
+        transferId: `transfer-${"a".repeat(32)}`,
+        targetMachineId: `machine-${"b".repeat(32)}`,
+        generation: 3,
+        manifestDigest: `sha256:${"c".repeat(64)}`,
+        completedAt: "2026-09-04T10:00:00.000Z",
+        completion: "conflict-released",
+      },
+    } as unknown as SessionSummary, "studio")
+
+    expect(released?.badge).toBe("Released")
+    expect(released?.detail).toContain("gave up its claim")
+    expect(readOnlySessionNotice(conflicted, "studio")?.badge).toBe("Conflict")
+  })
+
+  it("keeps the archive wording it had", () => {
+    expect(readOnlySessionNotice({ ...session, state: "archived" } as SessionSummary, undefined))
+      .toEqual({
+        badge: "Archived",
+        title: "Archived",
+        detail: "This session is read-only. Its history, checkpoints, artifacts, and annotations remain available.",
+      })
+  })
+
+  it("says nothing for a session that can still be worked on", () => {
+    expect(readOnlySessionNotice({ ...session, state: "idle" } as SessionSummary, "studio"))
+      .toBeUndefined()
   })
 })

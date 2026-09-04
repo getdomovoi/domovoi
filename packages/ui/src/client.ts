@@ -670,6 +670,33 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.transfer", { ...params, client: this.kind }, options)
   }
 
+  // Two exits from a stalled move, and the confirmation the operator made
+  // decides which one is called. Routing here rather than at the surface keeps
+  // the claim they agreed to and the method that acts on it together.
+  releaseSession(
+    params: {
+      sessionId: string
+      transferId: string
+      confirmation: "target-does-not-have-session" | "keep-target-session"
+    },
+    options?: DomovoiRequestOptions,
+  ): Promise<unknown> {
+    if (params.confirmation === "keep-target-session") {
+      return this.request("session.transferResolveConflict", {
+        sessionId: params.sessionId,
+        transferId: params.transferId,
+        confirmation: "keep-target-session",
+        client: this.kind,
+      }, options)
+    }
+    return this.request("session.transferRecoverSource", {
+      sessionId: params.sessionId,
+      transferId: params.transferId,
+      confirmation: "target-does-not-have-session",
+      client: this.kind,
+    }, options)
+  }
+
   listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {
     return this.request("device.list", {}, options)
   }

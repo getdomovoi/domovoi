@@ -472,6 +472,19 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.transferSession(params, options)
   }, [])
 
+  const releaseSession = useCallback(async (
+    params: {
+      sessionId: string
+      transferId: string
+      confirmation: "target-does-not-have-session" | "keep-target-session"
+    },
+    options?: DomovoiRequestOptions,
+  ): Promise<unknown> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.releaseSession(params, options)
+  }, [])
+
   const listDevices = useCallback(async (
     options?: DomovoiRequestOptions,
   ): Promise<DevicesResult> => {
@@ -705,6 +718,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     rotateDevice,
     transferSession,
     previewTransfer,
+    releaseSession,
     subscribeTerminal,
     terminalClientId: clientIdRef.current,
     writeTerminal,

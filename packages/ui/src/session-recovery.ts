@@ -67,3 +67,54 @@ export function sessionConflictOffer(
     confirmLabel: `${other} keeps the session`,
   }
 }
+
+// Every read-only state shared one notice, written for archiving, so a session
+// that had moved to another machine told the person cleanup would resume after
+// a restart. Each state says its own thing now.
+export function readOnlySessionNotice(
+  session: SessionSummary,
+  otherLabel: string | undefined,
+): { badge: string, title: string, detail: string } | undefined {
+  const other = otherLabel ?? "another machine"
+  switch (session.state) {
+    case "archiving":
+      return {
+        badge: "Archiving",
+        title: "Archiving session",
+        detail: "Cleanup will resume safely if the daemon restarts.",
+      }
+    case "archived":
+      return {
+        badge: "Archived",
+        title: "Archived",
+        detail: "This session is read-only. Its history, checkpoints, artifacts, and annotations remain available.",
+      }
+    case "transferring":
+      return {
+        badge: "Moving",
+        title: `Moving to ${other}`,
+        detail: "This session is frozen while it moves, so nothing here can change it.",
+      }
+    case "transferred":
+      return session.transfer?.phase === "transferred"
+        && session.transfer.completion === "conflict-released"
+        ? {
+          badge: "Released",
+          title: `Released to ${other}`,
+          detail: `This machine gave up its claim, so ${other} holds the session now. The files here stay readable and are yours to remove.`,
+        }
+        : {
+          badge: "Moved",
+          title: `Moved to ${other}`,
+          detail: `${other} holds this session now. What is here is a recovery point, kept as it was when it left.`,
+        }
+    case "ownership-conflict":
+      return {
+        badge: "Conflict",
+        title: `${other} also claims this session`,
+        detail: "Two machines hold this session and only one can keep it. Settle it before working on either copy.",
+      }
+    default:
+      return undefined
+  }
+}
