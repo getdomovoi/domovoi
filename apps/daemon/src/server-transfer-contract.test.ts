@@ -532,6 +532,106 @@ describe("transactional session transfer RPC", () => {
     })
   })
 
+  it("reconciles an ambiguous live transfer after returning the incomplete result", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-live-reconcile-"))
+    scratchDirectories.push(scratch)
+    const { source } = await transferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    let checkpointed = false
+    let statusCalls = 0
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => {
+          checkpointed = true
+          return { commit: checkpointCommit, changedFiles: [] }
+        },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: checkpointed ? checkpointCommit : baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK exact session"),
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          if (method === "transfer.status") {
+            statusCalls += 1
+            if (statusCalls === 1) throw new Error("target reply was lost")
+            return {
+              state: "committed",
+              transferId: String(params.transferId),
+              workspacePath: `/target/${source.sessions[0]!.id}`,
+              checkpointCommit,
+              ownershipGeneration: 2,
+            }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    const preview = await call("session.transferPreview", {
+      sessionId: source.sessions[0]!.id,
+      targetMachineId,
+      client: "desktop",
+    })
+    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+
+    await expect(call("session.transfer", {
+      sessionId: source.sessions[0]!.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    })).resolves.toMatchObject({
+      result: {
+        outcome: "incomplete",
+        state: "unknown",
+        recoveryAction: "check-status",
+      },
+    })
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    expect(statusCalls).toBe(2)
+    socket.close()
+  })
+
   it("accepts, restores, and idempotently commits a transfer from its source machine", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
     scratchDirectories.push(scratch)

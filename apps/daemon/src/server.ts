@@ -3696,6 +3696,7 @@ export class DomovoiDaemon {
               transferActor?.kind === "client" ? transferActor.clientId : undefined,
               transferSignal,
             )
+            if (outcome.outcome === "incomplete") this.#scheduleSessionTransferRecovery()
             this.#send(socket, {
               jsonrpc: "2.0",
               id: request.id,
@@ -4115,6 +4116,7 @@ export class DomovoiDaemon {
 
       if (method === "fleet.list") {
         this.#recordThisMachine()
+        this.#scheduleSessionTransferRecovery()
         this.#scheduleRecoveredOwnershipChecks()
         this.#send(socket, {
           jsonrpc: "2.0",
