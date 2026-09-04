@@ -25,12 +25,12 @@ type TransferResource = {
   digest: string
 }
 
-type ArtifactSourceResource = TransferResource & {
+export type ArtifactSourceResource = TransferResource & {
   artifactId: string
   path: string
 }
 
-type AnnotationCropResource = TransferResource & {
+export type AnnotationCropResource = TransferResource & {
   ref: string
   mimeType: "image/png" | "image/jpeg" | "image/webp"
 }
@@ -41,6 +41,13 @@ export type PreparedSessionTransferIntent = {
   method: "git-bundle" | "remote-ref"
   remote?: string
   worktreeDigest: string
+  artifactSources: ArtifactSourceResource[]
+  annotationCrops: AnnotationCropResource[]
+}
+
+export type CollectedSessionTransferState = {
+  state: SessionTransferState
+  coverage: SessionTransferCoverage
   artifactSources: ArtifactSourceResource[]
   annotationCrops: AnnotationCropResource[]
 }
@@ -115,32 +122,16 @@ function coverageFor(
   }
 }
 
-export async function prepareSessionTransferIntent(input: {
+export async function collectSessionTransferState(input: {
   snapshot: WorkspaceSnapshot
   sessionId: string
   usage: readonly SessionTransferUsageRecord[]
-  sourceMachineId: string
-  targetMachineId: string
-  sourceProjectId: string
-  targetProjectId: string
-  lineageCommit: string
-  sourceHeadCommit: string
-  worktreeDigest: string
-  method: "git-bundle" | "remote-ref"
-  remote?: string
   readIgnoredArtifactSource: (artifactId: string, path: string) => Promise<Buffer | undefined>
   readAnnotationCrop: (
     ref: string,
     mimeType: "image/png" | "image/jpeg" | "image/webp",
   ) => Promise<Uint8Array>
-}): Promise<PreparedSessionTransferIntent> {
-  if (
-    input.snapshot.machine.id !== input.sourceMachineId
-    || input.snapshot.project?.id !== input.sourceProjectId
-    || input.sourceMachineId === input.targetMachineId
-  ) {
-    throw new SessionTransferStateError("session-state-invalid")
-  }
+}): Promise<CollectedSessionTransferState> {
   const state = portableSessionTransferState(input.snapshot, input.sessionId, input.usage)
   const artifactSources: ArtifactSourceResource[] = []
   const annotationCrops: AnnotationCropResource[] = []
@@ -179,6 +170,30 @@ export async function prepareSessionTransferIntent(input: {
     artifactSources.length,
     annotationCrops.length,
   )
+  return { state, coverage, artifactSources, annotationCrops }
+}
+
+export function finalizeSessionTransferIntent(input: {
+  snapshot: WorkspaceSnapshot
+  sourceMachineId: string
+  targetMachineId: string
+  sourceProjectId: string
+  targetProjectId: string
+  lineageCommit: string
+  sourceHeadCommit: string
+  worktreeDigest: string
+  method: "git-bundle" | "remote-ref"
+  remote?: string
+  collected: CollectedSessionTransferState
+}): PreparedSessionTransferIntent {
+  if (
+    input.snapshot.machine.id !== input.sourceMachineId
+    || input.snapshot.project?.id !== input.sourceProjectId
+    || input.sourceMachineId === input.targetMachineId
+  ) {
+    throw new SessionTransferStateError("session-state-invalid")
+  }
+  const { state, coverage, artifactSources, annotationCrops } = input.collected
   const intentPayload = {
     contractVersion: 1,
     sourceMachineId: input.sourceMachineId,
@@ -212,7 +227,7 @@ export async function prepareSessionTransferIntent(input: {
   const intentDigest = sha256(`domovoi.session-transfer-intent.v1\0${canonicalJson(intentPayload)}`)
   const preview = sessionTransferPreviewSchema.parse({
     contractVersion: 1,
-    sessionId: input.sessionId,
+    sessionId: state.session.id,
     sourceMachineId: input.sourceMachineId,
     targetMachineId: input.targetMachineId,
     intentDigest,
@@ -234,6 +249,29 @@ export async function prepareSessionTransferIntent(input: {
     artifactSources,
     annotationCrops,
   }
+}
+
+export async function prepareSessionTransferIntent(input: {
+  snapshot: WorkspaceSnapshot
+  sessionId: string
+  usage: readonly SessionTransferUsageRecord[]
+  sourceMachineId: string
+  targetMachineId: string
+  sourceProjectId: string
+  targetProjectId: string
+  lineageCommit: string
+  sourceHeadCommit: string
+  worktreeDigest: string
+  method: "git-bundle" | "remote-ref"
+  remote?: string
+  readIgnoredArtifactSource: (artifactId: string, path: string) => Promise<Buffer | undefined>
+  readAnnotationCrop: (
+    ref: string,
+    mimeType: "image/png" | "image/jpeg" | "image/webp",
+  ) => Promise<Uint8Array>
+}): Promise<PreparedSessionTransferIntent> {
+  const collected = await collectSessionTransferState(input)
+  return finalizeSessionTransferIntent({ ...input, collected })
 }
 
 export function sessionTransferManifestDigest(manifest: SessionTransferManifest): string {
