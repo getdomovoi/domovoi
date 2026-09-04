@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -60,6 +60,21 @@ function renderDialog(overrides: {
   const onTransfer = vi.fn(overrides.onTransfer ?? (() => Promise.resolve(succeeded)))
   const onTransferred = vi.fn(overrides.onTransferred ?? (() => {}))
   const onOutcome = vi.fn(overrides.onOutcome ?? (() => {}))
+  const onPreview = vi.fn(async () => ({
+    allowed: true as const,
+    contractVersion: 1 as const,
+    sessionId: session.id,
+    sourceMachineId: source.id,
+    targetMachineId: target.id,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    project: {
+      sourceProjectId: "project-ledger",
+      targetProjectId: "project-ledger-target",
+      lineageCommit: "b".repeat(40),
+      sourceHeadCommit: "c".repeat(40),
+    },
+    coverage: { included: [{ kind: "repository" as const }], excluded: [], warnings: [] },
+  }))
   const user = userEvent.setup()
   render(
     <TransferSessionDialog
@@ -68,12 +83,13 @@ function renderDialog(overrides: {
       session={overrides.session ?? session}
       source={source}
       target={overrides.target ?? target}
+      onPreview={onPreview as never}
       onTransfer={onTransfer as never}
       onTransferred={onTransferred}
       onOutcome={onOutcome}
     />,
   )
-  return { user, onTransfer, onTransferred, onOutcome }
+  return { user, onPreview, onTransfer, onTransferred, onOutcome }
 }
 
 it("names the machine the session would move to", () => {
@@ -140,6 +156,8 @@ it("moves the session with a git bundle by default", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({
+    contractVersion: 1,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: "session-billing",
     targetMachineId: target.id,
     method: "git-bundle",
@@ -163,6 +181,8 @@ it("moves the session over the named remote", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({
+    contractVersion: 1,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: "session-billing",
     targetMachineId: target.id,
     method: "remote-ref",
@@ -228,4 +248,52 @@ it("does not promise that skills travel", () => {
 
   expect(screen.queryByText("Active skills")).toBeNull()
   expect(screen.getByText(/reviewed again there/u)).toBeTruthy()
+})
+
+it("waits for the daemon to allow the move before offering it", async () => {
+  const onPreview = vi.fn(() => new Promise(() => {}))
+  render(
+    <TransferSessionDialog
+      open
+      onOpenChange={() => {}}
+      session={session}
+      source={source}
+      target={target}
+      onPreview={onPreview as never}
+      onTransfer={vi.fn() as never}
+      onTransferred={() => {}}
+      onOutcome={() => {}}
+    />,
+  )
+
+  expect(screen.getByRole("button", { name: "Move session" })).toHaveProperty("disabled", true)
+  expect(onPreview).toHaveBeenCalledOnce()
+})
+
+it("offers no move when the daemon refuses to preview one", async () => {
+  const onPreview = vi.fn(async () => ({
+    allowed: false as const,
+    contractVersion: 1 as const,
+    sessionId: session.id,
+    sourceMachineId: source.id,
+    targetMachineId: target.id,
+    reason: "session-not-idle" as const,
+    coverage: { included: [], excluded: [], warnings: [] },
+  }))
+  render(
+    <TransferSessionDialog
+      open
+      onOpenChange={() => {}}
+      session={session}
+      source={source}
+      target={target}
+      onPreview={onPreview as never}
+      onTransfer={vi.fn() as never}
+      onTransferred={() => {}}
+      onOutcome={() => {}}
+    />,
+  )
+
+  await waitFor(() => expect(onPreview).toHaveBeenCalledOnce())
+  expect(screen.getByRole("button", { name: "Move session" })).toHaveProperty("disabled", true)
 })

@@ -656,6 +656,13 @@ export class DomovoiClient extends EventTarget {
 
   // Moving a session is one request that either lands, is refused with a
   // reason, or fails. The caller renders whichever came back.
+  previewSessionTransfer(
+    params: Omit<RpcParams<"session.transferPreview">, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"session.transferPreview">> {
+    return this.request("session.transferPreview", { ...params, client: this.kind }, options)
+  }
+
   transferSession(
     params: Omit<SessionTransferParams, "client">,
     options?: DomovoiRequestOptions,

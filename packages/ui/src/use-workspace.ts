@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { openClaimConnection } from "./claim-socket"
@@ -454,6 +454,15 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
 
   // Moving a session lands on the target machine, so the answer is returned to
   // the caller rather than folded into this machine's snapshot.
+  const previewTransfer = useCallback(async (
+    params: Omit<SessionTransferPreviewParams, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<SessionTransferPreview> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.previewSessionTransfer(params, options)
+  }, [])
+
   const transferSession = useCallback(async (
     params: Omit<SessionTransferParams, "client">,
     options?: DomovoiRequestOptions,
@@ -690,6 +699,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     revokeDevice,
     rotateDevice,
     transferSession,
+    previewTransfer,
     subscribeTerminal,
     terminalClientId: clientIdRef.current,
     writeTerminal,

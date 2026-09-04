@@ -8,6 +8,8 @@ import {
   type FleetMachine,
   type SessionSummary,
   type SessionTransferParams,
+  type SessionTransferPreview,
+  type SessionTransferPreviewParams,
   type SessionTransferResult,
   type TransferMethod,
 } from "@getdomovoi/protocol"
@@ -92,6 +94,7 @@ export function TransferSessionDialog({
   session,
   source,
   target,
+  onPreview,
   onTransfer,
   onTransferred,
   onOutcome,
@@ -101,6 +104,9 @@ export function TransferSessionDialog({
   session: SessionSummary
   source: FleetMachine
   target: FleetMachine
+  onPreview: (
+    params: Omit<SessionTransferPreviewParams, "client">,
+  ) => Promise<SessionTransferPreview>
   onTransfer: (
     params: Omit<SessionTransferParams, "client">,
   ) => Promise<SessionTransferResult>
@@ -111,6 +117,32 @@ export function TransferSessionDialog({
   const [remote, setRemote] = useState("")
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState("")
+  const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
+  const [previewing, setPreviewing] = useState(false)
+
+  // The daemon decides what this move would carry and whether it may happen at
+  // all. Asking it is not a nicety: session.transfer refuses anything without
+  // the contract version and intent digest this call returns.
+  useEffect(() => {
+    if (!open) return
+    if (method === "remote-ref" && !remote.trim()) return
+    let active = true
+    setPreviewing(true)
+    setPreview(undefined)
+    void onPreview({
+      sessionId: session.id,
+      targetMachineId: target.id,
+      method,
+      ...(method === "remote-ref" ? { remote: remote.trim() } : {}),
+    }).then(
+      (next) => { if (active) setPreview(next) },
+      (cause: unknown) => {
+        if (!active) return
+        setProblem(cause instanceof Error ? cause.message : "The move could not be previewed")
+      },
+    ).finally(() => { if (active) setPreviewing(false) })
+    return () => { active = false }
+  }, [method, onPreview, open, remote, session.id, target.id])
 
   const wasOpen = useRef(open)
   useEffect(() => {
@@ -118,20 +150,31 @@ export function TransferSessionDialog({
       setMethod("git-bundle")
       setRemote("")
       setProblem("")
+      setPreview(undefined)
     }
     wasOpen.current = open
   }, [open])
 
   const checks = transferChecks({ session, source, target })
   const remoteReady = method === "git-bundle" || remote.trim().length > 0
-  const ready = checks.every((check) => check.ready) && remoteReady && !pending
+  const ready = checks.every((check) => check.ready)
+    && remoteReady
+    && !pending
+    && !previewing
+    && preview?.allowed === true
 
   const move = async () => {
     if (!ready) return
     setPending(true)
     setProblem("")
     try {
+      if (!preview?.allowed) return
       const result = await onTransfer({
+        // Copied from the preview rather than composed here: the digest is the
+        // daemon's promise about what it inspected, and a value this client
+        // assembled would bind nothing.
+        contractVersion: preview.contractVersion,
+        intentDigest: preview.intentDigest,
         sessionId: session.id,
         targetMachineId: target.id,
         method,

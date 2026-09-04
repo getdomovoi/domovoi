@@ -71,6 +71,21 @@ async function openTransferDialog(result: SessionTransferResult) {
       currentMachineId={local.id}
       onSelectMachine={onSelectMachine}
       onTransferSession={onTransferSession}
+      onPreviewTransfer={(async () => ({
+        allowed: true,
+        contractVersion: 1,
+        sessionId: "session-billing",
+        sourceMachineId: "machine-local",
+        targetMachineId: "machine-studio",
+        intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        project: {
+          sourceProjectId: "project-one",
+          targetProjectId: "project-two",
+          lineageCommit: "b".repeat(40),
+          sourceHeadCommit: "c".repeat(40),
+        },
+        coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
+      })) as never}
       {...handlers}
     />,
   )
@@ -99,6 +114,8 @@ it("moves the session and switches to the target machine", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransferSession).toHaveBeenCalledWith({
+    contractVersion: 1,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: snapshot.activeSessionId,
     targetMachineId: studio.id,
     method: "git-bundle",
