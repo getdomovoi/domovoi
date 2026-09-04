@@ -141,7 +141,7 @@ export interface WorkspaceService {
     repositoryPath: string,
     remote: string,
     sessionId: string,
-    expectedCommit?: string,
+    expectedCommitOrSignal?: string | AbortSignal,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace>
   transferFingerprint?(
@@ -932,9 +932,15 @@ export class GitWorkspaceService implements WorkspaceService {
     repositoryPath: string,
     remote: string,
     sessionId: string,
-    expectedCommit?: string,
+    expectedCommitOrSignal?: string | AbortSignal,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace> {
+    const expectedCommit = typeof expectedCommitOrSignal === "string"
+      ? expectedCommitOrSignal
+      : undefined
+    const operationSignal = typeof expectedCommitOrSignal === "string"
+      ? signal
+      : expectedCommitOrSignal ?? signal
     if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
     if (expectedCommit !== undefined && !/^[a-f0-9]{40}$/u.test(expectedCommit)) {
@@ -942,8 +948,8 @@ export class GitWorkspaceService implements WorkspaceService {
     }
 
     const ref = `refs/domovoi/sessions/${sessionId}`
-    await git(repositoryPath, ["fetch", "--quiet", "--", remote, `${ref}:${ref}`], signal)
-    const commit = await git(repositoryPath, ["rev-parse", `${ref}^{commit}`], signal)
+    await git(repositoryPath, ["fetch", "--quiet", "--", remote, `${ref}:${ref}`], operationSignal)
+    const commit = await git(repositoryPath, ["rev-parse", `${ref}^{commit}`], operationSignal)
     if (expectedCommit !== undefined && commit !== expectedCommit) {
       throw new Error("Remote session ref changed before transfer commit")
     }
@@ -951,11 +957,11 @@ export class GitWorkspaceService implements WorkspaceService {
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
-    const held = await this.sessionHeadCommit(sessionId, signal)
+    const held = await this.sessionHeadCommit(sessionId, operationSignal)
     if (held !== undefined) {
-      const status = await git(path, ["status", "--porcelain"], signal)
+      const status = await git(path, ["status", "--porcelain"], operationSignal)
       if (held !== commit || status.length > 0) throw new SessionWorktreeExistsError()
-      await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
+      await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
       return { path, branch, baseCommit: commit }
     }
     try {
@@ -966,10 +972,10 @@ export class GitWorkspaceService implements WorkspaceService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
 
-    await git(repositoryPath, ["worktree", "add", "-b", branch, path, commit], signal)
+    await git(repositoryPath, ["worktree", "add", "-b", branch, path, commit], operationSignal)
     // The transferred checkpoint stays restorable here, as it does when a
     // session arrives as a bundle.
-    await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
+    await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
     return { path, branch, baseCommit: commit }
   }
 

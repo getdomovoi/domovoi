@@ -1022,6 +1022,12 @@ describe("GitWorkspaceService session ref restore", () => {
       targetClone,
       "origin",
       "session-1",
+      new AbortController().signal,
+    )).resolves.toEqual(restored)
+    await expect(target.restoreSessionFromRef(
+      targetClone,
+      "origin",
+      "session-1",
       "f".repeat(40),
     )).rejects.toThrow("Remote session ref changed before transfer commit")
   })
