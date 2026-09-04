@@ -329,12 +329,29 @@ export function FleetView({
                 <tbody>
                   {devices.map((paired) => {
                     const revoked = paired.revokedAt !== undefined
+                    // An upgrade revokes credentials that predate machine binding. That is
+                    // not the operator revoking a device, and it has a different remedy, so
+                    // the row says so instead of leaving a bare Revoked badge to explain it.
+                    const revokedByUpgrade = paired.revocationReason === "legacy-unbound-credential"
                     const busy = pendingDeviceId === paired.id
                     return (
                       <tr key={paired.id}>
                         <th scope="row" className="border-b py-2 pr-3 text-left font-medium text-strong">
                           {paired.label}
-                          {revoked ? <Badge variant="destructive" className="ml-2">Revoked</Badge> : null}
+                          {revoked ? (
+                            <Badge
+                              variant={revokedByUpgrade ? "warning" : "destructive"}
+                              className="ml-2"
+                            >
+                              {revokedByUpgrade ? "Revoked by upgrade" : "Revoked"}
+                            </Badge>
+                          ) : null}
+                          {revokedByUpgrade ? (
+                            <p className="mt-1 max-w-[52ch] text-[11px] font-normal leading-relaxed text-muted-foreground">
+                              This pairing predates machine-bound credentials. Pair this device
+                              again to restore it.
+                            </p>
+                          ) : null}
                         </th>
                         <td className="border-b py-2 pr-3 font-machine text-[10px] text-faint">
                           {paired.pairedAt}

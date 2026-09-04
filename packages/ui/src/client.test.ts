@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 
@@ -276,7 +276,7 @@ describe("DomovoiClient", () => {
       params: {
         client: "web",
         clientId: client.clientId,
-        protocolVersion: "0.1.0",
+        protocolVersion,
         authToken: "secret-token",
       },
     })

@@ -151,6 +151,21 @@ it("revokes a device only after the confirmation is accepted", async () => {
   })
 })
 
+it("says why an upgrade revoked a pairing, so it is not read as a deliberate revoke", async () => {
+  renderFleet({
+    devices: [{
+      ...device,
+      revokedAt: "2026-09-03T08:00:00.000Z",
+      revocationReason: "legacy-unbound-credential",
+    }],
+  })
+
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  expect(row.textContent).toContain("Revoked by upgrade")
+  expect(row.textContent).toContain("Pair this device again")
+})
+
 it("keeps the device when the confirmation is cancelled", async () => {
   const { user, onRevokeDevice } = renderFleet()
   await screen.findByRole("row", { name: /studio-ipad/ })
