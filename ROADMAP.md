@@ -45,22 +45,18 @@ access.
   - Generate a high-entropy credential when none is supplied.
   - Persist standalone credentials in a user-private file and keep browser handoff session-only.
   - Prove unauthenticated RPC and terminal requests are rejected.
-- [ ] Stop a paired machine reading another machine's workspace
-  - `system.hello` with `client: "machine"` returns the full workspace snapshot, and every
-    workspace broadcast reaches machine sockets. A paired machine therefore sees another
-    machine's sessions, thread, artifacts, and approvals, none of which it needs.
-  - Present for any paired machine today, independent of session transfer. Found on 2026-09-03
-    while auditing transfer authentication; the transfer work only made someone look.
-  - A machine connection needs the transfer surface, not the workspace. Returning an empty or
-    sanitized snapshot for a machine hello and excluding machine sockets from broadcasts needs no
-    protocol change.
-- [ ] Bind a machine credential to the machine it was issued for
-  - `device.claim` records only a code and a label, and `system.hello` accepts a caller-supplied
-    `machineId`, so a paired token can present as any machine or as a desktop client. Every
-    ownership decision in a transfer rests on believing who answered.
-  - Enrolment has to capture the machine the credential is for, and the actor has to be derived
-    from the credential rather than asserted in the request. Verifying the parameter is not enough
-    on its own: there is nothing to verify against until enrolment binds it.
+- [x] Stop a paired machine reading another machine's workspace
+  - A machine hello returns no workspace and machine sockets are excluded from workspace
+    broadcasts. Machine connections get the transfer surface only.
+- [x] Bind a machine credential to the machine it was issued for
+  - Enrolment records the machine a credential is for, and the actor is derived from the
+    credential rather than asserted by the caller. `system.hello` no longer accepts a
+    caller-supplied `machineId`, which is a wire change, so the shared protocol is `0.2.0` and
+    peers speaking `0.1.0` fail at the handshake.
+  - Credentials issued before the binding could act as either a machine or a person and are
+    revoked on migration, so every pairing made before this has to be made again. The paired
+    devices list names an upgrade revocation, and a move to a machine whose credential was
+    retired refuses with `target-pairing-required`.
 - [x] Protect embedded OpenCode and Kilo provider servers
   - Use provider-supported authentication or OS-protected IPC.
   - Prove direct unauthenticated requests cannot bypass Domovoi approvals.
@@ -375,6 +371,13 @@ The desktop handoff specifies these; `main` does not implement them yet.
 Priority: `P1`. Keep code and execution on the selected machine while one client controls the
 fleet.
 
+The items below were checked off before Claude Code and Codex began reviewing each other's work.
+Three holes found on 2026-09-04 were inside items already marked complete: a paired machine could
+read another machine's workspace, concurrent daemon starts raced on machine identity, and a
+credential could act as either a machine or a person. A second pass over the fleet surface
+underneath the transfer work is queued, weighted toward credential handling and transport
+ordering, where a mistake is both reachable from another machine and quiet.
+
 - [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
@@ -416,7 +419,17 @@ fleet.
   what travels with the session and what does not
   - The dialog ships and states what travels. What travels is less than a person would expect, so
     read the line below before trusting this one.
-- [ ] Carry session state, not only Git bytes, across a machine transfer
+- [x] Carry session state, not only Git bytes, across a machine transfer
+  - A move is previewed first and refused unless it carries the contract version and intent
+    digest the preview returned, so a session that changed cannot move on a stale description.
+    Coverage is reported by the daemon rather than described by the client.
+  - Two machines can no longer both hold a writable copy: a target that already has the session
+    freezes the source, conflicts record how they were found, and the only exit hands the session
+    to the machine holding the verifiable ownership generation while leaving this machine's
+    worktree readable. Nothing removes that worktree automatically.
+  - An interrupted move is reconciled by the daemon itself. Operator recovery is offered only
+    once the daemon records that it cannot reach the target, and the call rechecks the target
+    before releasing anything.
   - `transferBeginParams` in `packages/protocol/src/transfer-rpc.ts` carries the session id, the
     source machine, the method, a digest, a byte count, and an optional `sinceCommit`. Nothing
     else. The thread, artifacts, annotations, working plan, and usage ledger stay on the source
