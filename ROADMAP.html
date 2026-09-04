@@ -670,10 +670,14 @@ td { color: var(--ink2); }
 </ul>
 <h2 id="goal-2-add-private-machine-fleet-operation">Goal 2: add private machine-fleet operation</h2>
 <p>Priority: <code>P1</code>. Keep code and execution on the selected machine while one client controls the fleet.</p>
-<p>The items below were checked off before Claude Code and Codex began reviewing each other's work. Three holes found on 2026-09-04 were inside items already marked complete: a paired machine could read another machine's workspace, concurrent daemon starts raced on machine identity, and a credential could act as either a machine or a person. A second pass over the fleet surface underneath the transfer work is queued, weighted toward credential handling and transport ordering, where a mistake is both reachable from another machine and quiet. The encrypted relay preflight closed the immediate credential blockers: credentials are fixed-width, exact client or machine bindings determine the authenticated actor, activity is recorded only after an accepted hello, and both legacy credential shapes are retired in one migration. That preflight is not the full second pass. Resume with enrollment, revocation and rotation; transport authentication and ordering; install and supervision; then WSL discovery and interop. Transfer itself is excluded because its ownership and recovery contract already received joint review.</p>
+<p>The second pass found that the protocol, stores, views, and unit-tested helpers are real, but the production assembly has never enrolled or refreshed a second machine. A checked component is not completion evidence for an outcome. Six green-test gaps exposed the pattern: a component never rendered; CLI tests stubbed the socket handshake; fleet tests seeded remote rows; Desktop smoke bypassed its daemon; service tests replaced OS managers; and WSL tests replaced <code>wsl.exe</code>. Goal 2 remains open until production-boundary acceptance proofs exercise those assemblies.</p>
 <p>One known lifecycle finding remains parked with that audit: <code>MachineCredentialStore.forget()</code> has no production caller, so an outbound machine credential remains in the OS keychain until it is overwritten. Deletion needs an authoritative revocation, removal, or re-pair event before that method can be wired safely.</p>
 <ul>
-<li>[x] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
+<li>[ ] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
+<ul>
+<li>The schemas, <code>machine.json</code> identity, and local facts exist. Desktop uses a different fallback identity, an existing <code>state.sqlite</code> can override <code>machine.json</code> and current facts, and no remote heartbeat writer exists. Close with one production daemon factory plus startup reconciliation and restart tests.
+</li>
+</ul>
 </li>
 <li>[x] Add device pairing, revocation, and credential rotation to the daemon and protocol
 </li>
@@ -683,9 +687,13 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[x] Add a fleet registry and machine selector to the shared protocol and UI
+<li>[ ] Add a fleet registry and machine selector to the shared protocol and UI
+<ul>
+<li>The registry, protocol, and selector UI exist. Production writes only the local row; pairing saves a credential but no remote facts or endpoint, and nothing refreshes a peer. Close with two real daemons from pairing through selection and restart, without registry seeding.
 </li>
-<li>[x] Implement one transport abstraction with this order:
+</ul>
+</li>
+<li>[ ] Implement one transport abstraction with this order:
 <ol>
 <li>loopback or OS-private IPC;
 </li>
@@ -702,6 +710,8 @@ td { color: var(--ink2); }
 </ol>
 <ul>
 <li>Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open items below replace the earlier assumption that relay had to wait for the hosted Goal 3 service.
+</li>
+<li>The union-like base schema, preference order, and UI loop exist. Production produces only local and LAN candidates, the daemon tries only the first candidate, the UI can wait forever on a silent first candidate, and no WSL, tailnet, or SSH producer exists. Relay stays deferred.
 </li>
 </ul>
 </li>
@@ -726,22 +736,34 @@ td { color: var(--ink2); }
 <li>[ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
 </li>
 <li>[x] Bootstrap <code>domovoid</code> through a version-pinned install script that checks the archive against a caller-supplied SHA-256 and the <code>SHA256SUMS</code> the release publishes; signature verification is tracked under signed GitHub Release artifacts
-</li>
-<li>[x] Install and supervise the daemon for the user who asked, through a systemd user unit, a launchd agent, and a Windows logon task
 <ul>
-<li><code>domovoid service install</code>, <code>status</code>, and <code>remove</code> ship in the daemon package. Nothing is written to a system-wide location and no step asks for elevation.
+<li>The downloader verifies the caller SHA-256 and the release <code>SHA256SUMS</code> and stores a bounded archive. It does not extract, install dependencies, expose a binary, configure state, or install supervision. Call it a verified downloader until a clean-machine lifecycle passes.
 </li>
 </ul>
 </li>
-<li>[x] Implement WSL discovery and a <code>domovoi open .</code> Windows interop shim
+<li>[ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a launchd agent, and a Windows logon task
 <ul>
-<li>Ships as <code>domovoid open</code>; no <code>domovoi</code> alias exists yet.
+<li>Unit and task generators plus <code>service install</code>, <code>status</code>, and <code>remove</code> exist, and nothing is written to a system-wide location. Nondefault listener and TLS configuration is lost, Desktop contends for the same port instead of consuming the service, Windows lacks crash restart, and CI never invokes a real manager.
 </li>
 </ul>
 </li>
-<li>[x] Keep all WSL filesystem and Git work inside the distro daemon, never through <code>\\wsl$</code>
+<li>[ ] Implement WSL discovery and a <code>domovoi open .</code> Windows interop shim
+<ul>
+<li>Discovery, endpoint, and <code>domovoid open</code> helpers exist and unit tests stub <code>wsl.exe</code>. No real Windows-to-WSL test exists, no <code>domovoi</code> alias exists, and WSL is not a fleet candidate.
 </li>
-<li>[x] Add fleet health, reconnect, version mismatch, and upgrade-required states
+</ul>
+</li>
+<li>[ ] Keep all WSL filesystem and Git work inside the distro daemon, never through <code>\\wsl$</code>
+<ul>
+<li>The intended guard exists, but it assumes Windows drives are under <code>/mnt</code>. WSL supports custom automount roots, and no real mount-boundary test exists.
+</li>
+</ul>
+</li>
+<li>[ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
+<ul>
+<li>Protocol derivation and client rendering exist, but there is no production remote row or refresh path on which these remote states can operate.
+</li>
+</ul>
 </li>
 <li>[x] Add checkpointed machine transfer with live source and target preflight
 </li>
@@ -771,6 +793,8 @@ td { color: var(--ink2); }
 </li>
 <li>The versioned transfer contract carries the repository and checkpoint, thread, artifacts and promoted artifact sources, annotations and crops, working plan, usage, and runtime settings. Provider credentials and state, terminals, approval rules, skill authority, audit history, ignored files, external databases, and Auto consent remain machine-local. The daemon reports these coverage keys and warnings to the dialog instead of relying on fixed client prose.
 </li>
+<li>End-to-end reachability is still blocked by missing remote enrollment: no production paired machine has ever appeared in the fleet, so no move has run between two real daemons. The transfer invariants above are peer-reviewed and tested; the outcome is unproven.
+</li>
 </ul>
 </li>
 <li>[x] Record every attempted move in the thread as a receipt that names the reason the daemon refused rather than a generic failure
@@ -780,25 +804,28 @@ td { color: var(--ink2); }
 <li>[x] Manage paired devices from the Fleet surface, with revocation behind a confirmation and credential rotation that shows the new credential once
 </li>
 </ul>
-<p>Completion proof:</p>
+<p>Completion proof. Current evidence first, then what closing actually requires.</p>
+<p>Covered today:</p>
 <ul>
-<li>one session can be controlled across two clients without divergent state;
+<li>one session controlled across two clients on one machine without divergent state;
 </li>
-<li>Linux, macOS, and Windows daemons pass pairing and reconnect tests; WSL interop is covered only by unit tests that stub <code>wsl.exe</code>;
+<li>revocation and rotation paths exist in the client;
 </li>
-<li>repository bytes never flow through a filesystem sync layer;
+<li>transfer safety is tested against constructed remote facts;
 </li>
-<li>revoked devices lose access promptly;
-</li>
-<li>a daemon remains reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone cannot enter;
-</li>
-<li>interrupted transfers recover without losing either worktree;
-</li>
-<li>a session can be moved to another paired machine from the client, and a refused move names the reason the daemon gave;
-</li>
-<li>paired devices can be revoked and rotated from the client without reaching for a terminal.
+<li>repository bytes never flow through a filesystem sync layer.
 </li>
 </ul>
+<p>Not covered, and the reason this goal is open:</p>
+<ul>
+<li>no test pairs two production daemons and then observes the peer in <code>fleet.list</code>;
+</li>
+<li>Windows and macOS run component suites, but service managers and WSL remain simulated;
+</li>
+<li>a production paired-machine move has never run end to end.
+</li>
+</ul>
+<p>Required to close: two production daemons taken from pairing to a fleet row, a bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus jobs that invoke native service managers and a real WSL. A daemon must also remain reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.</p>
 <h2 id="goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</h2>
 <p>Priority: <code>P2</code>. Make plan review and safe remote control work from iPad, phones, and guest browsers.</p>
 <h3 id="account-and-transport-services">Account and transport services</h3>

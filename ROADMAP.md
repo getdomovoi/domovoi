@@ -371,32 +371,33 @@ The desktop handoff specifies these; `main` does not implement them yet.
 Priority: `P1`. Keep code and execution on the selected machine while one client controls the
 fleet.
 
-The items below were checked off before Claude Code and Codex began reviewing each other's work.
-Three holes found on 2026-09-04 were inside items already marked complete: a paired machine could
-read another machine's workspace, concurrent daemon starts raced on machine identity, and a
-credential could act as either a machine or a person. A second pass over the fleet surface
-underneath the transfer work is queued, weighted toward credential handling and transport
-ordering, where a mistake is both reachable from another machine and quiet. The encrypted relay
-preflight closed the immediate credential blockers: credentials are fixed-width, exact client or
-machine bindings determine the authenticated actor, activity is recorded only after an accepted
-hello, and both legacy credential shapes are retired in one migration. That preflight is not the
-full second pass. Resume with enrollment, revocation and rotation; transport authentication and
-ordering; install and supervision; then WSL discovery and interop. Transfer itself is excluded
-because its ownership and recovery contract already received joint review.
+The second pass found that the protocol, stores, views, and unit-tested helpers are real, but the
+production assembly has never enrolled or refreshed a second machine. A checked component is not
+completion evidence for an outcome. Six green-test gaps exposed the pattern: a component never
+rendered; CLI tests stubbed the socket handshake; fleet tests seeded remote rows; Desktop smoke
+bypassed its daemon; service tests replaced OS managers; and WSL tests replaced `wsl.exe`. Goal 2
+remains open until production-boundary acceptance proofs exercise those assemblies.
 
 One known lifecycle finding remains parked with that audit: `MachineCredentialStore.forget()` has
 no production caller, so an outbound machine credential remains in the OS keychain until it is
 overwritten. Deletion needs an authoritative revocation, removal, or re-pair event before that
 method can be wired safely.
 
-- [x] Define stable machine identity, device credentials, labels, platform facts, versions,
+- [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
+  - The schemas, `machine.json` identity, and local facts exist. Desktop uses a different fallback
+    identity, an existing `state.sqlite` can override `machine.json` and current facts, and no
+    remote heartbeat writer exists. Close with one production daemon factory plus startup
+    reconciliation and restart tests.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
 - [x] Expose device revocation and rotation in a client or `domovoid` command
   - `packages/ui/src/client.ts` calls `device.revoke` and `device.rotate`, and the Fleet surface
     drives both. This duplicates the checked entry below it under paired-device management.
-- [x] Add a fleet registry and machine selector to the shared protocol and UI
-- [x] Implement one transport abstraction with this order:
+- [ ] Add a fleet registry and machine selector to the shared protocol and UI
+  - The registry, protocol, and selector UI exist. Production writes only the local row; pairing
+    saves a credential but no remote facts or endpoint, and nothing refreshes a peer. Close with
+    two real daemons from pairing through selection and restart, without registry seeding.
+- [ ] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
   2. WSL interop to a distro daemon on the same machine;
   3. LAN connection;
@@ -406,6 +407,9 @@ method can be wired safely.
   - Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open
     items below replace the earlier assumption that relay had to wait for the hosted Goal 3
     service.
+  - The union-like base schema, preference order, and UI loop exist. Production produces only local
+    and LAN candidates, the daemon tries only the first candidate, the UI can wait forever on a
+    silent first candidate, and no WSL, tailnet, or SSH producer exists. Relay stays deferred.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
   rendezvous in `docs/encrypted-relay.md`
@@ -427,14 +431,24 @@ method can be wired safely.
 - [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
   a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
-- [x] Install and supervise the daemon for the user who asked, through a systemd user unit, a
+  - The downloader verifies the caller SHA-256 and the release `SHA256SUMS` and stores a bounded
+    archive. It does not extract, install dependencies, expose a binary, configure state, or
+    install supervision. Call it a verified downloader until a clean-machine lifecycle passes.
+- [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
-  - `domovoid service install`, `status`, and `remove` ship in the daemon package. Nothing is
-    written to a system-wide location and no step asks for elevation.
-- [x] Implement WSL discovery and a `domovoi open .` Windows interop shim
-  - Ships as `domovoid open`; no `domovoi` alias exists yet.
-- [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-- [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
+  - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is
+    written to a system-wide location. Nondefault listener and TLS configuration is lost, Desktop
+    contends for the same port instead of consuming the service, Windows lacks crash restart, and
+    CI never invokes a real manager.
+- [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
+  - Discovery, endpoint, and `domovoid open` helpers exist and unit tests stub `wsl.exe`. No real
+    Windows-to-WSL test exists, no `domovoi` alias exists, and WSL is not a fleet candidate.
+- [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
+  - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
+    automount roots, and no real mount-boundary test exists.
+- [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
+  - Protocol derivation and client rendering exist, but there is no production remote row or
+    refresh path on which these remote states can operate.
 - [x] Add checkpointed machine transfer with live source and target preflight
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
@@ -465,6 +479,9 @@ method can be wired safely.
     Provider credentials and state, terminals, approval rules, skill authority, audit history,
     ignored files, external databases, and Auto consent remain machine-local. The daemon reports
     these coverage keys and warnings to the dialog instead of relying on fixed client prose.
+  - End-to-end reachability is still blocked by missing remote enrollment: no production paired
+    machine has ever appeared in the fleet, so no move has run between two real daemons. The
+    transfer invariants above are peer-reviewed and tested; the outcome is unproven.
 - [x] Record every attempted move in the thread as a receipt that names the reason the daemon
   refused rather than a generic failure
 - [x] Add a Fleet surface listing machine platform, architecture, version, connection, health,
@@ -472,19 +489,26 @@ method can be wired safely.
 - [x] Manage paired devices from the Fleet surface, with revocation behind a confirmation and
   credential rotation that shows the new credential once
 
-Completion proof:
+Completion proof. Current evidence first, then what closing actually requires.
 
-- one session can be controlled across two clients without divergent state;
-- Linux, macOS, and Windows daemons pass pairing and reconnect tests; WSL interop is covered only
-  by unit tests that stub `wsl.exe`;
-- repository bytes never flow through a filesystem sync layer;
-- revoked devices lose access promptly;
-- a daemon remains reachable from a paired phone across private-network identity changes without
-  exposing payload plaintext to the relay, and a bearer or channel key alone cannot enter;
-- interrupted transfers recover without losing either worktree;
-- a session can be moved to another paired machine from the client, and a refused move names the
-  reason the daemon gave;
-- paired devices can be revoked and rotated from the client without reaching for a terminal.
+Covered today:
+
+- one session controlled across two clients on one machine without divergent state;
+- revocation and rotation paths exist in the client;
+- transfer safety is tested against constructed remote facts;
+- repository bytes never flow through a filesystem sync layer.
+
+Not covered, and the reason this goal is open:
+
+- no test pairs two production daemons and then observes the peer in `fleet.list`;
+- Windows and macOS run component suites, but service managers and WSL remain simulated;
+- a production paired-machine move has never run end to end.
+
+Required to close: two production daemons taken from pairing to a fleet row, a bounded ordered
+dial, a session move, reconnect, restart, revocation, and removal, plus jobs that invoke native
+service managers and a real WSL. A daemon must also remain reachable from a paired phone across
+private-network identity changes without exposing payload plaintext to the relay, and a bearer or
+channel key alone must not be enough to enter.
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
