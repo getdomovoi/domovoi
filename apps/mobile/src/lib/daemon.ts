@@ -6,8 +6,13 @@ import {
 } from "@getdomovoi/protocol"
 
 import { clientKind, clientVersion, protocolVersionForClient } from "./protocol-facts"
+import { DaemonTimeoutError, requestTimeoutMs } from "./request-timeout"
 
-type Pending = { resolve: (value: unknown) => void, reject: (error: Error) => void }
+type Pending = {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
 
 // A refusal can carry structured data saying what the daemon objected to, and a
 // plain Error throws it away. The turn skill refusal is read out of this, so
@@ -87,6 +92,7 @@ export class DaemonConnection {
       if (typeof message.id === "number") {
         const pending = this.#pending.get(message.id)
         if (!pending) return
+        clearTimeout(pending.timer)
         this.#pending.delete(message.id)
         if (message.error) {
           pending.reject(new DaemonError(
@@ -121,6 +127,7 @@ export class DaemonConnection {
 
     socket.onclose = () => {
       for (const pending of this.#pending.values()) {
+        clearTimeout(pending.timer)
         pending.reject(new Error("The daemon closed the connection"))
       }
       this.#pending.clear()
@@ -144,8 +151,15 @@ export class DaemonConnection {
     const socket = this.#socket
     if (!socket) return Promise.reject(new Error("The daemon connection is not open"))
     const id = this.#nextId++
+    const timeoutMs = requestTimeoutMs(method)
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject })
+      // Cleared on an answer, on a send that throws, and on close, so the only
+      // way it fires is the case it exists for: accepted and never answered.
+      const timer = setTimeout(() => {
+        this.#pending.delete(id)
+        reject(new DaemonTimeoutError(method, timeoutMs))
+      }, timeoutMs)
+      this.#pending.set(id, { resolve, reject, timer })
       try {
         socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
       } catch (cause) {
@@ -154,6 +168,7 @@ export class DaemonConnection {
         // was never sent. It is cleared here rather than left for onclose,
         // because depending on another handler to tidy up is a promise this
         // class cannot keep on its own.
+        clearTimeout(timer)
         this.#pending.delete(id)
         reject(cause instanceof Error ? cause : new Error("The request could not be sent"))
       }
