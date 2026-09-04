@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { fleetForgetRefusalSchema, type FleetEntry, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
+import { fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
 
 import { TooltipProvider } from "./components/ui/tooltip"
 import { FleetView, orderedMachineTransports } from "./fleet-view.js"
@@ -98,6 +98,7 @@ const machineConsequence =
 function renderFleet(overrides: {
   entries?: FleetEntry[]
   currentMachineId?: string
+  fleetOverflow?: FleetSnapshotOverflow
   devices?: PairedDeviceSummary[]
   onForgetMachine?: (machineId: string) => Promise<FleetForgetResult>
   onRevokeDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
@@ -134,6 +135,7 @@ function renderFleet(overrides: {
         connected
         entries={overrides.entries ?? entries(local, studio)}
         currentMachineId={overrides.currentMachineId ?? local.id}
+        fleetOverflow={overrides.fleetOverflow ?? null}
         currentSessionCount={2}
         onOpenSkills={() => {}}
         onListDevices={onListDevices as never}
@@ -483,6 +485,7 @@ it("holds the table shape while the list loads", async () => {
       <FleetView
         connected
         entries={entries(local)}
+        fleetOverflow={null}
         currentMachineId={local.id}
         currentSessionCount={0}
         onOpenSkills={() => {}}
@@ -608,6 +611,7 @@ it("does not offer machine actions while the daemon is unreachable", () => {
     <FleetView
       connected={false}
       entries={entries({ ...local, capabilities: ["sessions", "terminals"] })}
+      fleetOverflow={null}
       currentMachineId={studio.id}
       currentSessionCount={2}
       onOpenSkills={() => {}}
@@ -757,4 +761,31 @@ it("states the consequence of forgetting before the confirmation", () => {
   const card = within(screen.getByRole("group", { name: "studio" }))
   const standing = card.getByText("Deletes the credential this machine holds for it. Sessions there keep running, and revoking this machine on that side may still be yours to do.")
   expect(standing.className.split(" ")).toContain("pointer-coarse:block")
+})
+
+it("says the fleet list is withheld, how many entries exist, and the daemon-side remedy", () => {
+  renderFleet({
+    entries: entries(local),
+    fleetOverflow: {
+      kind: "fleet-overflow",
+      limit: maximumFleetEntries,
+      totalEntries: maximumFleetEntries + 40,
+      entriesNotShown: maximumFleetEntries + 40,
+    },
+  })
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("Fleet list withheld")
+  expect(alert.textContent).toContain(`${maximumFleetEntries + 40} fleet entries`)
+  expect(alert.textContent).toContain(`${maximumFleetEntries + 40} entries are not shown`)
+  expect(alert.textContent).toContain("This is not an empty fleet")
+  expect(alert.textContent).toContain("domovoid fleet-keychain list")
+  expect(alert.textContent).toContain("domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped")
+  expect(alert.textContent).toContain("On the daemon's own machine")
+})
+
+it("shows no overflow notice when the daemon listed the fleet", () => {
+  renderFleet()
+
+  expect(screen.queryByText("Fleet list withheld")).toBeNull()
 })

@@ -52,13 +52,17 @@ import {
 
 import { Deadline, DeadlineExceededError, deadlineBudget, describeTarget } from "./deadline.js"
 
+// The daemon's typed error data rides along: a refusal such as a withheld
+// fleet list carries facts the surface has to show, and a code alone cannot.
 export class DaemonRpcError extends Error {
   readonly code: number
+  readonly data: unknown
 
-  constructor(code: number, message: string) {
+  constructor(code: number, message: string, data?: unknown) {
     super(message)
     this.name = "DaemonRpcError"
     this.code = code
+    this.data = data
   }
 }
 
@@ -995,7 +999,7 @@ export class DomovoiClient extends EventTarget {
     pending.cleanup()
 
     if (response.data.error) {
-      const error = new DaemonRpcError(response.data.error.code, response.data.error.message)
+      const error = new DaemonRpcError(response.data.error.code, response.data.error.message, response.data.error.data)
       if (response.data.error.code === daemonAuthenticationErrorCode) {
         pending.reject(error)
         this.#markAuthenticationRequired(response.data.error.message)

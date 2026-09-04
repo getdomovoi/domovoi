@@ -3251,6 +3251,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     getSkillInventory,
     createTerminal,
     fleet,
+    fleetOverflow,
     forgetMachine,
     listDevices,
     listModels,
@@ -3894,6 +3895,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <FleetView
             connected={connected}
             entries={fleet?.entries ?? [localFleetEntry(snapshot)]}
+            fleetOverflow={fleetOverflow}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
             currentSessionCount={activeSessionCount(snapshot)}
             onOpenSkills={() => setSurface("skills")}

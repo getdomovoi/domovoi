@@ -24,6 +24,7 @@ import {
   type FleetForgetResult,
   type FleetHealth,
   type FleetMachine,
+  type FleetSnapshotOverflow,
   type PairedDeviceSummary,
   type TransportCandidate,
 } from "@getdomovoi/protocol"
@@ -34,6 +35,7 @@ import {
   shortMachineId,
   unenrolledNote,
 } from "./fleet-entries.js"
+import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { fleetUpdateAvailable } from "./fleet-updates.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
@@ -823,9 +825,27 @@ function ForgetReceipt({ notice }: { notice: ForgetMachineNotice }) {
   )
 }
 
+// The daemon withheld the whole list, so the cards below are this machine
+// alone and must not read as the fleet. The notice says so and names the
+// daemon-side CLI, since nothing on this surface can shrink the keychain.
+function FleetOverflowAlert({ overflow }: { overflow: FleetSnapshotOverflow }) {
+  const notice = fleetOverflowNotice(overflow)
+  return (
+    <Alert variant="destructive">
+      <CircleStopIcon />
+      <AlertTitle>{notice.title}</AlertTitle>
+      <AlertDescription className="[&>p+p]:mt-2">
+        <p className="m-0">{notice.detail}</p>
+        <p className="m-0">{notice.remedy}</p>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 export function FleetView({
   connected,
   entries,
+  fleetOverflow,
   currentMachineId,
   currentSessionCount,
   onOpenSkills,
@@ -839,6 +859,7 @@ export function FleetView({
 }: {
   connected: boolean
   entries: FleetEntry[]
+  fleetOverflow: FleetSnapshotOverflow | null
   currentMachineId: string
   currentSessionCount: number
   onOpenSkills: () => void
@@ -964,6 +985,7 @@ export function FleetView({
 
           <section className="mt-5 flex flex-col gap-2.5" aria-label="Machines">
             <h2 className="m-0 text-[13px] font-semibold">Machines</h2>
+            {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
             {forgetNotice?.outcome === "refused" ? (
               <Alert variant="destructive">
                 <CircleStopIcon />

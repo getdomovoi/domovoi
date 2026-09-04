@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { FleetForgetParams, FleetForgetResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
 import { applyWorkspaceDelta } from "@getdomovoi/protocol"
+import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 
 
@@ -94,6 +95,9 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   // The fleet is daemon state, held here so every surface reads one list.
   // null means the daemon has not described it on this connection.
   const [fleet, setFleet] = useState<FleetSnapshot | null>(null)
+  // A withheld list is the daemon's verdict, not an empty fleet, and it is
+  // held apart from `fleet` so no surface can read null as nothing paired.
+  const [fleetOverflow, setFleetOverflow] = useState<FleetSnapshotOverflow | null>(null)
   const snapshot = visibleWorkspaceSnapshot(workspace, target)
   const updateSnapshotFrom = useCallback((client: DomovoiClient, next: WorkspaceSnapshot) => {
     setWorkspace((current) => applyConnectionSnapshot(
@@ -124,6 +128,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     setProtocolError(null)
     setAuthenticationRequired(null)
     setFleet(null)
+    setFleetOverflow(null)
     setWorkspace({ target, snapshot: null })
     const client = new DomovoiClient(url, kind, {
       budgets: workspaceBudgets,
@@ -160,17 +165,23 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       // missed one. Every connection relists rather than trusting what it held.
       void client.listFleet().then(
         (next) => {
-          if (active && isCurrentConnection(clientRef.current, client)) setFleet(next)
+          if (!active || !isCurrentConnection(clientRef.current, client)) return
+          setFleet(next)
+          setFleetOverflow(null)
         },
-        () => {
+        (cause: unknown) => {
+          if (!active || !isCurrentConnection(clientRef.current, client)) return
           // A daemon that cannot describe its fleet still runs this machine.
-          if (active && isCurrentConnection(clientRef.current, client)) setFleet(null)
+          // Only its own overflow code says the list exists and was withheld.
+          setFleet(null)
+          setFleetOverflow(fleetListingOverflow(cause) ?? null)
         },
       )
     }
     const onFleetChanged = (event: Event) => {
       if (active && isCurrentConnection(clientRef.current, client)) {
         setFleet((event as CustomEvent<FleetSnapshot>).detail)
+        setFleetOverflow(null)
       }
     }
     const onReconnecting = (event: Event) => {
@@ -717,6 +728,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     emergencyStopPending,
     exportAudit,
     fleet,
+    fleetOverflow,
     forgetMachine,
     forkSession,
     getSkillInventory,

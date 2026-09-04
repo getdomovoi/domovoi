@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
+import { DaemonRpcError, DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 import { Deadline } from "./deadline"
 
 const skillSecurityMetadata = {
@@ -1703,6 +1703,28 @@ describe("DomovoiClient fleet enrollment", () => {
     })
     expect(sent.method).toBe("fleet.forget")
     expect(sent.params).toEqual({ machineId, client: "web" })
+  })
+
+  it("keeps the daemon's typed error data on a refused listing", async () => {
+    const { client, socket } = await connected()
+
+    const listing = client.listFleet()
+    const sent = JSON.parse(socket.sent[1]!) as { id: number }
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      error: {
+        code: fleetSnapshotOverflowErrorCode,
+        message: "Fleet keyring exceeds the wire limit",
+        data: { kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 },
+      },
+    })
+
+    const failure = await listing.then(() => undefined, (cause: unknown) => cause)
+    expect(failure).toBeInstanceOf(DaemonRpcError)
+    expect((failure as DaemonRpcError).code).toBe(fleetSnapshotOverflowErrorCode)
+    expect((failure as DaemonRpcError).data)
+      .toEqual({ kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 })
   })
 
   it("replaces the fleet when the daemon says it changed", async () => {

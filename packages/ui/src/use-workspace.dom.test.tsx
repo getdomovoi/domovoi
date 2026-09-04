@@ -1,10 +1,11 @@
 import { act, cleanup, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, protocolVersion, workspaceDeltaSchema } from "@getdomovoi/protocol"
+import { demoWorkspace, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, workspaceDeltaSchema } from "@getdomovoi/protocol"
 
 import {
   completeHandshake,
+  fail,
   FakeWebSocket,
   installFakeWebSocket,
   notify,
@@ -268,6 +269,38 @@ describe("useWorkspace fleet", () => {
   it("holds no fleet before the daemon has listed one", () => {
     const view = mountWorkspace()
     expect(view.result.current.fleet).toBeNull()
+    expect(view.result.current.fleetOverflow).toBeNull()
+  })
+
+  it("keeps the daemon's overflow verdict when it withholds the list", async () => {
+    const overflow = { kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 }
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+
+    await drive(() => fail(socket, "fleet.list", {
+      code: fleetSnapshotOverflowErrorCode,
+      message: "Fleet keyring exceeds the wire limit",
+      data: overflow,
+    }))
+
+    expect(view.result.current.fleet).toBeNull()
+    expect(view.result.current.fleetOverflow).toEqual(overflow)
+
+    await drive(() => notify(socket, "fleet.changed", { entries: [] }))
+    expect(view.result.current.fleetOverflow).toBeNull()
+    expect(view.result.current.fleet).toEqual({ entries: [] })
+  })
+
+  it("does not read any other listing failure as an overflow", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+
+    await drive(() => fail(socket, "fleet.list", { code: -32603, message: "fleet-overflow" }))
+
+    expect(view.result.current.fleet).toBeNull()
+    expect(view.result.current.fleetOverflow).toBeNull()
   })
 
   it("lists the fleet as soon as the handshake lands and installs the answer", async () => {

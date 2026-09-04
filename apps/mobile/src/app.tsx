@@ -26,6 +26,7 @@ import { useDaemon } from "./lib/use-daemon"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { ArtifactScreen } from "./screens/artifact"
+import { fleetProblem as describeFleetProblem } from "./fleet-problem"
 import { FleetScreen } from "./screens/fleet"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
@@ -164,7 +165,10 @@ export function App() {
       const result = await call("fleet.list", {})
       setFleet(fleetSnapshotSchema.parse(result).entries)
     } catch (cause) {
-      setFleetProblem(cause instanceof Error ? cause.message : "The fleet could not be listed")
+      // A withheld list is not an empty one, so what was read before is dropped
+      // rather than left up beside a notice that says the daemon returned nothing.
+      setFleet(undefined)
+      setFleetProblem(describeFleetProblem(cause))
     } finally {
       setFleetLoading(false)
     }
