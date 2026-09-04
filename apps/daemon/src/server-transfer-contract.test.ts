@@ -1183,9 +1183,7 @@ describe("transactional session transfer RPC", () => {
       error: { code: -32603 },
     })
 
-    const importedAfterJournalFailure = workspaceSnapshotSchema.parse(
-      (await call("workspace.get", {})).result,
-    )
+    const importedAfterJournalFailure = workspaceSnapshotSchema.parse(store.load())
     expect(importedAfterJournalFailure.sessions).toEqual([
       expect.objectContaining({
         id: packaged.manifest.sessionId,
@@ -1203,7 +1201,7 @@ describe("transactional session transfer RPC", () => {
     await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
       result: { state: "committed" },
     })
-    const imported = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
+    const imported = workspaceSnapshotSchema.parse(store.load())
     expect(imported.sessions).toHaveLength(1)
     expect(imported.sessions[0]).toMatchObject({
       id: packaged.manifest.sessionId,
@@ -1247,7 +1245,7 @@ describe("transactional session transfer RPC", () => {
       result: { state: "committed" },
     })
 
-    const loaded = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
+    const loaded = workspaceSnapshotSchema.parse(store.load())
     expect(loaded.sessions).toHaveLength(0)
     clientSocket.close()
     socket.close()
@@ -1371,6 +1369,11 @@ describe("transactional session transfer RPC", () => {
           digest: `sha256:${"e".repeat(64)}`,
         }),
         readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
       },
       connectToMachine: async () => ({
         call: async (method, params) => {
