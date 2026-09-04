@@ -6,6 +6,7 @@ import { createMachineDialer } from "./machine-dial.js"
 
 const credential = "n".repeat(43)
 const machineId = `machine-${"b".repeat(32)}`
+const sourceMachineId = `machine-${"a".repeat(32)}`
 
 function machine(overrides: Partial<FleetMachine> = {}): FleetMachine {
   return {
@@ -45,6 +46,7 @@ function dialer(overrides: {
     opened,
     dial: createMachineDialer({
       machines: () => overrides.machines ?? [machine()],
+      sourceMachineId: () => sourceMachineId,
       credentials: {
         save: () => {},
         forMachine: overrides.forMachine ?? (() => credential),
@@ -64,7 +66,7 @@ describe("createMachineDialer", () => {
 
     expect(io.opened).toEqual([{
       endpoint: "wss://studio.tailnet:47831/rpc",
-      machineId,
+      machineId: sourceMachineId,
       credential,
     }])
     connection.close()

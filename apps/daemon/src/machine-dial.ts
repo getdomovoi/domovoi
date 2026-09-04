@@ -27,6 +27,7 @@ function leavesThisMachine(endpoint: string): boolean {
 // order the protocol defines.
 export function createMachineDialer(input: {
   machines: () => FleetMachine[]
+  sourceMachineId: () => string
   credentials: MachineCredentials | undefined
   open: (input: {
     endpoint: string
@@ -61,7 +62,10 @@ export function createMachineDialer(input: {
 
     return input.open({
       endpoint: transport.endpoint,
-      machineId,
+      // The credential selects the target, but the handshake identifies the
+      // caller. Sending the target id here makes both ends appear to be the
+      // same machine and defeats source-bound transfer authorization.
+      machineId: input.sourceMachineId(),
       credential,
       ...(signal ? { signal } : {}),
     })

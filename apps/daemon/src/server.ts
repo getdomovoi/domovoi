@@ -860,6 +860,7 @@ export class DomovoiDaemon {
         this.#snapshot.machine.id,
         Date.now(),
       ).machines ?? [],
+      sourceMachineId: () => this.#snapshot.machine.id,
       credentials: this.#machineCredentials,
       open: ({ endpoint, machineId, credential, signal }) => openMachineSocket({
         endpoint,
