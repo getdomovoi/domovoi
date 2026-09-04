@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http"
 import { createServer as createSecureServer } from "node:https"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
 import { arch, homedir, hostname, platform, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
@@ -63,7 +63,6 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
-import { TransferAssembler } from "./transfer-assembler.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
@@ -188,12 +187,6 @@ import {
 const invalidRequest = -32600
 const methodNotFound = -32601
 const invalidParams = -32602
-// A machine accepts a bounded number of arriving transfers, so a source cannot
-// fill this machine with half-delivered worktrees.
-export const maximumIncomingTransfers = 4
-// An arrival that goes quiet for this long has been abandoned, and its slot
-// belongs to the next machine that needs it.
-const incomingTransferIdleMs = 60_000
 // A transfer that has stopped making progress is abandoned rather than left
 // holding the request that asked for it.
 const defaultSessionTransferTimeoutMs = 600_000
@@ -831,12 +824,6 @@ export class DomovoiDaemon {
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
-  #incomingTransfers = new Map<string, {
-    sessionId: string
-    assembler: TransferAssembler
-    socket: WebSocket
-    idle: ReturnType<typeof setTimeout>
-  }>()
   #rpcOutbound: RpcOutboundBackpressure
   #sessionHistory = new SessionHistoryIndex()
   #ownershipChecks = new Set<string>()
@@ -2200,25 +2187,6 @@ export class DomovoiDaemon {
     }
   }
 
-  #scheduleTransferExpiry(transferId: string): ReturnType<typeof setTimeout> {
-    const expiry = setTimeout(() => this.#forgetTransfer(transferId), incomingTransferIdleMs)
-    expiry.unref?.()
-    return expiry
-  }
-
-  #forgetTransfer(transferId: string): void {
-    const incoming = this.#incomingTransfers.get(transferId)
-    if (!incoming) return
-    clearTimeout(incoming.idle)
-    this.#incomingTransfers.delete(transferId)
-  }
-
-  #forgetTransfersFrom(socket: WebSocket): void {
-    for (const [transferId, incoming] of this.#incomingTransfers) {
-      if (incoming.socket === socket) this.#forgetTransfer(transferId)
-    }
-  }
-
   #reportError(context: string, error: unknown): void {
     try {
       this.#errorSink({ context, detail: redactErrorDetail(error) })
@@ -2283,10 +2251,6 @@ export class DomovoiDaemon {
           (candidate) => candidate.id === request.params!.approvalId,
         )
         if (approval) return `session:${approval.sessionId}`
-      }
-      if (request.method === "transfer.chunk" && typeof request.params?.transferId === "string") {
-        const incoming = this.#incomingTransfers.get(request.params.transferId)
-        if (incoming) return `session:${incoming.sessionId}`
       }
       return undefined
     } catch {
@@ -3711,170 +3675,6 @@ export class DomovoiDaemon {
           })
         } finally {
           clearTimeout(timeout)
-        }
-        return
-      }
-
-      if (method === "transfer.have") {
-        const params = paramsResult.data as RpcParams<"transfer.have">
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
-        const held = await this.#workspaceService.sessionHeadCommit?.(params.sessionId, signal)
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse(held ? { commit: held } : {}),
-        })
-        return
-      }
-
-      if (method === "transfer.fromRef") {
-        const params = paramsResult.data as RpcParams<"transfer.fromRef">
-        // Taking a session writes a worktree here, which is machine management.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
-        const repositoryPath = this.#snapshot.project?.path
-        if (!this.#workspaceService.restoreSessionFromRef || !repositoryPath) {
-          this.#error(socket, request.id, internalError, "This machine cannot take a session from a remote")
-          return
-        }
-        const workspace = await this.#workspaceService.restoreSessionFromRef(
-          repositoryPath,
-          params.remote,
-          params.sessionId,
-          undefined,
-          signal,
-        )
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({
-            workspacePath: workspace.path,
-            checkpointCommit: workspace.baseCommit,
-          }),
-        })
-        return
-      }
-
-      if (method === "transfer.begin" || method === "transfer.chunk") {
-        // Accepting a session writes a worktree on this machine, which is
-        // machine management, so a device credential must not reach it and only
-        // a peer daemon may ask.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires the daemon credential",
-          )
-          return
-        }
-        const actor = this.#authenticatedActors.get(socket)
-        if (actor?.kind !== "machine") {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Accepting a session transfer requires a machine connection",
-          )
-          return
-        }
-        if (!this.#workspaceService.restoreSessionFromBundle) {
-          this.#error(socket, request.id, internalError, "This machine cannot accept transfers")
-          return
-        }
-
-        if (method === "transfer.begin") {
-          const params = paramsResult.data as RpcParams<"transfer.begin">
-          if (this.#incomingTransfers.size >= maximumIncomingTransfers) {
-            this.#error(socket, request.id, invalidParams, "Too many transfers are already arriving")
-            return
-          }
-          const transferId = `transfer-${randomBytes(16).toString("hex")}`
-          this.#incomingTransfers.set(transferId, {
-            sessionId: params.sessionId,
-            assembler: new TransferAssembler({
-              digest: params.digest,
-              totalBytes: params.totalBytes,
-            }),
-            socket,
-            idle: this.#scheduleTransferExpiry(transferId),
-          })
-          // A source that stops sending, or goes away, must not hold a slot
-          // that other machines need.
-          socket.once("close", () => this.#forgetTransfersFrom(socket))
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({ transferId }),
-          })
-          return
-        }
-
-        const params = paramsResult.data as RpcParams<"transfer.chunk">
-        const incoming = this.#incomingTransfers.get(params.transferId)
-        if (!incoming) {
-          this.#error(socket, request.id, invalidParams, "That transfer is not arriving")
-          return
-        }
-        clearTimeout(incoming.idle)
-        incoming.idle = this.#scheduleTransferExpiry(params.transferId)
-        const accepted = incoming.assembler.accept(params)
-        if (accepted.state === "refused") {
-          this.#forgetTransfer(params.transferId)
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse(accepted),
-          })
-          return
-        }
-        if (accepted.state === "receiving") {
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse(accepted),
-          })
-          return
-        }
-
-        // The bundle is only reported as restored once it actually is, so the
-        // source never learns a session moved before it did.
-        this.#forgetTransfer(params.transferId)
-        const directory = await mkdtemp(join(tmpdir(), "domovoi-transfer-"))
-        const bundlePath = join(directory, "session.bundle")
-        try {
-          await writeFile(bundlePath, incoming.assembler.bytes(), { mode: 0o600 })
-          const workspace = await this.#workspaceService.restoreSessionFromBundle(
-            bundlePath,
-            incoming.sessionId,
-            signal,
-          )
-          this.#send(socket, {
-            jsonrpc: "2.0",
-            id: request.id,
-            result: rpcMethods[method].result.parse({
-              state: "restored",
-              workspacePath: workspace.path,
-              checkpointCommit: workspace.baseCommit,
-            }),
-          })
-        } finally {
-          await rm(directory, { recursive: true, force: true })
         }
         return
       }

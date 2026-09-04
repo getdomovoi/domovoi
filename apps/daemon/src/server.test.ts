@@ -30,7 +30,6 @@ import {
 } from "@getdomovoi/protocol"
 
 import {
-  maximumIncomingTransfers,
   appendPlanDelta,
   artifactAccessMatches,
   frameAncestorsFor,
@@ -10461,7 +10460,7 @@ describe("DomovoiDaemon transfers", () => {
     return Buffer.from("PACK a session worktree")
   }
 
-  it("accepts a transfer arrival only from a peer daemon", async () => {
+  it("rejects the legacy transfer arrival endpoint for clients and peers", async () => {
     const store = new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace))
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -10489,7 +10488,7 @@ describe("DomovoiDaemon transfers", () => {
     const desktopCall = rpcCaller(desktop)
     const refused = await desktopCall("transfer.begin", { ...arrival, client: "desktop" })
     expect(refused).toMatchObject({
-      error: { message: "Accepting a session transfer requires a machine connection" },
+      error: { code: -32601, message: "Unknown method: transfer.begin" },
     })
     desktop.close()
 
@@ -10502,21 +10501,13 @@ describe("DomovoiDaemon transfers", () => {
     await identifyMachine(peer, peerMachineId)
     const peerCall = rpcCaller(peer)
     const begun = await peerCall("transfer.begin", { ...arrival, client: "desktop" })
-    expect(begun.result).toBeDefined()
-
-    const entries = store.auditLog!.query({ limit: 50 }).entries
-    const attributed = entries.find(
-      (entry) => entry.action === "transfer.begin" && entry.actor.kind === "machine",
-    )
-    expect(attributed?.actor).toEqual({ kind: "machine", machineId: peerMachineId })
-    const refusedEntry = entries.find(
-      (entry) => entry.action === "transfer.begin" && entry.actor.kind === "client",
-    )
-    expect(refusedEntry?.outcome).toBe("failed")
+    expect(begun).toMatchObject({
+      error: { code: -32601, message: "Unknown method: transfer.begin" },
+    })
     peer.close()
   })
 
-  it("restores a session streamed from another machine", async () => {
+  it("does not restore bytes through the legacy streaming endpoints", async () => {
     const bytes = bundleBytes()
     const restored: { bundlePath: string; sessionId: string }[] = []
     const daemon = new DomovoiDaemon({
@@ -10553,25 +10544,25 @@ describe("DomovoiDaemon transfers", () => {
       totalBytes: bytes.length,
       client: "desktop",
     })
-    const transferId = (begun.result as { transferId: string }).transferId
-    const finished = await call("transfer.chunk", {
-      transferId,
+    const chunk = await call("transfer.chunk", {
+      transferId: `transfer-${"c".repeat(32)}`,
       sequence: 0,
       bytes: bytes.toString("base64"),
       final: true,
       client: "desktop",
     })
 
-    expect(finished.result).toMatchObject({
-      state: "restored",
-      workspacePath: "/worktrees/session-1",
-      checkpointCommit: "c".repeat(40),
+    expect(begun).toMatchObject({
+      error: { code: -32601, message: "Unknown method: transfer.begin" },
     })
-    expect(restored).toHaveLength(1)
+    expect(chunk).toMatchObject({
+      error: { code: -32601, message: "Unknown method: transfer.chunk" },
+    })
+    expect(restored).toEqual([])
     socket.close()
   })
 
-  it("reports a refusal instead of restoring bytes it cannot verify", async () => {
+  it("does not accept unverifiable bytes through the legacy streaming endpoints", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
@@ -10601,20 +10592,20 @@ describe("DomovoiDaemon transfers", () => {
       totalBytes: 32,
       client: "desktop",
     })
-    const transferId = (begun.result as { transferId: string }).transferId
-    const finished = await call("transfer.chunk", {
-      transferId,
+    const chunk = await call("transfer.chunk", {
+      transferId: `transfer-${"c".repeat(32)}`,
       sequence: 0,
       bytes: bundleBytes().toString("base64"),
       final: true,
       client: "desktop",
     })
 
-    expect(finished.result).toEqual({ state: "refused", reason: "digest-mismatch" })
+    expect(begun).toMatchObject({ error: { code: -32601 } })
+    expect(chunk).toMatchObject({ error: { code: -32601 } })
     socket.close()
   })
 
-  it("frees a transfer slot when the client that opened it goes away", { timeout: 15_000 }, async () => {
+  it("does not allocate legacy transfer slots", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
@@ -10642,32 +10633,14 @@ describe("DomovoiDaemon transfers", () => {
       return { socket, answer }
     }
 
-    // Fill every slot from clients that then disappear without sending a byte.
-    const abandoned = []
-    for (let index = 0; index < maximumIncomingTransfers; index += 1) {
-      abandoned.push(await begin())
-    }
-    for (const { socket } of abandoned) {
-      socket.close()
-      await new Promise<void>((resolve) => socket.once("close", () => resolve()))
-    }
-
-    // The daemon sees the close a moment after the client does, so this waits
-    // for the slot to come back rather than assuming it already has.
-    const reopened = await vi.waitFor(async () => {
-      const attempt = await begin()
-      if (!attempt.answer.result) {
-        attempt.socket.close()
-        throw new Error(`transfer slots are still held: ${JSON.stringify(attempt.answer.error)}`)
-      }
-      return attempt
-    }, { timeout: 3_000, interval: 50 })
-
-    expect(reopened.answer.result).toMatchObject({ transferId: expect.any(String) })
-    reopened.socket.close()
+    const attempt = await begin()
+    expect(attempt.answer).toMatchObject({
+      error: { code: -32601, message: "Unknown method: transfer.begin" },
+    })
+    attempt.socket.close()
   })
 
-  it("refuses a transfer from a client holding only a device credential", async () => {
+  it("does not expose legacy transfer arrival to device credentials", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
     running.push(daemon)
@@ -10692,7 +10665,7 @@ describe("DomovoiDaemon transfers", () => {
     })
 
     expect(refusal).toMatchObject({
-      error: { message: "Accepting a session transfer requires the daemon credential" },
+      error: { code: -32601, message: "Unknown method: transfer.begin" },
     })
     socket.close()
   })

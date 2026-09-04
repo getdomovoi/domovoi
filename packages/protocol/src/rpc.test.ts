@@ -92,6 +92,15 @@ describe("audit RPC contracts", () => {
     ))).toEqual([])
   })
 
+  it("does not expose pre-transactional transfer endpoints", () => {
+    expect(Object.keys(rpcMethods).filter((method) => [
+      "transfer.have",
+      "transfer.fromRef",
+      "transfer.begin",
+      "transfer.chunk",
+    ].includes(method))).toEqual([])
+  })
+
   it("requires exact reviewed skill content for enablement", () => {
     expect(rpcMethods["skill.setEnabled"].params.parse({
       id: "skill-111111111111",

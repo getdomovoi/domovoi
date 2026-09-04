@@ -1,21 +1,11 @@
 import { z } from "zod"
 
 import {
-  transferBeginParamsSchema,
-  transferBeginResultSchema,
-  transferChunkParamsSchema,
-  transferChunkResultSchema,
-  transferHaveParamsSchema,
-  transferHaveResultSchema,
-} from "./transfer-rpc.js"
-import {
   sessionTransferParamsSchema,
   sessionTransferPreviewParamsSchema,
   sessionTransferRecoverSourceParamsSchema,
   sessionTransferRecoverSourceResultSchema,
   sessionTransferResultSchema,
-  transferFromRefParamsSchema,
-  transferFromRefResultSchema,
 } from "./transfer-request.js"
 import { sessionTransferPreviewSchema } from "./transfer-contract.js"
 import {
@@ -1173,22 +1163,6 @@ export const rpcMethods = {
     params: sessionTransferRecoverSourceParamsSchema,
     result: sessionTransferRecoverSourceResultSchema,
   },
-  "transfer.fromRef": {
-    params: transferFromRefParamsSchema,
-    result: transferFromRefResultSchema,
-  },
-  "transfer.have": {
-    params: transferHaveParamsSchema,
-    result: transferHaveResultSchema,
-  },
-  "transfer.begin": {
-    params: transferBeginParamsSchema,
-    result: transferBeginResultSchema,
-  },
-  "transfer.chunk": {
-    params: transferChunkParamsSchema,
-    result: transferChunkResultSchema,
-  },
   "transfer.prepare": {
     params: transferPrepareParamsSchema,
     result: transferPrepareResultSchema,
@@ -1351,7 +1325,6 @@ export const rpcMethodMutations = {
   "terminal.close": "read-only",
   "fleet.list": "read-only",
   "session.transferPreview": "read-only",
-  "transfer.have": "read-only",
   "transfer.preflight": "read-only",
   "transfer.status": "read-only",
   "device.machineCredential": "read-only",
@@ -1374,9 +1347,6 @@ export const rpcMethodMutations = {
   "device.rotate": "mutating",
   "session.transfer": "mutating",
   "session.transferRecoverSource": "mutating",
-  "transfer.fromRef": "mutating",
-  "transfer.begin": "mutating",
-  "transfer.chunk": "mutating",
   "transfer.prepare": "mutating",
   "transfer.member": "mutating",
   "transfer.commit": "mutating",
