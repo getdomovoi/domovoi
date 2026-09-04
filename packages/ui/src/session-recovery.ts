@@ -40,15 +40,19 @@ export function sessionConflictOffer(
   if (session.state !== "ownership-conflict" || conflict === undefined) return undefined
 
   const other = otherLabel ?? "the other machine"
-  const cause = conflict.kind === "target-session-detected"
-    ? `${other} already holds a copy of this session`
-    : `${other} was found to hold this session after it was recovered here`
+  // The two kinds end the same way, because the returning machine holds the
+  // only ownership generation anyone can verify, but they do not read the same.
+  // One found a copy it never owned; the other did work here after recovering
+  // the session, and the copy it keeps is that work.
+  const detail = conflict.kind === "target-session-detected"
+    ? `${other} already holds a copy of this session. Settling this hands the session to ${other} for good. The files here stay on disk and readable, but they stop being the session, and nothing removes them for you.`
+    : `${other} came back holding this session after it was recovered here. It holds the only ownership this machine can check, so settling this hands the session to ${other} for good. The work done here since the recovery stays on disk and readable, to copy across by hand, and nothing removes it for you.`
   return {
     kind: "keep-target",
     transferId: conflict.transferId,
     targetMachineId: conflict.otherMachineId,
     title: `${other} also claims this session`,
-    detail: `${cause}. Settling this hands the session to ${other} for good. The files here stay on disk and readable, but they stop being the session, and nothing removes them for you.`,
+    detail,
     confirmation: "keep-target-session",
     confirmLabel: `${other} keeps the session`,
   }

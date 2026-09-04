@@ -69,13 +69,20 @@ describe("sessionConflictOffer", () => {
   it("says how the conflict was found, because the two causes differ", () => {
     expect(sessionConflictOffer(conflicted, "studio")?.detail)
       .toContain("already holds a copy")
-    expect(sessionConflictOffer(
+
+    const contradicted = sessionConflictOffer(
       {
         ...conflicted,
         ownershipConflict: { ...conflict, kind: "recovery-contradicted" },
       } as SessionSummary,
       "studio",
-    )?.detail).toContain("after it was recovered here")
+    )
+
+    // Here the person recovered the session and then worked on it, so the copy
+    // left behind is their work and the notice has to say it is salvageable.
+    expect(contradicted?.detail).toContain("came back holding this session")
+    expect(contradicted?.detail).toContain("work done here since the recovery")
+    expect(contradicted?.detail).toContain("copy across by hand")
   })
 
   it("offers nothing without a conflict to settle", () => {
