@@ -355,6 +355,14 @@ const statusClass: Record<SessionSummary["state"], string> = {
   failed: "bg-destructive",
   archiving: "bg-warning",
   archived: "bg-faint",
+  // A session mid-move is doing something; one that has moved is a recovery
+  // point on this machine and reads as quiet rather than failed.
+  transferring: "bg-warning",
+  transferred: "bg-faint",
+}
+
+export function sessionStatusClass(session: Pick<SessionSummary, "state">): string {
+  return statusClass[session.state]
 }
 
 export function restoreFocusAfterUpdate(
@@ -1782,10 +1790,20 @@ export function renderedThreadForActiveSession(snapshot: WorkspaceSnapshot): Thr
     .filter((item) => item.sessionId === snapshot.activeSessionId)
 }
 
+// A transferred session is a recovery point that another machine now owns, and
+// a transferring one is mid-move, so both refuse mutation for the same reason
+// an archived session does: this client cannot be the one that changes it.
+const readOnlySessionStates = new Set<SessionSummary["state"]>([
+  "archiving",
+  "archived",
+  "transferring",
+  "transferred",
+])
+
 export function sessionIsArchiveReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
-  return session?.state === "archiving" || session?.state === "archived"
+  return session !== undefined && readOnlySessionStates.has(session.state)
 }
 
 export function forkSessionBlockedReason(
@@ -1794,6 +1812,12 @@ export function forkSessionBlockedReason(
 ): string | undefined {
   if (session.state === "archiving" || session.state === "archived") {
     return "Archived sessions cannot be forked"
+  }
+  if (session.state === "transferring") {
+    return "This session is moving to another machine"
+  }
+  if (session.state === "transferred") {
+    return "This session moved to another machine"
   }
   if (session.activeTurnId || session.state === "active") {
     return "Stop the active turn before forking"
