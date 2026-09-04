@@ -1,6 +1,7 @@
 import {
   applyWorkspaceDelta,
   workspaceDeltaSchema,
+  workspaceSnapshotSchema,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -82,6 +83,14 @@ export class DaemonConnection {
       if (message.method === "workspace.delta") {
         const parsed = workspaceDeltaSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onDelta(parsed.data)
+        return
+      }
+      // Everything except streamed provider output arrives as a whole snapshot,
+      // so a phone that only listened for deltas showed the state it connected
+      // with and never the result of its own decisions.
+      if (message.method === "workspace.changed") {
+        const parsed = workspaceSnapshotSchema.safeParse(message.params)
+        if (parsed.success) this.handlers.onSnapshot(parsed.data)
       }
     }
 
