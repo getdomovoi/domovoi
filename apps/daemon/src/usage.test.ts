@@ -196,6 +196,61 @@ describe("provider usage telemetry", () => {
     ledger.close()
   })
 
+  it("exports exact turn rows without provider thread state and replaces them atomically", () => {
+    const source = new UsageLedger()
+    source.record({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      threadId: "provider-thread-secret",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      usage: normalizeUsage({
+        inputTokens: 20,
+        cachedInputTokens: 5,
+        outputTokens: 8,
+        contextTokens: 64_000,
+        contextWindowTokens: 200_000,
+        cost: { amount: 0.02, currency: "USD" },
+      }),
+    })
+    const transferred = source.transferSession("session-1")
+    expect(transferred).toEqual([{
+      turnId: "turn-1",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      inputTokens: 20,
+      cachedInputTokens: 5,
+      outputTokens: 8,
+      reasoningTokens: 0,
+      totalTokens: 28,
+      contextTokens: 64_000,
+      contextWindowTokens: 200_000,
+      costSource: "provider-reported",
+      costMicros: 20_000,
+      currency: "USD",
+    }])
+    expect(JSON.stringify(transferred)).not.toContain("provider-thread-secret")
+
+    const target = new UsageLedger()
+    target.record({
+      sessionId: "session-1",
+      turnId: "stale-turn",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 1 }),
+    })
+    target.replaceTransferredSession("session-1", transferred)
+    expect(target.transferSession("session-1")).toEqual(transferred)
+    expect(target.session("session-1")).toMatchObject({
+      totalTokens: 28,
+      contextTokens: 64_000,
+      contextWindowTokens: 200_000,
+      byRuntime: [{ provider: "claude-code", model: "claude-opus-5", turns: 1 }],
+    })
+    source.close()
+    target.close()
+  })
+
   it.skipIf(process.platform === "win32")("keeps usage telemetry readable only by the owner", async () => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-permissions-"))
     const path = join(directory, "usage.sqlite")

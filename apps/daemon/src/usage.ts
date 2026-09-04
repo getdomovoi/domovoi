@@ -1,6 +1,11 @@
 import { chmodSync, existsSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
 
+import {
+  sessionTransferUsageRecordSchema,
+  type SessionTransferUsageRecord,
+} from "@getdomovoi/protocol"
+
 export type ProviderCost = { amount: number; currency: string }
 
 type ActiveUsageContext = {
@@ -226,14 +231,7 @@ export class UsageLedger {
   }
 
   session(sessionId: string, active?: ActiveUsageContext) {
-    const rows = this.#database.prepare(`
-      SELECT
-        session_id, turn_id, provider_thread_id, provider, model,
-        input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
-        context_tokens, context_window_tokens,
-        cost_source, cost_micros, currency
-      FROM provider_usage WHERE session_id = ? ORDER BY rowid
-    `).all(sessionId)
+    const rows = this.#sessionRows(sessionId)
     const turns = rows.map(turnUsageFromRow)
     const totals = sumUsage(turns.map((turn) => turn.usage))
     const context = currentContextOccupancy(rows.at(-1), active)
@@ -258,6 +256,54 @@ export class UsageLedger {
     return { sessionId, ...totals, ...context, byRuntime }
   }
 
+  transferSession(sessionId: string): SessionTransferUsageRecord[] {
+    return this.#sessionRows(sessionId).map((row) => {
+      const turn = turnUsageFromRow(row)
+      return sessionTransferUsageRecordSchema.parse({
+        turnId: turn.turnId,
+        provider: turn.provider,
+        model: turn.model,
+        ...turn.usage,
+      })
+    })
+  }
+
+  replaceTransferredSession(
+    sessionId: string,
+    records: readonly SessionTransferUsageRecord[],
+  ): void {
+    const parsed = sessionTransferUsageRecordSchema.array().parse(records)
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#database.prepare("DELETE FROM provider_usage WHERE session_id = ?").run(sessionId)
+      for (const record of parsed) {
+        const usage: NormalizedUsage = {
+          inputTokens: record.inputTokens,
+          cachedInputTokens: record.cachedInputTokens,
+          outputTokens: record.outputTokens,
+          reasoningTokens: record.reasoningTokens,
+          totalTokens: record.totalTokens,
+          costSource: record.costSource,
+          ...(record.contextTokens === undefined ? {} : {
+            contextTokens: record.contextTokens,
+            contextWindowTokens: record.contextWindowTokens!,
+          }),
+          ...(record.costSource === "provider-reported" ? {
+            costMicros: record.costMicros,
+            currency: record.currency,
+          } : {}),
+        }
+        const { turnId, provider, model } = record
+        this.record({ sessionId, turnId, provider, model, usage })
+      }
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
+    this.#restrictFilePermissions()
+  }
+
   close(): void {
     this.#database.close()
   }
@@ -273,6 +319,17 @@ export class UsageLedger {
     const columns = this.#database.prepare("PRAGMA table_info(provider_usage)").all()
       .map((column) => String((column as Record<string, unknown>).name))
     if (!columns.includes(name)) this.#database.exec(`ALTER TABLE provider_usage ADD COLUMN ${name} ${type}`)
+  }
+
+  #sessionRows(sessionId: string): unknown[] {
+    return this.#database.prepare(`
+      SELECT
+        session_id, turn_id, provider_thread_id, provider, model,
+        input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
+        context_tokens, context_window_tokens,
+        cost_source, cost_micros, currency
+      FROM provider_usage WHERE session_id = ? ORDER BY rowid
+    `).all(sessionId)
   }
 }
 
@@ -318,6 +375,7 @@ function turnUsageFromRow(value: unknown): TurnUsage {
     reasoningTokens: Number(row.reasoning_tokens),
     totalTokens: Number(row.total_tokens),
     costSource: row.cost_source as NormalizedUsage["costSource"],
+    ...reportedContextOccupancy(row.context_tokens, row.context_window_tokens),
     ...(typeof row.cost_micros === "number" ? { costMicros: row.cost_micros } : {}),
     ...(typeof row.currency === "string" ? { currency: row.currency } : {}),
   }
