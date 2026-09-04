@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
+import { DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
+import { Deadline } from "./deadline"
 
 const skillSecurityMetadata = {
   manifest: { version: 1 as const, capabilities: [] },
@@ -10,6 +11,8 @@ const skillSecurityMetadata = {
   signature: { state: "unsigned" as const },
   trust: { state: "untrusted" as const, reason: "unsigned" as const },
 }
+
+const budgets = { connectMs: 10_000, requestMs: 120_000 }
 
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
@@ -86,7 +89,7 @@ class ManualScheduler {
 
 describe("DomovoiClient", () => {
   it("preserves typed project switch confirmation data", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -135,7 +138,7 @@ describe("DomovoiClient", () => {
   })
 
   it("reports a protocol error when a notification fails schema validation", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -155,7 +158,7 @@ describe("DomovoiClient", () => {
   })
 
   it("reports a protocol error for a notification method it does not recognize", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -175,7 +178,7 @@ describe("DomovoiClient", () => {
   })
 
   it("rejects a pending request immediately when its response cannot be parsed", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -198,7 +201,7 @@ describe("DomovoiClient", () => {
 
   it("announces a scheduled reconnect and clears it once the timer fires", async () => {
     const scheduler = new ManualScheduler()
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, scheduler })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -233,6 +236,7 @@ describe("DomovoiClient", () => {
 
   it("reconnects after an unexpected close and publishes the recovered snapshot", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      budgets,
       reconnectDelayMs: 25,
       reconnectJitterRatio: 0,
     })
@@ -266,6 +270,7 @@ describe("DomovoiClient", () => {
 
   it("authenticates the initial daemon handshake", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      budgets,
       authToken: "secret-token",
     })
     const connecting = client.connect()
@@ -286,7 +291,7 @@ describe("DomovoiClient", () => {
   })
 
   it("publishes validated workspace deltas", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -323,7 +328,7 @@ describe("DomovoiClient", () => {
   })
 
   it("publishes validated emergency-stopped notifications", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -363,7 +368,7 @@ describe("DomovoiClient", () => {
   })
 
   it("requests preview access scoped to the bridge channel", async () => {
-    const client = new DomovoiClient("wss://machine.example/rpc", "tablet")
+    const client = new DomovoiClient("wss://machine.example/rpc", "tablet", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -403,7 +408,7 @@ describe("DomovoiClient", () => {
   })
 
   it("requests older session history by cursor", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -451,7 +456,7 @@ describe("DomovoiClient", () => {
   })
 
   it("cancels session history through its request signal", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -473,7 +478,7 @@ describe("DomovoiClient", () => {
   })
 
   it("requests and validates refreshed session evidence", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -516,6 +521,7 @@ describe("DomovoiClient", () => {
 
   it("streams interactive terminal events and input", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
       clientId: "desktop-client-1",
     })
     const connecting = client.connect()
@@ -614,6 +620,7 @@ describe("DomovoiClient", () => {
 
   it("does not retry a rejected daemon credential", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      budgets,
       authToken: "wrong-token",
       reconnectDelayMs: 25,
     })
@@ -633,6 +640,7 @@ describe("DomovoiClient", () => {
 
   it("rejects an in-flight request when the connection closes", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
       reconnectDelayMs: 25,
     })
     const initial = client.connect()
@@ -651,7 +659,7 @@ describe("DomovoiClient", () => {
 
   it("bounds web RPC requests with a stable timeout error", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
-      requestTimeoutMs: 50,
+      budgets: { ...budgets, requestMs: 50 },
     })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
@@ -676,26 +684,22 @@ describe("DomovoiClient", () => {
     const oversizedTimeoutMs = 2_147_483_648
 
     expect(() => new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
-      requestTimeoutMs: oversizedTimeoutMs,
+      budgets: { ...budgets, requestMs: oversizedTimeoutMs },
     })).toThrow(RangeError)
 
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await initial
 
-    expect(() => client.request(
-      "session.activate",
-      { sessionId: "session-audit", client: "web" },
-      { timeoutMs: oversizedTimeoutMs },
-    )).toThrow(RangeError)
+    expect(() => Deadline.start(oversizedTimeoutMs)).toThrow(RangeError)
     client.disconnect()
   })
 
   it("allows multi-step RPC work until the 120-second default deadline", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -722,7 +726,7 @@ describe("DomovoiClient", () => {
   })
 
   it("attributes provider restart requests to the client", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -741,7 +745,7 @@ describe("DomovoiClient", () => {
 
   it("ignores a late response without affecting a newer desktop request", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
-      requestTimeoutMs: 100,
+      budgets: { ...budgets, requestMs: 100 },
     })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
@@ -773,7 +777,7 @@ describe("DomovoiClient", () => {
 
   it("cancels a request through AbortSignal and clears its deadline", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
-      requestTimeoutMs: 5_000,
+      budgets: { ...budgets, requestMs: 5_000 },
     })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
@@ -808,7 +812,7 @@ describe("DomovoiClient", () => {
 
   it("clears a request deadline after a successful response", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
-      requestTimeoutMs: 5_000,
+      budgets: { ...budgets, requestMs: 5_000 },
     })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
@@ -826,7 +830,7 @@ describe("DomovoiClient", () => {
 
   it("clears a request deadline after a daemon rejection", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
-      requestTimeoutMs: 5_000,
+      budgets: { ...budgets, requestMs: 5_000 },
     })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
@@ -847,7 +851,7 @@ describe("DomovoiClient", () => {
   })
 
   it("rejects connect when disconnected before the socket opens", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
 
     const connecting = client.connect()
     client.disconnect()
@@ -856,7 +860,7 @@ describe("DomovoiClient", () => {
   })
 
   it("reuses an in-progress connection attempt", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
 
     const first = client.connect()
     const second = client.connect()
@@ -872,6 +876,7 @@ describe("DomovoiClient", () => {
 
   it("retries immediately without leaving the scheduled retry active", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      budgets,
       reconnectDelayMs: 25,
     })
     const initial = client.connect()
@@ -897,6 +902,7 @@ describe("DomovoiClient", () => {
     const scheduler = new ManualScheduler()
     const randomValues = [0.5, 0, 1, 0.5]
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      budgets,
       reconnectDelayMs: 1_000,
       reconnectMaxDelayMs: 4_000,
       reconnectJitterRatio: 0.2,
@@ -918,6 +924,7 @@ describe("DomovoiClient", () => {
   it("resets reconnect backoff only after confirmed authentication", async () => {
     const scheduler = new ManualScheduler()
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
       reconnectDelayMs: 100,
       reconnectMaxDelayMs: 800,
       reconnectJitterRatio: 0,
@@ -943,7 +950,7 @@ describe("DomovoiClient", () => {
 
   it("starts a fresh connection at the first backoff delay", async () => {
     const scheduler = new ManualScheduler()
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler, random: () => 0.5 })
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, scheduler, random: () => 0.5 })
 
     client.connect()
     FakeWebSocket.instances[0]!.drop()
@@ -962,7 +969,7 @@ describe("DomovoiClient", () => {
 
   it("stops reconnecting once a machine revokes this device", () => {
     const scheduler = new ManualScheduler()
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, scheduler })
 
     client.connect()
     FakeWebSocket.instances[0]!.drop(1008, "device credential revoked")
@@ -972,7 +979,7 @@ describe("DomovoiClient", () => {
 
   it("cancels reconnect work after explicit disconnect", () => {
     const scheduler = new ManualScheduler()
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, scheduler })
 
     client.connect()
     FakeWebSocket.instances[0]!.drop()
@@ -985,6 +992,7 @@ describe("DomovoiClient", () => {
   it("publishes terminal authentication rejection without retrying", async () => {
     const scheduler = new ManualScheduler()
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
+      budgets,
       authToken: "expired-token",
       scheduler,
     })
@@ -1011,7 +1019,7 @@ describe("DomovoiClient", () => {
 
   it("stops an authenticated connection when credentials expire", async () => {
     const scheduler = new ManualScheduler()
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { scheduler })
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets, scheduler })
     const authenticationRequired = vi.fn()
     client.addEventListener("authentication-required", authenticationRequired)
     const connecting = client.connect()
@@ -1035,7 +1043,7 @@ describe("DomovoiClient", () => {
 
   it("does not let stale socket callbacks create or revive a connection", async () => {
     const scheduler = new ManualScheduler()
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { scheduler })
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, scheduler })
 
     client.connect()
     const stale = FakeWebSocket.instances[0]!
@@ -1055,6 +1063,7 @@ describe("DomovoiClient", () => {
   it("retries a 1013 slow-client close", async () => {
     const scheduler = new ManualScheduler()
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
       reconnectDelayMs: 50,
       reconnectJitterRatio: 0,
       scheduler,
@@ -1074,7 +1083,7 @@ describe("DomovoiClient", () => {
   })
 
   it("attributes annotation mutations to the current client", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1113,7 +1122,7 @@ describe("DomovoiClient", () => {
   })
 
   it("attributes checkpoint restores to the current client", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1135,7 +1144,7 @@ describe("DomovoiClient", () => {
   })
 
   it("sends explicit checkpoint fork intent with a stable request ID", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "tablet", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1164,7 +1173,7 @@ describe("DomovoiClient", () => {
   })
 
   it("lists provider models without parsing them as workspace state", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1197,7 +1206,7 @@ describe("DomovoiClient", () => {
   })
 
   it("refreshes provider readiness through an attributed daemon request", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1222,7 +1231,7 @@ describe("DomovoiClient", () => {
   })
 
   it("lists daemon skills without parsing them as workspace state", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1255,7 +1264,7 @@ describe("DomovoiClient", () => {
   })
 
   it("fetches only metadata for fleet skill comparison", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1294,7 +1303,7 @@ describe("DomovoiClient", () => {
   })
 
   it("manages provider keychain status without returning secret material", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1320,7 +1329,7 @@ describe("DomovoiClient", () => {
   })
 
   it("asks the daemon for session token and cost totals", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1369,7 +1378,7 @@ describe("DomovoiClient", () => {
   })
 
   it("reads skill source by discovered ID", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1406,7 +1415,7 @@ describe("DomovoiClient", () => {
   })
 
   it("submits exact skill review evidence without client spoofing", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1435,7 +1444,7 @@ describe("DomovoiClient", () => {
   })
 
   it("queries and exports typed audit records with bounded request controls", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1471,7 +1480,7 @@ describe("DomovoiClient", () => {
   })
 
   it("preserves the parser failure for an invalid RPC result", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1489,7 +1498,7 @@ describe("DomovoiClient", () => {
   })
 
   it("uses the registered result parser when none is supplied", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1507,7 +1516,7 @@ describe("DomovoiClient", () => {
   })
 
   it("attributes the global pause to the current client", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "phone")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "phone", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1533,7 +1542,7 @@ describe("DomovoiClient", () => {
   })
 
   it("attributes the emergency stop to the current client", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "phone")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "phone", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1565,7 +1574,7 @@ describe("DomovoiClient", () => {
   })
 
   it("attributes session archive to the shared client kind", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const initial = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1596,7 +1605,7 @@ describe("DomovoiClient machine credentials", () => {
   })
 
   it("lists the fleet through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1613,7 +1622,7 @@ describe("DomovoiClient machine credentials", () => {
   })
 
   it("reads a kept machine credential through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1629,7 +1638,7 @@ describe("DomovoiClient machine credentials", () => {
   })
 
   it("saves a machine credential through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1665,7 +1674,7 @@ describe("DomovoiClient session transfer and devices", () => {
   })
 
   async function connected() {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web")
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
@@ -1796,6 +1805,191 @@ describe("DomovoiClient session transfer and devices", () => {
     await expect(rotating).resolves.toEqual({ device, token: "f".repeat(43) })
     expect(sent.method).toBe("device.rotate")
     expect(sent.params).toEqual({ deviceId: device.id, client: "web" })
+    client.disconnect()
+  })
+})
+
+describe("DomovoiClient deadlines", () => {
+  const NativeWebSocket = globalThis.WebSocket
+  const url = "ws://127.0.0.1:47831/rpc"
+  const budgets = { connectMs: 1_000, requestMs: 5_000 }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    FakeWebSocket.instances = []
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = NativeWebSocket
+    vi.useRealTimers()
+  })
+
+  async function handshake(client: DomovoiClient): Promise<FakeWebSocket> {
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances.at(-1)!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    return socket
+  }
+
+  it("requires finite positive budgets", () => {
+    expect(() => new DomovoiClient(url, "web", { budgets: { connectMs: 0, requestMs: 1 } })).toThrow(RangeError)
+    expect(() => new DomovoiClient(url, "web", { budgets: { connectMs: 1, requestMs: Number.NaN } })).toThrow(RangeError)
+  })
+
+  it("fails a socket that never opens at the connect budget and frees the attempt", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient(url, "web", { budgets, scheduler })
+    const disconnected = vi.fn()
+    client.addEventListener("disconnected", disconnected)
+    const connecting = client.connect()
+    const outcome = connecting.catch((cause: unknown) => cause)
+    let settled = false
+    void outcome.then(() => {
+      settled = true
+    })
+    const socket = FakeWebSocket.instances[0]!
+
+    await vi.advanceTimersByTimeAsync(999)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+
+    await expect(outcome).resolves.toBeInstanceOf(DomovoiConnectTimeoutError)
+    await expect(outcome).resolves.toMatchObject({
+      name: "DomovoiConnectTimeoutError",
+      stage: "open",
+      target: url,
+      budgetMs: 1_000,
+    })
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(disconnected).toHaveBeenCalledOnce()
+    expect(scheduler.callbacks.size).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    client.disconnect()
+    expect(scheduler.callbacks.size).toBe(0)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it("counts the hello against the budget the open already spent", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient(url, "web", { budgets, scheduler })
+    const snapshot = vi.fn()
+    const connected = vi.fn()
+    client.addEventListener("snapshot", snapshot)
+    client.addEventListener("connected", connected)
+    const outcome = client.connect().catch((cause: unknown) => cause)
+    const socket = FakeWebSocket.instances[0]!
+
+    await vi.advanceTimersByTimeAsync(900)
+    socket.open()
+    expect(socket.sent).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(outcome).resolves.toMatchObject({ stage: "hello", budgetMs: 1_000 })
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(vi.getTimerCount()).toBe(0)
+
+    socket.readyState = FakeWebSocket.OPEN
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await Promise.resolve()
+    expect(snapshot).not.toHaveBeenCalled()
+    expect(connected).not.toHaveBeenCalled()
+    await expect(client.activateSession("session-audit")).rejects.toThrow("Daemon connection is not open")
+    client.disconnect()
+  })
+
+  it("gives the next attempt its own full budget", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient(url, "web", { budgets, scheduler })
+    void client.connect().catch(() => undefined)
+    const stale = FakeWebSocket.instances[0]!
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(stale.readyState).toBe(FakeWebSocket.CLOSED)
+
+    await scheduler.runNext()
+    const current = FakeWebSocket.instances[1]!
+    stale.open()
+    expect(stale.sent).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(current.readyState).toBe(FakeWebSocket.CONNECTING)
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(current.readyState).toBe(FakeWebSocket.CLOSED)
+    expect(scheduler.callbacks.size).toBe(1)
+    client.disconnect()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("lets a connect share a caller's deadline and keeps its own cap", async () => {
+    const client = new DomovoiClient(url, "web", { budgets: { connectMs: 1_000, requestMs: 5_000 } })
+    const deadline = Deadline.start(10_000)
+    await vi.advanceTimersByTimeAsync(9_700)
+
+    const outcome = client.connect(deadline).catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(300)
+
+    await expect(outcome).resolves.toMatchObject({ stage: "open", budgetMs: 300 })
+    expect(deadline.expired).toBe(true)
+    client.disconnect()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("rejects a request at the caller's deadline and ignores the late answer", async () => {
+    const client = new DomovoiClient(url, "web", { budgets })
+    const socket = await handshake(client)
+    const deadline = Deadline.start(200)
+
+    const expired = client.request(
+      "session.activate",
+      { sessionId: "session-audit", client: "web" },
+      { deadline },
+    )
+    const expiration = expired.catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(200)
+
+    await expect(expiration).resolves.toBeInstanceOf(DomovoiRpcTimeoutError)
+    await expect(expiration).resolves.toMatchObject({ method: "session.activate", timeoutMs: 200 })
+    expect(vi.getTimerCount()).toBe(0)
+
+    const current = client.activateSession("session-billing")
+    let currentSettled = false
+    void current.then(() => {
+      currentSettled = true
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await Promise.resolve()
+    expect(currentSettled).toBe(false)
+    socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })
+    await expect(current).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
+  it("holds a request to the client budget when the caller allows longer", async () => {
+    const client = new DomovoiClient(url, "web", { budgets })
+    await handshake(client)
+    const deadline = Deadline.start(60_000)
+
+    const expiration = client.request("skill.list", {}, { deadline }).catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    await expect(expiration).resolves.toMatchObject({ method: "skill.list", timeoutMs: 5_000 })
+    expect(deadline.expired).toBe(false)
+    deadline.clear()
+    client.disconnect()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("refuses to send a request whose deadline has already passed", async () => {
+    const client = new DomovoiClient(url, "web", { budgets })
+    const socket = await handshake(client)
+    const deadline = Deadline.start(100)
+    await vi.advanceTimersByTimeAsync(100)
+
+    await expect(client.request("skill.list", {}, { deadline })).rejects.toBeInstanceOf(DomovoiRpcTimeoutError)
+    expect(socket.sent).toHaveLength(1)
     client.disconnect()
   })
 })

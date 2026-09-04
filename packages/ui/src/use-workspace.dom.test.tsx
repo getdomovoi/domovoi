@@ -214,7 +214,9 @@ describe("useWorkspace connection lifecycle", () => {
     expect(view.result.current.connected).toBe(false)
     expect(harness.sockets).toHaveLength(1)
 
-    await drive(() => vi.advanceTimersByTime(backoffCeilingMs))
+    // The next attempt is bounded like the first, so time moves only to the
+    // backoff timer rather than past the connect budget of the retry.
+    await drive(() => vi.advanceTimersToNextTimer())
     expect(harness.sockets.map((socket) => socket.url)).toEqual([daemonUrl, daemonUrl])
 
     const second = harness.socket(1)

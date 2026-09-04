@@ -62,6 +62,7 @@ import type {
   PreviewBridgePickerMessage,
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
+  TransportCandidate,
 } from "@getdomovoi/protocol"
 import {
   boundedClientThread,
@@ -137,6 +138,7 @@ import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { connectMachineClient } from "./machine-client.js"
+import { Deadline } from "./deadline"
 import { collectFleetInventories } from "./fleet-inventories.js"
 import { openMachine } from "./open-machine.js"
 import { resolveMachineTarget } from "./machine-target.js"
@@ -155,7 +157,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./comp
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { ProjectSwitchConfirmationError } from "./client"
-import { useWorkspace } from "./use-workspace"
+import { machineDialBudgetMs, useWorkspace, workspaceBudgets } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { annotationCaptureUpload } from "./annotation-capture"
@@ -3326,6 +3328,25 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     }
   }, [connected, listFleet])
 
+  // Reaching another machine tries its transports in turn as one operation, so
+  // one deadline covers the whole dial; a later route gets only what remains.
+  const dialMachine = useCallback(async (
+    { candidates, credential }: { candidates: TransportCandidate[]; credential: string },
+  ) => {
+    const deadline = Deadline.start(machineDialBudgetMs)
+    try {
+      return await connectMachineClient({
+        candidates,
+        credential,
+        kind: clientKind,
+        budgets: workspaceBudgets,
+        deadline,
+      })
+    } finally {
+      deadline.clear()
+    }
+  }, [clientKind])
+
   const switchMachine = useCallback((machineId: string) => {
     if (machineId === homeMachineId) {
       setMachineSwitch(homeMachineSwitch)
@@ -3337,8 +3358,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     void resolveMachineTarget({
       machine,
       readCredential: async (id) => (await machineCredential({ machineId: id })).credential,
-      connect: async ({ candidates, credential }) => {
-        const opened = await connectMachineClient({ candidates, credential, kind: clientKind })
+      connect: async (attempt) => {
+        const opened = await dialMachine(attempt)
         return { transport: opened.transport, close: () => opened.client.disconnect() }
       },
       wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -3350,7 +3371,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         machineId,
       )),
     )
-  }, [clientKind, fleet, homeMachineId, machineCredential])
+  }, [dialMachine, fleet, homeMachineId, machineCredential])
 
   const shellRef = useRef<HTMLDivElement>(null)
   const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
@@ -3820,8 +3841,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             const opened = await openMachine({
               machine,
               readCredential: async (id) => (await machineCredential({ machineId: id })).credential,
-              connect: ({ candidates, credential }) =>
-                connectMachineClient({ candidates, credential, kind: clientKind }),
+              connect: dialMachine,
               wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
               attempts: 1,
             })
@@ -3847,8 +3867,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
     return () => { active = false }
   }, [
-    clientKind,
     connected,
+    dialMachine,
     fleet,
     getSkillInventory,
     listSkills,
