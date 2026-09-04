@@ -379,6 +379,29 @@ function hashField(hash: ReturnType<typeof createHash>, value: string | Uint8Arr
   hash.update(String(bytes.byteLength)).update(":").update(bytes)
 }
 
+function utf8GitPaths(bytes: Buffer): string[] {
+  const paths: string[] = []
+  let start = 0
+  while (start < bytes.byteLength) {
+    const separator = bytes.indexOf(0, start)
+    const end = separator === -1 ? bytes.byteLength : separator
+    const rawPath = bytes.subarray(start, end)
+    if (rawPath.byteLength > 0) {
+      const path = rawPath.toString("utf8")
+      // Node string paths re-encode as UTF-8. Accepting a lossy decode here
+      // would make the digest describe a missing replacement-character path
+      // instead of the inode Git reported.
+      if (!Buffer.from(path, "utf8").equals(rawPath)) {
+        throw new Error("Git returned a path that is not valid UTF-8")
+      }
+      paths.push(path)
+    }
+    if (separator === -1) break
+    start = separator + 1
+  }
+  return paths.sort()
+}
+
 async function transferWorktreeFingerprint(
   worktreePath: string,
   signal?: AbortSignal,
@@ -396,9 +419,9 @@ async function transferWorktreeFingerprint(
       "--cached",
       "--others",
       "--exclude-standard",
-    ], { maxBuffer: maximumGitOutputBytes, signal }),
+    ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
   ])
-  const paths = Buffer.from(listed.stdout).toString("utf8").split("\0").filter(Boolean).sort()
+  const paths = utf8GitPaths(Buffer.from(listed.stdout))
   const hash = createHash("sha256").update("domovoi.transfer-worktree.v1\0")
   for (const path of paths) {
     signal?.throwIfAborted()

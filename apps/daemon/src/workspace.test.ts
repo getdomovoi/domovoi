@@ -750,6 +750,21 @@ describe("GitWorkspaceService transfer resources", () => {
     expect(checkpointed.digest).toBe(second.digest)
   })
 
+  it.runIf(process.platform !== "win32")(
+    "refuses a transfer fingerprint when Git reports a non-UTF-8 path",
+    async () => {
+      const { service, workspace } = await repositoryWithIgnoredPreview()
+      const invalidPath = Buffer.concat([
+        Buffer.from(`${workspace.path}/`, "utf8"),
+        Buffer.from([0x66, 0x6f, 0x80]),
+      ])
+      await writeFile(invalidPath, "untracked\n")
+
+      await expect(service.transferFingerprint(workspace.path))
+        .rejects.toThrow("Git returned a path that is not valid UTF-8")
+    },
+  )
+
   it("checks that the target project contains the shared lineage commit", async () => {
     const { repositoryPath, service, workspace } = await repositoryWithIgnoredPreview()
     await expect(service.projectHasLineage(repositoryPath, workspace.baseCommit)).resolves.toBe(true)
