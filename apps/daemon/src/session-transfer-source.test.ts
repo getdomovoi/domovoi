@@ -431,7 +431,7 @@ describe("prepared source transfer delivery", () => {
       transactions: outgoing,
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
       call,
     })
 
@@ -514,7 +514,7 @@ describe("prepared source transfer delivery", () => {
       transactions: outgoing,
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
       call,
     })).resolves.toMatchObject({ state: "committed", ownershipGeneration: 5 })
     expect(chunks.map(({ memberId }) => memberId)).toEqual([
@@ -544,7 +544,7 @@ describe("prepared source transfer delivery", () => {
       transactions: new FileTransferTransactions(join(scratch, "outgoing")),
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
       call,
     })).resolves.toEqual({
       state: "recovering",

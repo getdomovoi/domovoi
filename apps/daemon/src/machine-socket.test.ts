@@ -3,7 +3,11 @@ import { once } from "node:events"
 import { WebSocketServer } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { daemonAuthenticationErrorCode, demoWorkspace } from "@getdomovoi/protocol"
+import {
+  daemonAuthenticationErrorCode,
+  demoWorkspace,
+  protocolVersion,
+} from "@getdomovoi/protocol"
 
 import {
   MachinePairingRequiredError,
@@ -83,7 +87,7 @@ describe("openMachineSocket", () => {
       params: {
         client: "machine",
         clientVersion: "0.0.1",
-        protocolVersion: "0.2.0",
+        protocolVersion,
         authToken: "n".repeat(43),
       },
     })
@@ -102,7 +106,7 @@ describe("openMachineSocket", () => {
     await expect(openMachineSocket({
       endpoint: machine.endpoint,
       credential: "n".repeat(43),
-    })).rejects.toThrow("That machine speaks protocol 9.9.9, this daemon speaks 0.2.0")
+    })).rejects.toThrow(`That machine speaks protocol 9.9.9, this daemon speaks ${protocolVersion}`)
   })
 
   it("classifies a rejected machine credential without exposing its history", async () => {

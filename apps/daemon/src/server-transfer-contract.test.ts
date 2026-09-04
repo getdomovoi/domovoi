@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -37,6 +38,10 @@ const sourceMachineId = `machine-${"a".repeat(32)}`
 const targetMachineId = `machine-${"b".repeat(32)}`
 const baseCommit = "c".repeat(40)
 const checkpointCommit = "d".repeat(40)
+
+function testAuthToken(label: string): string {
+  return createHash("sha256").update(label).digest("base64url")
+}
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
@@ -204,7 +209,7 @@ async function preparedTargetTransfer() {
   const daemon = new DomovoiDaemon({
     port: 0,
     store,
-    authToken: "correct-horse-battery-staple",
+    authToken: testAuthToken("correct-horse-battery-staple"),
     workspaceService: {
       inspect: async (path: string) => ({
         root: path,
@@ -241,14 +246,14 @@ async function preparedTargetTransfer() {
     ownershipGeneration: packaged.manifest.ownership.fromGeneration,
     method: packaged.manifest.repository.method,
     coverage: packaged.manifest.coverage,
-    client: "desktop",
+    initiatedByClient: "desktop",
   })).resolves.toMatchObject({
     result: { allowed: true, targetProjectId: "project-target" },
   })
   await expect(call("transfer.prepare", {
     manifest: packaged.manifest,
     manifestDigest: packaged.manifestDigest,
-    client: "desktop",
+    initiatedByClient: "desktop",
   })).resolves.toMatchObject({
     result: { state: "receiving" },
   })
@@ -259,7 +264,7 @@ async function preparedTargetTransfer() {
       sequence: 0,
       bytes: entry.bytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
   }
   return {
@@ -272,7 +277,7 @@ async function preparedTargetTransfer() {
     commitParams: {
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
     },
   }
 }
@@ -283,7 +288,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", source),
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     })
     running.push(daemon)
@@ -319,7 +324,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     })
     running.push(daemon)
@@ -401,7 +406,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         inspect: async () => ({
           root: source.project!.path,
@@ -433,7 +438,7 @@ describe("transactional session transfer RPC", () => {
     const request = {
       sessionId: source.sessions[0]!.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     }
 
     const { socket: machineSocket } = await openMachine(daemon, store, targetMachineId)
@@ -494,7 +499,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", targetSnapshot()),
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       transferTransactions: incoming,
       outgoingTransferTransactions: outgoing,
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -524,7 +529,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         inspect: async () => ({
           root: source.project!.path,
@@ -578,7 +583,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       sessionTransferRetryMs: 10,
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
@@ -620,7 +625,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -651,7 +656,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -693,7 +698,7 @@ describe("transactional session transfer RPC", () => {
       const daemon = new DomovoiDaemon({
         port: 0,
         store,
-        authToken: "correct-horse-battery-staple",
+        authToken: testAuthToken("correct-horse-battery-staple"),
         outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
         connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
         errorSink: () => {},
@@ -742,7 +747,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -785,7 +790,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -830,7 +835,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -863,7 +868,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       connectToMachine,
       errorSink: () => {},
@@ -895,7 +900,7 @@ describe("transactional session transfer RPC", () => {
       sessionId: packaged.manifest.sessionId,
       transferId: packaged.manifest.transferId,
       confirmation: "target-does-not-have-session",
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     expect(recovered.result).toMatchObject({
@@ -935,7 +940,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       connectToMachine,
       sessionTransferRetryMs: 10,
@@ -977,7 +982,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       sessionTransferTimeoutMs: 10,
       connectToMachine: async (_machineId, signal) => new Promise((_, reject) => {
@@ -1009,7 +1014,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       connectToMachine: async () => ({
         call: async () => {
@@ -1031,7 +1036,7 @@ describe("transactional session transfer RPC", () => {
       sessionId: packaged.manifest.sessionId,
       transferId: packaged.manifest.transferId,
       confirmation: "target-does-not-have-session",
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     expect(response).toMatchObject({
@@ -1060,7 +1065,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       connectToMachine: async () => ({
         call: async () => {
@@ -1089,7 +1094,7 @@ describe("transactional session transfer RPC", () => {
       sessionId: packaged.manifest.sessionId,
       transferId: packaged.manifest.transferId,
       confirmation: "target-does-not-have-session",
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     expect(response).toMatchObject({
@@ -1160,7 +1165,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       sessionTransferRetryMs: 10,
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
@@ -1219,7 +1224,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     })
@@ -1264,7 +1269,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       connectToMachine: async () => ({
         call: async () => ({
           state: "committed",
@@ -1347,7 +1352,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       workspaceService: {
         inspect: async () => ({
@@ -1405,14 +1410,14 @@ describe("transactional session transfer RPC", () => {
     const preview = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     const approved = preview.result as { contractVersion: 1; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     })).resolves.toMatchObject({
@@ -1462,7 +1467,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       connectToMachine: async () => ({
         call: async (method, params) => {
@@ -1531,7 +1536,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       workspaceService: {
         inspect: async () => ({
@@ -1588,14 +1593,14 @@ describe("transactional session transfer RPC", () => {
     const preview = await call("session.transferPreview", {
       sessionId: source.sessions[0]!.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     const approved = preview.result as { contractVersion: 1; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: source.sessions[0]!.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     })).resolves.toMatchObject({
@@ -1709,7 +1714,7 @@ describe("transactional session transfer RPC", () => {
     await expect(call("transfer.prepare", {
       manifest: packaged.manifest,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({ result: { state: "committed" } })
     await expect(call("transfer.abort", commitParams)).resolves.toMatchObject({
       result: { state: "committed" },
@@ -1730,7 +1735,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       transferTransactions: transactions,
       workspaceService: {
         inspect: async () => ({
@@ -1761,7 +1766,7 @@ describe("transactional session transfer RPC", () => {
       ownershipGeneration: packaged.manifest.ownership.fromGeneration,
       method: packaged.manifest.repository.method,
       coverage: packaged.manifest.coverage,
-      client: "desktop",
+      initiatedByClient: "desktop",
     }
 
     await expect(call("transfer.preflight", preflight)).resolves.toMatchObject({
@@ -1770,7 +1775,7 @@ describe("transactional session transfer RPC", () => {
     await expect(call("transfer.prepare", {
       manifest: packaged.manifest,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({
       result: {
         state: "refused",
@@ -1820,7 +1825,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         inspect: async () => ({
           root: "/source/project",
@@ -1864,7 +1869,7 @@ describe("transactional session transfer RPC", () => {
     const previewResponse = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     expect(previewResponse).toMatchObject({
       result: {
@@ -1896,14 +1901,14 @@ describe("transactional session transfer RPC", () => {
         ownershipGeneration: 3,
         method: "git-bundle",
         coverage: preview.coverage,
-        client: "desktop",
+        initiatedByClient: "desktop",
       },
     }])
     remoteCalls.length = 0
     await expect(call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Method parameters are invalid" },
     })
@@ -1942,7 +1947,7 @@ describe("transactional session transfer RPC", () => {
       const daemon = new DomovoiDaemon({
         port: 0,
         store,
-        authToken: "correct-horse-battery-staple",
+        authToken: testAuthToken("correct-horse-battery-staple"),
         workspaceService: {
           inspect: async () => ({
             root: source.project!.path,
@@ -1978,7 +1983,7 @@ describe("transactional session transfer RPC", () => {
         targetMachineId,
         method,
         ...(remote ? { remote } : {}),
-        client: "desktop",
+        initiatedByClient: "desktop",
       })).resolves.toMatchObject({ result: { allowed: false, reason } })
       expect(connectToMachine).not.toHaveBeenCalled()
       socket.close()
@@ -2002,7 +2007,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         inspect: async () => ({
           root: source.project!.path,
@@ -2035,7 +2040,7 @@ describe("transactional session transfer RPC", () => {
     await expect(rpc(socket)("session.transferPreview", {
       sessionId: source.sessions[0]!.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({
       result: { allowed: false, reason: "target-pairing-required" },
     })
@@ -2069,7 +2074,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       terminalService: { spawn: vi.fn(() => terminal) },
       workspaceService: {
         inspect: async () => ({
@@ -2119,14 +2124,14 @@ describe("transactional session transfer RPC", () => {
     const preview = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     const approved = preview.result as { contractVersion: 1; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     })).resolves.toMatchObject({
@@ -2177,7 +2182,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       workspaceService: {
         inspect: async () => ({
@@ -2223,14 +2228,14 @@ describe("transactional session transfer RPC", () => {
     const preview = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     const approved = preview.result as { contractVersion: 1; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     })).resolves.toMatchObject({
@@ -2297,7 +2302,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: outgoing,
       workspaceService: {
         inspect: async () => ({
@@ -2372,14 +2377,14 @@ describe("transactional session transfer RPC", () => {
     const preview = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     const approved = preview.result as { contractVersion: 1, intentDigest: string }
 
     const moved = await call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     })
@@ -2460,7 +2465,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       workspaceService: {
         inspect: async () => ({
@@ -2528,14 +2533,14 @@ describe("transactional session transfer RPC", () => {
     const preview = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     const approved = preview.result as { contractVersion: 1; intentDigest: string }
 
     const conflict = await call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     })
@@ -2561,7 +2566,7 @@ describe("transactional session transfer RPC", () => {
       sessionId: session.id,
       transferId: frozen.ownershipConflict!.transferId,
       confirmation: "keep-target-session",
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({
       result: {
         sessions: [expect.objectContaining({
@@ -2649,7 +2654,7 @@ describe("transactional session transfer RPC", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
       workspaceService: {
         inspect: async () => ({
@@ -2717,7 +2722,7 @@ describe("transactional session transfer RPC", () => {
       const response = await call("session.transferPreview", {
         sessionId: session.id,
         targetMachineId,
-        client: "desktop",
+        initiatedByClient: "desktop",
       })
       expect(response.result).toMatchObject({
         allowed: true,
@@ -2730,7 +2735,7 @@ describe("transactional session transfer RPC", () => {
     const moves = sessions.map((session) => call("session.transfer", {
       sessionId: session.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: approved.get(session.id)!.contractVersion,
       intentDigest: approved.get(session.id)!.intentDigest,
     }))
