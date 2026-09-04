@@ -1,19 +1,38 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-const { DomovoiDaemon } = await import("./dist/public.js")
+const { DomovoiDaemon, createProductionDaemon } = await import("./dist/public.js")
 const internal = await import("./dist/server.js")
 
 // The published entry stays narrow; the injection seams stay reachable on the
 // internal path the workspace and the tests use.
-assert.deepEqual(Object.keys(await import("./dist/public.js")).sort(), ["DomovoiDaemon"])
+assert.deepEqual(
+  Object.keys(await import("./dist/public.js")).sort(),
+  ["DomovoiDaemon", "createProductionDaemon"],
+)
 assert.ok(internal.DomovoiDaemon)
 assert.ok(Object.keys(internal).length > 10)
 
 const daemon = new DomovoiDaemon({ statePath: ":memory:" })
 assert.match(daemon.authToken, /^[A-Za-z0-9_-]{43}$/)
 await daemon.stop()
+
+const productionHome = mkdtempSync(join(tmpdir(), "domovoi-dist-factory-"))
+try {
+  const production = await createProductionDaemon({
+    environment: {},
+    homeDirectory: productionHome,
+    machineLabel: "dist-test",
+  })
+  assert.match(production.authToken, /^[A-Za-z0-9_-]{43}$/)
+  assert.equal(production.secureTransport, false)
+  await production.stop()
+} finally {
+  rmSync(productionHome, { force: true, recursive: true })
+}
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
 
