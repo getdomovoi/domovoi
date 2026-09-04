@@ -13,6 +13,7 @@ import {
   type SkillSummary,
 } from "@getdomovoi/protocol"
 
+import { artifactRows, findArtifact } from "./artifact-rows"
 import { ConfirmSheet } from "./components/confirm-sheet"
 import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
@@ -22,6 +23,7 @@ import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
+import { ArtifactScreen } from "./screens/artifact"
 import { FleetScreen } from "./screens/fleet"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
@@ -44,6 +46,7 @@ export function App() {
   const [restoring, setRestoring] = useState(true)
   const [openApprovalId, setOpenApprovalId] = useState<string | undefined>(undefined)
   const [openSessionId, setOpenSessionId] = useState<string | undefined>(undefined)
+  const [openArtifactId, setOpenArtifactId] = useState<string | undefined>(undefined)
   const [deciding, setDeciding] = useState(false)
   const [pausing, setPausing] = useState(false)
   const [confirmPauseSession, setConfirmPauseSession] = useState(false)
@@ -94,6 +97,16 @@ export function App() {
   const openSession = useMemo(
     () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId) : undefined,
     [openSessionId, snapshot],
+  )
+
+  const openArtifacts = useMemo(
+    () => snapshot && openSessionId ? artifactRows(snapshot, openSessionId) : [],
+    [openSessionId, snapshot],
+  )
+
+  const openArtifact = useMemo(
+    () => snapshot && openArtifactId ? findArtifact(snapshot, openArtifactId) : undefined,
+    [openArtifactId, snapshot],
   )
 
   const openPlan = useMemo(() => {
@@ -232,6 +245,22 @@ export function App() {
     )
   }
 
+  // An artifact is read on top of the session it belongs to, so closing it
+  // returns to the thread rather than to the list.
+  if (openArtifact) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <SafeAreaView className="flex-1 bg-background">
+          <ArtifactScreen
+            artifact={openArtifact}
+            onBack={() => setOpenArtifactId(undefined)}
+          />
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
   // A session is read the same way: full screen, back to the list, no tab bar
   // competing with the thread for the bottom of a phone.
   if (openSession) {
@@ -241,6 +270,7 @@ export function App() {
         <SafeAreaView className="flex-1 bg-background">
           <SessionScreen
             detail={openSession}
+            artifacts={openArtifacts}
             plan={openPlan}
             pausing={pausing}
             draft={draft}
@@ -249,9 +279,11 @@ export function App() {
             skillLabel={skillSelectionLabel(chosenSkills)}
             onBack={() => {
               setOpenSessionId(undefined)
+              setOpenArtifactId(undefined)
               setSendProblem("")
             }}
             onOpenApproval={setOpenApprovalId}
+            onOpenArtifact={setOpenArtifactId}
             onPause={() => setConfirmPauseSession(true)}
             onChangeDraft={(next) => {
               setDraft(next)

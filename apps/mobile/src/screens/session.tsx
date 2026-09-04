@@ -1,4 +1,4 @@
-import { KeyboardAvoidingView, Platform, ScrollView, View } from "react-native"
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from "react-native"
 
 import { Composer } from "../components/composer"
 import { Badge } from "../components/ui/badge"
@@ -6,6 +6,7 @@ import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
+import type { ArtifactRow } from "../artifact-rows"
 import type { PlanRow, PlanSummary } from "../plan-rows"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
 
@@ -86,8 +87,53 @@ function PlanCard({ plan }: { plan: PlanSummary }) {
   )
 }
 
+function ArtifactList({
+  rows,
+  onOpen,
+}: {
+  rows: ArtifactRow[]
+  onOpen: (artifactId: string) => void
+}) {
+  return (
+    <Card className="gap-0 p-0">
+      <View className="border-b border-border px-3 py-2.5">
+        <Text className="text-[11.5px] font-medium">Artifacts</Text>
+      </View>
+      {rows.map((row, index) => (
+        <Pressable
+          key={row.id}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${row.title}`}
+          onPress={() => onOpen(row.id)}
+          className={cn(
+            "min-h-tap flex-row items-center gap-2.5 px-3 py-2.5 active:opacity-70",
+            index > 0 && "border-t border-border",
+          )}
+        >
+          <View className="flex-1 gap-1">
+            <View className="flex-row items-center gap-1.5">
+              <Text className="text-[12px]" numberOfLines={1}>{row.title}</Text>
+              {row.variantLabel ? <Badge label={row.variantLabel} /> : null}
+            </View>
+            {/* An artifact the phone cannot read says so here rather than
+                opening onto an empty frame. */}
+            <Text
+              variant="machine"
+              className={cn("text-[9px]", row.readable ? "text-faint" : "text-warn-dim")}
+            >
+              {row.detail}
+            </Text>
+          </View>
+          <Text className="text-[13px] text-faint">›</Text>
+        </Pressable>
+      ))}
+    </Card>
+  )
+}
+
 export function SessionScreen({
   detail,
+  artifacts,
   plan,
   pausing,
   draft,
@@ -96,12 +142,14 @@ export function SessionScreen({
   skillLabel,
   onBack,
   onOpenApproval,
+  onOpenArtifact,
   onPause,
   onChangeDraft,
   onSend,
   onOpenSkills,
 }: {
   detail: SessionDetail
+  artifacts: ArtifactRow[]
   plan: PlanSummary | undefined
   pausing: boolean
   draft: string
@@ -110,6 +158,7 @@ export function SessionScreen({
   skillLabel: string
   onBack: () => void
   onOpenApproval: (approvalId: string) => void
+  onOpenArtifact: (artifactId: string) => void
   onPause: () => void
   onChangeDraft: (draft: string) => void
   onSend: () => void
@@ -151,6 +200,8 @@ export function SessionScreen({
         ) : null}
 
         {plan ? <PlanCard plan={plan} /> : null}
+
+        {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
 
         {detail.omitted > 0 ? (
           <Text variant="meta" className="text-center">
