@@ -9,6 +9,16 @@ import { clientKind, clientVersion, protocolVersionForClient } from "./protocol-
 
 type Pending = { resolve: (value: unknown) => void, reject: (error: Error) => void }
 
+// A refusal can carry structured data saying what the daemon objected to, and a
+// plain Error throws it away. The turn skill refusal is read out of this, so
+// the phone can name the skill rather than show the sentence and guess.
+export class DaemonError extends Error {
+  constructor(message: string, readonly data: unknown) {
+    super(message)
+    this.name = "DaemonError"
+  }
+}
+
 export type DaemonStatus = "connecting" | "open" | "closed"
 
 // The phone connects to a daemon over the tailnet like any other client. This
@@ -61,7 +71,7 @@ export class DaemonConnection {
       let message: {
         id?: number
         result?: unknown
-        error?: { message?: string }
+        error?: { message?: string, data?: unknown }
         method?: string
         params?: unknown
       }
@@ -74,8 +84,14 @@ export class DaemonConnection {
         const pending = this.#pending.get(message.id)
         if (!pending) return
         this.#pending.delete(message.id)
-        if (message.error) pending.reject(new Error(message.error.message ?? "The daemon refused"))
-        else pending.resolve(message.result)
+        if (message.error) {
+          pending.reject(new DaemonError(
+            message.error.message ?? "The daemon refused",
+            message.error.data,
+          ))
+        } else {
+          pending.resolve(message.result)
+        }
         return
       }
       // A delta describes a change to the snapshot the client already holds, so

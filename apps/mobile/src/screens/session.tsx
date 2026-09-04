@@ -93,11 +93,13 @@ export function SessionScreen({
   draft,
   sending,
   sendProblem,
+  skillLabel,
   onBack,
   onOpenApproval,
   onPause,
   onChangeDraft,
   onSend,
+  onOpenSkills,
 }: {
   detail: SessionDetail
   plan: PlanSummary | undefined
@@ -105,11 +107,13 @@ export function SessionScreen({
   draft: string
   sending: boolean
   sendProblem: string
+  skillLabel: string
   onBack: () => void
   onOpenApproval: (approvalId: string) => void
   onPause: () => void
   onChangeDraft: (draft: string) => void
   onSend: () => void
+  onOpenSkills: () => void
 }) {
   const approvalId = detail.approvalId
   return (
@@ -179,8 +183,10 @@ export function SessionScreen({
         readiness={detail.sending}
         sending={sending}
         problem={sendProblem}
+        skillLabel={skillLabel}
         onChangeDraft={onChangeDraft}
         onSend={onSend}
+        onOpenSkills={onOpenSkills}
       />
     </KeyboardAvoidingView>
   )

@@ -2,9 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { View } from "react-native"
 import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
-import { fleetSnapshotSchema, type ApprovalDecision, type FleetMachine } from "@getdomovoi/protocol"
+import {
+  fleetSnapshotSchema,
+  selectableTurnSkills,
+  skillSummariesSchema,
+  turnSkillRefusalFrom,
+  turnSkillSelectionFor,
+  type ApprovalDecision,
+  type FleetMachine,
+  type SkillSummary,
+} from "@getdomovoi/protocol"
 
 import { ConfirmSheet } from "./components/confirm-sheet"
+import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
 import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
@@ -18,6 +28,12 @@ import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
 import { promptProblem, sessionDetail } from "./session-detail"
 import { waitingCount } from "./session-rows"
+import {
+  missingSkillProblem,
+  refusalMessage,
+  skillPickerRows,
+  skillSelectionLabel,
+} from "./turn-skills"
 import "./global.css"
 
 export function App() {
@@ -38,6 +54,14 @@ export function App() {
   // state has re-rendered anything. The latch is read and set synchronously, so
   // the second tap has nothing left to do.
   const inFlightSend = useRef(false)
+  // Undefined is "the person has not chosen", which leaves the project's own
+  // skills alone. An empty set is a deliberate "no skills this turn". The two
+  // are different requests and the daemon treats them differently.
+  const [chosenSkills, setChosenSkills] = useState<ReadonlySet<string> | undefined>(undefined)
+  const [skillCatalog, setSkillCatalog] = useState<SkillSummary[] | undefined>(undefined)
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillProblem, setSkillProblem] = useState("")
   const [fleet, setFleet] = useState<FleetMachine[] | undefined>(undefined)
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
@@ -78,6 +102,32 @@ export function App() {
     return plan ? planSummary(plan) : undefined
   }, [openSessionId, snapshot])
 
+  const offeredSkills = useMemo(
+    () => selectableTurnSkills(
+      skillCatalog ?? [],
+      snapshot?.skillEnablements ?? [],
+      snapshot?.project?.id,
+    ),
+    [skillCatalog, snapshot],
+  )
+
+  const skillDescriptions = useMemo(
+    () => new Map((skillCatalog ?? []).map((skill) => [skill.id, skill.description])),
+    [skillCatalog],
+  )
+
+  const loadSkills = useCallback(async () => {
+    setSkillsLoading(true)
+    setSkillProblem("")
+    try {
+      setSkillCatalog(skillSummariesSchema.parse(await call("skill.list", {})))
+    } catch (cause) {
+      setSkillProblem(cause instanceof Error ? cause.message : "The skill catalog could not be read")
+    } finally {
+      setSkillsLoading(false)
+    }
+  }, [call])
+
   const loadFleet = useCallback(async () => {
     setFleetLoading(true)
     setFleetProblem("")
@@ -90,6 +140,12 @@ export function App() {
       setFleetLoading(false)
     }
   }, [call])
+
+  // The catalog is asked for when the picker is opened, for the same reason the
+  // fleet is: a phone should not hold what it is not showing.
+  useEffect(() => {
+    if (skillsOpen && status === "open" && !skillCatalog && !skillsLoading) void loadSkills()
+  }, [loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
   // The list is asked for when the tab is opened rather than kept warm, because
   // a phone should not hold a subscription it is not showing.
@@ -128,6 +184,15 @@ export function App() {
       setSendProblem(problem)
       return
     }
+    const { selection, missing } = turnSkillSelectionFor(chosenSkills, offeredSkills)
+    // A chosen skill the catalog no longer offers must stop the send. Sending
+    // the smaller selection would quietly turn a request for three skills into
+    // a request for two, and the daemon would accept it without complaint.
+    const dropped = missingSkillProblem(missing)
+    if (dropped) {
+      setSendProblem(dropped)
+      return
+    }
     inFlightSend.current = true
     setSending(true)
     setSendProblem("")
@@ -136,10 +201,13 @@ export function App() {
         sessionId,
         prompt: draft.trim(),
         client: clientKind,
+        ...(selection ? { skillSelection: selection } : {}),
       })
       setDraft("")
     } catch (cause) {
-      setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
+      const refusal = turnSkillRefusalFrom(cause)
+      if (refusal) setSendProblem(refusalMessage(refusal))
+      else setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
     } finally {
       inFlightSend.current = false
       setSending(false)
@@ -178,6 +246,7 @@ export function App() {
             draft={draft}
             sending={sending}
             sendProblem={sendProblem}
+            skillLabel={skillSelectionLabel(chosenSkills)}
             onBack={() => {
               setOpenSessionId(undefined)
               setSendProblem("")
@@ -189,6 +258,28 @@ export function App() {
               if (sendProblem) setSendProblem("")
             }}
             onSend={() => void sendMessage(openSession.id)}
+            onOpenSkills={() => setSkillsOpen(true)}
+          />
+          <SkillSheet
+            open={skillsOpen}
+            rows={skillPickerRows(offeredSkills, chosenSkills, skillDescriptions)}
+            chosen={chosenSkills !== undefined}
+            loading={skillsLoading}
+            problem={skillProblem}
+            onToggle={(skillId) => {
+              setChosenSkills((current) => {
+                const next = new Set(current ?? [])
+                if (next.has(skillId)) next.delete(skillId)
+                else next.add(skillId)
+                return next
+              })
+              if (sendProblem) setSendProblem("")
+            }}
+            onUseDefault={() => {
+              setChosenSkills(undefined)
+              if (sendProblem) setSendProblem("")
+            }}
+            onClose={() => setSkillsOpen(false)}
           />
           <ConfirmSheet
             open={confirmPauseSession}

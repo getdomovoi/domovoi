@@ -9,8 +9,10 @@ export function Composer({
   readiness,
   sending,
   problem,
+  skillLabel,
   onChangeDraft,
   onSend,
+  onOpenSkills,
 }: {
   draft: string
   readiness: SendReadiness
@@ -19,8 +21,10 @@ export function Composer({
   // see the old value of this.
   sending: boolean
   problem: string
+  skillLabel: string
   onChangeDraft: (draft: string) => void
   onSend: () => void
+  onOpenSkills: () => void
 }) {
   const blocked = !readiness.can
   const canSend = readiness.can && !sending && draft.trim().length > 0
@@ -32,6 +36,18 @@ export function Composer({
         ? <Text variant="meta" className="text-[11px]">{readiness.hint}</Text>
         : null}
       {blocked ? <Text variant="meta" className="text-[11px]">{readiness.reason}</Text> : null}
+
+      {!blocked ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Skills for this turn: ${skillLabel}`}
+          onPress={onOpenSkills}
+          className="min-h-tap flex-row items-center gap-1.5 self-start active:opacity-70"
+        >
+          <Text variant="label">Skills</Text>
+          <Text variant="machine" className="text-[10px] text-primary">{skillLabel}</Text>
+        </Pressable>
+      ) : null}
 
       <View className="flex-row items-end gap-2">
         <TextInput
