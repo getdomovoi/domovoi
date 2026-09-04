@@ -49,6 +49,7 @@ import {
   sessionForkParamsSchema,
   sessionPauseParamsSchema,
   sessionSendParamsSchema,
+  sessionTransferLifecycleSchema,
   skillSummarySchema,
   skillDocumentSchema,
   workspaceSnapshotSchema,
@@ -546,6 +547,28 @@ describe("workspace protocol", () => {
   })
 
   it("models a frozen source while session ownership moves", () => {
+    expect(sessionTransferLifecycleSchema.safeParse({
+      phase: "transferring",
+      transferId: `transfer-${"b".repeat(32)}`,
+      targetMachineId: `machine-${"c".repeat(32)}`,
+      intentDigest: `sha256:${"d".repeat(64)}`,
+      nextGeneration: 4,
+      startedAt: "2026-09-03T18:00:00.000Z",
+      resumeState: "idle",
+      package: { state: "preparing" },
+    }).success).toBe(false)
+    expect(sessionTransferLifecycleSchema.safeParse({
+      phase: "transferring",
+      transferId: `transfer-${"b".repeat(32)}`,
+      targetMachineId: `machine-${"c".repeat(32)}`,
+      intentDigest: `sha256:${"d".repeat(64)}`,
+      nextGeneration: 4,
+      startedAt: "2026-09-03T18:00:00.000Z",
+      resumeState: "idle",
+      method: "git-bundle",
+      package: { state: "preparing" },
+    }).success).toBe(false)
+
     const transferring = structuredClone(demoWorkspace)
     const session = transferring.sessions[2]!
     session.state = "transferring"
@@ -560,6 +583,8 @@ describe("workspace protocol", () => {
       nextGeneration: 4,
       startedAt: "2026-09-03T18:00:00.000Z",
       resumeState: "idle",
+      method: "git-bundle",
+      requestedBy: { client: "desktop", clientId: "studio-mac" },
       package: { state: "preparing" },
     }
     expect(workspaceSnapshotSchema.parse(transferring).sessions[2]).toMatchObject({

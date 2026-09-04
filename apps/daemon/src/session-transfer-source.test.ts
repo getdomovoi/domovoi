@@ -89,6 +89,7 @@ describe("source transfer lifecycle", () => {
       intent,
       packaged.manifest.transferId,
       "2026-09-03T22:00:00.000Z",
+      { client: "desktop", clientId: "studio-mac" },
     )
     expect(frozen.sessions[0]).toMatchObject({
       id: session.id,
@@ -101,6 +102,8 @@ describe("source transfer lifecycle", () => {
         intentDigest: intent.preview.intentDigest,
         nextGeneration: 5,
         resumeState: "idle",
+        method: "git-bundle",
+        requestedBy: { client: "desktop", clientId: "studio-mac" },
         package: { state: "preparing" },
       },
     })
@@ -140,6 +143,7 @@ describe("source transfer lifecycle", () => {
       intent,
       packaged.manifest.transferId,
       "2026-09-03T22:00:00.000Z",
+      { client: "desktop" },
     )
     const staged = stageSourceSessionCheckpoint(frozen, packaged.manifest)
 
@@ -164,6 +168,7 @@ describe("source transfer lifecycle", () => {
         intent,
         packaged.manifest.transferId,
         "2026-09-03T22:00:00.000Z",
+        { client: "desktop" },
       ),
       packaged.manifest,
     )

@@ -1609,6 +1609,7 @@ export class DomovoiDaemon {
       target: FleetMachine
       intent: PreparedSessionTransferIntent
     },
+    clientId: string | undefined,
     signal?: AbortSignal,
   ): Promise<SessionTransferResult> {
     const startedAt = new Date().toISOString()
@@ -1623,6 +1624,7 @@ export class DomovoiDaemon {
       prepared.intent,
       transferId,
       startedAt,
+      { client: params.client, ...(clientId ? { clientId } : {}) },
     )
     await this.#persistTransferSnapshot(frozen)
 
@@ -3145,12 +3147,14 @@ export class DomovoiDaemon {
             ? AbortSignal.any([signal, transferDeadline.signal])
             : transferDeadline.signal
           try {
+            const transferActor = this.#authenticatedActors.get(socket)
             const outcome = await this.#sendVersionedSessionTransfer(
               params as RpcParams<"session.transfer"> & {
                 contractVersion: 1
                 intentDigest: string
               },
               { ...prepared, target: prepared.target, intent: prepared.intent },
+              transferActor?.kind === "client" ? transferActor.clientId : undefined,
               transferSignal,
             )
             this.#send(socket, {

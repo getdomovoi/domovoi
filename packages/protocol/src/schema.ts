@@ -155,6 +155,11 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
     nextGeneration: ownershipGenerationSchema,
     startedAt: z.string().datetime({ offset: true }),
     resumeState: z.enum(["idle", "done", "failed"]),
+    method: z.enum(["git-bundle", "remote-ref"]),
+    requestedBy: z.object({
+      client: clientKindSchema,
+      clientId: clientIdentityIdSchema.optional(),
+    }).strict(),
     package: sessionTransferPackageSchema,
   }).strict(),
   z.object({

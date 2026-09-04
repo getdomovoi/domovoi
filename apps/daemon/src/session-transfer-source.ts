@@ -54,6 +54,7 @@ export function freezeSourceSessionTransfer(
   intent: PreparedSessionTransferIntent,
   transferId: string,
   startedAt: string,
+  requestedBy: { client: ClientKind; clientId?: string },
 ): WorkspaceSnapshot {
   const session = sourceSession(snapshot, intent.state.session.id)
   const resumeState = session.state
@@ -81,6 +82,8 @@ export function freezeSourceSessionTransfer(
     nextGeneration: intent.state.session.ownershipGeneration + 1,
     startedAt,
     resumeState,
+    method: intent.method,
+    requestedBy,
     package: { state: "preparing" },
   }
   return workspaceSnapshotSchema.parse(candidate)
