@@ -11,9 +11,11 @@ import {
   prepareSessionTransferIntent,
 } from "./session-transfer-package.js"
 import {
+  clearSourceTransferReconciliation,
   clearConfirmedSourceRecovery,
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
+  markSourceTransferReconciliationFailure,
   markSourceOwnershipConflict,
   markTargetSessionOwnershipConflict,
   recoverUnconfirmedSourceTransfer,
@@ -163,6 +165,84 @@ describe("source transfer lifecycle", () => {
     expect(thawed.sessions[0]).not.toHaveProperty("transfer")
   })
 
+  it("records target reconciliation evidence until an authoritative response arrives", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const staged = stageSourceSessionCheckpoint(
+      freezeSourceSessionTransfer(
+        source,
+        intent,
+        packaged.manifest.transferId,
+        "2026-09-03T22:00:00.000Z",
+        { client: "desktop" },
+      ),
+      packaged.manifest,
+    )
+
+    const first = markSourceTransferReconciliationFailure(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      reason: "target-unreachable",
+      failedAt: "2026-09-03T22:01:00.000Z",
+    })
+    expect(first.sessions[0]?.transfer).toMatchObject({
+      package: {
+        state: "staged",
+        reconciliation: {
+          state: "ownership-unconfirmed",
+          reason: "target-unreachable",
+          firstFailedAt: "2026-09-03T22:01:00.000Z",
+          lastFailedAt: "2026-09-03T22:01:00.000Z",
+          attemptCount: 1,
+          recoveryAction: "confirm-source-recovery",
+        },
+      },
+    })
+
+    const second = markSourceTransferReconciliationFailure(first, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      reason: "target-timeout",
+      failedAt: "2026-09-03T22:02:00.000Z",
+    })
+    expect(second.sessions[0]?.transfer).toMatchObject({
+      package: {
+        reconciliation: {
+          reason: "target-timeout",
+          firstFailedAt: "2026-09-03T22:01:00.000Z",
+          lastFailedAt: "2026-09-03T22:02:00.000Z",
+          attemptCount: 2,
+        },
+      },
+    })
+
+    const cleared = clearSourceTransferReconciliation(second, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+    })
+    expect(cleared.sessions[0]?.transfer).not.toHaveProperty("package.reconciliation")
+  })
+
+  it("refuses source recovery without durable reconciliation evidence", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const staged = stageSourceSessionCheckpoint(
+      freezeSourceSessionTransfer(
+        source,
+        intent,
+        packaged.manifest.transferId,
+        "2026-09-03T22:00:00.000Z",
+        { client: "desktop" },
+      ),
+      packaged.manifest,
+    )
+
+    expect(() => recoverUnconfirmedSourceTransfer(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      recoveredAt: "2026-09-03T22:02:00.000Z",
+    })).toThrow("session-state-changed")
+  })
+
   it("retains who reclaimed an unverifiable source and freezes that source on later conflict", async () => {
     const { source, intent, packaged } = await transferFixture()
     const staged = stageSourceSessionCheckpoint(
@@ -175,7 +255,13 @@ describe("source transfer lifecycle", () => {
       ),
       packaged.manifest,
     )
-    const recovered = recoverUnconfirmedSourceTransfer(staged, {
+    const recoverable = markSourceTransferReconciliationFailure(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      reason: "target-unreachable",
+      failedAt: "2026-09-03T22:01:00.000Z",
+    })
+    const recovered = recoverUnconfirmedSourceTransfer(recoverable, {
       sessionId: packaged.manifest.sessionId,
       transferId: packaged.manifest.transferId,
       client: "desktop",
@@ -289,24 +375,28 @@ describe("source transfer lifecycle", () => {
 
   it("clears a recovery claim only after its target confirms no ownership", async () => {
     const { source, intent, packaged } = await transferFixture()
-    const recovered = recoverUnconfirmedSourceTransfer(
-      stageSourceSessionCheckpoint(
-        freezeSourceSessionTransfer(
-          source,
-          intent,
-          packaged.manifest.transferId,
-          "2026-09-03T22:00:00.000Z",
-          { client: "desktop" },
-        ),
-        packaged.manifest,
+    const staged = stageSourceSessionCheckpoint(
+      freezeSourceSessionTransfer(
+        source,
+        intent,
+        packaged.manifest.transferId,
+        "2026-09-03T22:00:00.000Z",
+        { client: "desktop" },
       ),
-      {
-        sessionId: packaged.manifest.sessionId,
-        transferId: packaged.manifest.transferId,
-        client: "desktop",
-        recoveredAt: "2026-09-03T22:02:00.000Z",
-      },
+      packaged.manifest,
     )
+    const recoverable = markSourceTransferReconciliationFailure(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      reason: "target-unreachable",
+      failedAt: "2026-09-03T22:01:00.000Z",
+    })
+    const recovered = recoverUnconfirmedSourceTransfer(recoverable, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      recoveredAt: "2026-09-03T22:02:00.000Z",
+    })
 
     const cleared = clearConfirmedSourceRecovery(recovered, {
       sessionId: packaged.manifest.sessionId,

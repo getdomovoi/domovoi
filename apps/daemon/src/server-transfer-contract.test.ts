@@ -21,6 +21,7 @@ import {
 } from "./session-transfer-package.js"
 import {
   freezeSourceSessionTransfer,
+  markSourceTransferReconciliationFailure,
   recoverUnconfirmedSourceTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
@@ -871,7 +872,23 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
     await daemon.start()
     await vi.waitFor(() => expect(connectToMachine).toHaveBeenCalledOnce())
-    expect(store.load().sessions[0]?.state).toBe("transferring")
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferring",
+      transfer: {
+        package: {
+          state: "staged",
+          reconciliation: {
+            state: "ownership-unconfirmed",
+            reason: "target-unreachable",
+            firstFailedAt: expect.any(String),
+            lastFailedAt: expect.any(String),
+            attemptCount: 1,
+            recoveryAction: "confirm-source-recovery",
+          },
+        },
+      },
+    })
+    expect(JSON.stringify(store.load())).not.toContain("target is unreachable")
     const socket = await openClient(daemon, "studio-mac")
 
     const recovered = await rpc(socket)("session.transferRecoverSource", {
@@ -905,6 +922,80 @@ describe("transactional session transfer RPC", () => {
       packaged.manifestDigest,
     )).resolves.toMatchObject({ state: "unknown" })
     socket.close()
+  })
+
+  it("records repeated pairing failures without persisting provider error text", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-pairing-evidence-"))
+    scratchDirectories.push(scratch)
+    const { staged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const connectToMachine = vi.fn(async () => {
+      throw new MachinePairingRequiredError()
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      connectToMachine,
+      sessionTransferRetryMs: 10,
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    await vi.waitFor(() => {
+      const lifecycle = store.load().sessions[0]?.transfer
+      if (lifecycle?.phase !== "transferring" || lifecycle.package.state !== "staged") {
+        throw new Error("Expected a staged transfer")
+      }
+      expect(lifecycle.package.reconciliation?.attemptCount).toBeGreaterThanOrEqual(2)
+    })
+
+    const lifecycle = store.load().sessions[0]?.transfer
+    if (lifecycle?.phase !== "transferring" || lifecycle.package.state !== "staged") {
+      throw new Error("Expected a staged transfer")
+    }
+    expect(lifecycle.package.reconciliation).toMatchObject({
+      reason: "target-pairing-required",
+      firstFailedAt: expect.any(String),
+      lastFailedAt: expect.any(String),
+      recoveryAction: "confirm-source-recovery",
+    })
+    expect(Date.parse(lifecycle.package.reconciliation!.lastFailedAt)).toBeGreaterThanOrEqual(
+      Date.parse(lifecycle.package.reconciliation!.firstFailedAt),
+    )
+    expect(JSON.stringify(store.load())).not.toContain("Machine pairing is required")
+  })
+
+  it("distinguishes a target status deadline from an unreachable target", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-timeout-evidence-"))
+    scratchDirectories.push(scratch)
+    const { staged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      sessionTransferTimeoutMs: 10,
+      connectToMachine: async (_machineId, signal) => new Promise((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+      }),
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    await vi.waitFor(() => {
+      const lifecycle = store.load().sessions[0]?.transfer
+      if (lifecycle?.phase !== "transferring" || lifecycle.package.state !== "staged") {
+        throw new Error("Expected a staged transfer")
+      }
+      expect(lifecycle.package.reconciliation?.reason).toBe("target-timeout")
+    })
   })
 
   it("does not recover a source from a status for another transfer", async () => {
@@ -948,8 +1039,71 @@ describe("transactional session transfer RPC", () => {
     })
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferring",
-      transfer: { transferId: packaged.manifest.transferId },
+      transfer: {
+        transferId: packaged.manifest.transferId,
+        package: {
+          reconciliation: { reason: "target-unreachable", attemptCount: 1 },
+        },
+      },
     })
+    socket.close()
+  })
+
+  it("clears source recovery evidence when the target answers authoritatively", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-recovery-cleared-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    let calls = 0
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine: async () => ({
+        call: async () => {
+          calls += 1
+          if (calls === 1) throw new Error("startup status unavailable")
+          return { state: "receiving", transferId: packaged.manifest.transferId }
+        },
+        close: () => {},
+      }),
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    await vi.waitFor(() => {
+      const transfer = store.load().sessions[0]?.transfer
+      expect(
+        transfer?.phase === "transferring" && transfer.package.state === "staged"
+          ? transfer.package.reconciliation
+          : undefined,
+      ).toBeDefined()
+    })
+    const socket = await openClient(daemon, "studio-mac")
+
+    const response = await rpc(socket)("session.transferRecoverSource", {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      confirmation: "target-does-not-have-session",
+      client: "desktop",
+    })
+
+    expect(response).toMatchObject({
+      error: {
+        code: -32602,
+        message: "The target still holds transfer state, so source recovery was refused",
+      },
+    })
+    const current = store.load().sessions[0]
+    expect(current).toMatchObject({ state: "transferring" })
+    if (current?.transfer?.phase !== "transferring" || current.transfer.package.state !== "staged") {
+      throw new Error("Expected a staged source transfer")
+    }
+    expect(current.transfer.package).not.toHaveProperty("reconciliation")
     socket.close()
   })
 
@@ -957,13 +1111,21 @@ describe("transactional session transfer RPC", () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-owner-conflict-"))
     scratchDirectories.push(scratch)
     const { staged, packaged } = await stagedTransferFixture()
-    const recovered = recoverUnconfirmedSourceTransfer(staged, {
-      sessionId: packaged.manifest.sessionId,
-      transferId: packaged.manifest.transferId,
-      client: "desktop",
-      clientId: "studio-mac",
-      recoveredAt: "2026-09-03T22:10:00.000Z",
-    })
+    const recovered = recoverUnconfirmedSourceTransfer(
+      markSourceTransferReconciliationFailure(staged, {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        reason: "target-unreachable",
+        failedAt: "2026-09-03T22:09:00.000Z",
+      }),
+      {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        client: "desktop",
+        clientId: "studio-mac",
+        recoveredAt: "2026-09-03T22:10:00.000Z",
+      },
+    )
     const approval = structuredClone(demoWorkspace.approvals[0]!)
     approval.sessionId = packaged.manifest.sessionId
     recovered.approvals = [approval]
@@ -1034,13 +1196,21 @@ describe("transactional session transfer RPC", () => {
 
   it("clears a recovery claim after the target authoritatively reports no ownership", async () => {
     const { staged, packaged } = await stagedTransferFixture()
-    const recovered = recoverUnconfirmedSourceTransfer(staged, {
-      sessionId: packaged.manifest.sessionId,
-      transferId: packaged.manifest.transferId,
-      client: "desktop",
-      clientId: "studio-mac",
-      recoveredAt: "2026-09-03T22:10:00.000Z",
-    })
+    const recovered = recoverUnconfirmedSourceTransfer(
+      markSourceTransferReconciliationFailure(staged, {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        reason: "target-unreachable",
+        failedAt: "2026-09-03T22:09:00.000Z",
+      }),
+      {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        client: "desktop",
+        clientId: "studio-mac",
+        recoveredAt: "2026-09-03T22:10:00.000Z",
+      },
+    )
     const store = new SqliteWorkspaceStore(":memory:", recovered)
     const remoteCall = vi.fn(async (method: string) => {
       if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
@@ -1075,12 +1245,20 @@ describe("transactional session transfer RPC", () => {
     scratchDirectories.push(scratch)
     const databasePath = join(scratch, "state.sqlite")
     const { staged, packaged } = await stagedTransferFixture()
-    const recovered = recoverUnconfirmedSourceTransfer(staged, {
-      sessionId: packaged.manifest.sessionId,
-      transferId: packaged.manifest.transferId,
-      client: "desktop",
-      recoveredAt: "2026-09-03T22:10:00.000Z",
-    })
+    const recovered = recoverUnconfirmedSourceTransfer(
+      markSourceTransferReconciliationFailure(staged, {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        reason: "target-unreachable",
+        failedAt: "2026-09-03T22:09:00.000Z",
+      }),
+      {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        client: "desktop",
+        recoveredAt: "2026-09-03T22:10:00.000Z",
+      },
+    )
     const store = new SqliteWorkspaceStore(databasePath, recovered)
     vi.spyOn(store, "saveAsync").mockRejectedValue(new Error("disk unavailable"))
     const daemon = new DomovoiDaemon({

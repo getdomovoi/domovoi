@@ -8,6 +8,7 @@ import {
   transferStatusResultSchema,
   workspaceSnapshotSchema,
   type ClientKind,
+  type SessionTransferReconciliationReason,
   type SessionTransferManifest,
   type TransferCommitResult,
   type TransferMemberResult,
@@ -206,6 +207,61 @@ export function thawSourceSessionTransfer(
   return workspaceSnapshotSchema.parse(candidate)
 }
 
+export function markSourceTransferReconciliationFailure(
+  snapshot: WorkspaceSnapshot,
+  input: {
+    sessionId: string
+    transferId: string
+    reason: SessionTransferReconciliationReason
+    failedAt: string
+  },
+): WorkspaceSnapshot {
+  const frozen = frozenSourceSession(snapshot, input.transferId, input.sessionId)
+  if (frozen.transfer.package.state !== "staged") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  const previous = frozen.transfer.package.reconciliation
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, input.sessionId)
+  if (session.transfer?.phase !== "transferring" || session.transfer.package.state !== "staged") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  const failedTime = Date.parse(input.failedAt)
+  const firstFailedAt = previous && Date.parse(previous.firstFailedAt) <= failedTime
+    ? previous.firstFailedAt
+    : input.failedAt
+  const lastFailedAt = previous && Date.parse(previous.lastFailedAt) >= failedTime
+    ? previous.lastFailedAt
+    : input.failedAt
+  session.transfer.package.reconciliation = {
+    state: "ownership-unconfirmed",
+    reason: input.reason,
+    firstFailedAt,
+    lastFailedAt,
+    attemptCount: Math.min((previous?.attemptCount ?? 0) + 1, Number.MAX_SAFE_INTEGER),
+    recoveryAction: "confirm-source-recovery",
+  }
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
+export function clearSourceTransferReconciliation(
+  snapshot: WorkspaceSnapshot,
+  input: { sessionId: string; transferId: string },
+): WorkspaceSnapshot {
+  const frozen = frozenSourceSession(snapshot, input.transferId, input.sessionId)
+  if (frozen.transfer.package.state !== "staged") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  if (!frozen.transfer.package.reconciliation) return snapshot
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, input.sessionId)
+  if (session.transfer?.phase !== "transferring" || session.transfer.package.state !== "staged") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  delete session.transfer.package.reconciliation
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
 export function recoverUnconfirmedSourceTransfer(
   snapshot: WorkspaceSnapshot,
   input: {
@@ -217,7 +273,10 @@ export function recoverUnconfirmedSourceTransfer(
   },
 ): WorkspaceSnapshot {
   const frozen = frozenSourceSession(snapshot, input.transferId, input.sessionId)
-  if (frozen.transfer.package.state !== "staged") {
+  if (
+    frozen.transfer.package.state !== "staged"
+    || frozen.transfer.package.reconciliation?.state !== "ownership-unconfirmed"
+  ) {
     throw new SessionTransferStateError("session-state-changed")
   }
   const targetMachineId = frozen.transfer.targetMachineId

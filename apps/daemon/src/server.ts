@@ -48,6 +48,7 @@ import {
   type SessionHistoryPage,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
+  type SessionTransferReconciliationReason,
   type SessionTransferCoverage,
   type SessionTransferPreview,
   type SessionTransferResult,
@@ -80,9 +81,11 @@ import {
   SessionTransferStateError,
 } from "./session-transfer-state.js"
 import {
+  clearSourceTransferReconciliation,
   clearConfirmedSourceRecovery,
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
+  markSourceTransferReconciliationFailure,
   markSourceOwnershipConflict,
   markTargetSessionOwnershipConflict,
   recoverUnconfirmedSourceTransfer,
@@ -276,6 +279,14 @@ class OperationTimeoutError extends PublicRpcError {
     super(internalError, message)
     this.name = "OperationTimeoutError"
   }
+}
+
+function sourceTransferReconciliationReason(
+  error: unknown,
+): SessionTransferReconciliationReason {
+  if (error instanceof MachinePairingRequiredError) return "target-pairing-required"
+  if (error instanceof OperationTimeoutError) return "target-timeout"
+  return "target-unreachable"
 }
 
 function matchingTransferResponse<T extends { transferId: string }>(
@@ -1997,25 +2008,48 @@ export class DomovoiDaemon {
           return
         }
         const manifestDigest = lifecycle.package.manifestDigest
-        const remote = await this.#withAbortTimeout(async (signal) => {
-          const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
-          try {
-            return matchingTransferResponse(
-              lifecycle.transferId,
-              rpcMethods["transfer.status"].result.parse(await connection.call(
-                "transfer.status",
-                {
-                  transferId: lifecycle.transferId,
-                  manifestDigest,
-                  client: lifecycle.requestedBy.client,
-                },
-                signal,
-              )),
-            )
-          } finally {
-            connection.close()
-          }
-        }, this.#sessionTransferTimeoutMs, "Transfer status check timed out", parentSignal)
+        let remote: TransferStatusResult
+        try {
+          remote = await this.#withAbortTimeout(async (signal) => {
+            const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+            try {
+              return matchingTransferResponse(
+                lifecycle.transferId,
+                rpcMethods["transfer.status"].result.parse(await connection.call(
+                  "transfer.status",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: lifecycle.requestedBy.client,
+                  },
+                  signal,
+                )),
+              )
+            } finally {
+              connection.close()
+            }
+          }, this.#sessionTransferTimeoutMs, "Transfer status check timed out", parentSignal)
+        } catch (error) {
+          parentSignal?.throwIfAborted()
+          if (error instanceof TransferResponseIdentityError) throw error
+          await this.#persistTransferSnapshot(
+            markSourceTransferReconciliationFailure(this.#snapshot, {
+              sessionId: frozen.id,
+              transferId: lifecycle.transferId,
+              reason: sourceTransferReconciliationReason(error),
+              failedAt: new Date().toISOString(),
+            }),
+            frozen.id,
+          )
+          throw error
+        }
+        const cleared = clearSourceTransferReconciliation(this.#snapshot, {
+          sessionId: frozen.id,
+          transferId: lifecycle.transferId,
+        })
+        if (cleared !== this.#snapshot) {
+          await this.#persistTransferSnapshot(cleared, frozen.id)
+        }
         if (remote.state === "committed") {
           await this.#completeVersionedSourceTransfer(
             frozen.id,
@@ -4084,6 +4118,7 @@ export class DomovoiDaemon {
           || lifecycle?.phase !== "transferring"
           || lifecycle.transferId !== params.transferId
           || lifecycle.package.state !== "staged"
+          || lifecycle.package.reconciliation?.state !== "ownership-unconfirmed"
         ) {
           this.#error(socket, request.id, invalidParams, "Session has no matching frozen transfer")
           return
@@ -4121,6 +4156,24 @@ export class DomovoiDaemon {
           if (error instanceof TransferResponseIdentityError) {
             this.#error(socket, request.id, invalidParams, error.message)
             return
+          }
+          await this.#persistTransferSnapshot(
+            markSourceTransferReconciliationFailure(this.#snapshot, {
+              sessionId: session.id,
+              transferId: lifecycle.transferId,
+              reason: sourceTransferReconciliationReason(error),
+              failedAt: new Date().toISOString(),
+            }),
+            session.id,
+          )
+        }
+        if (remote !== undefined) {
+          const cleared = clearSourceTransferReconciliation(this.#snapshot, {
+            sessionId: session.id,
+            transferId: lifecycle.transferId,
+          })
+          if (cleared !== this.#snapshot) {
+            await this.#persistTransferSnapshot(cleared, session.id)
           }
         }
         if (remote?.state === "committed") {
