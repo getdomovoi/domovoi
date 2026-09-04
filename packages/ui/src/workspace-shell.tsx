@@ -52,6 +52,8 @@ import type {
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
+  TurnSkillSelection,
+  TurnSkillSelectionRefusal,
   SystemEmergencyStopResult,
   ThreadItem,
   WorkspaceSnapshot,
@@ -168,6 +170,7 @@ import { SettingsShell } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
+import { selectableTurnSkills, turnSkillRefusalFrom, turnSkillSelectionFor } from "./turn-skill-selection"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
@@ -1275,6 +1278,7 @@ export function Thread({
   usage = null,
   onOpenSkills,
   skillNames,
+  skillCatalog,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -1291,7 +1295,11 @@ export function Thread({
   onForkSession: (input: Omit<RpcParams<"session.fork">, "client">) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
   onNewSession: () => void
-  onSend: (sessionId: string, prompt: string) => Promise<void>
+  onSend: (
+    sessionId: string,
+    prompt: string,
+    skillSelection?: TurnSkillSelection,
+  ) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   onPauseSession: (sessionId: string) => Promise<void>
@@ -1306,12 +1314,15 @@ export function Thread({
   usage?: SessionUsage | null | undefined
   onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
+  skillCatalog?: readonly SkillSummary[] | undefined
 }) {
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
+  const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(undefined)
+  const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
   const [transferTargetId, setTransferTargetId] = useState<string | null>(null)
@@ -1371,10 +1382,19 @@ export function Thread({
     if (!nextPrompt || pending || providerRestartRequired || emergencyStopPending) return
     setPending(true)
     setSendError("")
+    setSkillRefusal(undefined)
     try {
-      await onSend(active.id, nextPrompt)
+      const selection = turnSkillSelectionFor(
+        skillSelection,
+        selectableTurnSkills(skillCatalog ?? [], snapshot.skillEnablements, snapshot.project?.id),
+      )
+      await onSend(active.id, nextPrompt, selection)
       setPrompt("")
+      // The daemon accepted this selection, so it stops being a draft.
+      setSkillSelection(undefined)
     } catch (cause) {
+      const refusal = turnSkillRefusalFrom(cause)
+      if (refusal) setSkillRefusal(refusal)
       setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
     } finally {
       setPending(false)
@@ -1634,6 +1654,9 @@ export function Thread({
                   snapshot={snapshot}
                   skillNames={skillNames ?? {}}
                   onOpenSkills={onOpenSkills}
+                  selection={skillSelection}
+                  onSelectionChange={setSkillSelection}
+                  refusal={skillRefusal}
                 />
               ) : null}
               <MachineSwitcher
@@ -3784,7 +3807,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
