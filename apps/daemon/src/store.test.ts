@@ -21,6 +21,87 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("keeps committed transfer ownership after restart and active project changes", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-ownership-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const imported = structuredClone(demoWorkspace)
+    const targetMachineId = `machine-${"b".repeat(32)}`
+    const sourceMachineId = `machine-${"a".repeat(32)}`
+    const transferId = `transfer-${"c".repeat(32)}`
+    const manifestDigest = `sha256:${"d".repeat(64)}`
+    const checkpointCommit = "e".repeat(40)
+    imported.machine.id = targetMachineId
+    imported.project = {
+      ...imported.project!,
+      id: "project-target",
+      machineId: targetMachineId,
+      path: "/target/project",
+    }
+    const session = imported.sessions[0]!
+    session.projectId = imported.project.id
+    session.workspacePath = "/target/session"
+    session.baseCommit = checkpointCommit
+    session.ownershipGeneration = 2
+    session.transferredFrom = {
+      transferId,
+      sourceMachineId,
+      generation: 2,
+      manifestDigest,
+      checkpointCommit,
+      completedAt: "2026-09-03T22:00:00.000Z",
+    }
+    imported.sessions = [session]
+    imported.activeSessionId = session.id
+    imported.thread = imported.thread.filter((item) => item.sessionId === session.id)
+    imported.artifacts = imported.artifacts.filter((artifact) => artifact.sessionId === session.id)
+    imported.workingPlans = imported.workingPlans.filter((plan) => plan.sessionId === session.id)
+    imported.annotations = imported.annotations.filter((annotation) => annotation.sessionId === session.id)
+    imported.approvals = imported.approvals.filter((approval) => approval.sessionId === session.id)
+
+    const store = new SqliteWorkspaceStore(databasePath, imported)
+    store.saveTransferredSnapshot(imported, {
+      version: 1,
+      transferId,
+      manifestDigest,
+      sessionId: session.id,
+      sourceMachineId,
+      targetMachineId,
+      targetProjectId: imported.project.id,
+      workspacePath: session.workspacePath,
+      checkpointCommit,
+      generation: 2,
+      completedAt: "2026-09-03T22:00:00.000Z",
+    })
+    const other = structuredClone(imported)
+    other.project = {
+      ...other.project!,
+      id: "project-other",
+      path: "/target/other",
+    }
+    other.sessions = []
+    other.activeSessionId = null
+    other.thread = []
+    other.artifacts = []
+    other.workingPlans = []
+    other.annotations = []
+    other.approvals = []
+    store.save(other)
+    store.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, other)
+
+    expect(reopened.transferOwnership.find({ transferId, manifestDigest, sourceMachineId }))
+      .toMatchObject({
+        sessionId: session.id,
+        targetProjectId: "project-target",
+        workspacePath: "/target/session",
+        checkpointCommit,
+        generation: 2,
+      })
+    reopened.close()
+  })
+
   it("keeps the event loop responsive while persisting long history", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-long-history-"))
     scratchDirectories.push(scratch)

@@ -18,6 +18,12 @@ import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
 import { SqliteFleetRegistry, type FleetRegistry } from "./fleet-registry.js"
 import { SqliteSkillReviews, type SkillReviews } from "./skill-reviews.js"
+import {
+  committedTransferOwnershipSchema,
+  SqliteTransferOwnership,
+  type CommittedTransferOwnership,
+  type TransferOwnership,
+} from "./transfer-ownership.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
 
 type StoredWorkspace = {
@@ -69,12 +75,17 @@ export interface WorkspaceStore {
   readonly devices?: DeviceRegistry
   readonly fleet?: FleetRegistry
   readonly transferReceipts?: TransferReceipts
+  readonly transferOwnership?: TransferOwnership
   readonly skillReviews?: SkillReviews
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
   loadProject?(projectId: string): ProjectWorkspaceState | undefined
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
+  saveTransferredSnapshot?(
+    snapshot: WorkspaceSnapshot,
+    ownership: CommittedTransferOwnership,
+  ): void | Promise<void>
   close(): void | Promise<void>
 }
 
@@ -461,6 +472,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly devices: SqliteDeviceRegistry
   readonly fleet: SqliteFleetRegistry
   readonly transferReceipts: SqliteTransferReceipts
+  readonly transferOwnership: SqliteTransferOwnership
   readonly skillReviews: SqliteSkillReviews
   readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
@@ -496,6 +508,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.devices = new SqliteDeviceRegistry(this.#database)
     this.fleet = new SqliteFleetRegistry(this.#database)
     this.transferReceipts = new SqliteTransferReceipts(this.#database)
+    this.transferOwnership = new SqliteTransferOwnership(this.#database)
     this.skillReviews = new SqliteSkillReviews(this.#database)
 
     const existing = this.#database
@@ -572,6 +585,43 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     )
   }
 
+  saveTransferredSnapshot(
+    snapshot: WorkspaceSnapshot,
+    rawOwnership: CommittedTransferOwnership,
+  ): void {
+    const validated = workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot))
+    const ownership = committedTransferOwnershipSchema.parse(rawOwnership)
+    const session = validated.sessions.find((candidate) => candidate.id === ownership.sessionId)
+    const origin = session?.transferredFrom
+    if (
+      validated.machine.id !== ownership.targetMachineId
+      || validated.project?.id !== ownership.targetProjectId
+      || session?.projectId !== ownership.targetProjectId
+      || session.workspacePath !== ownership.workspacePath
+      || session.ownershipGeneration !== ownership.generation
+      || origin?.transferId !== ownership.transferId
+      || origin.sourceMachineId !== ownership.sourceMachineId
+      || origin.manifestDigest !== ownership.manifestDigest
+      || origin.generation !== ownership.generation
+      || origin.checkpointCommit !== ownership.checkpointCommit
+      || origin.completedAt !== ownership.completedAt
+    ) {
+      throw new Error("Transferred snapshot does not match its ownership record")
+    }
+
+    const updatedAt = new Date().toISOString()
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#writeValidatedRows(validated, updatedAt)
+      this.transferOwnership.record(ownership)
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
+    this.#restrictFilePermissions()
+  }
+
   loadProject(projectId: string): ProjectWorkspaceState | undefined {
     const row = this.#database
       .prepare("SELECT state FROM workspace_projects WHERE project_id = ?")
@@ -603,6 +653,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   #writeValidated(snapshot: WorkspaceSnapshot): void {
     const updatedAt = new Date().toISOString()
+    this.#writeValidatedRows(snapshot, updatedAt)
+    this.#restrictFilePermissions()
+  }
+
+  #writeValidatedRows(snapshot: WorkspaceSnapshot, updatedAt: string): void {
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)
@@ -624,7 +679,6 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         `)
         .run(state.project.id, JSON.stringify(state), updatedAt)
     }
-    this.#restrictFilePermissions()
   }
 
   #recordRuleInactivations(
