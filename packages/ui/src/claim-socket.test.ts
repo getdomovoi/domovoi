@@ -142,6 +142,19 @@ describe("openClaimConnection", () => {
     expect(socket.sent).toHaveLength(1)
   })
 
+  it("fails a claim in flight when the socket errors after opening", async () => {
+    const connecting = openClaimConnection("wss://workshop.tailnet:47831/rpc", Deadline.start(10_000))
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    const connection = await connecting
+
+    const claiming = connection.call("device.claim", { code: "hearth-quiet-ember-42", label: "studio-ipad", machineId: `machine-${"b".repeat(32)}` })
+    socket.dispatchEvent(new Event("error"))
+
+    await expect(claiming).rejects.toThrow("The machine closed the connection")
+    expect(socket.closed).toBe(1)
+  })
+
   it("refuses to open once the deadline has passed", async () => {
     const deadline = Deadline.start(100)
     await vi.advanceTimersByTimeAsync(100)

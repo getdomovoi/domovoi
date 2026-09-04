@@ -32,9 +32,12 @@ export function openClaimConnection(
       pending.clear()
       for (const claim of claims) claim.reject(describe(claim))
     }
+    // Whatever ends the socket, a claim still waiting on it is answered before
+    // the listeners go, since after that nothing else could reject it.
     const stop = () => {
       if (stopped) return
       stopped = true
+      failPending(() => new Error("The machine closed the connection"))
       listeners.abort()
       socket.close()
     }
@@ -54,9 +57,7 @@ export function openClaimConnection(
     }, { once: true, signal: listeners.signal })
 
     socket.addEventListener("close", () => {
-      const closed = new Error("The machine closed the connection")
-      failPending(() => closed)
-      if (!opened) reject(closed)
+      if (!opened) reject(new Error("The machine closed the connection"))
       stop()
     }, { signal: listeners.signal })
 
