@@ -82,6 +82,29 @@ function isWindowDecoration(value: unknown): value is WorkspaceWindowDecoration 
   return typeof value === "string" && windowDecorations.includes(value)
 }
 
+type DesktopRpcEndpoint = Awaited<ReturnType<DesktopWindowBridge["getRpcEndpoint"]>>
+
+const maximumTokenLength = 4_096
+
+function rpcEndpointResult(value: unknown): DesktopRpcEndpoint {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || Object.keys(value).sort().join(",") !== "token,url"
+  ) throw new Error("Desktop returned an invalid daemon endpoint")
+  const result = value as Record<string, unknown>
+  if (
+    typeof result.url !== "string"
+    || typeof result.token !== "string"
+    || result.token.length === 0
+    || result.token.length > maximumTokenLength
+    || !URL.canParse(result.url)
+    || !["ws:", "wss:"].includes(new URL(result.url).protocol)
+  ) throw new Error("Desktop returned an invalid daemon endpoint")
+  return { url: result.url, token: result.token }
+}
+
 function booleanResult(value: unknown, action: string): boolean {
   if (typeof value !== "boolean") throw new Error(`Desktop returned an invalid ${action} response`)
   return value
@@ -93,11 +116,7 @@ export function createDesktopWindowBridge(
 ): DesktopWindowBridge {
   return {
     platform,
-    getRpcToken: async () => {
-      const result = await ipc.invoke("domovoi:rpc-token")
-      if (typeof result !== "string" || !result) throw new Error("Desktop authentication token is unavailable")
-      return result
-    },
+    getRpcEndpoint: async () => rpcEndpointResult(await ipc.invoke("domovoi:rpc-endpoint")),
     captureAnnotation: async (rect) => captureResult(await ipc.invoke("domovoi:capture-annotation", rect)),
     notify: async (request) => booleanResult(await ipc.invoke("domovoi:notify", request), "notification"),
     onNotificationActivate: (listener) => {

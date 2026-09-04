@@ -31,12 +31,13 @@ const notAuthorized = "Desktop request is not authorized"
 const rect = { x: 0, y: 0, width: 10, height: 10 }
 const notification = { id: "desktop-completion-0123456789abcdef", kind: "completion", sessionId: "session-one" }
 const externalRequest = { editor: "system", path: "/home/user/.domovoi/worktrees/project" }
+const rpcEndpoint = { url: "ws://127.0.0.1:47831/rpc", token: "factory-token" }
 
 const channels: readonly ChannelSpec[] = [
   { channel: "window:minimize", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "window:maximize", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "window:close", via: "on", guard: "authorized", unauthorized: { ignored: true } },
-  { channel: "domovoi:rpc-token", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:rpc-endpoint", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:capture-annotation",
     via: "handle",
@@ -125,6 +126,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "webContents.send": webContents.send,
     "event.sender.send": event.sender.send as Mock,
     focusMainWindow: vi.fn(),
+    rpcEndpoint: vi.fn(async () => rpcEndpoint),
     "openDirectoryDialog.showOpenDirectory": vi.fn(async () => ({ canceled: false, filePaths: ["/projects/app"] })),
     "clipboard.readText": vi.fn(async () => "pasted"),
     "clipboard.writeText": vi.fn(async () => true),
@@ -144,7 +146,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     authorized: authorize,
     mainWindow: () => (options.withWindow ?? true) ? window : undefined,
     focusMainWindow: effects.focusMainWindow,
-    rpcToken: "rpc-token-value",
+    rpcEndpoint: effects.rpcEndpoint,
     platform: "linux",
     fileSystem: {
       realpath: async (path) => path,
@@ -230,10 +232,24 @@ describe("registerDesktopIpc", () => {
     expect(disabled.effects["launchSmoke.preloadReady"]).not.toHaveBeenCalled()
   })
 
+  it("serves the renderer the endpoint of the daemon that was actually built", async () => {
+    const target = harness({ launchSmoke: false })
+
+    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(rpcEndpoint)
+    expect(target.effects.rpcEndpoint).toHaveBeenCalledOnce()
+  })
+
+  it("refuses daemon credentials during the launch smoke without building a daemon", async () => {
+    const target = harness({ launchSmoke: true })
+
+    await expect(async () => target.listener("handle", "domovoi:rpc-endpoint")(target.event))
+      .rejects.toThrow("Daemon credentials are unavailable during the launch smoke")
+    expect(target.calledEffects()).toEqual([])
+  })
+
   it("serves the authorized renderer", async () => {
     const target = harness()
 
-    expect(target.listener("handle", "domovoi:rpc-token")(target.event)).toBe("rpc-token-value")
     expect(await target.listener("handle", "domovoi:clipboard-read")(target.event)).toBe("pasted")
     expect(await target.listener("handle", "domovoi:clipboard-write")(target.event, "copy me")).toBe(true)
     expect(target.effects["clipboard.writeText"]).toHaveBeenCalledWith("copy me")

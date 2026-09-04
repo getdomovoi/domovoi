@@ -13,7 +13,7 @@
     "noUncheckedIndexedAccess": true,
     "paths": {
       "@getdomovoi/daemon": ["./apps/daemon/src/public.ts"],
-      "@getdomovoi/daemon/internal": ["./apps/daemon/src/server.ts"],
+      "@getdomovoi/daemon/internal": ["./apps/daemon/src/internal.ts"],
       "@getdomovoi/protocol": ["./packages/protocol/src/index.ts"],
       "@getdomovoi/ui": ["./packages/ui/src/index.ts"]
     },

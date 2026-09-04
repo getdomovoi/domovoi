@@ -6,6 +6,8 @@ interface StoppableOwnedDaemon extends OwnedDaemon {
   stop(): Promise<void>
 }
 
+type OwnedDaemonAddress<T extends OwnedDaemon> = Awaited<ReturnType<T["start"]>>
+
 interface QuitEvent {
   preventDefault(): void
 }
@@ -22,10 +24,14 @@ export class OwnedDaemonLifecycle {
     private readonly stopTimeoutMs = 10_000,
   ) {}
 
-  start<T extends StoppableOwnedDaemon>(daemon: T): Promise<T> {
-    const starting = startOwnedDaemon(daemon)
+  start<T extends StoppableOwnedDaemon>(daemon: T): Promise<OwnedDaemonAddress<T>> {
+    let address!: OwnedDaemonAddress<T>
+    const starting = (async () => {
+      address = await daemon.start() as OwnedDaemonAddress<T>
+      return daemon
+    })()
     this.#starting = starting
-    return starting
+    return starting.then(() => address)
   }
 
   beforeQuit(event: QuitEvent, quit: () => void): void {
@@ -66,11 +72,6 @@ export class OwnedDaemonLifecycle {
       })
     })
   }
-}
-
-export async function startOwnedDaemon<T extends OwnedDaemon>(daemon: T): Promise<T> {
-  await daemon.start()
-  return daemon
 }
 
 export async function startDesktop(

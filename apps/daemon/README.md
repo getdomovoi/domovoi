@@ -85,50 +85,41 @@ user-private files the daemon already reads.
 
 ## Programmatic use
 
-The package has two entry points. `@getdomovoi/daemon` is the supported surface: one class, and
-the options that configure a listener and its credentials. `@getdomovoi/daemon/internal` exposes
-the whole server module, including the dependency-injection seams the daemon's own tests use. It
-carries no compatibility promise and can change in any release.
+`@getdomovoi/daemon` exposes one supported production factory. It owns the daemon credential,
+stable machine identity, provider discovery, peer-credential store, TLS loading, state database,
+and worktree root. Embedders cannot omit those production dependencies or replace them with test
+seams.
 
 ```ts
-import { DomovoiDaemon } from "@getdomovoi/daemon"
+import { createProductionDaemon } from "@getdomovoi/daemon"
 
-const daemon = new DomovoiDaemon({
-  host: "127.0.0.1",
-  port: 47831,
-  statePath: ":memory:",
+const daemon = await createProductionDaemon({
   errorSink: ({ context, detail }) => console.error(context, detail),
 })
 
-const address = await daemon.start()
-console.log(address, daemon.authToken)
+const endpoint = await daemon.start()
+console.log(endpoint.url)
 
 await daemon.stop()
 ```
 
-`DomovoiDaemonOptions` accepts:
+`ProductionDaemonOptions` accepts:
 
 | Option | Purpose |
 | --- | --- |
-| `host` | Listener host, `127.0.0.1` by default |
-| `port` | Listener port, `47831` by default |
-| `advertiseHost` | Name an encrypted listener is advertised as reachable by |
-| `allowedOrigins` | Browser origins allowed to connect |
-| `allowRemoteTransport` | Permits a non-loopback listener |
-| `tls` | Certificate chain and key for a non-loopback listener |
-| `authToken` | Bearer token required by RPC requests |
-| `authTimeoutMs` | Time a connection has to authenticate |
-| `statePath` | SQLite state file, or `:memory:` |
-| `worktreeRoot` | Directory worktrees are created under |
-| `agentTimeoutMs` | Time a provider turn may take |
+| `environment` | Daemon environment; defaults to `process.env` |
+| `homeDirectory` | State-directory base; defaults to the current user's home |
+| `machineLabel` | Initial label for a new machine identity; defaults to the hostname |
 | `errorSink` | Receives daemon failures as `{ context, detail }` |
 
-A started daemon exposes `host`, `requestedPort`, `allowedOrigins`, `authToken`, `start()`, and
-`stop()`. Anything beyond that lives on the internal entry:
+The returned handle exposes the configured `host`, `requestedPort`, whether the transport is
+secure, where its credential came from, and `start()` and `stop()`. `start()` returns the actual
+host, port, and WebSocket URL. The handle also carries `authToken` for an embedding client; treat
+it as a root credential and never log it or persist another copy.
 
-```ts
-import { DomovoiDaemon, type DaemonServerOptions } from "@getdomovoi/daemon/internal"
-```
+The package retains `@getdomovoi/daemon/internal` as an inert artifact-compatibility entry point.
+It does not expose the raw server constructor or a supported runtime API. Daemon tests import the
+source server module directly.
 
 ## Terminal dependency
 

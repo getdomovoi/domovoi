@@ -9,7 +9,7 @@ afterEach(cleanup)
 function bridge(platform: DesktopWindowBridge["platform"]): DesktopWindowBridge {
   return {
     platform,
-    getRpcToken: vi.fn(async () => "token"),
+    getRpcEndpoint: vi.fn(async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "token" })),
     captureAnnotation: vi.fn(),
     notify: vi.fn(async () => true),
     onNotificationActivate: vi.fn(() => () => {}),
