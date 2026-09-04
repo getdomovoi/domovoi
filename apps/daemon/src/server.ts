@@ -9,6 +9,7 @@ import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   type MachineCapability,
+  type FleetMachine,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
@@ -46,6 +47,8 @@ import {
   type SessionHistoryPage,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
+  type SessionTransferCoverage,
+  type SessionTransferPreview,
   type SystemEmergencyStopResult,
   type ClientKind,
   type Runtime,
@@ -63,6 +66,12 @@ import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
 import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-source.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
+import {
+  collectSessionTransferState,
+  finalizeSessionTransferIntent,
+  type PreparedSessionTransferIntent,
+} from "./session-transfer-package.js"
+import { SessionTransferStateError } from "./session-transfer-state.js"
 import {
   commitPreparedSessionTransfer,
   preflightSessionTransferTarget,
@@ -612,6 +621,18 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
 type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "close"> & Partial<
   Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
 >
+
+type PreparedTransferPreview = {
+  preview: SessionTransferPreview
+  target?: FleetMachine
+  intent?: PreparedSessionTransferIntent
+}
+
+const emptyTransferCoverage: SessionTransferCoverage = {
+  included: [],
+  excluded: [],
+  warnings: [],
+}
 
 export function protectedAnnotationCropRefs(snapshot: WorkspaceSnapshot): string[] {
   const refs = new Set<string>()
@@ -1402,6 +1423,127 @@ export class DomovoiDaemon {
       })
     } catch (error) {
       this.#reportError("Domovoi could not record a transfer receipt", error)
+    }
+  }
+
+  #refusedTransferPreview(
+    params: RpcParams<"session.transferPreview">,
+    reason: Extract<SessionTransferPreview, { allowed: false }>["reason"],
+    coverage: SessionTransferPreview["coverage"] = emptyTransferCoverage,
+  ): PreparedTransferPreview {
+    return {
+      preview: rpcMethods["session.transferPreview"].result.parse({
+        allowed: false,
+        contractVersion: 1,
+        sessionId: params.sessionId,
+        sourceMachineId: this.#snapshot.machine.id,
+        targetMachineId: params.targetMachineId,
+        coverage,
+        reason,
+      }),
+    }
+  }
+
+  async #prepareTransferPreview(
+    params: RpcParams<"session.transferPreview">,
+    signal?: AbortSignal,
+  ): Promise<PreparedTransferPreview> {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
+    if (!session) return this.#refusedTransferPreview(params, "session-state-invalid")
+    const sourceReady = sourcePreflight({ session })
+    if (!sourceReady.allowed) return this.#refusedTransferPreview(params, sourceReady.reason)
+
+    const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
+    const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
+    if (!target) return this.#refusedTransferPreview(params, "target-unreachable")
+    const reachable = transferPreflight({
+      source: { ...target, id: this.#snapshot.machine.id },
+      target,
+    })
+    if (!reachable.allowed) return this.#refusedTransferPreview(params, reachable.reason)
+    if (
+      !this.#snapshot.project
+      || !session.workspacePath
+      || !this.#usageLedger.transferSession
+      || !this.#workspaceService.transferFingerprint
+      || !this.#workspaceService.readIgnoredArtifactSource
+    ) {
+      return this.#refusedTransferPreview(params, "session-resource-unavailable")
+    }
+
+    let collected: Awaited<ReturnType<typeof collectSessionTransferState>>
+    let projectHead: string
+    let fingerprint: { headCommit: string; digest: string }
+    try {
+      [collected, projectHead, fingerprint] = await Promise.all([
+        collectSessionTransferState({
+          snapshot: this.#snapshot,
+          sessionId: session.id,
+          usage: this.#usageLedger.transferSession(session.id),
+          readIgnoredArtifactSource: (_artifactId, path) => (
+            this.#workspaceService.readIgnoredArtifactSource!(session.workspacePath!, path, signal)
+          ),
+          readAnnotationCrop: (ref, mimeType) => this.#annotationVisualContext.read(ref, mimeType),
+        }),
+        this.#workspaceService.inspect(this.#snapshot.project.path, signal)
+          .then((project) => project.head),
+        this.#workspaceService.transferFingerprint(session.workspacePath, signal),
+      ])
+    } catch (error) {
+      signal?.throwIfAborted()
+      const reason = error instanceof SessionTransferStateError
+        ? error.reason
+        : "session-resource-unavailable"
+      return this.#refusedTransferPreview(params, reason)
+    }
+
+    let connection: {
+      call: (
+        method: string,
+        params: Record<string, unknown>,
+        signal?: AbortSignal,
+      ) => Promise<unknown>
+      close: () => void
+    }
+    try {
+      connection = await this.#connectToMachine(target.id, signal)
+    } catch {
+      signal?.throwIfAborted()
+      return this.#refusedTransferPreview(params, "target-not-responding", collected.coverage)
+    }
+    try {
+      const targetReady = rpcMethods["transfer.preflight"].result.parse(
+        await connection.call("transfer.preflight", {
+          sessionId: session.id,
+          sourceMachineId: this.#snapshot.machine.id,
+          sourceProjectId: this.#snapshot.project.id,
+          lineageCommit: projectHead,
+          ownershipGeneration: session.ownershipGeneration ?? 0,
+          client: params.client,
+        }, signal),
+      )
+      if (!targetReady.allowed) {
+        return this.#refusedTransferPreview(params, targetReady.reason, collected.coverage)
+      }
+      const intent = finalizeSessionTransferIntent({
+        snapshot: this.#snapshot,
+        sourceMachineId: this.#snapshot.machine.id,
+        targetMachineId: target.id,
+        sourceProjectId: this.#snapshot.project.id,
+        targetProjectId: targetReady.targetProjectId,
+        lineageCommit: targetReady.lineageCommit,
+        sourceHeadCommit: fingerprint.headCommit,
+        worktreeDigest: fingerprint.digest,
+        method: params.method,
+        ...(params.remote ? { remote: params.remote } : {}),
+        collected,
+      })
+      return { preview: intent.preview, target, intent }
+    } catch {
+      signal?.throwIfAborted()
+      return this.#refusedTransferPreview(params, "target-not-responding", collected.coverage)
+    } finally {
+      connection.close()
     }
   }
 
@@ -2621,6 +2763,17 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(committed.result),
+        })
+        return
+      }
+
+      if (method === "session.transferPreview") {
+        const params = paramsResult.data as RpcParams<"session.transferPreview">
+        const prepared = await this.#prepareTransferPreview(params, signal)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: prepared.preview,
         })
         return
       }

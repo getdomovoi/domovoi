@@ -136,6 +136,23 @@ async function openMachine(daemon: DomovoiDaemon): Promise<WebSocket> {
   return socket
 }
 
+async function openClient(daemon: DomovoiDaemon): Promise<WebSocket> {
+  const address = daemon.address!
+  const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+    headers: { authorization: `Bearer ${daemon.authToken}` },
+  })
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve)
+    socket.once("error", reject)
+  })
+  await rpc(socket)("system.hello", {
+    client: "desktop",
+    clientVersion: "0.0.1",
+    protocolVersion: "0.1.0",
+  })
+  return socket
+}
+
 describe("transactional session transfer RPC", () => {
   it("prunes incoming and outgoing transfer journals before listening", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-retention-startup-"))
@@ -253,6 +270,111 @@ describe("transactional session transfer RPC", () => {
     })
     expect(loaded.thread.filter((item) => item.id.startsWith("system-transfer-")))
       .toHaveLength(1)
+    socket.close()
+  })
+
+  it("previews the exact portable contract without freezing the source", async () => {
+    const source = structuredClone(demoWorkspace)
+    source.machine.id = sourceMachineId
+    source.project = {
+      ...source.project!,
+      machineId: sourceMachineId,
+      path: "/source/project",
+    }
+    const session = source.sessions.find((candidate) => candidate.state === "idle")!
+    session.workspacePath = "/source/session"
+    session.baseCommit = baseCommit
+    session.ownershipGeneration = 3
+    source.sessions = [session]
+    source.activeSessionId = session.id
+    source.thread = source.thread.filter((item) => item.sessionId === session.id)
+    source.artifacts = []
+    source.workingPlans = []
+    source.annotations = []
+    source.approvals = []
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const remoteCalls: Array<{ method: string, params: Record<string, unknown> }> = []
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        inspect: async () => ({
+          root: "/source/project",
+          name: "source",
+          branch: "main",
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({
+          path: "/unused",
+          branch: "unused",
+          baseCommit,
+        }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+      },
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          remoteCalls.push({ method, params })
+          return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+
+    await expect(call("session.transferPreview", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: {
+        allowed: true,
+        sessionId: session.id,
+        sourceMachineId,
+        targetMachineId,
+        project: { targetProjectId: "project-target", lineageCommit: baseCommit },
+        coverage: {
+          included: expect.arrayContaining([
+            { kind: "repository", count: 1 },
+            { kind: "thread", count: source.thread.length },
+          ]),
+        },
+      },
+    })
+    expect(remoteCalls).toEqual([{
+      method: "transfer.preflight",
+      params: {
+        sessionId: session.id,
+        sourceMachineId,
+        sourceProjectId: source.project.id,
+        lineageCommit: baseCommit,
+        ownershipGeneration: 3,
+        client: "desktop",
+      },
+    }])
+    expect((store.load().sessions[0])?.state).toBe("idle")
     socket.close()
   })
 })
