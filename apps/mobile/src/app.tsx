@@ -9,10 +9,13 @@ import { TabBar, type Tab } from "./components/tab-bar"
 import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
 import { useDaemon } from "./lib/use-daemon"
+import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { FleetScreen } from "./screens/fleet"
+import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
+import { sessionDetail } from "./session-detail"
 import { waitingCount } from "./session-rows"
 import "./global.css"
 
@@ -23,7 +26,10 @@ export function App() {
   const [connectTo, setConnectTo] = useState<{ url: string, token: string } | undefined>(undefined)
   const [restoring, setRestoring] = useState(true)
   const [openApprovalId, setOpenApprovalId] = useState<string | undefined>(undefined)
+  const [openSessionId, setOpenSessionId] = useState<string | undefined>(undefined)
   const [deciding, setDeciding] = useState(false)
+  const [pausing, setPausing] = useState(false)
+  const [confirmPauseSession, setConfirmPauseSession] = useState(false)
   const [fleet, setFleet] = useState<FleetMachine[] | undefined>(undefined)
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
@@ -52,6 +58,17 @@ export function App() {
     () => snapshot?.approvals.find((approval) => approval.id === openApprovalId),
     [openApprovalId, snapshot],
   )
+
+  const openSession = useMemo(
+    () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId) : undefined,
+    [openSessionId, snapshot],
+  )
+
+  const openPlan = useMemo(() => {
+    if (!snapshot || !openSessionId) return undefined
+    const plan = planForSession(snapshot, openSessionId)
+    return plan ? planSummary(plan) : undefined
+  }, [openSessionId, snapshot])
 
   const loadFleet = useCallback(async () => {
     setFleetLoading(true)
@@ -87,6 +104,15 @@ export function App() {
     }
   }
 
+  const pauseSession = async (sessionId: string) => {
+    setPausing(true)
+    try {
+      await call("session.pause", { sessionId, client: "phone" })
+    } finally {
+      setPausing(false)
+    }
+  }
+
   // An approval is the reason the phone exists, so it takes the whole screen
   // and the tab bar goes away until it is answered or dismissed.
   if (openApproval) {
@@ -105,6 +131,37 @@ export function App() {
     )
   }
 
+  // A session is read the same way: full screen, back to the list, no tab bar
+  // competing with the thread for the bottom of a phone.
+  if (openSession) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <SafeAreaView className="flex-1 bg-background">
+          <SessionScreen
+            detail={openSession}
+            plan={openPlan}
+            pausing={pausing}
+            onBack={() => setOpenSessionId(undefined)}
+            onOpenApproval={setOpenApprovalId}
+            onPause={() => setConfirmPauseSession(true)}
+          />
+          <ConfirmSheet
+            open={confirmPauseSession}
+            title="Pause this session?"
+            detail="This stops the turn the agent is running now. Work already done is kept, and the session has to be started again by hand."
+            confirmLabel="Pause this session"
+            onConfirm={() => {
+              setConfirmPauseSession(false)
+              void pauseSession(openSession.id)
+            }}
+            onCancel={() => setConfirmPauseSession(false)}
+          />
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
@@ -115,10 +172,7 @@ export function App() {
               <SessionsScreen
                 snapshot={snapshot}
                 machineCount={1}
-                onOpenSession={(sessionId) => {
-                  const next = snapshot.approvals.find((approval) => approval.sessionId === sessionId)
-                  if (next) setOpenApprovalId(next.id)
-                }}
+                onOpenSession={setOpenSessionId}
                 onPauseAll={() => setConfirmPause(true)}
               />
             ) : (
