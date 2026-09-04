@@ -911,6 +911,12 @@ td { color: var(--ink2); }
 </ul>
 </li>
 <li>[ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and GitHub Releases from the same immutable commit
+<ul>
+<li><code>.github/workflows/release.yml</code> does all of this through Changesets and npm trusted publishing, gated on the same checks as CI, with the protocol published before the daemon.
+</li>
+<li>It stays inert until the <code>RELEASE_PUBLISHING</code> repository variable is set; the npm organisation and trusted publishers do not exist yet. See <code>docs/distribution.md</code>.
+</li>
+</ul>
 </li>
 <li>[ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts are stable
 </li>
@@ -933,7 +939,7 @@ td { color: var(--ink2); }
 <ul>
 <li><code>pnpm release:artifacts</code> generates the tarballs, per-artifact CycloneDX SBOMs, and <code>SHA256SUMS</code>, and runs on Linux in CI.
 </li>
-<li>Attaching them to a GitHub Release waits on the release workflow.
+<li>The release workflow attaches them to each published package's GitHub release once enabled.
 </li>
 </ul>
 </li>

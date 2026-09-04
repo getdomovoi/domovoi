@@ -573,6 +573,10 @@ before any public package or application publish.
   - `pnpm release:invariants` fails CI when a manifest version drifts.
 - [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
   GitHub Releases from the same immutable commit
+  - `.github/workflows/release.yml` does all of this through Changesets and npm trusted
+    publishing, gated on the same checks as CI, with the protocol published before the daemon.
+  - It stays inert until the `RELEASE_PUBLISHING` repository variable is set; the npm
+    organisation and trusted publishers do not exist yet. See `docs/distribution.md`.
 - [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
   are stable
 
@@ -587,7 +591,7 @@ before any public package or application publish.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
-  - Attaching them to a GitHub Release waits on the release workflow.
+  - The release workflow attaches them to each published package's GitHub release once enabled.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set
 - [ ] Add daemon and desktop update checks with explicit user control

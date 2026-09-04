@@ -9,7 +9,7 @@ import { inspectArchive, packPackage } from "./pack-package.mjs"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
+export const publishablePackages = ["@getdomovoi/protocol", "@getdomovoi/daemon"]
 
 export function packageUrl(name, version) {
   return `pkg:npm/${name.replace("@", "%40")}@${version}`

@@ -6,13 +6,16 @@ type Variant = "body" | "title" | "heading" | "label" | "meta" | "machine"
 
 // The desktop shell reaches for a font size and colour at every call site. Here
 // the variants are named, so a screen cannot quietly invent a tenth text style.
+// Each variant names its face outright: React Native registers one font per
+// weight, so a weight utility on top of a family would ask for a face that was
+// never loaded and fall back to the platform font.
 const variants: Record<Variant, string> = {
-  heading: "text-[30px] font-semibold tracking-tight text-foreground",
-  title: "text-[15px] font-semibold text-foreground",
-  body: "text-[13px] text-foreground",
-  label: "text-[11px] font-medium uppercase tracking-[0.08em] text-faint",
-  meta: "text-[12px] text-muted-foreground",
-  machine: "font-machine text-[11px] text-muted-foreground",
+  heading: "font-sans-semibold text-[30px] tracking-tight text-foreground",
+  title: "font-sans-semibold text-[15px] text-foreground",
+  body: "font-sans text-[13px] text-foreground",
+  label: "font-sans-medium text-[11px] uppercase tracking-[0.08em] text-faint",
+  meta: "font-sans text-[12px] text-muted-foreground",
+  machine: "font-mono text-[11px] text-muted-foreground",
 }
 
 export function Text({

@@ -65,7 +65,7 @@ export function FleetScreen({
 
       {rows.map((row) => (
         <Card key={row.id} className="flex-row items-center gap-2.5">
-          <View className={cn("h-2 w-2 rounded-pill", dot[row.health])} />
+          <View className={cn("h-2 w-2 rounded-full", dot[row.health])} />
           <View className="flex-1 gap-1">
             <Text variant="title">{row.label}</Text>
             <Text variant="machine">{row.platform}</Text>
