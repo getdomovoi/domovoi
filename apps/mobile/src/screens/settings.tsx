@@ -50,6 +50,10 @@ export function SettingsScreen({
         </View>
         <View className="gap-1.5">
           <Text variant="label">Pairing token</Text>
+          <Text variant="meta">
+            This token can do anything you can do on that machine: send work to an agent, approve
+            a command, and open a terminal. Treat it like the machine's keys.
+          </Text>
           <TextInput
             value={token}
             onChangeText={onChangeToken}
