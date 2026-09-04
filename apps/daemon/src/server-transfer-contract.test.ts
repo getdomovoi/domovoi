@@ -7,12 +7,14 @@ import WebSocket from "ws"
 
 import {
   demoWorkspace,
+  protocolVersion,
   workspaceSnapshotSchema,
   type SessionTransferCoverage,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import { DomovoiDaemon } from "./server.js"
+import { MachinePairingRequiredError } from "./machine-socket.js"
 import {
   createSessionTransferPackage,
   prepareSessionTransferIntent,
@@ -165,7 +167,7 @@ async function openMachine(
   const hello = await call("system.hello", {
     client: "machine",
     clientVersion: "0.0.1",
-    protocolVersion: "0.1.0",
+    protocolVersion,
   })
   return { socket, hello }
 }
@@ -187,7 +189,7 @@ async function openClient(
     client,
     ...(clientId ? { clientId } : {}),
     clientVersion: "0.0.1",
-    protocolVersion: "0.1.0",
+    protocolVersion,
   })
   return socket
 }
@@ -301,7 +303,7 @@ describe("transactional session transfer RPC", () => {
       version: "0.0.1",
       connection: "local",
       capabilities: ["sessions"],
-      protocolVersion: "0.1.0",
+      protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
     }, Date.now())
     const connectToMachine = vi.fn(async () => ({
@@ -1017,7 +1019,7 @@ describe("transactional session transfer RPC", () => {
       version: "0.0.1",
       connection: "local",
       capabilities: ["sessions"],
-      protocolVersion: "0.1.0",
+      protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
     }, Date.now())
     let checkpointed = false
@@ -1341,7 +1343,7 @@ describe("transactional session transfer RPC", () => {
       version: "0.0.1",
       connection: "local",
       capabilities: ["sessions"],
-      protocolVersion: "0.1.0",
+      protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
     }, Date.now())
     const remoteCalls: Array<{ method: string, params: Record<string, unknown> }> = []
@@ -1456,7 +1458,7 @@ describe("transactional session transfer RPC", () => {
         version: "0.0.1",
         connection: "local",
         capabilities: ["sessions"],
-        protocolVersion: "0.1.0",
+        protocolVersion,
         transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
       }, Date.now())
       const connectToMachine = vi.fn(async () => ({
@@ -1513,6 +1515,63 @@ describe("transactional session transfer RPC", () => {
     },
   )
 
+  it("tells a client to pair again when the target rejects its machine credential", async () => {
+    const { source } = await transferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: source.protocolVersion,
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      connectToMachine: async () => { throw new MachinePairingRequiredError() },
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+
+    await expect(rpc(socket)("session.transferPreview", {
+      sessionId: source.sessions[0]!.id,
+      targetMachineId,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: { allowed: false, reason: "target-pairing-required" },
+    })
+    socket.close()
+  })
+
   it("freezes and stages the source before committing one target owner", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-source-rpc-"))
     scratchDirectories.push(scratch)
@@ -1551,7 +1610,7 @@ describe("transactional session transfer RPC", () => {
       version: "0.0.1",
       connection: "local",
       capabilities: ["sessions"],
-      protocolVersion: "0.1.0",
+      protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
     }, Date.now())
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
@@ -1730,7 +1789,7 @@ describe("transactional session transfer RPC", () => {
       version: "0.0.1",
       connection: "local",
       capabilities: ["sessions"],
-      protocolVersion: "0.1.0",
+      protocolVersion,
       transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
     }, Date.now())
     const originalSave = store.saveAsync.bind(store)

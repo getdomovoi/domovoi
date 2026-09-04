@@ -66,7 +66,7 @@ import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { createMachineDialer } from "./machine-dial.js"
-import { openMachineSocket } from "./machine-socket.js"
+import { MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
@@ -1574,9 +1574,15 @@ export class DomovoiDaemon {
     }
     try {
       connection = await this.#connectToMachine(target.id, signal)
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted()
-      return this.#refusedTransferPreview(params, "target-not-responding", collected.coverage)
+      return this.#refusedTransferPreview(
+        params,
+        error instanceof MachinePairingRequiredError
+          ? "target-pairing-required"
+          : "target-not-responding",
+        collected.coverage,
+      )
     }
     try {
       const targetReady = rpcMethods["transfer.preflight"].result.parse(
@@ -1609,9 +1615,15 @@ export class DomovoiDaemon {
         collected,
       })
       return { preview: intent.preview, target, intent }
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted()
-      return this.#refusedTransferPreview(params, "target-not-responding", collected.coverage)
+      return this.#refusedTransferPreview(
+        params,
+        error instanceof MachinePairingRequiredError
+          ? "target-pairing-required"
+          : "target-not-responding",
+        collected.coverage,
+      )
     } finally {
       connection.close()
     }

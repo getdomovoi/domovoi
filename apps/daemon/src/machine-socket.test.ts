@@ -3,9 +3,12 @@ import { once } from "node:events"
 import { WebSocketServer } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, demoWorkspace } from "@getdomovoi/protocol"
 
-import { openMachineSocket as openMachineSocketWithoutDefaults } from "./machine-socket.js"
+import {
+  MachinePairingRequiredError,
+  openMachineSocket as openMachineSocketWithoutDefaults,
+} from "./machine-socket.js"
 
 const servers: WebSocketServer[] = []
 
@@ -80,7 +83,7 @@ describe("openMachineSocket", () => {
       params: {
         client: "machine",
         clientVersion: "0.0.1",
-        protocolVersion: "0.1.0",
+        protocolVersion: "0.2.0",
         authToken: "n".repeat(43),
       },
     })
@@ -99,7 +102,35 @@ describe("openMachineSocket", () => {
     await expect(openMachineSocket({
       endpoint: machine.endpoint,
       credential: "n".repeat(43),
-    })).rejects.toThrow("That machine speaks protocol 9.9.9, this daemon speaks 0.1.0")
+    })).rejects.toThrow("That machine speaks protocol 9.9.9, this daemon speaks 0.2.0")
+  })
+
+  it("classifies a rejected machine credential without exposing its history", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+    servers.push(server)
+    await once(server, "listening")
+    server.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        socket.send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: {
+            code: daemonAuthenticationErrorCode,
+            message: "Daemon authentication failed",
+          },
+        }))
+      })
+    })
+    const address = server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+
+    const opening = openMachineSocket({
+      endpoint: `ws://127.0.0.1:${port}/rpc`,
+      credential: "n".repeat(43),
+    })
+    await expect(opening).rejects.toBeInstanceOf(MachinePairingRequiredError)
+    await expect(opening).rejects.toThrow("That machine must be paired again")
   })
 
   it("answers each call with the reply that carries its id", async () => {
