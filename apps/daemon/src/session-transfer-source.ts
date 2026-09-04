@@ -232,6 +232,40 @@ export function recoverUnconfirmedSourceTransfer(
   return workspaceSnapshotSchema.parse(candidate)
 }
 
+export function clearConfirmedSourceRecovery(
+  snapshot: WorkspaceSnapshot,
+  input: {
+    sessionId: string
+    transferId: string
+    targetMachineId: string
+    confirmedAt: string
+  },
+): WorkspaceSnapshot {
+  const current = sourceSession(snapshot, input.sessionId)
+  const recovery = current.sourceRecovery
+  if (
+    !recovery
+    || recovery.transferId !== input.transferId
+    || recovery.targetMachineId !== input.targetMachineId
+    || current.state === "ownership-conflict"
+  ) {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, input.sessionId)
+  delete session.sourceRecovery
+  session.updatedAt = input.confirmedAt
+  candidate.thread.push({
+    id: `system-transfer-recovery-cleared-${randomUUID()}`,
+    sessionId: session.id,
+    kind: "system",
+    body: "Target confirmed it does not own this session.",
+    detail: `Machine ${input.targetMachineId} has no committed record for transfer ${input.transferId}. The recovery claim is resolved and this session may move again.`,
+    createdAt: input.confirmedAt,
+  })
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
 export function markSourceOwnershipConflict(
   snapshot: WorkspaceSnapshot,
   input: {

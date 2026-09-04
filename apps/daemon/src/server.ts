@@ -74,6 +74,7 @@ import {
 } from "./session-transfer-package.js"
 import { SessionTransferStateError } from "./session-transfer-state.js"
 import {
+  clearConfirmedSourceRecovery,
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
   markSourceOwnershipConflict,
@@ -1930,9 +1931,28 @@ export class DomovoiDaemon {
     } catch {
       return
     }
+    if (remote.transferId !== recovery.transferId) return
+    if (remote.state === "unknown" || remote.state === "aborted") {
+      const confirmedAt = new Date().toISOString()
+      await this.#persistTransferSnapshot(clearConfirmedSourceRecovery(this.#snapshot, {
+        sessionId: session.id,
+        transferId: recovery.transferId,
+        targetMachineId: recovery.targetMachineId,
+        confirmedAt,
+      }))
+      this.#appendAudit({
+        actor: { kind: "daemon", component: "transfer-reconciliation" },
+        action: "session.source-recovery-cleared",
+        outcome: "succeeded",
+        sessionId: session.id,
+        ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+        target: recovery.targetMachineId,
+        detail: `Target confirmed no committed ownership for transfer ${recovery.transferId}`,
+      })
+      return
+    }
     if (
-      remote.transferId !== recovery.transferId
-      || remote.state !== "committed"
+      remote.state !== "committed"
       || remote.ownershipGeneration <= (session.ownershipGeneration ?? 0)
     ) return
 

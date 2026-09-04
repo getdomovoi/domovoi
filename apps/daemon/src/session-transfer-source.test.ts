@@ -11,6 +11,7 @@ import {
   prepareSessionTransferIntent,
 } from "./session-transfer-package.js"
 import {
+  clearConfirmedSourceRecovery,
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
   markSourceOwnershipConflict,
@@ -209,6 +210,47 @@ describe("source transfer lifecycle", () => {
       kind: "system",
       body: "Session ownership conflict detected.",
     })
+  })
+
+  it("clears a recovery claim only after its target confirms no ownership", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const recovered = recoverUnconfirmedSourceTransfer(
+      stageSourceSessionCheckpoint(
+        freezeSourceSessionTransfer(
+          source,
+          intent,
+          packaged.manifest.transferId,
+          "2026-09-03T22:00:00.000Z",
+          { client: "desktop" },
+        ),
+        packaged.manifest,
+      ),
+      {
+        sessionId: packaged.manifest.sessionId,
+        transferId: packaged.manifest.transferId,
+        client: "desktop",
+        recoveredAt: "2026-09-03T22:02:00.000Z",
+      },
+    )
+
+    const cleared = clearConfirmedSourceRecovery(recovered, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      targetMachineId,
+      confirmedAt: "2026-09-03T23:00:00.000Z",
+    })
+
+    expect(cleared.sessions[0]).not.toHaveProperty("sourceRecovery")
+    expect(cleared.thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Target confirmed it does not own this session.",
+    })
+    expect(() => clearConfirmedSourceRecovery(recovered, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      targetMachineId: `machine-${"0".repeat(32)}`,
+      confirmedAt: "2026-09-03T23:00:00.000Z",
+    })).toThrow("session-state-changed")
   })
 })
 

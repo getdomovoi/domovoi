@@ -761,6 +761,44 @@ describe("transactional session transfer RPC", () => {
     socket.close()
   })
 
+  it("clears a recovery claim after the target authoritatively reports no ownership", async () => {
+    const { staged, packaged } = await stagedTransferFixture()
+    const recovered = recoverUnconfirmedSourceTransfer(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      clientId: "studio-mac",
+      recoveredAt: "2026-09-03T22:10:00.000Z",
+    })
+    const store = new SqliteWorkspaceStore(":memory:", recovered)
+    const remoteCall = vi.fn(async (method: string) => {
+      if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
+      return { state: "unknown", transferId: packaged.manifest.transferId }
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    await vi.waitFor(() => expect(store.load().sessions[0]?.sourceRecovery).toBeUndefined())
+    expect(store.load().thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Target confirmed it does not own this session.",
+    })
+    expect(store.auditLog.query({ action: "session.source-recovery-cleared" }).entries)
+      .toEqual([expect.objectContaining({
+        outcome: "succeeded",
+        sessionId: packaged.manifest.sessionId,
+        target: targetMachineId,
+      })])
+  })
+
   it("reconciles an ambiguous live transfer after returning the incomplete result", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-live-reconcile-"))
     scratchDirectories.push(scratch)
