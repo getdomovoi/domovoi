@@ -4,17 +4,27 @@
 "@getdomovoi/ui": minor
 ---
 
-Bind a paired credential to the machine that claims it. A machine no longer
-states its own identity when it connects; identity comes from the credential it
-presents, so a caller can no longer claim to be a machine it is not.
+Bind every paired credential to one exact client kind or machine identity. The
+authenticated actor now comes from that binding, not from identity fields a
+caller sends after connecting, so audit entries, approvals, plan edits, and
+transfer decisions cannot be attributed to a different client. Device activity
+is recorded only after an accepted hello.
 
-This changes the wire, and the shared protocol moves to 0.2.0 so peers that
-speak the old one fail at the handshake instead of agreeing to talk and then
-failing inside a call. Machines running an older build show as a version
-mismatch until they are updated.
+This is a breaking wire change and moves the shared protocol to 0.3.0. Older
+peers fail at the handshake instead of agreeing to talk and then failing inside
+a call. Transfer wire assertions are now named `initiatedByClient`, and the
+retired pre-contract transfer RPC family is removed.
 
-Credentials issued before this change could act as either a machine or a person,
-which is the ambiguity being removed, so they are revoked when the daemon
-migrates. Every existing pairing has to be made again. A device revoked this way
-says so in the paired devices list, and any move to a machine whose credential
-was retired refuses with a message asking for that machine to be paired again.
+One migration handles both legacy shapes: credentials that could act as either
+a machine or a person, and client credentials that did not record a client
+kind. Any such pairing is revoked once and must be made again. The record keeps
+the two legacy shapes apart for auditing, and the paired-device list tells one
+upgrade story for both, so a person who skipped both migrations is not told the
+pairing broke twice. Authentication remains deliberately uniform so it does not
+reveal whether a presented credential ever existed.
+
+Daemon and device credentials are now fixed-width 256-bit base64url values. A
+configured daemon credential in the older weak shape is rejected at startup
+with an actionable error. A paired client credential grants ordinary client
+authority, including sending or steering work, answering approvals, and using
+terminals, so it must be protected as an account-equivalent secret.

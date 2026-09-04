@@ -1,5 +1,7 @@
 import { join } from "node:path"
 
+import { credentialSchema } from "@getdomovoi/protocol"
+
 export type DaemonEnvironment = Readonly<Record<string, string | undefined>>
 
 export type DaemonTlsMaterial = {
@@ -46,7 +48,7 @@ export function parseDaemonEnvironment(
   // plaintext because nothing it carries reaches a network.
   if (!loopbackHosts.has(host) && !tls) {
     throw new DaemonConfigurationError(
-      "Non-loopback DOMOVOI_HOST requires TLS: set DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH",
+      `Non-loopback DOMOVOI_HOST requires TLS for ${host}: set DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH`,
     )
   }
 
@@ -144,10 +146,9 @@ function parseStatePath(
 
 function parseAuthToken(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
-  if (!value.trim()) throw new DaemonConfigurationError("DOMOVOI_AUTH_TOKEN cannot be empty")
-  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+  if (!credentialSchema.safeParse(value).success) {
     throw new DaemonConfigurationError(
-      "DOMOVOI_AUTH_TOKEN must contain only A-Z, a-z, 0-9, hyphen, and underscore",
+      "DOMOVOI_AUTH_TOKEN must be a 43-character base64url credential",
     )
   }
   return value

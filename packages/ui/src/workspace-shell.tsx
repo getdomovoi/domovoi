@@ -1394,10 +1394,10 @@ export function Thread({
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
   onTransferSession?: ((
-    params: Omit<SessionTransferParams, "client">,
+    params: Omit<SessionTransferParams, "initiatedByClient">,
   ) => Promise<SessionTransferResult>) | undefined
   onPreviewTransfer?: ((
-    params: Omit<SessionTransferPreviewParams, "client">,
+    params: Omit<SessionTransferPreviewParams, "initiatedByClient">,
   ) => Promise<SessionTransferPreview>) | undefined
   // One handler for both exits. The confirmation says which the operator made,
   // and the caller routes it, so this surface cannot send the wrong one.

@@ -28,7 +28,7 @@ export const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*
 const sessionTransferRequestFields = {
   sessionId: z.string().trim().min(1).max(128),
   targetMachineId: machineIdSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
   // The bundle keeps repository bytes on the machines involved, so it is what
   // happens unless the caller deliberately asks for the remote.
   method: transferMethodSchema.default("git-bundle"),
@@ -67,17 +67,11 @@ export const sessionTransferParamsSchema = z.object({
   validateTransferMethod(params, context)
 })
 
-export const transferFromRefParamsSchema = z.object({
-  sessionId: z.string().trim().min(1).max(128),
-  remote: gitRemoteNameSchema,
-  client: clientKindSchema,
-}).strict()
-
 export const sessionTransferRecoverSourceParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
   transferId: transferIdSchema,
   confirmation: z.literal("target-does-not-have-session"),
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const sessionTransferRecoverSourceResultSchema = workspaceSnapshotSchema
@@ -86,15 +80,10 @@ export const sessionTransferResolveConflictParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
   transferId: transferIdSchema,
   confirmation: z.literal("keep-target-session"),
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const sessionTransferResolveConflictResultSchema = workspaceSnapshotSchema
-
-export const transferFromRefResultSchema = z.object({
-  workspacePath: z.string().min(1),
-  checkpointCommit: commitShaSchema,
-}).strict()
 
 const succeededTransferResultSchema = z.object({
   outcome: z.literal("succeeded"),
@@ -185,9 +174,6 @@ export type SessionTransferResolveConflictParams = z.infer<
 export type SessionTransferResolveConflictResult = z.infer<
   typeof sessionTransferResolveConflictResultSchema
 >
-export type TransferFromRefParams = z.infer<typeof transferFromRefParamsSchema>
-export type TransferFromRefResult = z.infer<typeof transferFromRefResultSchema>
-
 export type SessionTransferRefusal =
   | TransferRefusal
   | SourceRefusal

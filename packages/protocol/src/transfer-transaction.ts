@@ -111,7 +111,7 @@ export const transferTargetPreflightParamsSchema = z.object({
   ownershipGeneration: safeGenerationSchema,
   method: transferMethodSchema,
   coverage: sessionTransferCoverageSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const transferTargetPreflightResultSchema = z.union([
@@ -259,7 +259,7 @@ const committedFields = {
 export const transferPrepareParamsSchema = z.object({
   manifest: sessionTransferManifestSchema,
   manifestDigest: sessionTransferManifestDigestSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict()
 
 export const transferPrepareResultSchema = z.union([
@@ -286,7 +286,7 @@ export const transferPrepareResultSchema = z.union([
 export const transferMemberParamsSchema = transferChunkSchema.extend({
   transferId: transferIdSchema,
   memberId: sessionTransferMemberIdSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 }).strict().superRefine((request, context) => {
   if (request.final) return
   if (canonicalBase64DecodedByteLength(request.bytes) === transferMemberChunkBytes) return
@@ -323,7 +323,7 @@ export const transferMemberResultSchema = z.discriminatedUnion("state", [
 const transactionRequest = {
   transferId: transferIdSchema,
   manifestDigest: sessionTransferManifestDigestSchema,
-  client: clientKindSchema,
+  initiatedByClient: clientKindSchema,
 } as const
 
 export const transferCommitParamsSchema = z.object(transactionRequest).strict()

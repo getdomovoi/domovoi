@@ -68,18 +68,27 @@ describe("parseDaemonEnvironment", () => {
   })
 
   it("rejects empty credential settings and preserves explicit values", () => {
+    const authToken = "s".repeat(43)
     expect(() => parseDaemonEnvironment({ DOMOVOI_AUTH_TOKEN: "" }, "/home/tester"))
       .toThrow("DOMOVOI_AUTH_TOKEN")
     expect(() => parseDaemonEnvironment({ DOMOVOI_CREDENTIAL_PATH: "  " }, "/home/tester"))
       .toThrow("DOMOVOI_CREDENTIAL_PATH")
     expect(parseDaemonEnvironment({
-      DOMOVOI_AUTH_TOKEN: "secret-token",
+      DOMOVOI_AUTH_TOKEN: authToken,
       DOMOVOI_CREDENTIAL_PATH: "/run/secrets/domovoi-token",
     }, "/home/tester")).toMatchObject({
-      authToken: "secret-token",
+      authToken,
       credentialPath: "/run/secrets/domovoi-token",
     })
   })
+
+  it.each(["x", "n".repeat(42), "n".repeat(44)])(
+    "rejects configured daemon credentials without 256 bits: %s",
+    (authToken) => {
+      expect(() => parseDaemonEnvironment({ DOMOVOI_AUTH_TOKEN: authToken }, "/home/tester"))
+        .toThrow("43-character base64url")
+    },
+  )
 
   it("reads TLS material for an encrypted listener", () => {
     expect(parseDaemonEnvironment({
@@ -161,10 +170,10 @@ describe("parseDaemonEnvironment", () => {
   })
 
   it.each(["token with spaces", "token.with.dots", "token/slash", "påssword"])(
-    "rejects auth tokens outside the bearer parser charset: %s",
+    "rejects malformed configured daemon credentials: %s",
     (authToken) => {
       expect(() => parseDaemonEnvironment({ DOMOVOI_AUTH_TOKEN: authToken }, "/home/tester"))
-        .toThrow("A-Z, a-z, 0-9, hyphen, and underscore")
+        .toThrow("43-character base64url")
     },
   )
 })

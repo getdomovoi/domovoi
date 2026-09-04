@@ -208,7 +208,7 @@ describe("file transfer transaction journal", () => {
       sequence: 1,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({ state: "refused", reason: "chunk-out-of-order" })
     await expect(transactions.acceptMember({
       transferId,
@@ -216,7 +216,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toEqual({ state: "member-received", transferId, memberId: "state" })
 
     const reopened = new FileTransferTransactions(root)
@@ -226,7 +226,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: firstRepositoryChunk.toString("base64"),
       final: false,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toEqual({
       state: "receiving",
       transferId,
@@ -239,7 +239,7 @@ describe("file transfer transaction journal", () => {
       sequence: 1,
       bytes: finalRepositoryChunk.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toEqual({ state: "prepared", transferId })
     await expect(reopened.readMember(transferId, manifestDigest, "repository"))
       .resolves.toEqual(repositoryBytes)
@@ -260,7 +260,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     const chunk = {
@@ -269,7 +269,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: repositoryBytes.toString("base64"),
       final: true,
-      client: "desktop" as const,
+      initiatedByClient: "desktop" as const,
     }
     renameSimulation.rejectOverlappingTargets = true
     const results = await Promise.allSettled(
@@ -298,7 +298,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toEqual({ state: "member-received", transferId, memberId: "state" })
     await expect(reopened.readMember(transferId, manifestDigest, "state"))
       .resolves.toEqual(stateBytes)
@@ -325,7 +325,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toEqual({
       state: "member-received",
       transferId,
@@ -348,7 +348,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: Buffer.from("wrong").toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({ state: "refused", reason: "digest-mismatch" })
     await expect(transactions.readMember(transferId, manifestDigest, "state"))
       .rejects.toThrow("Transfer member is incomplete")
@@ -369,7 +369,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toEqual({
       state: "refused",
       transferId,
@@ -419,7 +419,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: stateBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     await transactions.acceptMember({
       transferId,
@@ -427,7 +427,7 @@ describe("file transfer transaction journal", () => {
       sequence: 0,
       bytes: repositoryBytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     await expect(transactions.remove(transferId, sha256("0")))

@@ -2,12 +2,8 @@
 import { readFileSync } from "node:fs"
 import { homedir, hostname, userInfo } from "node:os"
 
-import { DomovoiDaemon } from "./server.js"
-import { CliProviderProbe } from "./providers.js"
+import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
-import { loadOrCreateMachineIdentity } from "./machine-identity.js"
-import { loadTlsMaterial } from "./tls-material.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
@@ -16,11 +12,45 @@ import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
-import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+
+async function greetCli(socket: import("ws").WebSocket): Promise<void> {
+  const requestId = 1
+  await new Promise<void>((resolve, reject) => {
+    const settle = (finish: () => void) => {
+      socket.off("message", receive)
+      socket.off("close", closed)
+      socket.off("error", failed)
+      finish()
+    }
+    const receive = (data: { toString(): string }) => {
+      const message = JSON.parse(data.toString()) as {
+        id?: number
+        error?: { message?: string }
+      }
+      if (message.id !== requestId) return
+      settle(() => {
+        if (message.error) reject(new Error(message.error.message ?? "Daemon refused the CLI connection"))
+        else resolve()
+      })
+    }
+    const closed = () => settle(() => reject(new Error("Daemon connection closed")))
+    const failed = (error: Error) => settle(() => reject(error))
+    socket.on("message", receive)
+    socket.once("close", closed)
+    socket.once("error", failed)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "system.hello",
+      params: { client: "cli", clientVersion: "0.0.1", protocolVersion },
+    }))
+  })
+}
 
 async function requestPairingCode(
   config: { host: string; port: number; tls?: unknown },
@@ -31,12 +61,13 @@ async function requestPairingCode(
   const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
     headers: { authorization: `Bearer ${token}` },
   })
-  const requestId = 1
+  const requestId = 2
   try {
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await greetCli(socket)
     const result = await new Promise<DeviceIssueCodeResult>((resolve, reject) => {
       // The daemon broadcasts notifications on the same socket, so only the
       // reply carrying this request's id may settle it, and a socket that
@@ -85,12 +116,13 @@ async function requestProjectOpen(
   const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
     headers: { authorization: `Bearer ${token}` },
   })
-  const requestId = 1
+  const requestId = 2
   try {
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await greetCli(socket)
     await new Promise<void>((resolve, reject) => {
       // A daemon that accepts the socket and then says nothing would otherwise
       // hold this open forever, so the wait is bounded and every listener is
@@ -126,7 +158,7 @@ async function requestProjectOpen(
         jsonrpc: "2.0",
         id: requestId,
         method: "project.open",
-        params: { path, client: "desktop" },
+        params: { path, client: "cli" },
       }))
     })
   } finally {
@@ -247,39 +279,23 @@ async function main() {
     return
   }
 
-  const config = parseDaemonEnvironment(process.env, homedir())
-  const authToken = config.authToken
-    ?? await loadOrCreateDaemonToken(config.credentialPath)
-  const machineIdentity = await loadOrCreateMachineIdentity(config.machineIdentityPath, {
-    label: hostname(),
-  })
-  const tls = config.tls ? await loadTlsMaterial(config.tls) : undefined
-  const daemon = new DomovoiDaemon({
-    host: config.host,
-    port: config.port,
-    ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
-    authToken,
-    ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
-    providerProbe: new CliProviderProbe(),
-    machineIdentity,
-    ...(tls ? { tls } : {}),
-    ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
-    machineCredentials: new MachineCredentialStore(),
+  const daemon = await createProductionDaemon({
+    environment: process.env,
+    homeDirectory: homedir(),
+    machineLabel: hostname(),
   })
 
   const address = await daemon.start()
-  process.stdout.write(
-    `domovoid listening on ${tls ? "wss" : "ws"}://${address.host}:${address.port}/rpc\n`,
-  )
-  if (!config.authToken) {
-    process.stdout.write(`domovoid credential stored at ${config.credentialPath}\n`)
+  process.stdout.write(`domovoid listening on ${address.url}\n`)
+  if (daemon.credential.source === "file") {
+    process.stdout.write(`domovoid credential stored at ${daemon.credential.path}\n`)
   }
 
   // A daemon inside a WSL distribution is found by its endpoint file, which is
   // why it is published only once the listener is actually up, and taken away
   // when it stops.
   const published = isLoopbackListener(address.host)
-    ? { host: address.host, port: address.port, token: authToken }
+    ? { host: address.host, port: address.port, token: daemon.authToken }
     : undefined
   if (published) await publishEndpointFile({ home: homedir(), ...published })
 
