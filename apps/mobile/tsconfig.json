@@ -5,9 +5,16 @@
     "noUncheckedIndexedAccess": true,
     "jsx": "react-jsx",
     "jsxImportSource": "nativewind",
-    "types": ["nativewind/types"],
+    "types": [
+      "nativewind/types"
+    ],
     "moduleResolution": "bundler",
     "verbatimModuleSyntax": false
   },
-  "include": ["src", "index.ts", "*.d.ts"]
+  "include": [
+    "src",
+    "index.ts",
+    "*.d.ts",
+    "nativewind-env.d.ts"
+  ]
 }

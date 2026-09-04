@@ -14,6 +14,9 @@ config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, "node_modules"),
   path.resolve(workspaceRoot, "node_modules"),
 ]
-config.resolver.disableHierarchicalLookup = true
+// pnpm keeps real packages in a content-addressed store and links them, so
+// Metro has to be allowed to walk up into it. Disabling hierarchical lookup,
+// which is the usual monorepo advice, makes expo's own dependencies unresolvable.
+config.resolver.unstable_enableSymlinks = true
 
 module.exports = withNativeWind(config, { input: "./src/global.css" })
