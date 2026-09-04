@@ -12,7 +12,7 @@ export class MachineClaimError extends Error {
 export type ClaimConnection = {
   // Typed against the protocol so a parameter the daemon requires cannot go
   // missing here and fail only against a running machine.
-  call: <Method extends "device.claim">(
+  call: <Method extends "device.claim" | "system.hello">(
     method: Method,
     params: RpcParams<Method>,
   ) => Promise<unknown>

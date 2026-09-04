@@ -13,7 +13,7 @@ const transferring: NonNullable<SessionSummary["transfer"]> = {
   resumeState: "failed",
   method: "git-bundle",
   requestedBy: { client: "desktop" },
-  package: { state: "preparing" },
+  package: { state: "staged", manifestDigest: `sha256:${"d".repeat(64)}` },
 }
 
 const session = {
@@ -32,13 +32,22 @@ describe("sessionRecoveryOffer", () => {
     expect(offer?.detail).toContain("diverge")
   })
 
-  it("stays out of the way while the move may still succeed", () => {
-    for (const resumeState of ["idle", "done"] as const) {
+  it("offers release for an ordinary session, not only one that had failed", () => {
+    // resumeState carries the pre-transfer session state. Gating on it meant an
+    // idle session, which is the normal case, never saw the way out.
+    for (const resumeState of ["idle", "done", "failed"] as const) {
       expect(sessionRecoveryOffer(
         { ...session, transfer: { ...transferring, resumeState } } as SessionSummary,
         "studio",
-      )).toBeUndefined()
+      )?.kind).toBe("release-stranded")
     }
+  })
+
+  it("stays quiet until the package the daemon needs is staged", () => {
+    expect(sessionRecoveryOffer(
+      { ...session, transfer: { ...transferring, package: { state: "preparing" } } } as SessionSummary,
+      "studio",
+    )).toBeUndefined()
   })
 
   it("does not offer release on a session that is not mid-move", () => {

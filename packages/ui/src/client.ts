@@ -136,6 +136,10 @@ function requestAbortError(signal: AbortSignal): Error {
   return new DOMException("Daemon RPC request aborted", "AbortError")
 }
 
+// Every greeting this package sends carries the same build, so pairing and the
+// workspace connection cannot drift apart.
+export const clientVersion = "0.0.1"
+
 export class DomovoiClient extends EventTarget {
   readonly url: string
   readonly kind: ClientKind
@@ -229,7 +233,7 @@ export class DomovoiClient extends EventTarget {
           this.request("system.hello", {
             client: this.kind,
             clientId: this.clientId,
-            clientVersion: "0.0.1",
+            clientVersion,
             protocolVersion,
             ...(this.#authToken ? { authToken: this.#authToken } : {}),
           }).then(

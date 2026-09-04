@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { DomovoiClient, type DomovoiRequestOptions } from "./client"
+import { clientVersion, DomovoiClient, type DomovoiRequestOptions } from "./client"
+import { rpcMethods } from "@getdomovoi/protocol"
 import { openClaimConnection } from "./claim-socket"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { applyWorkspaceDelta } from "./workspace-delta"
@@ -525,17 +526,23 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       machineId: localMachineId,
       open: openClaimConnection,
       identify: async ({ endpoint, credential }) => {
-        const paired = new DomovoiClient(endpoint, kind, { authToken: credential })
+        // The credential that came back is bound to a machine, and the daemon
+        // refuses a machine credential presented as a person's client, so this
+        // greets as a machine rather than as this desktop or browser.
+        const connection = await openClaimConnection(endpoint)
         try {
-          const snapshot = await paired.connect()
-          return { id: snapshot.machine.id, name: snapshot.machine.name }
+          const greeting = rpcMethods["system.hello"].result.parse(await connection.call(
+            "system.hello",
+            { client: "machine", clientVersion, authToken: credential },
+          ))
+          return { id: greeting.machine.id, name: greeting.machine.name }
         } finally {
-          paired.disconnect()
+          connection.close()
         }
       },
       saveCredential: (saved) => client.saveMachineCredential(saved).then(() => {}),
     })
-  }, [kind])
+  }, [snapshot?.machine.id])
 
   const authorizeArtifact = useCallback(async (
     input: {

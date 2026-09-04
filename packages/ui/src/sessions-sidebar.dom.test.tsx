@@ -65,3 +65,28 @@ it("counts one machine until the fleet has loaded", () => {
   expect(screen.getByText("1 machine · local")).toBeTruthy()
   expect(screen.queryByText("phetzy")).toBeNull()
 })
+
+it("keeps a session that is moving or in conflict reachable in the list", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  const [moving, conflicted, moved] = snapshot.sessions
+  if (!moving || !conflicted || !moved) throw new Error("fixture needs three sessions")
+  moving.state = "transferring"
+  moving.title = "Moving session"
+  conflicted.state = "ownership-conflict"
+  conflicted.title = "Conflicted session"
+  moved.state = "transferred"
+  moved.title = "Moved session"
+
+  render(
+    <TooltipProvider>
+      <SessionsSidebar snapshot={snapshot} {...handlers} />
+    </TooltipProvider>,
+  )
+
+  // A session in any of these states is read-only and may need recovering, so
+  // dropping it from the list makes its notice unreachable once the operator
+  // selects something else.
+  for (const title of ["Moving session", "Conflicted session", "Moved session"]) {
+    expect(screen.getByText(title)).toBeTruthy()
+  }
+})

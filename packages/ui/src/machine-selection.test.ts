@@ -40,7 +40,7 @@ describe("machineSelection", () => {
     expect(machineSelection({ ...machine, health: "version-mismatch" }))
       .toEqual({
       selectable: false,
-      reason: "That machine speaks an older protocol version, so update Domovoi on it",
+      reason: "That machine speaks a newer protocol version, so update Domovoi here",
     })
   })
 

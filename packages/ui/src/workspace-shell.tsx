@@ -701,7 +701,14 @@ export function SessionsSidebar({
     () => [
       { label: "Active", states: ["active"] },
       { label: "Waiting", states: ["waiting"] },
+      // A conflicted session blocks work on both machines, so it sits above the
+      // quiet ones. Every transfer state stays listed: they are read-only and
+      // some need recovering, and a session missing from here cannot be
+      // selected, which puts its notice and its way out beyond reach.
+      { label: "Conflict", states: ["ownership-conflict"] },
       { label: "Idle", states: ["idle", "done", "failed"] },
+      { label: "Moving", states: ["transferring"] },
+      { label: "Moved", states: ["transferred"] },
       { label: "Archived", states: ["archiving", "archived"] },
     ],
     [],

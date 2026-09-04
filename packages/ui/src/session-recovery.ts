@@ -27,9 +27,11 @@ export function sessionRecoveryOffer(
   const transfer = session.transfer
   if (session.state !== "transferring") return undefined
   if (transfer?.phase !== "transferring") return undefined
-  // Only a move the daemon has given up on. One still running would be raced by
-  // a recovery, and one that has not started may still succeed on its own.
-  if (transfer.resumeState !== "failed") return undefined
+  // resumeState is the state the session had before it froze, restored on thaw,
+  // and says nothing about the move. Reading it as progress hid the offer from
+  // every ordinary transfer and showed it during live ones. The daemon accepts
+  // a recovery only for a staged package, so that is the condition to match.
+  if (transfer.package.state !== "staged") return undefined
 
   const target = targetLabel ?? "the other machine"
   return {
