@@ -78,6 +78,8 @@ import { SessionTransferStateError } from "./session-transfer-state.js"
 import {
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
+  markSourceOwnershipConflict,
+  recoverUnconfirmedSourceTransfer,
   sendPreparedSessionTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
@@ -236,6 +238,7 @@ const sessionResourceMethods = new Set([
   "session.restartProviderThread",
   "session.setRuntime",
   "session.transfer",
+  "session.transferRecoverSource",
   "transfer.fromRef",
 ])
 const unauditedRpcMethods = new Set<RpcMethod>([
@@ -837,6 +840,7 @@ export class DomovoiDaemon {
   }>()
   #rpcOutbound: RpcOutboundBackpressure
   #sessionHistory = new SessionHistoryIndex()
+  #ownershipChecks = new Set<string>()
 
   constructor(options: DaemonServerOptions = {}) {
     this.host = options.host ?? "127.0.0.1"
@@ -1040,7 +1044,6 @@ export class DomovoiDaemon {
       this.#transferTransactions.pruneExpired(),
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
-    await this.#recoverSessionTransfers()
     await this.#recoverSessionArchives()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
@@ -1159,6 +1162,10 @@ export class DomovoiDaemon {
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
 
+    // A dead target must not hold daemon startup hostage. Each frozen source
+    // remains read-only while its own resource queue reconciles in background.
+    this.#scheduleSessionTransferRecovery()
+    this.#scheduleRecoveredOwnershipChecks()
     if (this.#providerProbe) this.#queueProviderRefresh(true)
 
     return this.address!
@@ -1599,7 +1606,7 @@ export class DomovoiDaemon {
     client: ClientKind
     clientId?: string
     checkpointCommit: string
-    outcome: "succeeded" | "failed" | "refused"
+    outcome: "succeeded" | "failed" | "refused" | "source-recovered"
     reason?: TransferReceipt["reason"]
     startedAt: string
     completedAt: string
@@ -1685,14 +1692,55 @@ export class DomovoiDaemon {
     }
   }
 
-  async #recoverSessionTransfers(): Promise<void> {
-    const frozenSessions = this.#snapshot.sessions.filter(
-      (session) => session.state === "transferring" && session.transfer?.phase === "transferring",
-    )
-    for (const frozen of frozenSessions) {
-      const lifecycle = frozen.transfer
-      if (lifecycle?.phase !== "transferring") continue
-      try {
+  async #thawVersionedSourceTransfer(
+    sessionId: string,
+    outcome: "failed" | "refused",
+    reason: TransferReceipt["reason"],
+    completedAt: string,
+  ): Promise<void> {
+    const source = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    if (source?.state !== "transferring" || source.transfer?.phase !== "transferring") {
+      throw new SessionTransferStateError("session-state-changed")
+    }
+    const lifecycle = source.transfer
+    const checkpointCommit = source.baseCommit
+    if (!checkpointCommit) throw new SessionTransferStateError("session-state-changed")
+    await this.#persistTransferSnapshot(thawSourceSessionTransfer(
+      this.#snapshot,
+      lifecycle.transferId,
+      completedAt,
+    ))
+    if (lifecycle.package.state === "staged") {
+      await this.#outgoingTransferTransactions.remove(
+        lifecycle.transferId,
+        lifecycle.package.manifestDigest,
+      ).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.#reportError("Domovoi could not remove an outgoing transfer package", error)
+        }
+      })
+    }
+    this.#recordVersionedTransferReceipt({
+      sessionId: source.id,
+      targetMachineId: lifecycle.targetMachineId,
+      method: lifecycle.method,
+      client: lifecycle.requestedBy.client,
+      ...(lifecycle.requestedBy.clientId
+        ? { clientId: lifecycle.requestedBy.clientId }
+        : {}),
+      checkpointCommit,
+      outcome,
+      reason,
+      startedAt: lifecycle.startedAt,
+      completedAt,
+    })
+  }
+
+  async #recoverSessionTransfer(sessionId: string): Promise<void> {
+    const frozen = this.#snapshot.sessions.find((session) => session.id === sessionId)
+    const lifecycle = frozen?.transfer
+    if (frozen?.state !== "transferring" || lifecycle?.phase !== "transferring") return
+    try {
         if (lifecycle.package.state === "preparing") {
           // Target contact is forbidden until the staged digest is durable, so
           // a crash in preparing cannot have transferred ownership.
@@ -1701,7 +1749,7 @@ export class DomovoiDaemon {
             lifecycle.transferId,
             new Date().toISOString(),
           ))
-          continue
+          return
         }
         const manifestDigest = lifecycle.package.manifestDigest
         const remote = await this.#withAbortTimeout(async (signal) => {
@@ -1726,13 +1774,236 @@ export class DomovoiDaemon {
             remote,
             new Date().toISOString(),
           )
+          return
         }
-      } catch (error) {
-        // Unreachable is not evidence that ownership stayed here. The source
-        // remains frozen until target status becomes authoritative or a person
-        // explicitly accepts the double-owner risk.
-        this.#reportError(`Domovoi could not reconcile transfer ${lifecycle.transferId}`, error)
-      }
+        if (remote.state === "aborted") {
+          await this.#thawVersionedSourceTransfer(
+            frozen.id,
+            "refused",
+            "session-state-changed",
+            new Date().toISOString(),
+          )
+          return
+        }
+        if (remote.state === "recovering" || remote.state === "failed") {
+          const retried = await this.#withAbortTimeout(async (signal) => {
+            const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+            try {
+              return rpcMethods["transfer.commit"].result.parse(await connection.call(
+                "transfer.commit",
+                {
+                  transferId: lifecycle.transferId,
+                  manifestDigest,
+                  client: lifecycle.requestedBy.client,
+                },
+                signal,
+              ))
+            } finally {
+              connection.close()
+            }
+          }, this.#sessionTransferTimeoutMs, "Transfer recovery timed out")
+          if (retried.state === "committed") {
+            await this.#completeVersionedSourceTransfer(
+              frozen.id,
+              retried,
+              new Date().toISOString(),
+            )
+          } else {
+            await this.#thawVersionedSourceTransfer(
+              frozen.id,
+              "refused",
+              retried.reason,
+              new Date().toISOString(),
+            )
+          }
+          return
+        }
+        if (
+          remote.state === "unknown"
+          || remote.state === "receiving"
+          || remote.state === "prepared"
+        ) {
+          let packageAvailable = true
+          try {
+            await this.#outgoingTransferTransactions.manifest(
+              lifecycle.transferId,
+              manifestDigest,
+            )
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+            packageAvailable = false
+          }
+          if (!packageAvailable) {
+            if (remote.state === "unknown") {
+              await this.#thawVersionedSourceTransfer(
+                frozen.id,
+                "failed",
+                "session-resource-unavailable",
+                new Date().toISOString(),
+              )
+              return
+            }
+            const aborted = await this.#withAbortTimeout(async (signal) => {
+              const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+              try {
+                return rpcMethods["transfer.abort"].result.parse(await connection.call(
+                  "transfer.abort",
+                  {
+                    transferId: lifecycle.transferId,
+                    manifestDigest,
+                    client: lifecycle.requestedBy.client,
+                  },
+                  signal,
+                ))
+              } finally {
+                connection.close()
+              }
+            }, this.#sessionTransferTimeoutMs, "Transfer abort timed out")
+            if (aborted.state === "committed") {
+              await this.#completeVersionedSourceTransfer(
+                frozen.id,
+                aborted,
+                new Date().toISOString(),
+              )
+            } else {
+              await this.#thawVersionedSourceTransfer(
+                frozen.id,
+                "failed",
+                "session-resource-unavailable",
+                new Date().toISOString(),
+              )
+            }
+            return
+          }
+          const resumed = await this.#withAbortTimeout(async (signal) => {
+            const connection = await this.#connectToMachine(lifecycle.targetMachineId, signal)
+            try {
+              return sendPreparedSessionTransfer({
+                transactions: this.#outgoingTransferTransactions,
+                transferId: lifecycle.transferId,
+                manifestDigest,
+                client: lifecycle.requestedBy.client,
+                call: (method, params) => connection.call(method, params, signal),
+              })
+            } finally {
+              connection.close()
+            }
+          }, this.#sessionTransferTimeoutMs, "Transfer resume timed out")
+          if (resumed.state === "committed") {
+            await this.#completeVersionedSourceTransfer(
+              frozen.id,
+              resumed,
+              new Date().toISOString(),
+            )
+          } else if (resumed.state === "refused" || resumed.state === "aborted") {
+            await this.#thawVersionedSourceTransfer(
+              frozen.id,
+              "refused",
+              resumed.state === "refused" ? resumed.reason : "session-state-changed",
+              new Date().toISOString(),
+            )
+          }
+        }
+    } catch (error) {
+      // Unreachable is not evidence that ownership stayed here. The source
+      // remains frozen until target status becomes authoritative or a person
+      // explicitly accepts the double-owner risk.
+      this.#reportError(`Domovoi could not reconcile transfer ${lifecycle.transferId}`, error)
+    }
+  }
+
+  #scheduleSessionTransferRecovery(): void {
+    for (const session of this.#snapshot.sessions) {
+      if (session.state !== "transferring" || session.transfer?.phase !== "transferring") continue
+      void this.#mutations.enqueue(
+        `session:${session.id}`,
+        () => this.#recoverSessionTransfer(session.id),
+      ).catch((error) => this.#reportError(
+        `Domovoi could not schedule transfer recovery ${session.transfer!.transferId}`,
+        error,
+      ))
+    }
+  }
+
+  async #checkRecoveredSourceOwnership(sessionId: string): Promise<void> {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    const recovery = session?.sourceRecovery
+    if (!session || !recovery || sessionIsReadOnly(session)) return
+    let remote: TransferStatusResult
+    try {
+      remote = await this.#withAbortTimeout(async (signal) => {
+        const connection = await this.#connectToMachine(recovery.targetMachineId, signal)
+        try {
+          return rpcMethods["transfer.status"].result.parse(await connection.call(
+            "transfer.status",
+            {
+              transferId: recovery.transferId,
+              manifestDigest: recovery.manifestDigest,
+              client: recovery.decidedBy.client,
+            },
+            signal,
+          ))
+        } finally {
+          connection.close()
+        }
+      }, Math.min(this.#sessionTransferTimeoutMs, this.#agentTimeoutMs),
+      "Recovered ownership check timed out")
+    } catch {
+      return
+    }
+    if (
+      remote.state !== "committed"
+      || remote.ownershipGeneration <= (session.ownershipGeneration ?? 0)
+    ) return
+
+    const providerThread = session.providerThreadId
+    const provider = session.runtime.provider
+    const conflicted = markSourceOwnershipConflict(this.#snapshot, {
+      sessionId: session.id,
+      transferId: recovery.transferId,
+      otherMachineId: recovery.targetMachineId,
+      otherGeneration: remote.ownershipGeneration,
+      detectedAt: new Date().toISOString(),
+    })
+    conflicted.approvals = conflicted.approvals.filter(
+      (approval) => approval.sessionId !== session.id,
+    )
+    await this.#persistTransferSnapshot(workspaceSnapshotSchema.parse(conflicted))
+    this.#closeSessionTerminals(session.id)
+    this.#appendAudit({
+      actor: { kind: "daemon", component: "transfer-reconciliation" },
+      action: "session.ownership-conflict",
+      outcome: "denied",
+      sessionId: session.id,
+      ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+      target: recovery.targetMachineId,
+      detail: `Recovered source stopped because transfer ${recovery.transferId} is committed at generation ${remote.ownershipGeneration}`,
+    })
+    if (providerThread) {
+      this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+      void withTimeout(
+        this.#agents.require(provider).stopThread(providerThread),
+        this.#agentTimeoutMs,
+        "Ownership conflict provider shutdown timed out",
+      ).catch((error) => this.#reportError(
+        "Domovoi could not stop a provider after detecting duplicate ownership",
+        error,
+      ))
+    }
+  }
+
+  #scheduleRecoveredOwnershipChecks(): void {
+    for (const session of this.#snapshot.sessions) {
+      if (!session.sourceRecovery || sessionIsReadOnly(session)) continue
+      if (this.#ownershipChecks.has(session.id)) continue
+      this.#ownershipChecks.add(session.id)
+      void this.#mutations.enqueue(
+        `session:${session.id}`,
+        () => this.#checkRecoveredSourceOwnership(session.id),
+      ).catch((error) => this.#reportError(
+        `Domovoi could not schedule recovered ownership check ${session.id}`,
+        error,
+      )).finally(() => this.#ownershipChecks.delete(session.id))
     }
   }
 
@@ -3210,6 +3481,148 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "session.transferRecoverSource") {
+        const params = paramsResult.data as RpcParams<"session.transferRecoverSource">
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Recovering source ownership requires the daemon credential",
+          )
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "client" || actor.client !== params.client) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "Source recovery requires the authenticated client identity",
+          )
+          return
+        }
+        const session = this.#snapshot.sessions.find(
+          (candidate) => candidate.id === params.sessionId,
+        )
+        const lifecycle = session?.transfer
+        if (
+          session?.state !== "transferring"
+          || lifecycle?.phase !== "transferring"
+          || lifecycle.transferId !== params.transferId
+          || lifecycle.package.state !== "staged"
+        ) {
+          this.#error(socket, request.id, invalidParams, "Session has no matching frozen transfer")
+          return
+        }
+        const manifestDigest = lifecycle.package.manifestDigest
+        let remote: TransferStatusResult | undefined
+        try {
+          remote = await this.#withAbortTimeout(async (statusSignal) => {
+            const connection = await this.#connectToMachine(
+              lifecycle.targetMachineId,
+              statusSignal,
+            )
+            try {
+              return rpcMethods["transfer.status"].result.parse(await connection.call(
+                "transfer.status",
+                {
+                  transferId: lifecycle.transferId,
+                  manifestDigest,
+                  client: actor.client,
+                },
+                statusSignal,
+              ))
+            } finally {
+              connection.close()
+            }
+          }, Math.min(this.#sessionTransferTimeoutMs, this.#agentTimeoutMs),
+          "Target ownership confirmation timed out")
+        } catch {
+          // A request cancellation or daemon shutdown is not evidence about
+          // the target and must never authorize another owner.
+          signal?.throwIfAborted()
+        }
+        if (remote?.state === "committed") {
+          await this.#completeVersionedSourceTransfer(
+            session.id,
+            remote,
+            new Date().toISOString(),
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: workspaceSnapshotForClient(this.#snapshot),
+          })
+          return
+        }
+        if (remote?.state === "unknown") {
+          await this.#thawVersionedSourceTransfer(
+            session.id,
+            "failed",
+            "session-resource-unavailable",
+            new Date().toISOString(),
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: workspaceSnapshotForClient(this.#snapshot),
+          })
+          return
+        }
+        if (remote !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "The target still holds transfer state, so source recovery was refused",
+          )
+          return
+        }
+
+        signal?.throwIfAborted()
+        const recoveredAt = new Date().toISOString()
+        const checkpointCommit = session.baseCommit
+        if (!checkpointCommit) {
+          this.#error(socket, request.id, invalidParams, "Frozen source has no checkpoint")
+          return
+        }
+        const recovered = recoverUnconfirmedSourceTransfer(this.#snapshot, {
+          sessionId: session.id,
+          transferId: lifecycle.transferId,
+          client: actor.client,
+          ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          recoveredAt,
+        })
+        await this.#persistTransferSnapshot(recovered)
+        await this.#outgoingTransferTransactions.remove(
+          lifecycle.transferId,
+          manifestDigest,
+        ).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            this.#reportError("Domovoi could not remove a recovered transfer package", error)
+          }
+        })
+        this.#recordVersionedTransferReceipt({
+          sessionId: session.id,
+          targetMachineId: lifecycle.targetMachineId,
+          method: lifecycle.method,
+          client: actor.client,
+          ...(actor.clientId ? { clientId: actor.clientId } : {}),
+          checkpointCommit,
+          outcome: "source-recovered",
+          reason: "target-ownership-unconfirmed",
+          startedAt: lifecycle.startedAt,
+          completedAt: recoveredAt,
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: workspaceSnapshotForClient(this.#snapshot),
+        })
+        return
+      }
+
       if (method === "session.transfer") {
         const params = paramsResult.data as RpcParams<"session.transfer">
         // Moving a session hands a worktree to another machine, so a device
@@ -3702,6 +4115,7 @@ export class DomovoiDaemon {
 
       if (method === "fleet.list") {
         this.#recordThisMachine()
+        this.#scheduleRecoveredOwnershipChecks()
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,

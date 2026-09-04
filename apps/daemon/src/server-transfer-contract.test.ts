@@ -18,6 +18,7 @@ import {
 } from "./session-transfer-package.js"
 import {
   freezeSourceSessionTransfer,
+  recoverUnconfirmedSourceTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
 } from "./session-transfer-source.js"
@@ -109,6 +110,21 @@ async function packagedTransfer() {
   return (await transferFixture()).packaged
 }
 
+async function stagedTransferFixture() {
+  const fixture = await transferFixture()
+  const staged = stageSourceSessionCheckpoint(
+    freezeSourceSessionTransfer(
+      fixture.source,
+      fixture.intent,
+      fixture.packaged.manifest.transferId,
+      "2026-09-03T22:00:00.000Z",
+      { client: "desktop", clientId: "studio-mac" },
+    ),
+    fixture.packaged.manifest,
+  )
+  return { ...fixture, staged }
+}
+
 function rpc(socket: WebSocket) {
   let id = 0
   return (method: string, params: Record<string, unknown>) => {
@@ -146,7 +162,7 @@ async function openMachine(daemon: DomovoiDaemon): Promise<WebSocket> {
   return socket
 }
 
-async function openClient(daemon: DomovoiDaemon): Promise<WebSocket> {
+async function openClient(daemon: DomovoiDaemon, clientId?: string): Promise<WebSocket> {
   const address = daemon.address!
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
@@ -157,6 +173,7 @@ async function openClient(daemon: DomovoiDaemon): Promise<WebSocket> {
   })
   await rpc(socket)("system.hello", {
     client: "desktop",
+    ...(clientId ? { clientId } : {}),
     clientVersion: "0.0.1",
     protocolVersion: "0.1.0",
   })
@@ -190,17 +207,7 @@ describe("transactional session transfer RPC", () => {
   it("finishes a committed staged transfer after the source restarts", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-"))
     scratchDirectories.push(scratch)
-    const { source, intent, packaged } = await transferFixture()
-    const staged = stageSourceSessionCheckpoint(
-      freezeSourceSessionTransfer(
-        source,
-        intent,
-        packaged.manifest.transferId,
-        "2026-09-03T22:00:00.000Z",
-        { client: "desktop", clientId: "studio-mac" },
-      ),
-      packaged.manifest,
-    )
+    const { staged, packaged } = await stagedTransferFixture()
     const store = new SqliteWorkspaceStore(":memory:", staged)
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     await stageOutgoingSessionTransferPackage(outgoing, packaged)
@@ -226,6 +233,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
     expect(remoteCall).toHaveBeenCalledOnce()
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferred",
@@ -241,6 +249,287 @@ describe("transactional session transfer RPC", () => {
       packaged.manifest.transferId,
       packaged.manifestDigest,
     )).resolves.toMatchObject({ state: "unknown" })
+  })
+
+  it("thaws a restarted source only when the target authoritatively has no transfer", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-empty-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const remoteCall = vi.fn(async (method: string) => {
+      if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
+      return { state: "unknown", transferId: packaged.manifest.transferId }
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("idle"))
+    expect(remoteCall).toHaveBeenCalledOnce()
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "idle",
+      ownershipGeneration: 1,
+      runtime: { auto: false },
+    })
+    expect(store.load().sessions[0]).not.toHaveProperty("transfer")
+  })
+
+  it("resumes a staged package after both daemons lost volatile transfer state", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-resume-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    const target = new FileTransferTransactions(join(scratch, "target"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    const remoteCall = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === "transfer.status") {
+        return target.status(String(params.transferId), String(params.manifestDigest))
+      }
+      if (method === "transfer.prepare") {
+        return target.prepare(params.manifest as never, String(params.manifestDigest))
+      }
+      if (method === "transfer.member") return target.acceptMember(params as never)
+      if (method === "transfer.commit") {
+        return {
+          state: "committed",
+          transferId: packaged.manifest.transferId,
+          workspacePath: `/target/${packaged.manifest.sessionId}`,
+          checkpointCommit,
+          ownershipGeneration: 2,
+        }
+      }
+      throw new Error(`Unexpected ${method}`)
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    expect(remoteCall.mock.calls.map(([method]) => method)).toEqual([
+      "transfer.status",
+      "transfer.status",
+      "transfer.prepare",
+      ...packaged.members.map(() => "transfer.member"),
+      "transfer.commit",
+    ])
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferred",
+      ownershipGeneration: 2,
+    })
+  })
+
+  it("aborts a partial target before thawing when the source package is gone", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-abort-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    const target = new FileTransferTransactions(join(scratch, "target"))
+    await target.prepare(packaged.manifest, packaged.manifestDigest)
+    const remoteCall = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === "transfer.status") {
+        return target.status(String(params.transferId), String(params.manifestDigest))
+      }
+      if (method === "transfer.abort") {
+        return target.abort(String(params.transferId), String(params.manifestDigest))
+      }
+      throw new Error(`Unexpected ${method}`)
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("idle"))
+    expect(remoteCall.mock.calls.map(([method]) => method)).toEqual([
+      "transfer.status",
+      "transfer.abort",
+    ])
+    expect(store.load().sessions[0]).toMatchObject({ state: "idle", ownershipGeneration: 1 })
+    expect(store.load().sessions[0]).not.toHaveProperty("transfer")
+  })
+
+  it("retries a target commit that was interrupted during recovery", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-recovery-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const remoteCall = vi.fn(async (method: string) => {
+      if (method === "transfer.status") {
+        return {
+          state: "failed",
+          transferId: packaged.manifest.transferId,
+          reason: "persistence-failed",
+        }
+      }
+      if (method === "transfer.commit") {
+        return {
+          state: "committed",
+          transferId: packaged.manifest.transferId,
+          workspacePath: `/target/${packaged.manifest.sessionId}`,
+          checkpointCommit,
+          ownershipGeneration: 2,
+        }
+      }
+      throw new Error(`Unexpected ${method}`)
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    expect(remoteCall.mock.calls.map(([method]) => method)).toEqual([
+      "transfer.status",
+      "transfer.commit",
+    ])
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferred",
+      ownershipGeneration: 2,
+    })
+  })
+
+  it("requires an explicit operator claim before recovering an unreachable source", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-source-recovery-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const store = new SqliteWorkspaceStore(":memory:", staged)
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    const connectToMachine = vi.fn(async () => {
+      throw new Error("target is unreachable")
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      connectToMachine,
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    await vi.waitFor(() => expect(connectToMachine).toHaveBeenCalledOnce())
+    expect(store.load().sessions[0]?.state).toBe("transferring")
+    const socket = await openClient(daemon, "studio-mac")
+
+    const recovered = await rpc(socket)("session.transferRecoverSource", {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      confirmation: "target-does-not-have-session",
+      client: "desktop",
+    })
+
+    expect(recovered.result).toMatchObject({
+      sessions: [{
+        id: packaged.manifest.sessionId,
+        state: "idle",
+        ownershipGeneration: 1,
+        sourceRecovery: {
+          transferId: packaged.manifest.transferId,
+          targetMachineId,
+          generation: 1,
+          manifestDigest: packaged.manifestDigest,
+          decidedBy: { client: "desktop", clientId: "studio-mac" },
+        },
+      }],
+      thread: expect.arrayContaining([expect.objectContaining({
+        sessionId: packaged.manifest.sessionId,
+        kind: "system",
+        body: "Source ownership recovered without target confirmation.",
+      })]),
+    })
+    await expect(outgoing.status(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )).resolves.toMatchObject({ state: "unknown" })
+    socket.close()
+  })
+
+  it("freezes the claimant when a recovered target later proves it owns the session", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-owner-conflict-"))
+    scratchDirectories.push(scratch)
+    const { staged, packaged } = await stagedTransferFixture()
+    const recovered = recoverUnconfirmedSourceTransfer(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      clientId: "studio-mac",
+      recoveredAt: "2026-09-03T22:10:00.000Z",
+    })
+    const store = new SqliteWorkspaceStore(":memory:", recovered)
+    const remoteCall = vi.fn(async (method: string) => {
+      if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
+      return {
+        state: "committed",
+        transferId: packaged.manifest.transferId,
+        workspacePath: `/target/${packaged.manifest.sessionId}`,
+        checkpointCommit,
+        ownershipGeneration: 2,
+      }
+    })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
+
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "ownership-conflict",
+      workspacePath: "/source/session",
+      sourceRecovery: {
+        transferId: packaged.manifest.transferId,
+        decidedBy: { client: "desktop", clientId: "studio-mac" },
+      },
+      ownershipConflict: {
+        transferId: packaged.manifest.transferId,
+        otherMachineId: targetMachineId,
+        otherGeneration: 2,
+        recoveryAction: "none",
+      },
+    })
+    expect(store.load().thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Session ownership conflict detected.",
+    })
   })
 
   it("accepts, restores, and idempotently commits a transfer from its source machine", async () => {
