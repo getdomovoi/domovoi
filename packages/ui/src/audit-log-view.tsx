@@ -70,6 +70,21 @@ export function cancelAuditExport(holder: AbortControllerHolder): void {
 export async function collectAuditExport(
   onExport: (params: AuditExportParams, options?: DomovoiRequestOptions) => Promise<AuditExportResult>,
   filters: AuditExportFilters,
+  options: { signal: AbortSignal; budgetMs: number },
+): Promise<AuditDownload> {
+  // The export is one operation across every page it fetches, so the clock
+  // starts here and is stopped here whatever way the export ends.
+  const deadline = Deadline.start(options.budgetMs)
+  try {
+    return await collectAuditPages(onExport, filters, { signal: options.signal, deadline })
+  } finally {
+    deadline.clear()
+  }
+}
+
+async function collectAuditPages(
+  onExport: (params: AuditExportParams, options?: DomovoiRequestOptions) => Promise<AuditExportResult>,
+  filters: AuditExportFilters,
   options: { signal: AbortSignal; deadline: Deadline },
 ): Promise<AuditDownload> {
   const chunks: string[] = []
@@ -243,6 +258,7 @@ export function AuditLogView({
         setError(cause instanceof Error ? cause.message : "Older audit entries could not be loaded")
       }
     } finally {
+      deadline.clear()
       if (loadControllerRef.current === controller) loadControllerRef.current = undefined
       if (request === requestRef.current) setLoading(false)
     }
@@ -252,20 +268,18 @@ export function AuditLogView({
     if (!connected || exporting) return
     const controller = new AbortController()
     exportControllerRef.current = controller
-    const deadline = Deadline.start(auditExportBudgetMs)
     setExporting(true)
     setError("")
     try {
       downloadAuditExport(await collectAuditExport(onExport, filters, {
         signal: controller.signal,
-        deadline,
+        budgetMs: auditExportBudgetMs,
       }))
     } catch (cause) {
       if (!controller.signal.aborted) {
         setError(cause instanceof Error ? cause.message : "Audit export could not be created")
       }
     } finally {
-      deadline.clear()
       if (exportControllerRef.current === controller) exportControllerRef.current = undefined
       setExporting(false)
     }
