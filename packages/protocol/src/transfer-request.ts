@@ -61,17 +61,10 @@ export const sessionTransferPreviewParamsSchema = z.object(sessionTransferReques
 
 export const sessionTransferParamsSchema = z.object({
   ...sessionTransferRequestFields,
-  contractVersion: sessionTransferContractVersionSchema.optional(),
-  intentDigest: sessionTransferIntentDigestSchema.optional(),
+  contractVersion: sessionTransferContractVersionSchema,
+  intentDigest: sessionTransferIntentDigestSchema,
 }).strict().superRefine((params, context) => {
   validateTransferMethod(params, context)
-  if ((params.contractVersion === undefined) !== (params.intentDigest === undefined)) {
-    context.addIssue({
-      code: "custom",
-      path: params.contractVersion === undefined ? ["contractVersion"] : ["intentDigest"],
-      message: "A transfer contract version and preview intent digest must be sent together",
-    })
-  }
 })
 
 export const transferFromRefParamsSchema = z.object({

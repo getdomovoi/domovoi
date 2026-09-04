@@ -837,6 +837,15 @@ describe("transactional session transfer RPC", () => {
         client: "desktop",
       },
     }])
+    remoteCalls.length = 0
+    await expect(call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Method parameters are invalid" },
+    })
+    expect(remoteCalls).toEqual([])
     expect((store.load().sessions[0])?.state).toBe("idle")
     socket.close()
   })

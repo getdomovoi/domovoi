@@ -6,12 +6,18 @@ import {
   transferFromRefResultSchema,
 } from "./index.js"
 
+const approvedIntent = {
+  contractVersion: 1 as const,
+  intentDigest: `sha256:${"c".repeat(64)}`,
+}
+
 describe("remote ref transfer", () => {
   it("moves by bundle unless another method is named", () => {
     const parsed = sessionTransferParamsSchema.parse({
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
       client: "desktop",
+      ...approvedIntent,
     })
 
     expect(parsed.method).toBe("git-bundle")
@@ -24,6 +30,7 @@ describe("remote ref transfer", () => {
       client: "desktop",
       method: "remote-ref",
       remote: "origin",
+      ...approvedIntent,
     }).success).toBe(true)
   })
 
@@ -35,6 +42,7 @@ describe("remote ref transfer", () => {
       targetMachineId: `machine-${"b".repeat(32)}`,
       client: "desktop",
       method: "remote-ref",
+      ...approvedIntent,
     }).success).toBe(false)
   })
 
@@ -45,6 +53,7 @@ describe("remote ref transfer", () => {
       client: "desktop",
       method: "remote-ref",
       remote: "--upload-pack=touch",
+      ...approvedIntent,
     }).success).toBe(false)
   })
 
@@ -55,6 +64,7 @@ describe("remote ref transfer", () => {
       client: "desktop",
       method: "git-bundle",
       remote: "origin",
+      ...approvedIntent,
     }).success).toBe(false)
   })
 

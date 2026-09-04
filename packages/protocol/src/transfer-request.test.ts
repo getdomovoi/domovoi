@@ -16,11 +16,17 @@ import {
 } from "./transfer-request.js"
 
 describe("session transfer request", () => {
-  it("names the session and the machine it should move to", () => {
-    expect(sessionTransferParamsSchema.safeParse({
+  it("requires the preview contract that freezes a single source owner", () => {
+    const request = {
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
       client: "desktop",
+    }
+    expect(sessionTransferParamsSchema.safeParse(request).success).toBe(false)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      contractVersion: 1,
+      intentDigest: `sha256:${"c".repeat(64)}`,
     }).success).toBe(true)
   })
 
