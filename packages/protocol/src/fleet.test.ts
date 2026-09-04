@@ -210,10 +210,12 @@ describe("fleetSnapshotSchema", () => {
     expect(fleetSnapshotSchema.safeParse({ entries: [...machines, ...recovery, {
       kind: "unenrolled", machineId: `machine-${"f".repeat(32)}`,
     }] }).success).toBe(false)
-    expect(fleetSnapshotSchema.safeParse({ entries: [...machines, ...recovery.slice(0, -1), {
-      kind: "pending", id: "12345678-1234-4234-8234-123456789abc", machineId: `machine-${"f".repeat(32)}`,
-      operation: "forget", startedAt: "2026-09-04T12:00:00.000Z",
-    }] }).success).toBe(true)
+    for (const operation of ["forget", "enroll"] as const) {
+      expect(fleetSnapshotSchema.safeParse({ entries: [...machines, ...recovery.slice(0, -1), {
+        kind: "pending", id: "12345678-1234-4234-8234-123456789abc", machineId: `machine-${"f".repeat(32)}`,
+        operation, startedAt: "2026-09-04T12:00:00.000Z",
+      }] }).success).toBe(true)
+    }
   })
 
   it("reports the full omitted count when refusing an over-cap fleet", () => {

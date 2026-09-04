@@ -19,6 +19,8 @@ export const fleetEnrollParamsSchema = z.object({
   code: pairingCodeSchema,
   sourceDeviceLabel: deviceLabelSchema,
   client: clientKindSchema,
+  // Required to re-pair an existing row at capacity. Without a known identity
+  // the daemon refuses before spending a code that might admit a new machine.
   expectedMachineId: machineIdSchema.optional(),
 }).strict()
 

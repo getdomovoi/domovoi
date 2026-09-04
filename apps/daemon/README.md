@@ -68,7 +68,9 @@ this machine in the target's Devices list. Enrollment does not grant a client cr
 remote Use or Terminal; that is a separate admission step.
 
 Admission is limited to 128 machine entries, including the local machine and pending enrollment
-reservations. Recovery rows remain visible beyond that limit. The wire list is bounded at 512
+reservations. At capacity, re-pairing an existing row requires its `expectedMachineId`; an unnamed
+target is refused before consuming the pairing code. Recovery rows remain visible beyond the
+admission limit. The wire list is bounded at 512
 total entries. Older keychain indexes had no count limit. An over-cap index therefore refuses the
 entire list with `fleetSnapshotOverflowErrorCode` (`-32016`) and a `fleet-overflow` error payload
 containing `limit`, `totalEntries`, and `entriesNotShown`. No rows are silently truncated.

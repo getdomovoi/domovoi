@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { protocolVersion, type FleetMachineDescriptor } from "@getdomovoi/protocol"
+import { maximumFleetMachines, protocolVersion, type FleetMachineDescriptor } from "@getdomovoi/protocol"
 
 import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
@@ -53,6 +53,24 @@ function fixture() {
 }
 
 describe("fleet enrollment coordinator", () => {
+  it("requires a known expected identity to re-pair at capacity without spending an ambiguous claim", async () => {
+    const f = fixture()
+    for (let index = 0; index < maximumFleetMachines; index++) {
+      f.registry.record({
+        ...descriptor, id: index === 0 ? targetId : `machine-${index.toString(16).padStart(32, "0")}`,
+        connection: "direct", verifiedRoute: { endpoint, lastAuthenticatedAt: new Date(1_000).toISOString() },
+      }, 1_000)
+    }
+    expect(await f.service.enroll(params)).toEqual({ outcome: "refused", reason: "fleet-limit" })
+    expect(f.claim).not.toHaveBeenCalled()
+    expect(await f.service.enroll({ ...params, expectedMachineId: targetId })).toMatchObject({
+      outcome: "enrolled", machineId: targetId,
+    })
+    expect(f.claim).toHaveBeenCalledOnce()
+    expect(f.claim).toHaveBeenCalledWith(expect.objectContaining({ expectedMachineId: targetId }))
+    expect(f.service.snapshot().entries).toHaveLength(maximumFleetMachines)
+  })
+
   it("does not count legacy recovery rows as admitted machines and can forget one beyond admission capacity", async () => {
     const f = fixture()
     const orphans = Array.from({ length: 129 }, (_, index) => `machine-${index.toString(16).padStart(32, "0")}`)
