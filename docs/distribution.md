@@ -49,8 +49,9 @@ A dependency that declares no license appears in the SBOM with an empty `license
 than an invented one. Today that is the proprietary Claude Code agent SDK described in
 [licensing.md](licensing.md), so the SBOM shows the same constraint the license audit records.
 
-The generator runs on Linux in CI so it cannot rot, but nothing publishes yet. Attaching these
-files to a GitHub Release is part of the release workflow, which does not exist.
+The generator runs on Linux in CI so it cannot rot. The release workflow below packs the same
+tarballs for publishing, refuses to continue if their checksums differ from `SHA256SUMS`, and
+attaches all three kinds of file to the GitHub release of each published package.
 
 ## Versioning and release metadata
 
@@ -72,8 +73,96 @@ recorded bump applies to every workspace package. `pnpm release:status` reports 
 packages still lack metadata; `pnpm release:version` consumes the accumulated changesets, writes
 changelogs, and rewrites the manifests.
 
-The first public alpha is `0.1.0-alpha.1`. Until that release, `pnpm release:version` is run only
-deliberately, and no package is published from this repository.
+The first public alpha is `0.1.0-alpha.1`. Until the release workflow is enabled,
+`pnpm release:version` is run only deliberately, and no package is published from this repository.
+
+## Release workflow
+
+`.github/workflows/release.yml` turns accumulated changesets into a versioned, published release.
+It is inert: every job is gated on the repository variable `RELEASE_PUBLISHING` being `enabled`,
+and that variable does not exist yet. A push to `main` or a manual dispatch before a maintainer
+sets it produces a skipped run and nothing else. The variable, rather than a branch or a secret,
+is the switch because it is visible in repository settings, needs no code change to flip in
+either direction, and cannot be set from a pull request.
+
+Once enabled, every push to `main` runs the workflow, which does one of three things:
+
+1. **Version.** Pending changesets exist, so `changesets/action/version` runs `changeset version`
+   and opens or refreshes a pull request titled `chore(release): version packages` that rewrites
+   every manifest to the next version and writes the changelogs. Because the `@getdomovoi/*`
+   group is fixed, the protocol, daemon, shared UI, web, and desktop packages all move together.
+   Merging that pull request is the release decision.
+2. **Publish.** No changesets are pending and a workspace version is missing from the registry,
+   which is the state of `main` right after the version pull request merges. The workflow
+   publishes and creates one GitHub release per published package.
+3. **Nothing.** No changesets are pending and every version is already on the registry.
+
+The mode is chosen by `changesets/action/select-mode` at the end of the `verify` job, and
+`verify` runs the same commands as `ci.yml` first: lint, typecheck, tests, build, performance
+budgets, `pnpm release:invariants`, the license audit, and `pnpm test:install`. A release cannot
+ship a commit that CI would have refused, even if the version pull request merged without a CI
+run of its own.
+
+### Publish order
+
+`@getdomovoi/daemon` depends on `@getdomovoi/protocol` through `workspace:*`, which `pnpm pack`
+rewrites to the exact release version. A consumer installing the daemon therefore resolves the
+protocol at that exact version, so the protocol has to be on the registry first.
+
+The `pack` job writes the publish plan with `changeset publish-plan`, which orders packages by
+dependency, and then `pnpm release:order` fails the job unless the plan places the protocol in
+an earlier chunk than the daemon. `scripts/publish-order.mjs` reads the same ordered package list
+`scripts/release-artifacts.mjs` uses, so there is one place that says what this repository
+publishes and in which order. The plan is then packed into tarballs, checked against
+`SHA256SUMS`, and handed to the `publish` job as a workflow artifact. `changeset publish
+--from-pack-dir` publishes those exact bytes, one plan chunk at a time, and creates the git tags
+and GitHub releases from the commit that built them.
+
+### Trusted publishing
+
+There is no `NPM_TOKEN` and the workflow does not accept one. The `publish` job requests
+`id-token: write`, and pnpm exchanges the GitHub OIDC token for a short-lived npm credential
+scoped to this repository and workflow. npm records the workflow run as the publisher and
+generates a provenance attestation; both packages also declare `publishConfig.provenance`, so a
+publish that cannot produce an attestation fails instead of shipping unattested. The job runs in
+the `npm` GitHub environment so that the trusted publisher on npm can be bound to that
+environment name and so a maintainer can require a reviewer before the job starts.
+
+The `publish` job installs with `--ignore-scripts` and downloads the packed artifact instead of
+building, so the job that holds the OIDC token runs as little third-party code as possible.
+
+### Enabling the first release
+
+These steps are for a maintainer with owner rights on the GitHub repository and the npm
+organisation. None of them has been done, and whether the `getdomovoi` npm organisation name
+is available has not been checked.
+
+1. Create the `getdomovoi` organisation on npmjs.com and give it a maintainer with two-factor
+   authentication enabled.
+2. Configure a trusted publisher for each of `@getdomovoi/protocol` and `@getdomovoi/daemon`:
+   publisher GitHub Actions, organisation `getdomovoi`, repository `domovoi`, workflow filename
+   `release.yml`, environment name `npm`. If npm requires a package to exist before a trusted
+   publisher can be added, publish the first version of each package from a maintainer machine
+   with a short-lived granular access token, in the order protocol then daemon, and revoke the
+   token afterwards; every later version goes through the workflow. Then set each package's
+   publishing access to the strictest setting that still allows trusted publishing.
+3. In the GitHub repository, under Settings, Actions, General, allow GitHub Actions to create
+   and approve pull requests. The version job cannot open the release pull request without it.
+4. Under Settings, Environments, create `npm`. Add the maintainers as required reviewers if a
+   human approval should stand between a merged version pull request and the registry.
+5. Open a pull request that runs `pnpm changeset pre enter alpha` and commits
+   `.changeset/pre.json`, so the first version pull request produces an alpha rather than
+   `0.1.0`. Leave pre mode with `pnpm changeset pre exit` when the first stable release is due.
+6. Under Settings, Secrets and variables, Actions, Variables, add `RELEASE_PUBLISHING` with the
+   value `enabled`. The next push to `main`, or a manual dispatch of the `release` workflow,
+   opens the version pull request from the pending changesets.
+7. Review and merge the version pull request. The pull request is opened with the workflow's
+   own token, so GitHub does not start `ci` on it; the release workflow's `verify` job runs the
+   full suite on the merged commit before anything publishes. Close and reopen the pull request
+   to run `ci` on it as well, or configure a GitHub App token for the version job later.
+
+To pause releases, delete the variable or set it to any other value. Runs already in progress
+finish; the concurrency group prevents two releases from overlapping.
 
 ## Immutable workflow references
 
