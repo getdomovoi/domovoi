@@ -536,6 +536,25 @@ describe("transactional session transfer RPC", () => {
       transferred.transfer.transferId,
       transferred.transfer.manifestDigest,
     )).resolves.toMatchObject({ state: "unknown" })
+    await expect(call("session.send", {
+      sessionId: session.id,
+      prompt: "keep working",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "This session belongs to another machine and is read-only here",
+      },
+    })
+    await expect(call("session.archive", {
+      sessionId: session.id,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "This session belongs to another machine and is read-only here",
+      },
+    })
     socket.close()
   })
 })

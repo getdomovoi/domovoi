@@ -267,10 +267,28 @@ function permissionViolation(runtime: Runtime, agent: AgentAdapter): string | un
   return `${providerName} does not support enforceable Build auto`
 }
 
-function sessionIsArchiveReadOnly(
+function sessionReadOnlyMessage(
+  session: WorkspaceSnapshot["sessions"][number] | undefined,
+): string | undefined {
+  if (session?.state === "archiving" || session?.state === "archived") {
+    return "Archived sessions are read-only"
+  }
+  if (session?.state === "transferring") {
+    return "Session ownership is moving, so this session is read-only"
+  }
+  if (session?.state === "transferred") {
+    return "This session belongs to another machine and is read-only here"
+  }
+  if (session?.state === "ownership-conflict") {
+    return "This session has conflicting owners and is read-only"
+  }
+  return undefined
+}
+
+function sessionIsReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
-  return session?.state === "archiving" || session?.state === "archived"
+  return sessionReadOnlyMessage(session) !== undefined
 }
 
 function webSocketPayloadByteLength(data: WebSocket.RawData): number {
@@ -1627,6 +1645,7 @@ export class DomovoiDaemon {
       { client: params.client, ...(clientId ? { clientId } : {}) },
     )
     await this.#persistTransferSnapshot(frozen)
+    this.#closeSessionTerminals(sourceSession.id)
 
     let packaged: ReturnType<typeof createSessionTransferPackage> | undefined
     let checkpointCommit = sourceSession.baseCommit ?? "0".repeat(40)
@@ -2450,8 +2469,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -3793,7 +3812,7 @@ export class DomovoiDaemon {
       if (method === "system.pauseAll") {
         const params = paramsResult.data as RpcParams<"system.pauseAll">
         changed = await this.#pauseSessions(this.#snapshot.sessions.filter(
-          (session) => !sessionIsArchiveReadOnly(session)
+          (session) => !sessionIsReadOnly(session)
             && session.providerThreadId
             && session.activeTurnId,
         ), params.client)
@@ -3806,8 +3825,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         changed = await this.#pauseSessions(
@@ -3823,6 +3842,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
+          return
+        }
         await this.#archiveSession(session.id, params.client)
         changed = true
       }
@@ -3832,8 +3855,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const artifact = this.#snapshot.artifacts.find(
@@ -3924,8 +3947,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === annotation.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const createdAt = new Date().toISOString()
@@ -3951,8 +3974,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === annotation.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const changedAt = new Date().toISOString()
@@ -3983,8 +4006,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const currentIndex = this.#snapshot.workingPlans.findIndex(
@@ -4079,8 +4102,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const currentIndex = this.#snapshot.workingPlans.findIndex(
@@ -4155,8 +4178,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === approval.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (approval.risk === "hard-gate" && params.decision === "always-project") {
@@ -4297,8 +4320,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         const crossesAskBoundary = (session.runtime.permissionMode === "ask")
@@ -4461,8 +4484,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session.workspacePath) {
@@ -4773,8 +4796,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        if (sessionIsArchiveReadOnly(source)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(source)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(source)!)
           return
         }
         if (source.activeTurnId || source.state === "active") {
@@ -4957,8 +4980,8 @@ export class DomovoiDaemon {
       if (method === "session.send") {
         const params = paramsResult.data as RpcParams<"session.send">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath || !session.providerThreadId) {
@@ -5190,8 +5213,8 @@ export class DomovoiDaemon {
       if (method === "checkpoint.create") {
         const params = paramsResult.data as RpcParams<"checkpoint.create">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -5236,8 +5259,8 @@ export class DomovoiDaemon {
       if (method === "checkpoint.restore") {
         const params = paramsResult.data as RpcParams<"checkpoint.restore">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (session?.state === "archiving" || session?.state === "archived") {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -5319,8 +5342,8 @@ export class DomovoiDaemon {
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
-        if (sessionIsArchiveReadOnly(session)) {
-          this.#error(socket, request.id, invalidParams, "Archived sessions are read-only")
+        if (sessionIsReadOnly(session)) {
+          this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
         if (!session?.workspacePath) {
@@ -5462,7 +5485,7 @@ export class DomovoiDaemon {
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
     )
     if (!session) return
-    if (session.state === "archiving" || session.state === "archived") return
+    if (sessionIsReadOnly(session)) return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
     if (event.type === "usage") {
@@ -6002,7 +6025,7 @@ export class DomovoiDaemon {
     const failures: SystemEmergencyStopResult["failures"] = []
     const affectedSessionIds = new Set<string>()
     const active = this.#snapshot.sessions.filter(
-      (session) => !sessionIsArchiveReadOnly(session)
+      (session) => !sessionIsReadOnly(session)
         && session.providerThreadId
         && session.activeTurnId,
     )
@@ -6164,7 +6187,7 @@ export class DomovoiDaemon {
 
     for (const sessionId of affectedSessionIds) {
       const session = this.#snapshot.sessions.find(({ id }) => id === sessionId)
-      if (!session || sessionIsArchiveReadOnly(session)) continue
+      if (!session || sessionIsReadOnly(session)) continue
       this.#snapshot.thread.push({
         id: `system-${randomUUID()}`,
         sessionId,
@@ -6631,7 +6654,7 @@ export class DomovoiDaemon {
 
   #syncArtifactWatchers(): void {
     const liveSessions = new Map(this.#snapshot.sessions.flatMap((session) =>
-      session.workspacePath && !sessionIsArchiveReadOnly(session)
+      session.workspacePath && !sessionIsReadOnly(session)
         ? [[session.id, resolve(session.workspacePath)] as const]
         : []
     ))
@@ -6670,7 +6693,7 @@ export class DomovoiDaemon {
       candidate.id === sessionId
       && candidate.workspacePath
       && resolve(candidate.workspacePath) === root
-      && !sessionIsArchiveReadOnly(candidate)
+      && !sessionIsReadOnly(candidate)
     )
     if (!session) return
     const lexicalPath = resolveInside(root, change.path)
