@@ -14,6 +14,7 @@ const device = {
   id: `device-${"a".repeat(32)}`,
   label: "studio-ipad",
   pairedAt: "2026-08-31T12:00:00.000Z",
+  binding: { kind: "client" as const, client: "phone" as const },
 }
 
 describe("pairedDeviceSchema", () => {
@@ -32,7 +33,10 @@ describe("pairedDeviceSchema", () => {
 
   it("explains a credential revoked by the identity-binding migration", () => {
     const migrated = {
-      ...device,
+      id: device.id,
+      label: device.label,
+      pairedAt: device.pairedAt,
+      binding: { kind: "unbound" as const, previousRole: "unknown" as const },
       revokedAt: "2026-09-04T00:00:00.000Z",
       revocationReason: "legacy-unbound-credential",
     }
@@ -41,6 +45,56 @@ describe("pairedDeviceSchema", () => {
     expect(pairedDeviceSchema.safeParse({
       ...device,
       revocationReason: "legacy-unbound-credential",
+    }).success).toBe(false)
+  })
+
+  it("preserves a client credential retired before client-kind binding", () => {
+    const migrated = {
+      id: device.id,
+      label: device.label,
+      pairedAt: device.pairedAt,
+      binding: { kind: "unbound" as const, previousRole: "client" as const },
+      revokedAt: "2026-09-04T00:00:00.000Z",
+      revocationReason: "legacy-unbound-client-kind",
+    }
+
+    expect(pairedDeviceSchema.parse(migrated)).toEqual(migrated)
+  })
+
+  it("requires migration reasons to match an inactive unbound role", () => {
+    const revokedAt = "2026-09-04T00:00:00.000Z"
+    expect(pairedDeviceSchema.safeParse({
+      ...device,
+      revokedAt,
+      revocationReason: "legacy-unbound-client-kind",
+    }).success).toBe(false)
+    expect(pairedDeviceSchema.safeParse({
+      ...device,
+      binding: { kind: "unbound", previousRole: "client" },
+    }).success).toBe(false)
+    expect(pairedDeviceSchema.safeParse({
+      ...device,
+      binding: { kind: "unbound", previousRole: "client" },
+      revokedAt,
+      revocationReason: "legacy-unbound-credential",
+    }).success).toBe(false)
+    expect(pairedDeviceSchema.safeParse({
+      ...device,
+      binding: { kind: "unbound", previousRole: "unknown" },
+      revokedAt,
+      revocationReason: "legacy-unbound-client-kind",
+    }).success).toBe(false)
+  })
+
+  it("describes a machine credential with its bound machine identity", () => {
+    const machine = {
+      ...device,
+      binding: { kind: "machine" as const, machineId: `machine-${"b".repeat(32)}` },
+    }
+    expect(pairedDeviceSchema.parse(machine)).toEqual(machine)
+    expect(pairedDeviceSchema.safeParse({
+      ...machine,
+      binding: { kind: "machine" },
     }).success).toBe(false)
   })
 
