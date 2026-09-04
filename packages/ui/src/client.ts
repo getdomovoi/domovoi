@@ -49,6 +49,8 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import { Deadline, DeadlineExceededError, deadlineBudget, describeTarget } from "./deadline.js"
+
 export class DaemonRpcError extends Error {
   readonly code: number
 
@@ -69,21 +71,43 @@ export class ProjectSwitchConfirmationError extends Error {
   }
 }
 
-export class DomovoiRpcTimeoutError extends Error {
+export class DomovoiRpcTimeoutError extends DeadlineExceededError {
   readonly method: RpcMethod
   readonly timeoutMs: number
 
-  constructor(method: RpcMethod, timeoutMs: number) {
-    super(`Daemon RPC request ${method} timed out after ${timeoutMs}ms`)
+  constructor(method: RpcMethod, target: string, timeoutMs: number) {
+    super(method, target, timeoutMs)
+    this.message = `Daemon RPC request ${method} timed out after ${timeoutMs}ms`
     this.name = "DomovoiRpcTimeoutError"
     this.method = method
     this.timeoutMs = timeoutMs
   }
 }
 
+export type DomovoiConnectStage = "open" | "hello"
+
+export class DomovoiConnectTimeoutError extends DeadlineExceededError {
+  override readonly stage: DomovoiConnectStage
+
+  constructor(stage: DomovoiConnectStage, target: string, budgetMs: number) {
+    super(stage, target, budgetMs)
+    this.name = "DomovoiConnectTimeoutError"
+    this.stage = stage
+  }
+}
+
+// A caller's deadline bounds the request from its side; the client's own
+// request budget still applies, so the request ends at whichever comes first.
 export type DomovoiRequestOptions = {
-  timeoutMs?: number
+  deadline?: Deadline
   signal?: AbortSignal
+}
+
+// Neither budget has a default: a client built without them does not compile,
+// so no connection or request can be left waiting without end by omission.
+export type DomovoiClientBudgets = {
+  connectMs: number
+  requestMs: number
 }
 
 type PendingRequest = {
@@ -100,35 +124,23 @@ export type DomovoiReconnectScheduler = {
   clearTimeout: (timer: DomovoiReconnectTimer) => void
 }
 
-type DomovoiClientOptions = {
+export type DomovoiClientOptions = {
+  budgets: DomovoiClientBudgets
   reconnectDelayMs?: number
   reconnectMaxDelayMs?: number
   reconnectJitterRatio?: number
   random?: () => number
   scheduler?: DomovoiReconnectScheduler
-  requestTimeoutMs?: number
   authToken?: string
   clientId?: string
 }
 
-const defaultRequestTimeoutMs = 120_000
-const maximumRequestTimeoutMs = 2_147_483_647
 const defaultReconnectDelayMs = 1_000
 const defaultReconnectMaxDelayMs = 30_000
 const defaultReconnectJitterRatio = 0.2
 const defaultReconnectScheduler: DomovoiReconnectScheduler = {
   setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
   clearTimeout: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>),
-}
-
-function requestTimeout(value: number | undefined, fallback: number): number {
-  const timeoutMs = value ?? fallback
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > maximumRequestTimeoutMs) {
-    throw new RangeError(
-      `RPC request timeout must be between 1 and ${maximumRequestTimeoutMs} milliseconds`,
-    )
-  }
-  return timeoutMs
 }
 
 function requestAbortError(signal: AbortSignal): Error {
@@ -160,12 +172,17 @@ export class DomovoiClient extends EventTarget {
   #authenticationTerminal = false
   #shouldReconnect = false
   #authToken: string | undefined
-  #requestTimeoutMs: number
+  #budgets: DomovoiClientBudgets
+  #socketListeners: AbortController | undefined
 
-  constructor(url: string, kind: ClientKind, options: DomovoiClientOptions = {}) {
+  constructor(url: string, kind: ClientKind, options: DomovoiClientOptions) {
     super()
     this.url = url
     this.kind = kind
+    this.#budgets = {
+      connectMs: deadlineBudget(options.budgets.connectMs, "Connect budget"),
+      requestMs: deadlineBudget(options.budgets.requestMs, "Request budget"),
+    }
     this.clientId = options.clientId ?? crypto.randomUUID()
     this.#reconnectDelayMs = options.reconnectDelayMs ?? defaultReconnectDelayMs
     this.#reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? defaultReconnectMaxDelayMs
@@ -188,55 +205,84 @@ export class DomovoiClient extends EventTarget {
     }
     this.#random = options.random ?? Math.random
     this.#scheduler = options.scheduler ?? defaultReconnectScheduler
-    this.#requestTimeoutMs = requestTimeout(options.requestTimeoutMs, defaultRequestTimeoutMs)
     this.#authToken = options.authToken
   }
 
-  connect(): Promise<WorkspaceSnapshot> {
+  // A caller that is trying several routes for one connection passes the
+  // deadline they share; this attempt then gets the smaller of what remains
+  // and the client's own connect budget. Reconnect attempts the client starts
+  // on its own each get the full connect budget.
+  connect(deadline?: Deadline): Promise<WorkspaceSnapshot> {
     this.#shouldReconnect = true
     this.#authenticationTerminal = false
     // A connection asked for explicitly is a fresh start, so the next failure
     // waits the first backoff rather than one escalated by earlier attempts.
     this.#reconnectAttempt = 0
     this.#clearReconnectTimer()
-    return this.#open()
+    return this.#open(deadline)
   }
 
-  #open(): Promise<WorkspaceSnapshot> {
+  #open(shared?: Deadline): Promise<WorkspaceSnapshot> {
     if (this.#opening) return this.#opening
     if (this.#socket) return Promise.reject(new Error("Daemon connection is already open"))
 
+    // The clock starts before the socket exists, so open and hello draw on the
+    // one budget and a slow open leaves the hello only what it did not use.
+    const deadline = shared
+      ? shared.limit(this.#budgets.connectMs)
+      : Deadline.start(this.#budgets.connectMs)
+    if (deadline.expired) {
+      return Promise.reject(
+        new DomovoiConnectTimeoutError("open", describeTarget(this.url), deadline.budgetMs),
+      )
+    }
+
     const generation = ++this.#connectionGeneration
+    const listeners = new AbortController()
+    this.#socketListeners = listeners
     const opening = new Promise<WorkspaceSnapshot>((resolve, reject) => {
       const socket = new WebSocket(this.url)
       this.#socket = socket
       let opening = true
+      let stage: DomovoiConnectStage = "open"
       const rejectOpening = (error: Error) => {
         if (!opening) return
         opening = false
         reject(error)
       }
       this.#cancelOpening = rejectOpening
+      const current = () => socket === this.#socket && generation === this.#connectionGeneration
+      deadline.signal.addEventListener("abort", () => {
+        if (!current()) return
+        // Everything this attempt owns goes before the next one starts: the
+        // socket is detached so its late events find nothing, its listeners
+        // are removed, and the hello it may have sent is no longer awaited.
+        const error = new DomovoiConnectTimeoutError(stage, describeTarget(this.url), deadline.budgetMs)
+        this.#socket = undefined
+        listeners.abort()
+        rejectOpening(error)
+        this.#rejectPending(error)
+        socket.close()
+        this.dispatchEvent(new Event("disconnected"))
+        this.#scheduleReconnect()
+      }, { once: true, signal: listeners.signal })
       socket.addEventListener("error", () => {
-        if (socket !== this.#socket || generation !== this.#connectionGeneration) return
+        if (!current()) return
         rejectOpening(new Error(`Cannot reach ${this.url}`))
         socket.close()
-      }, { once: true })
+      }, { once: true, signal: listeners.signal })
       socket.addEventListener(
         "open",
         () => {
-          if (
-            socket !== this.#socket
-            || generation !== this.#connectionGeneration
-            || !this.#shouldReconnect
-          ) return
+          if (!current() || !this.#shouldReconnect) return
+          stage = "hello"
           this.request("system.hello", {
             client: this.kind,
             clientId: this.clientId,
             clientVersion,
             protocolVersion,
             ...(this.#authToken ? { authToken: this.#authToken } : {}),
-          }).then(
+          }, { deadline }).then(
             (snapshot) => {
               if (socket !== this.#socket || generation !== this.#connectionGeneration) return
               opening = false
@@ -253,15 +299,13 @@ export class DomovoiClient extends EventTarget {
             },
           )
         },
-        { once: true },
+        { once: true, signal: listeners.signal },
       )
       socket.addEventListener("message", (event) => {
-        if (socket === this.#socket && generation === this.#connectionGeneration) {
-          this.#receive(String(event.data))
-        }
-      })
+        if (current()) this.#receive(String(event.data))
+      }, { signal: listeners.signal })
       socket.addEventListener("close", (event) => {
-        if (socket !== this.#socket || generation !== this.#connectionGeneration) return
+        if (!current()) return
         this.#socket = undefined
         const error = new Error("Daemon connection closed")
         rejectOpening(error)
@@ -274,23 +318,17 @@ export class DomovoiClient extends EventTarget {
         }
         this.dispatchEvent(new Event("disconnected"))
         this.#scheduleReconnect()
-      })
+      }, { signal: listeners.signal })
     })
     this.#opening = opening
-    void opening.then(
-      () => {
-        if (this.#opening === opening) {
-          this.#opening = undefined
-          this.#cancelOpening = undefined
-        }
-      },
-      () => {
-        if (this.#opening === opening) {
-          this.#opening = undefined
-          this.#cancelOpening = undefined
-        }
-      },
-    )
+    const settled = () => {
+      deadline.clear()
+      if (this.#opening === opening) {
+        this.#opening = undefined
+        this.#cancelOpening = undefined
+      }
+    }
+    void opening.then(settled, settled)
     return opening
   }
 
@@ -300,6 +338,8 @@ export class DomovoiClient extends EventTarget {
     this.#clearReconnectTimer()
     const socket = this.#socket
     this.#socket = undefined
+    this.#socketListeners?.abort()
+    this.#socketListeners = undefined
     this.#cancelOpening?.(new Error("Daemon connection closed"))
     this.#cancelOpening = undefined
     this.#opening = undefined
@@ -328,10 +368,14 @@ export class DomovoiClient extends EventTarget {
     const parse = typeof parseOrOptions === "function" ? parseOrOptions : undefined
     const options = typeof parseOrOptions === "function" ? requestOptions : (parseOrOptions ?? {})
     const resultParser = parse ?? ((value: unknown) => rpcMethods[method].result.parse(value) as T)
-    const timeoutMs = requestTimeout(options.timeoutMs, this.#requestTimeoutMs)
+    const target = describeTarget(this.url)
     return new Promise((resolve, reject) => {
       if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Daemon connection is not open"))
+        return
+      }
+      if (options.deadline?.expired) {
+        reject(new DomovoiRpcTimeoutError(method, target, options.deadline.budgetMs))
         return
       }
       if (options.signal?.aborted) {
@@ -339,6 +383,9 @@ export class DomovoiClient extends EventTarget {
         return
       }
 
+      const deadline = options.deadline
+        ? options.deadline.limit(this.#budgets.requestMs)
+        : Deadline.start(this.#budgets.requestMs)
       const onAbort = () => {
         const pending = this.#pending.get(id)
         if (!pending) return
@@ -346,8 +393,15 @@ export class DomovoiClient extends EventTarget {
         pending.cleanup()
         pending.reject(requestAbortError(options.signal!))
       }
+      const onExpire = () => {
+        if (this.#pending.get(id) !== pending) return
+        this.#pending.delete(id)
+        pending.cleanup()
+        pending.reject(new DomovoiRpcTimeoutError(method, target, deadline.budgetMs))
+      }
       const cleanup = () => {
-        clearTimeout(timer)
+        deadline.clear()
+        deadline.signal.removeEventListener("abort", onExpire)
         options.signal?.removeEventListener("abort", onAbort)
       }
       const pending: PendingRequest = {
@@ -357,13 +411,12 @@ export class DomovoiClient extends EventTarget {
         cleanup,
       }
       this.#pending.set(id, pending)
-      const timer = setTimeout(() => {
-        if (this.#pending.get(id) !== pending) return
-        this.#pending.delete(id)
-        pending.cleanup()
-        pending.reject(new DomovoiRpcTimeoutError(method, timeoutMs))
-      }, timeoutMs)
+      deadline.signal.addEventListener("abort", onExpire, { once: true })
       options.signal?.addEventListener("abort", onAbort, { once: true })
+      if (deadline.expired) {
+        onExpire()
+        return
+      }
 
       try {
         this.#socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))

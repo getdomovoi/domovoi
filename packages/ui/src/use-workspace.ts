@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { DomovoiClient, type DomovoiRequestOptions } from "./client"
+import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
+import { Deadline } from "./deadline"
 import { rpcMethods } from "@getdomovoi/protocol"
 import { openClaimConnection } from "./claim-socket"
 import { machineHelloParams, pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
@@ -63,6 +64,18 @@ export function claimEmergencyStop<T>(
   return true
 }
 
+// Every wait on the daemon is bounded here, where the connection is made:
+// establishing a socket and greeting the daemon share one budget, each request
+// gets its own, and pairing another machine is one budget across its stages.
+// The reconnect loop itself runs for the life of the app; each attempt it
+// makes gets the connect budget afresh.
+export const workspaceBudgets: DomovoiClientBudgets = {
+  connectMs: 30_000,
+  requestMs: 120_000,
+}
+export const pairingBudgetMs = 60_000
+export const machineDialBudgetMs = 45_000
+
 export function useWorkspace(url: string, kind: ClientKind, authToken?: string) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
@@ -110,6 +123,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     setAuthenticationRequired(null)
     setWorkspace({ target, snapshot: null })
     const client = new DomovoiClient(url, kind, {
+      budgets: workspaceBudgets,
       ...(authToken ? { authToken } : {}),
       clientId: clientIdRef.current,
     })
@@ -519,29 +533,36 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     if (!client) throw new Error("Daemon connection is not open")
     const localMachineId = snapshot?.machine.id
     if (!localMachineId) throw new Error("This machine has no identity yet")
-    return completePairing({
-      request,
-      // The credential is issued to this daemon, so the target binds it to this
-      // machine rather than to whoever happens to present it later.
-      machineId: localMachineId,
-      open: openClaimConnection,
-      identify: async ({ endpoint, credential }) => {
-        // The credential that came back is bound to a machine, and the daemon
-        // refuses a machine credential presented as a person's client, so this
-        // greets as a machine rather than as this desktop or browser.
-        const connection = await openClaimConnection(endpoint)
-        try {
-          const greeting = rpcMethods["system.hello"].result.parse(await connection.call(
-            "system.hello",
-            machineHelloParams(credential),
-          ))
-          return { id: greeting.machine.id, name: greeting.machine.name }
-        } finally {
-          connection.close()
-        }
-      },
-      saveCredential: (saved) => client.saveMachineCredential(saved).then(() => {}),
-    })
+    const deadline = Deadline.start(pairingBudgetMs)
+    try {
+      return await completePairing({
+        request,
+        // The credential is issued to this daemon, so the target binds it to this
+        // machine rather than to whoever happens to present it later.
+        machineId: localMachineId,
+        deadline,
+        open: openClaimConnection,
+        identify: async ({ endpoint, credential, deadline: remaining }) => {
+          // The credential that came back is bound to a machine, and the daemon
+          // refuses a machine credential presented as a person's client, so this
+          // greets as a machine rather than as this desktop or browser.
+          const connection = await openClaimConnection(endpoint, remaining)
+          try {
+            const greeting = rpcMethods["system.hello"].result.parse(await connection.call(
+              "system.hello",
+              machineHelloParams(credential),
+            ))
+            return { id: greeting.machine.id, name: greeting.machine.name }
+          } finally {
+            connection.close()
+          }
+        },
+        saveCredential: ({ machineId, credential, deadline: remaining }) =>
+          client.saveMachineCredential({ machineId, credential }, { deadline: remaining }).then(() => {}),
+      })
+    } finally {
+      deadline.clear()
+    }
   }, [snapshot?.machine.id])
 
   const authorizeArtifact = useCallback(async (

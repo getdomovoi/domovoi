@@ -1,5 +1,6 @@
 import { devicePairResultSchema, type DevicePairResult, type RpcParams } from "@getdomovoi/protocol"
 
+import type { Deadline } from "./deadline.js"
 import { isLoopbackEndpoint } from "./transport-dial.js"
 
 export class MachineClaimError extends Error {
@@ -19,12 +20,15 @@ export type ClaimConnection = {
   close: () => void
 }
 
+// The deadline is the pairing's whole budget: the socket open, the claim, and
+// anything the caller does with the result afterwards all draw on it.
 export async function claimMachine(input: {
   endpoint: string
   code: string
   label: string
   machineId: string
-  open: (endpoint: string) => Promise<ClaimConnection>
+  deadline: Deadline
+  open: (endpoint: string, deadline: Deadline) => Promise<ClaimConnection>
 }): Promise<DevicePairResult> {
   // Parsed rather than prefix-matched, so an address with no machine behind it
   // never reaches the network layer.
@@ -43,7 +47,7 @@ export async function claimMachine(input: {
     throw new MachineClaimError("Refusing to send a pairing code over an unencrypted connection")
   }
 
-  const connection = await input.open(input.endpoint)
+  const connection = await input.open(input.endpoint, input.deadline)
   let claimed: unknown
   try {
     claimed = await connection.call("device.claim", {
