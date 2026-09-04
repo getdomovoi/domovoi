@@ -1667,6 +1667,19 @@ export class DomovoiDaemon {
     })
   }
 
+  async #removeIncomingTransferPackage(
+    transferId: string,
+    manifestDigest: string,
+  ): Promise<void> {
+    try {
+      await this.#transferTransactions.remove(transferId, manifestDigest)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.#reportError("Domovoi could not remove an imported transfer package", error)
+      }
+    }
+  }
+
   #recordVersionedTransferReceipt(input: {
     sessionId: string
     targetMachineId: string
@@ -3501,6 +3514,10 @@ export class DomovoiDaemon {
             sourceMachineId: actor.machineId,
           })
           if (durable?.targetMachineId === this.#snapshot.machine.id) {
+            await this.#removeIncomingTransferPackage(
+              params.manifest.transferId,
+              params.manifestDigest,
+            )
             this.#send(socket, {
               jsonrpc: "2.0",
               id: request.id,
@@ -3589,6 +3606,10 @@ export class DomovoiDaemon {
           sourceMachineId: actor.machineId,
         })
         if (durable?.targetMachineId === this.#snapshot.machine.id) {
+          await this.#removeIncomingTransferPackage(
+            params.transferId,
+            params.manifestDigest,
+          )
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -3743,6 +3764,15 @@ export class DomovoiDaemon {
           this.#sessionHistory.invalidate(manifest.sessionId)
           this.#syncArtifactWatchers()
           this.#broadcastSnapshot()
+        }
+        if (committed.result.state === "committed") {
+          // The imported session and ownership row are now authoritative.
+          // Keep replay idempotent through that canonical state instead of
+          // retaining a second complete copy in the transaction journal.
+          await this.#removeIncomingTransferPackage(
+            params.transferId,
+            params.manifestDigest,
+          )
         }
         this.#send(socket, {
           jsonrpc: "2.0",

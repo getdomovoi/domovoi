@@ -194,6 +194,87 @@ async function openClient(
   return socket
 }
 
+async function preparedTargetTransfer() {
+  const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
+  scratchDirectories.push(scratch)
+  const transactions = new FileTransferTransactions(join(scratch, "transactions"))
+  const store = new SqliteWorkspaceStore(":memory:", targetSnapshot())
+  const daemon = new DomovoiDaemon({
+    port: 0,
+    store,
+    authToken: "correct-horse-battery-staple",
+    workspaceService: {
+      inspect: async (path: string) => ({
+        root: path,
+        name: path === "/target/project" ? "project" : "other",
+        branch: "main",
+        head: baseCommit,
+      }),
+      createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+      removeSessionWorkspace: async () => {},
+      checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+      restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+      projectHasLineage: async () => true,
+      restoreSessionFromBundle: async (_path: string, sessionId: string) => ({
+        path: `/target/${sessionId}`,
+        branch: `domovoi/${sessionId}`,
+        baseCommit: checkpointCommit,
+      }),
+    } satisfies WorkspaceService,
+    transferTransactions: transactions,
+    artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+  })
+  running.push(daemon)
+  await daemon.start()
+  const { socket } = await openMachine(daemon, store)
+  const call = rpc(socket)
+  const packaged = await packagedTransfer()
+
+  await expect(call("transfer.preflight", {
+    contractVersion: packaged.manifest.version,
+    sessionId: packaged.manifest.sessionId,
+    sourceMachineId,
+    sourceProjectId: packaged.manifest.project.sourceProjectId,
+    lineageCommit: baseCommit,
+    ownershipGeneration: packaged.manifest.ownership.fromGeneration,
+    method: packaged.manifest.repository.method,
+    coverage: packaged.manifest.coverage,
+    client: "desktop",
+  })).resolves.toMatchObject({
+    result: { allowed: true, targetProjectId: "project-target" },
+  })
+  await expect(call("transfer.prepare", {
+    manifest: packaged.manifest,
+    manifestDigest: packaged.manifestDigest,
+    client: "desktop",
+  })).resolves.toMatchObject({
+    result: { state: "receiving" },
+  })
+  for (const entry of packaged.members) {
+    await call("transfer.member", {
+      transferId: packaged.manifest.transferId,
+      memberId: entry.member.memberId,
+      sequence: 0,
+      bytes: entry.bytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+  }
+  return {
+    call,
+    daemon,
+    packaged,
+    socket,
+    store,
+    transactions,
+    commitParams: {
+      transferId: packaged.manifest.transferId,
+      manifestDigest: packaged.manifestDigest,
+      client: "desktop",
+    },
+  }
+}
+
 describe("transactional session transfer RPC", () => {
   it("requires a hello identity before an authenticated socket can call RPCs", async () => {
     const { source } = await transferFixture()
@@ -1154,79 +1235,40 @@ describe("transactional session transfer RPC", () => {
     socket.close()
   })
 
-  it("keeps an imported owner authoritative when the transaction journal commit fails", async () => {
-    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
-    scratchDirectories.push(scratch)
-    const transactions = new FileTransferTransactions(join(scratch, "transactions"))
-    const snapshot = targetSnapshot()
-    const workspaceService = {
-      inspect: async (path: string) => ({
-        root: path,
-        name: path === "/target/project" ? "project" : "other",
-        branch: "main",
-        head: baseCommit,
-      }),
-      createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
-      removeSessionWorkspace: async () => {},
-      checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
-      restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
-      projectHasLineage: async () => true,
-      restoreSessionFromBundle: async (_path: string, sessionId: string) => ({
-        path: `/target/${sessionId}`,
-        branch: `domovoi/${sessionId}`,
-        baseCommit: checkpointCommit,
-      }),
-    } satisfies WorkspaceService
-    const store = new SqliteWorkspaceStore(":memory:", snapshot)
-    const daemon = new DomovoiDaemon({
-      port: 0,
-      store,
-      authToken: "correct-horse-battery-staple",
-      workspaceService,
-      transferTransactions: transactions,
-      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
-    })
-    running.push(daemon)
-    await daemon.start()
-    const { socket } = await openMachine(daemon, store)
-    const call = rpc(socket)
-    const packaged = await packagedTransfer()
+  it("removes imported package bytes after canonical ownership commits", async () => {
+    const { call, commitParams, packaged, socket, transactions } =
+      await preparedTargetTransfer()
+    const remove = vi.spyOn(transactions, "remove")
 
-    await expect(call("transfer.preflight", {
-      contractVersion: packaged.manifest.version,
-      sessionId: packaged.manifest.sessionId,
-      sourceMachineId,
-      sourceProjectId: packaged.manifest.project.sourceProjectId,
-      lineageCommit: baseCommit,
-      ownershipGeneration: packaged.manifest.ownership.fromGeneration,
-      method: packaged.manifest.repository.method,
-      coverage: packaged.manifest.coverage,
-      client: "desktop",
-    })).resolves.toMatchObject({
-      result: { allowed: true, targetProjectId: "project-target" },
+    await expect(call("transfer.commit", commitParams)).resolves.toMatchObject({
+      result: {
+        state: "committed",
+        checkpointCommit,
+        ownershipGeneration: 2,
+      },
     })
-    await expect(call("transfer.prepare", {
-      manifest: packaged.manifest,
-      manifestDigest: packaged.manifestDigest,
-      client: "desktop",
-    })).resolves.toMatchObject({
-      result: { state: "receiving" },
+
+    expect(remove).toHaveBeenCalledWith(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )
+    await expect(transactions.status(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )).resolves.toMatchObject({ state: "unknown" })
+    await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
+      result: {
+        state: "committed",
+        checkpointCommit,
+        ownershipGeneration: 2,
+      },
     })
-    for (const entry of packaged.members) {
-      await call("transfer.member", {
-        transferId: packaged.manifest.transferId,
-        memberId: entry.member.memberId,
-        sequence: 0,
-        bytes: entry.bytes.toString("base64"),
-        final: true,
-        client: "desktop",
-      })
-    }
-    const commitParams = {
-      transferId: packaged.manifest.transferId,
-      manifestDigest: packaged.manifestDigest,
-      client: "desktop",
-    }
+    socket.close()
+  })
+
+  it("keeps an imported owner authoritative when the transaction journal commit fails", async () => {
+    const { call, commitParams, daemon, packaged, socket, store, transactions } =
+      await preparedTargetTransfer()
     vi.spyOn(transactions, "markCommitted")
       .mockRejectedValueOnce(new Error("journal unavailable after snapshot commit"))
     await expect(call("transfer.commit", commitParams)).resolves.toMatchObject({
@@ -1248,6 +1290,10 @@ describe("transactional session transfer RPC", () => {
         ownershipGeneration: 2,
       },
     })
+    await expect(transactions.status(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )).resolves.toMatchObject({ state: "unknown" })
     await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
       result: { state: "committed" },
     })
@@ -1267,7 +1313,6 @@ describe("transactional session transfer RPC", () => {
     expect(imported.thread.filter((item) => item.id.startsWith("system-transfer-")))
       .toHaveLength(1)
 
-    await transactions.remove(packaged.manifest.transferId, packaged.manifestDigest)
     const clientSocket = await openClient(daemon)
     const clientCall = rpc(clientSocket)
     const confirmation = await clientCall("project.open", {
