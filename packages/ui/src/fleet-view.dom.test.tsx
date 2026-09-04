@@ -45,6 +45,7 @@ const device: PairedDeviceSummary = {
   id: `device-${"d".repeat(32)}`,
   label: "studio-ipad",
   pairedAt: "2026-08-20T09:00:00.000Z",
+  binding: { kind: "client", client: "tablet" },
   lastSeenAt: "2026-08-31T11:00:00.000Z",
 }
 
@@ -149,21 +150,51 @@ it("revokes a device only after the confirmation is accepted", async () => {
   await waitFor(() => {
     expect(screen.getByRole("row", { name: /studio-ipad/ }).textContent).toContain("Revoked")
   })
+  // A deliberate revoke is not an upgrade, so it must not borrow the copy that
+  // tells the operator to pair the device again.
+  const row = screen.getByRole("row", { name: /studio-ipad/ })
+  expect(row.textContent).not.toContain("Revoked by upgrade")
+  expect(row.textContent).not.toContain("predates bound credentials")
 })
 
-it("says why an upgrade revoked a pairing, so it is not read as a deliberate revoke", async () => {
+// Two migrations bound credentials, and a person who skipped both would
+// otherwise be told their pairing broke twice for two different reasons. The
+// record keeps them apart for auditing; the row tells one story with one remedy.
+it("tells one upgrade story for either credential migration", async () => {
   renderFleet({
-    devices: [{
-      ...device,
-      revokedAt: "2026-09-03T08:00:00.000Z",
-      revocationReason: "legacy-unbound-credential",
-    }],
+    devices: [
+      {
+        ...device,
+        id: `device-${"1".repeat(32)}`,
+        label: "unbound-credential-ipad",
+        binding: { kind: "unbound", previousRole: "unknown" },
+        revokedAt: "2026-09-03T08:00:00.000Z",
+        revocationReason: "legacy-unbound-credential",
+      },
+      {
+        ...device,
+        id: `device-${"2".repeat(32)}`,
+        label: "unbound-client-kind-ipad",
+        binding: { kind: "unbound", previousRole: "client" },
+        revokedAt: "2026-09-03T08:00:00.000Z",
+        revocationReason: "legacy-unbound-client-kind",
+      },
+    ],
   })
 
-  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  const rows = [
+    await screen.findByRole("row", { name: /unbound-credential-ipad/ }),
+    await screen.findByRole("row", { name: /unbound-client-kind-ipad/ }),
+  ]
+  const explanations = rows.map((row) => {
+    expect(within(row).getByText("Revoked by upgrade")).toBeTruthy()
+    return within(row).getByText(/predates bound credentials/).textContent
+  })
 
-  expect(row.textContent).toContain("Revoked by upgrade")
-  expect(row.textContent).toContain("Pair this device again")
+  expect(explanations[0]).toBe(
+    "This pairing predates bound credentials. Pair this device again to restore it.",
+  )
+  expect(explanations[1]).toBe(explanations[0])
 })
 
 it("keeps the device when the confirmation is cancelled", async () => {

@@ -69,8 +69,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for machine-bound pairing", () => {
-    expect(protocolVersion).toBe("0.2.0")
+  it("uses a breaking minor for fully bound device credentials", () => {
+    expect(protocolVersion).toBe("0.3.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 
@@ -1086,17 +1086,18 @@ describe("workspace protocol", () => {
   })
 
   it("accepts an optional daemon credential during hello", () => {
+    const authToken = "n".repeat(43)
     expect(helloParamsSchema.parse({
       client: "web",
       clientVersion: "0.0.1",
       protocolVersion: "0.1.0",
-      authToken: "token-with-enough-entropy",
-    }).authToken).toBe("token-with-enough-entropy")
+      authToken,
+    }).authToken).toBe(authToken)
     expect(helloParamsSchema.safeParse({
       client: "web",
       clientVersion: "0.0.1",
       protocolVersion: "0.1.0",
-      authToken: "",
+      authToken: "short",
     }).success).toBe(false)
   })
 

@@ -48,8 +48,9 @@ export class PairingCodeService {
   issue(nowMs: number): { code: string; expiresAt: string } {
     const words = Array.from({ length: 3 }, () => codeWords[randomInt(codeWords.length)])
     const code = `${words.join("-")}-${String(randomInt(10, 100))}`
-    // Only the digest is kept, so a memory dump of the daemon does not hand
-    // over a usable code, and only one pairing is ever open at a time.
+    // Keep plaintext out of incidental inspection, but do not treat this
+    // low-entropy digest as protection from an offline search. Pairing stays
+    // direct-only, with online guesses bounded by maximumPairingAttempts.
     this.#open = {
       digest: digestOf(code),
       expiresAtMs: nowMs + pairingCodeTtlMs,

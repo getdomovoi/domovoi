@@ -86,6 +86,10 @@ const skillSecurityMetadata = {
 }
 const claimedMachineId = `machine-${"c".repeat(32)}`
 
+function testAuthToken(label: string): string {
+  return createHash("sha256").update(label).digest("base64url")
+}
+
 describe("helloProtocolCompatibility", () => {
   it("keeps a versionless client on its historical protocol after a breaking minor", () => {
     expect(helloProtocolCompatibility("0.2.0", undefined)).toEqual({
@@ -121,7 +125,11 @@ function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   }
 }
 
-function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
+function authenticatedSocket(
+  daemon: DomovoiDaemon,
+  url: string,
+  client: "desktop" | "web" | "tablet" | "phone" | "cli" = "desktop",
+): WebSocket {
   const socket = new WebSocket(url, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
   })
@@ -166,8 +174,8 @@ function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
           id: automaticHelloId,
           method: "system.hello",
           params: {
-            client: "desktop",
-            clientId: "desktop-test-client",
+            client,
+            clientId: `${client}-test-client`,
             clientVersion: "0.0.1",
             protocolVersion,
           },
@@ -184,8 +192,8 @@ function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
           id: automaticHelloId,
           method: "system.hello",
           params: {
-            client: "desktop",
-            clientId: "desktop-test-client",
+            client,
+            clientId: `${client}-test-client`,
             clientVersion: "0.0.1",
             protocolVersion,
           },
@@ -256,6 +264,14 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it.each(["x", "n".repeat(42), "n".repeat(44)])(
+    "refuses a daemon credential without 256 bits: %s",
+    (authToken) => {
+      expect(() => new DomovoiDaemon({ port: 0, authToken }))
+        .toThrow("Daemon credential must be a 43-character base64url value")
+    },
+  )
+
   it("closes a client whose RPC response reaches the outbound high-water boundary", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -1082,7 +1098,7 @@ describe("DomovoiDaemon", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "evidence-token",
+      authToken: testAuthToken("evidence-token"),
       store: { load: () => structuredClone(snapshot), save, close: vi.fn() },
       workspaceService,
     })
@@ -1149,7 +1165,7 @@ describe("DomovoiDaemon", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "unstable-evidence-token",
+      authToken: testAuthToken("unstable-evidence-token"),
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       workspaceService,
     })
@@ -1222,7 +1238,7 @@ describe("DomovoiDaemon", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "evidence-invalid-token",
+      authToken: testAuthToken("evidence-invalid-token"),
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       workspaceService,
     })
@@ -1272,7 +1288,7 @@ describe("DomovoiDaemon", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "evidence-queue-token",
+      authToken: testAuthToken("evidence-queue-token"),
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       workspaceService,
     })
@@ -1317,7 +1333,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 3,
       method: "transfer.fromRef",
-      params: { sessionId: session.id, remote: "origin", client: "desktop" },
+      params: { sessionId: session.id, remote: "origin", initiatedByClient: "desktop" },
     }))
     const retiredBeforeEvidence = await Promise.race([
       retiredTransfer.then(() => true),
@@ -1366,7 +1382,7 @@ describe("DomovoiDaemon", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "evidence-timeout-token",
+      authToken: testAuthToken("evidence-timeout-token"),
       agentTimeoutMs: 10,
       errorSink: vi.fn(),
       store: { load: () => structuredClone(snapshot), save, close: vi.fn() },
@@ -1467,7 +1483,7 @@ describe("DomovoiDaemon", () => {
       }),
       close: vi.fn(async () => { order.push("agent:close") }),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({ port: 0, authToken: "shutdown-token", store, agent })
+    const daemon = new DomovoiDaemon({ port: 0, authToken: testAuthToken("shutdown-token"), store, agent })
     await daemon.start()
     activateTurns()
 
@@ -1506,7 +1522,7 @@ describe("DomovoiDaemon", () => {
     }
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "shutdown-token",
+      authToken: testAuthToken("shutdown-token"),
       statePath: ":memory:",
       providerProbe,
     })
@@ -1579,7 +1595,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "restart-token",
+      authToken: testAuthToken("restart-token"),
       statePath,
       store: new SqliteWorkspaceStore(statePath, snapshot),
       agent,
@@ -2258,7 +2274,7 @@ describe("DomovoiDaemon", () => {
       }),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
-    const daemon = new DomovoiDaemon({ port: 0, authToken: "failure-token", store, agent })
+    const daemon = new DomovoiDaemon({ port: 0, authToken: testAuthToken("failure-token"), store, agent })
     await daemon.start()
     activateTurns()
     listener!({
@@ -2305,7 +2321,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "drain-timeout-token",
+      authToken: testAuthToken("drain-timeout-token"),
       store,
       agent,
       agentTimeoutMs: 100,
@@ -2361,7 +2377,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "save-signal-token",
+      authToken: testAuthToken("save-signal-token"),
       store,
       agent,
     })
@@ -2994,7 +3010,7 @@ describe("DomovoiDaemon", () => {
     } satisfies AgentAdapter
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "history-token",
+      authToken: testAuthToken("history-token"),
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
     })
@@ -3024,7 +3040,7 @@ describe("DomovoiDaemon", () => {
     const hello = await rpc("system.hello", {
       client: "desktop",
       clientVersion: "0.0.1", protocolVersion,
-      authToken: "history-token",
+      authToken: testAuthToken("history-token"),
     })
     expect((hello.result as { thread: unknown[] }).thread).toHaveLength(100)
 
@@ -3246,7 +3262,7 @@ describe("DomovoiDaemon", () => {
       host: "0.0.0.0",
       port: 0,
       allowRemoteTransport: true,
-      authToken: "remote-daemon-token",
+      authToken: testAuthToken("remote-daemon-token"),
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
     })
@@ -3275,7 +3291,7 @@ describe("DomovoiDaemon", () => {
     await rpc("system.hello", {
       client: "web",
       clientVersion: "0.0.1", protocolVersion,
-      authToken: "remote-daemon-token",
+      authToken: testAuthToken("remote-daemon-token"),
     })
     const accessResponse = await rpc("artifact.authorize", {
       sessionId: artifact.sessionId,
@@ -3389,10 +3405,11 @@ describe("DomovoiDaemon", () => {
 
   it("accepts a paired device credential and rejects it once revoked", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const address = await daemon.start()
-    const paired = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const paired = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    expect(store.devices.list()[0]?.lastSeenAt).toBeUndefined()
 
     const open = (token: string) => {
       const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
@@ -3423,6 +3440,7 @@ describe("DomovoiDaemon", () => {
     await expect(hello(pairedSocket)).resolves.toMatchObject({
       result: { machine: { id: expect.any(String) } },
     })
+    expect(store.devices.list()[0]?.lastSeenAt).toEqual(expect.any(String))
     pairedSocket.close()
 
     store.devices.revoke(paired.device.id)
@@ -3437,15 +3455,67 @@ describe("DomovoiDaemon", () => {
     revokedSocket.close()
   })
 
+  it("derives paired client attribution from the credential binding", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
+    running.push(daemon)
+    const paired = store.devices.pair({
+      label: "studio-phone",
+      binding: { kind: "client", client: "phone" },
+    })
+    const connect = async () => {
+      const { socket, call } = await unauthenticatedSocket(daemon)
+      return { socket, call }
+    }
+    await daemon.start()
+
+    const mismatch = await connect()
+    await expect(mismatch.call(1, "system.hello", {
+      client: "web",
+      clientId: "spoofed-browser",
+      clientVersion: "0.0.1",
+      protocolVersion,
+      authToken: paired.token,
+    })).resolves.toMatchObject({
+      error: { code: -32001, message: "Paired client credential does not match this client" },
+    })
+    expect(store.devices.list()[0]?.lastSeenAt).toBeUndefined()
+    mismatch.socket.close()
+
+    const accepted = await connect()
+    await expect(accepted.call(1, "system.hello", {
+      client: "phone",
+      clientId: "spoofed-client-id",
+      clientVersion: "0.0.1",
+      protocolVersion,
+      authToken: paired.token,
+    })).resolves.toHaveProperty("result")
+    await expect(accepted.call(2, "system.pauseAll", { client: "web" })).resolves.toMatchObject({
+      error: { code: -32602, message: "RPC client does not match the authenticated client" },
+    })
+    await expect(accepted.call(3, "device.list", {})).resolves.toHaveProperty("result")
+
+    const entry = store.auditLog.query({ action: "device.list" }).entries[0]
+    expect(entry?.actor).toMatchObject({
+      kind: "client",
+      client: "phone",
+      clientId: paired.device.id,
+      connectionId: expect.any(String),
+    })
+    expect(JSON.stringify(entry)).not.toContain("spoofed-client-id")
+    expect(store.devices.list()[0]?.lastSeenAt).toEqual(expect.any(String))
+    accepted.socket.close()
+  })
+
   it("derives machine actors from machine-bound credentials", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const machineId = `machine-${"d".repeat(32)}`
     const clientCredential = store.devices.pair({
       label: "studio-ipad",
-      binding: { kind: "client" },
+      binding: { kind: "client", client: "desktop" },
     })
     const machineCredential = store.devices.pair({
       label: "studio-mac",
@@ -3486,10 +3556,10 @@ describe("DomovoiDaemon", () => {
     }],
   ])("drops a live connection whose device credential is %s", async (_case, invalidate) => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const address = await daemon.start()
-    const paired = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const paired = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${paired.token}` },
     })
@@ -3587,7 +3657,7 @@ describe("DomovoiDaemon", () => {
 
   it("pairs a device and returns its credential exactly once", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const { socket, call } = await pairingClient(daemon)
@@ -3598,7 +3668,13 @@ describe("DomovoiDaemon", () => {
     const token = (paired.result as { token: string }).token
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(listed).toMatchObject({
-      result: { devices: [{ label: "studio-ipad", id: expect.stringMatching(/^device-/) }] },
+      result: {
+        devices: [{
+          label: "studio-ipad",
+          id: expect.stringMatching(/^device-/),
+          binding: { kind: "client", client: "desktop" },
+        }],
+      },
     })
     expect(JSON.stringify(listed)).not.toContain(token)
     socket.close()
@@ -3606,7 +3682,7 @@ describe("DomovoiDaemon", () => {
 
   it("keeps a paired credential out of the audit log", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const { socket, call } = await pairingClient(daemon)
@@ -3622,7 +3698,7 @@ describe("DomovoiDaemon", () => {
 
   it("revokes and rotates a paired device", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const { socket, call } = await pairingClient(daemon)
@@ -3641,16 +3717,16 @@ describe("DomovoiDaemon", () => {
 
   it("refuses to manage devices for a client holding only a device credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "desktop" } })
     const { socket, call } = await pairingClient(daemon, issued.token)
 
-    const pairAttempt = await call(2, "device.pair", { label: "second-ipad", client: "tablet" })
+    const pairAttempt = await call(2, "device.pair", { label: "second-ipad", client: "desktop" })
     const revokeAttempt = await call(3, "device.revoke", {
       deviceId: issued.device.id,
-      client: "tablet",
+      client: "desktop",
     })
 
     for (const attempt of [pairAttempt, revokeAttempt]) {
@@ -3664,10 +3740,10 @@ describe("DomovoiDaemon", () => {
 
   it("stops broadcasting to a device the moment it is revoked", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "web" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -3747,7 +3823,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       tls,
     })
     running.push(daemon)
@@ -3755,7 +3831,7 @@ describe("DomovoiDaemon", () => {
 
     const socket = new WebSocket(`wss://127.0.0.1:${address.port}/rpc`, {
       rejectUnauthorized: false,
-      headers: { authorization: "Bearer correct-horse-battery-staple" },
+      headers: { authorization: `Bearer ${testAuthToken("correct-horse-battery-staple")}` },
     })
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -3808,7 +3884,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
@@ -3849,7 +3925,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
@@ -3859,7 +3935,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "desktop" } })
     const { socket, call } = await pairingClient(daemon, issued.token)
     const response = call(2, "device.saveCredential", {
       machineId: `machine-${"b".repeat(32)}`,
@@ -3879,7 +3955,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
@@ -3919,7 +3995,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
@@ -3929,7 +4005,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "desktop" } })
     const { socket, call } = await pairingClient(daemon, issued.token)
     const refusal = await call(2, "device.machineCredential", {
       machineId: `machine-${"b".repeat(32)}`,
@@ -3946,7 +4022,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: () => {},
         forMachine: () => undefined,
@@ -3983,7 +4059,7 @@ describe("DomovoiDaemon", () => {
 
   it("issues a pairing code to an authenticated client", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
@@ -4011,7 +4087,7 @@ describe("DomovoiDaemon", () => {
 
   it("answers empty-params methods when a JSON-RPC request omits params", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
@@ -4053,10 +4129,10 @@ describe("DomovoiDaemon", () => {
 
   it("refuses to issue a pairing code to a client holding only a device credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "desktop" } })
     const { socket, call } = await pairingClient(daemon, issued.token)
     const response = call(2, "device.issueCode", {})
 
@@ -4068,7 +4144,7 @@ describe("DomovoiDaemon", () => {
 
   it("refuses to issue a pairing code to an unauthenticated socket", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const { socket, call } = await unauthenticatedSocket(daemon)
@@ -4081,7 +4157,7 @@ describe("DomovoiDaemon", () => {
 
   it("pairs an unauthenticated machine that presents the pairing code", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const issued = daemon.issuePairingCode()
@@ -4104,7 +4180,7 @@ describe("DomovoiDaemon", () => {
 
   it("lets an unauthenticated socket do nothing but claim", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     daemon.issuePairingCode()
@@ -4120,7 +4196,7 @@ describe("DomovoiDaemon", () => {
 
   it("refuses a claim when no pairing is open", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const { socket, call } = await unauthenticatedSocket(daemon)
@@ -4137,7 +4213,7 @@ describe("DomovoiDaemon", () => {
 
   it("refuses every rejected claim with the same words", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const { socket, call } = await unauthenticatedSocket(daemon)
@@ -4163,11 +4239,11 @@ describe("DomovoiDaemon", () => {
 
   it("answers the paired device limit instead of rejecting the connection", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     for (let index = 0; index < maximumPairedDevices; index += 1) {
-      store.devices.pair({ label: `device-${index}`, binding: { kind: "client" } })
+      store.devices.pair({ label: `device-${index}`, binding: { kind: "client", client: "desktop" } })
     }
     const issued = daemon.issuePairingCode()
     const { socket, call } = await unauthenticatedSocket(daemon)
@@ -4199,7 +4275,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       errorSink: (entry) => errors.push(entry.context),
     })
     running.push(daemon)
@@ -4224,7 +4300,7 @@ describe("DomovoiDaemon", () => {
         client: "desktop",
         clientVersion: "0.0.1",
         protocolVersion,
-        authToken: "not-the-daemon-token",
+        authToken: testAuthToken("not-the-daemon-token"),
       },
     }))
 
@@ -4237,7 +4313,7 @@ describe("DomovoiDaemon", () => {
 
   it("audits a pairing without recording the code or the credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     await daemon.start()
     const issued = daemon.issuePairingCode()
@@ -4274,7 +4350,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", demoWorkspace),
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       agent,
     })
     running.push(daemon)
@@ -4313,14 +4389,14 @@ describe("DomovoiDaemon", () => {
     await expect(rpc(2, "system.hello", {
       client: "web",
       clientVersion: "0.0.1", protocolVersion,
-      authToken: "wrong-token",
+      authToken: testAuthToken("wrong-token"),
     })).resolves.toMatchObject({
       error: { code: -32001, message: "Daemon authentication failed" },
     })
     await expect(rpc(3, "system.hello", {
       client: "web",
       clientVersion: "0.0.1", protocolVersion,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
     })).resolves.toMatchObject({ result: { machine: { id: expect.any(String) } } })
     await expect(rpc(4, "workspace.get", {})).resolves.toMatchObject({
       result: { project: { id: "project-acme-api" } },
@@ -4354,7 +4430,7 @@ describe("DomovoiDaemon", () => {
       params: {
         client: "web",
         clientVersion: "0.0.1", protocolVersion,
-        authToken: "correct-horse-battery-staple",
+        authToken: testAuthToken("correct-horse-battery-staple"),
       },
     }))
     pipelined.send(JSON.stringify({
@@ -4383,7 +4459,7 @@ describe("DomovoiDaemon", () => {
         jsonrpc: "2.0",
         id,
         method: "system.hello",
-        params: { client: "web", clientVersion: "0.0.1", protocolVersion, authToken: "wrong-token" },
+        params: { client: "web", clientVersion: "0.0.1", protocolVersion, authToken: testAuthToken("wrong-token") },
       }))
     }
     await expect(rejected).resolves.toEqual({ code: 1008, reason: "authentication failed" })
@@ -4501,7 +4577,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "queue-auth-token",
+      authToken: testAuthToken("queue-auth-token"),
       workspaceService,
     })
     running.push(daemon)
@@ -4599,7 +4675,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       authTimeoutMs: 10,
     })
     running.push(daemon)
@@ -4654,7 +4730,7 @@ describe("DomovoiDaemon", () => {
     running.push(daemon)
     const address = await daemon.start()
     activateTurns()
-    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`, "phone")
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -4691,13 +4767,22 @@ describe("DomovoiDaemon", () => {
     expect(agent.interruptTurn).toHaveBeenCalledOnce()
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
 
+    const globalSocket = authenticatedSocket(
+      daemon,
+      `ws://${address.host}:${address.port}/rpc`,
+      "tablet",
+    )
+    await new Promise<void>((resolve, reject) => {
+      globalSocket.once("open", resolve)
+      globalSocket.once("error", reject)
+    })
     const globalResponse = new Promise<Record<string, unknown>>((resolve) => {
-      socket.on("message", (data) => {
+      globalSocket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number }
         if (message.id === 2) resolve(message as Record<string, unknown>)
       })
     })
-    socket.send(JSON.stringify({
+    globalSocket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
       method: "system.pauseAll",
@@ -4747,14 +4832,15 @@ describe("DomovoiDaemon", () => {
       })
     }
     const afterLateApproval = new Promise<Record<string, unknown>>((resolve) => {
-      socket.on("message", (data) => {
+      globalSocket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: number }
         if (message.id === 3) resolve(message as Record<string, unknown>)
       })
     })
-    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "workspace.get", params: {} }))
+    globalSocket.send(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "workspace.get", params: {} }))
     await expect(afterLateApproval).resolves.toMatchObject({ result: { approvals: [] } })
     socket.close()
+    globalSocket.close()
   })
 
   it("stops a quarantined provider thread when persistence fails", async () => {
@@ -5575,7 +5661,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "provider-secret-token",
+      authToken: testAuthToken("provider-secret-token"),
       providerSecrets,
     })
     running.push(daemon)
@@ -5987,7 +6073,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -6024,7 +6110,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", structuredClone(demoWorkspace)),
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -6131,7 +6217,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`, "tablet")
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
@@ -6195,14 +6281,14 @@ describe("DomovoiDaemon", () => {
         height: 4,
         data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64"),
       },
-      client: "desktop",
+      client: "tablet",
     })
     expect(stale).toMatchObject({ error: { code: -32602, message: "Visual context revision is stale" } })
 
     const replied = await rpc("annotation.reply", {
       annotationId,
       body: "Updated in revision four.",
-      client: "desktop",
+      client: "tablet",
     })
     expect(replied).toMatchObject({
       result: {
@@ -6210,7 +6296,7 @@ describe("DomovoiDaemon", () => {
           id: annotationId,
           thread: [expect.objectContaining({
             body: "Updated in revision four.",
-            origin: "desktop",
+            origin: "tablet",
           })],
         })]),
       },
@@ -6219,14 +6305,14 @@ describe("DomovoiDaemon", () => {
     const resolved = await rpc("annotation.setStatus", {
       annotationId,
       status: "resolved",
-      client: "phone",
+      client: "tablet",
     })
     expect(resolved).toMatchObject({
       result: {
         annotations: expect.arrayContaining([expect.objectContaining({
           id: annotationId,
           status: "resolved",
-          statusChangedBy: "phone",
+          statusChangedBy: "tablet",
         })]),
       },
     })
@@ -8121,7 +8207,7 @@ describe("DomovoiDaemon", () => {
 
     const restarted = await rpc("session.restartProviderThread", {
       sessionId: quarantineSessionId,
-      client: "web",
+      client: "desktop",
     })
     expect(restarted).toMatchObject({
       result: {
@@ -8196,7 +8282,7 @@ describe("DomovoiDaemon", () => {
     store.save.mockImplementationOnce(() => { throw new Error("disk full") })
     expect(await rpc("session.restartProviderThread", {
       sessionId: steeringSessionId,
-      client: "web",
+      client: "desktop",
     })).toMatchObject({
       error: { code: -32603, message: "Internal daemon error" },
     })
@@ -8611,7 +8697,7 @@ describe("DomovoiDaemon", () => {
     })
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "fork-token",
+      authToken: testAuthToken("fork-token"),
       store: { load: () => structuredClone(snapshot), save, close: vi.fn() },
       agents: { codex: agent },
       workspaceService,
@@ -8760,7 +8846,7 @@ describe("DomovoiDaemon", () => {
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
       port: 0,
-      authToken: "unsupported-fork-token",
+      authToken: testAuthToken("unsupported-fork-token"),
       store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
       agents: { codex: agent },
       workspaceService,
@@ -9916,7 +10002,7 @@ describe("DomovoiDaemon", () => {
       artifacts: store.snapshot.artifacts.filter((item) => item.sessionId === session.id).length,
       annotations: store.snapshot.annotations.filter((item) => item.sessionId === session.id).length,
     }
-    await rpc("session.archive", { sessionId: session.id, client: "web" })
+    await rpc("session.archive", { sessionId: session.id, client: "desktop" })
     expect(agent.stopThread).toHaveBeenCalledOnce()
     expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
     expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledOnce()
@@ -9926,14 +10012,14 @@ describe("DomovoiDaemon", () => {
     const artifact = store.snapshot.artifacts.find((item) => item.sessionId === session.id)!
     const annotation = store.snapshot.annotations.find((item) => item.sessionId === session.id)!
     for (const [method, params] of [
-      ["session.send", { sessionId: session.id, prompt: "resume", client: "web" }],
-      ["checkpoint.create", { sessionId: session.id, client: "web" }],
-      ["terminal.create", { terminalId: "archived-terminal", sessionId: session.id, cols: 80, rows: 24, client: "web", clientId: "archived-client" }],
-      ["annotation.create", { sessionId: session.id, artifactId: artifact.id, anchor: { textQuote: "archived" }, body: "mutate", client: "web" }],
-      ["annotation.reply", { annotationId: annotation.id, body: "mutate", client: "web" }],
-      ["annotation.setStatus", { annotationId: annotation.id, status: "resolved", client: "web" }],
+      ["session.send", { sessionId: session.id, prompt: "resume", client: "desktop" }],
+      ["checkpoint.create", { sessionId: session.id, client: "desktop" }],
+      ["terminal.create", { terminalId: "archived-terminal", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "archived-client" }],
+      ["annotation.create", { sessionId: session.id, artifactId: artifact.id, anchor: { textQuote: "archived" }, body: "mutate", client: "desktop" }],
+      ["annotation.reply", { annotationId: annotation.id, body: "mutate", client: "desktop" }],
+      ["annotation.setStatus", { annotationId: annotation.id, status: "resolved", client: "desktop" }],
     ] as const) await expect(rpc(method, params)).resolves.toMatchObject({ error: { code: -32602 } })
-    await expect(rpc("session.activate", { sessionId: session.id, client: "web" })).resolves.toMatchObject({
+    await expect(rpc("session.activate", { sessionId: session.id, client: "desktop" })).resolves.toMatchObject({
       result: { activeSessionId: session.id },
     })
     await expect(rpc("session.history", { sessionId: session.id, limit: 50 })).resolves.toHaveProperty("result")
@@ -10304,19 +10390,19 @@ describe("DomovoiDaemon", () => {
       artifactId: artifact.id,
       anchor: { textQuote: "plan" },
       body: "Authorization: Bearer must-never-persist",
-      client: "phone",
+      client: "web",
     })).resolves.toHaveProperty("result")
     await expect(rpc("annotation.create", {
       sessionId: session.id,
       artifactId: "missing-artifact",
       anchor: { textQuote: "plan" },
       body: "api_key=must-never-persist-either",
-      client: "desktop",
+      client: "web",
     })).resolves.toMatchObject({ error: { code: -32602 } })
     await expect(rpc("checkpoint.create", {
       sessionId: session.id,
       label: "audit timeout",
-      client: "desktop",
+      client: "web",
     })).resolves.toMatchObject({ error: { code: -32603, message: "Checkpoint timed out" } })
     providerEvent!({
       type: "approval-requested",
@@ -10591,7 +10677,7 @@ describe("DomovoiDaemon transfers", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: stubWorkspaceService(),
     })
     running.push(daemon)
@@ -10639,7 +10725,7 @@ describe("DomovoiDaemon transfers", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         ...stubWorkspaceService(),
         restoreSessionFromBundle: async (bundlePath: string, sessionId: string) => {
@@ -10692,7 +10778,7 @@ describe("DomovoiDaemon transfers", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         ...stubWorkspaceService(),
         restoreSessionFromBundle: async () => {
@@ -10735,7 +10821,7 @@ describe("DomovoiDaemon transfers", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: stubWorkspaceService(),
     })
     running.push(daemon)
@@ -10768,10 +10854,10 @@ describe("DomovoiDaemon transfers", () => {
 
   it("does not expose legacy transfer arrival to device credentials", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
-    const daemon = new DomovoiDaemon({ port: 0, store, authToken: "correct-horse-battery-staple" })
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "desktop" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -10879,7 +10965,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     params: {
       sessionId: string
       targetMachineId: string
-      client: "desktop"
+      initiatedByClient: "desktop"
       method?: "git-bundle" | "remote-ref"
       remote?: string
     },
@@ -10923,7 +11009,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       workspaceService: {
         inspect: async () => ({ root: "/repo", name: "repo", branch: "main", head: "a".repeat(40) }),
         createSessionWorkspace: async (_repository: string, sessionId: string) => ({
@@ -10962,7 +11048,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       port: 0,
       statePath: ":memory:",
       store: targetStore,
-      authToken: "target-horse-battery-staple",
+      authToken: testAuthToken("target-horse-battery-staple"),
       workspaceService: {
         ...stubWorkspaceService(),
         restoreSessionFromBundle: async (_bundlePath: string, sessionId: string) => {
@@ -10993,7 +11079,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const source = new DomovoiDaemon({
       port: 0,
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: (id: string, credential: string) => credentials.set(id, credential),
         forMachine: (id: string) => credentials.get(id),
@@ -11040,7 +11126,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await approvedSessionTransfer(rpcCaller(socket), {
       sessionId: moved.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     expect(answer).toMatchObject({
@@ -11066,7 +11152,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       port: 0,
       statePath: ":memory:",
       store: targetStore,
-      authToken: "target-horse-battery-staple",
+      authToken: testAuthToken("target-horse-battery-staple"),
       workspaceService: {
         ...stubWorkspaceService(),
         restoreSessionFromRef: async (_repository: string, remote: string, sessionId: string) => {
@@ -11095,7 +11181,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       port: 0,
       statePath: ":memory:",
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: () => {},
         forMachine: () => targetCredential,
@@ -11141,7 +11227,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await approvedSessionTransfer(rpcCaller(socket), {
       sessionId: moved.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       method: "remote-ref",
       remote: "origin",
     })
@@ -11167,7 +11253,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       port: 0,
       statePath: ":memory:",
       store,
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       machineCredentials: {
         save: () => {},
         forMachine: () => "n".repeat(43),
@@ -11227,7 +11313,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await approvedSessionTransfer(rpcCaller(socket), {
       sessionId: moved.id,
       targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
 
     // What matters is that the deadline reached the git call and the daemon
@@ -11250,7 +11336,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await rpcCaller(socket)("session.transfer", {
       sessionId: session.id,
       targetMachineId: `machine-${"f".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: 1,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
@@ -11294,7 +11380,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await rpcCaller(socket)("session.transfer", {
       sessionId: demoWorkspace.sessions.find((candidate) => candidate.state === "active")!.id,
       targetMachineId: targetMachineId,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: 1,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
@@ -11385,7 +11471,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       statePath: ":memory:",
       store,
       agents: { codex: fakeCodexAgent(listeners) },
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       errorSink: vi.fn(),
       workspaceService: {
         ...stubWorkspaceService(),
@@ -11473,7 +11559,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       targetMachineId,
       method: "remote-ref" as const,
       remote: "origin",
-      client: "desktop" as const,
+      initiatedByClient: "desktop" as const,
     }
     const preview = await rpc("session.transferPreview", request)
     expect(preview).toMatchObject({ result: { allowed: true } })
@@ -11564,7 +11650,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       statePath: ":memory:",
       store,
       agents: { codex: fakeCodexAgent(listeners) },
-      authToken: "correct-horse-battery-staple",
+      authToken: testAuthToken("correct-horse-battery-staple"),
       errorSink: vi.fn(),
       workspaceService: {
         ...stubWorkspaceService(),
@@ -11612,12 +11698,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       ownershipGeneration: packaged.manifest.ownership.fromGeneration,
       method: packaged.manifest.repository.method,
       coverage: packaged.manifest.coverage,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({ result: { allowed: true } })
     await expect(peerRpc("transfer.prepare", {
       manifest: packaged.manifest,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })).resolves.toMatchObject({ result: { state: "receiving" } })
     for (const entry of packaged.members) {
       await expect(peerRpc("transfer.member", {
@@ -11626,13 +11712,13 @@ describe("DomovoiDaemon session transfer requests", () => {
         sequence: 0,
         bytes: entry.bytes.toString("base64"),
         final: true,
-        client: "desktop",
+        initiatedByClient: "desktop",
       })).resolves.toHaveProperty("result")
     }
     const finished = peerRpc("transfer.commit", {
       transferId: packaged.manifest.transferId,
       manifestDigest: packaged.manifestDigest,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     await restoring
     for (const listener of listeners) {
@@ -11659,7 +11745,7 @@ describe("DomovoiDaemon session transfer requests", () => {
   it("refuses a transfer from a client holding only a device credential", async () => {
     const { daemon, store } = transferDaemon()
     const address = await daemon.start()
-    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const issued = store.devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "desktop" } })
     const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
       headers: { authorization: `Bearer ${issued.token}` },
     })
@@ -11677,7 +11763,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await call("session.transfer", {
       sessionId: demoWorkspace.sessions[0]!.id,
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: 1,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
@@ -11701,7 +11787,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const answer = await rpcCaller(socket)("session.transfer", {
       sessionId: "session-does-not-exist",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
       contractVersion: 1,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
@@ -11831,7 +11917,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     const reverted = await rpc("session.revertFile", {
       sessionId: session.id,
       path: "src/webhooks.ts",
-      client: "web",
+      client: "desktop",
     })
     expect(revertFile).toHaveBeenCalledWith(
       "/worktrees/session-revert",

@@ -74,6 +74,7 @@ export async function publishMachineIdentity(
   path: string,
   identity: MachineIdentity,
   hardLink: typeof link = link,
+  readPublishedIdentity: typeof readMachineIdentity = readMachineIdentity,
 ): Promise<MachineIdentity> {
   const temporaryPath = `${path}.${randomBytes(8).toString("hex")}.tmp`
   try {
@@ -84,7 +85,13 @@ export async function publishMachineIdentity(
     } finally {
       await handle.close()
     }
-    return await publishCompletedIdentity(temporaryPath, path, identity, hardLink)
+    return await publishCompletedIdentity(
+      temporaryPath,
+      path,
+      identity,
+      hardLink,
+      readPublishedIdentity,
+    )
   } finally {
     await rm(temporaryPath, { force: true })
   }
@@ -95,6 +102,7 @@ async function publishCompletedIdentity(
   path: string,
   identity: MachineIdentity,
   hardLink: typeof link,
+  readPublishedIdentity: typeof readMachineIdentity,
 ): Promise<MachineIdentity> {
   try {
     // A hard link publishes the already-synced bytes without replacing an
@@ -104,7 +112,7 @@ async function publishCompletedIdentity(
     return identity
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
-    if (code === "EEXIST") return await adoptPublishedIdentity(path)
+    if (code === "EEXIST") return await adoptPublishedIdentity(path, readPublishedIdentity)
     if (!code || !unsupportedHardLinkCodes.has(code)) {
       throw publicationError(path, code, error)
     }
@@ -118,18 +126,28 @@ async function publishCompletedIdentity(
     return identity
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
-    if (code === "EEXIST") return await adoptPublishedIdentity(path)
+    if (code === "EEXIST") return await adoptPublishedIdentity(path, readPublishedIdentity)
     throw publicationError(path, code, error)
   }
 }
 
-async function adoptPublishedIdentity(path: string): Promise<MachineIdentity> {
+async function adoptPublishedIdentity(
+  path: string,
+  readPublishedIdentity: typeof readMachineIdentity,
+): Promise<MachineIdentity> {
   for (let attempt = 0; attempt < publicationReadAttempts; attempt += 1) {
     try {
-      const identity = await readMachineIdentity(path)
+      const identity = await readPublishedIdentity(path)
       if (identity) return identity
     } catch (error) {
-      if (!(error instanceof MalformedMachineIdentityError)) throw error
+      // COPYFILE_EXCL publishes without clobbering but Windows can briefly
+      // refuse a loser's read while the winning copy still holds the target.
+      // EBUSY means publication may still be settling; permission failures do
+      // not, and remain loud instead of being hidden behind this bounded poll.
+      if (
+        !(error instanceof MalformedMachineIdentityError)
+        && (error as NodeJS.ErrnoException).code !== "EBUSY"
+      ) throw error
     }
     await delay(identityPollDelayMs)
   }

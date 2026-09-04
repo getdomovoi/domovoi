@@ -708,14 +708,14 @@ const clientHelloParamsSchema = z.object({
   clientId: clientIdentityIdSchema.optional(),
   clientVersion: z.string().min(1).max(64),
   protocolVersion: protocolVersionPatternSchema.optional(),
-  authToken: z.string().min(1).optional(),
+  authToken: credentialSchema.optional(),
 }).strict()
 
 const machineHelloParamsSchema = z.object({
   client: z.literal("machine"),
   clientVersion: z.string().min(1).max(64),
   protocolVersion: protocolVersionPatternSchema.optional(),
-  authToken: z.string().min(1).optional(),
+  authToken: credentialSchema.optional(),
 }).strict()
 
 export const helloParamsSchema = z.discriminatedUnion("client", [

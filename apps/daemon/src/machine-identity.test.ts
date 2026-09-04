@@ -162,6 +162,31 @@ describe("loadOrCreateMachineIdentity", () => {
     expect(JSON.parse(await readFile(identityPath, "utf8"))).toEqual(published[0])
   })
 
+  it("retries a busy winner while adopting an existing publication", async () => {
+    const identityPath = join(await scratch(), "machine.json")
+    const candidate = { id: `machine-${"a".repeat(32)}`, label: "candidate" }
+    const winner = { id: `machine-${"b".repeat(32)}`, label: "winner" }
+    const alreadyPublished = async () => {
+      throw Object.assign(new Error("Already published"), { code: "EEXIST" })
+    }
+    let reads = 0
+    const readPublished = async () => {
+      reads += 1
+      if (reads === 1) {
+        throw Object.assign(new Error("Winner is still closing"), { code: "EBUSY" })
+      }
+      return winner
+    }
+
+    await expect(publishMachineIdentity(
+      identityPath,
+      candidate,
+      alreadyPublished,
+      readPublished,
+    )).resolves.toEqual(winner)
+    expect(reads).toBe(2)
+  })
+
   it("waits for the identity published by the start that claimed initialization", async () => {
     const root = await scratch()
     const identityPath = join(root, "machine.json")

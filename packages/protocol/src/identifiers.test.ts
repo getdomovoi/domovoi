@@ -38,15 +38,8 @@ import {
 import { skillEnablementReviewSchema } from "./skills.js"
 import { transferReceiptSchema } from "./transfer.js"
 import {
-  transferBeginParamsSchema,
-  transferBeginResultSchema,
-  transferChunkResultSchema,
-  transferHaveResultSchema,
-} from "./transfer-rpc.js"
-import {
   sessionTransferParamsSchema,
   sessionTransferResultSchema,
-  transferFromRefResultSchema,
 } from "./transfer-request.js"
 
 function option<T extends { options: readonly unknown[] }>(
@@ -121,7 +114,6 @@ describe("machine id", () => {
     expect(deviceMachineCredentialParamsSchema.shape.machineId).toBe(machineIdSchema)
     expect(transferReceiptSchema.shape.sourceMachineId).toBe(machineIdSchema)
     expect(transferReceiptSchema.shape.targetMachineId).toBe(machineIdSchema)
-    expect(transferBeginParamsSchema.shape.sourceMachineId).toBe(machineIdSchema)
     expect(sessionTransferParamsSchema.shape.targetMachineId).toBe(machineIdSchema)
   })
 
@@ -161,12 +153,7 @@ describe("commit sha", () => {
     expect(unwrap(sessionSummarySchema.shape.archiveCheckpoint)).toBe(commitShaSchema)
     expect(unwrap(option(threadItemSchema, "kind", "checkpoint").shape.commit)).toBe(commitShaSchema)
     expect(transferReceiptSchema.shape.checkpointCommit).toBe(commitShaSchema)
-    expect(unwrap(transferBeginParamsSchema.shape.sinceCommit)).toBe(commitShaSchema)
-    expect(unwrap(transferBeginResultSchema.shape.haveCommit)).toBe(commitShaSchema)
-    expect(unwrap(transferHaveResultSchema.shape.commit)).toBe(commitShaSchema)
-    expect(option(transferChunkResultSchema, "state", "restored").shape.checkpointCommit).toBe(commitShaSchema)
     expect(workspaceEvidenceSchema.shape.baseCommit).toBe(commitShaSchema)
-    expect(transferFromRefResultSchema.shape.checkpointCommit).toBe(commitShaSchema)
     expect(option(sessionTransferResultSchema, "outcome", "succeeded").shape.checkpointCommit).toBe(commitShaSchema)
     expect(unwrap(option(sessionHistoryEntrySchema, "category", "checkpoints").shape.commit)).toBe(commitShaSchema)
   })

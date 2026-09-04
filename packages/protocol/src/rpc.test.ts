@@ -1100,9 +1100,10 @@ describe("hello version compatibility", () => {
       client: "desktop" as const,
       clientId: "client-1",
       clientVersion: "0.0.1",
-      authToken: "token",
+      authToken: "n".repeat(43),
     }
     expect(helloParamsSchema.safeParse(legacy).success).toBe(true)
+    expect(helloParamsSchema.safeParse({ ...legacy, authToken: "token" }).success).toBe(false)
   })
 
   it("still rejects a version that is not three-part semver", () => {
@@ -1111,7 +1112,7 @@ describe("hello version compatibility", () => {
       clientId: "client-1",
       clientVersion: "0.0.1",
       protocolVersion: "one",
-      authToken: "token",
+      authToken: "n".repeat(43),
     }
     expect(helloParamsSchema.safeParse(bad).success).toBe(false)
   })

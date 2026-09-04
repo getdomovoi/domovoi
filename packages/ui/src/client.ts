@@ -661,17 +661,21 @@ export class DomovoiClient extends EventTarget {
   // Moving a session is one request that either lands, is refused with a
   // reason, or fails. The caller renders whichever came back.
   previewSessionTransfer(
-    params: Omit<RpcParams<"session.transferPreview">, "client">,
+    params: Omit<RpcParams<"session.transferPreview">, "initiatedByClient">,
     options?: DomovoiRequestOptions,
   ): Promise<RpcResult<"session.transferPreview">> {
-    return this.request("session.transferPreview", { ...params, client: this.kind }, options)
+    return this.request(
+      "session.transferPreview",
+      { ...params, initiatedByClient: this.kind },
+      options,
+    )
   }
 
   transferSession(
-    params: Omit<SessionTransferParams, "client">,
+    params: Omit<SessionTransferParams, "initiatedByClient">,
     options?: DomovoiRequestOptions,
   ): Promise<SessionTransferResult> {
-    return this.request("session.transfer", { ...params, client: this.kind }, options)
+    return this.request("session.transfer", { ...params, initiatedByClient: this.kind }, options)
   }
 
   // Two exits from a stalled move, and the confirmation the operator made
@@ -690,14 +694,14 @@ export class DomovoiClient extends EventTarget {
         sessionId: params.sessionId,
         transferId: params.transferId,
         confirmation: "keep-target-session",
-        client: this.kind,
+        initiatedByClient: this.kind,
       }, options)
     }
     return this.request("session.transferRecoverSource", {
       sessionId: params.sessionId,
       transferId: params.transferId,
       confirmation: "target-does-not-have-session",
-      client: this.kind,
+      initiatedByClient: this.kind,
     }, options)
   }
 

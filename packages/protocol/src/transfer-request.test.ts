@@ -17,11 +17,26 @@ import {
 } from "./transfer-request.js"
 
 describe("session transfer request", () => {
+  it("names the initiating client without presenting it as transport identity", () => {
+    const request = {
+      sessionId: "session-1",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      initiatedByClient: "desktop" as const,
+      method: "git-bundle" as const,
+    }
+    expect(sessionTransferPreviewParamsSchema.parse(request)).toEqual(request)
+    expect(sessionTransferPreviewParamsSchema.safeParse({
+      ...request,
+      initiatedByClient: undefined,
+      client: "desktop",
+    }).success).toBe(false)
+  })
+
   it("requires the preview contract that freezes a single source owner", () => {
     const request = {
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
-      client: "desktop",
+      initiatedByClient: "desktop",
     }
     expect(sessionTransferParamsSchema.safeParse(request).success).toBe(false)
     expect(sessionTransferParamsSchema.safeParse({
@@ -36,7 +51,7 @@ describe("session transfer request", () => {
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "git-bundle" as const,
-      client: "desktop" as const,
+      initiatedByClient: "desktop" as const,
     }
     expect(sessionTransferPreviewParamsSchema.parse(request)).toEqual(request)
     expect(sessionTransferParamsSchema.safeParse({
@@ -54,7 +69,31 @@ describe("session transfer request", () => {
     expect(sessionTransferParamsSchema.safeParse({
       sessionId: "session-1",
       targetMachineId: "studio",
-      client: "desktop",
+      initiatedByClient: "desktop",
+    }).success).toBe(false)
+  })
+
+  it("accepts a named remote only for the remote-ref path", () => {
+    const request = {
+      sessionId: "session-1",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      initiatedByClient: "desktop" as const,
+      contractVersion: 1 as const,
+      intentDigest: `sha256:${"c".repeat(64)}`,
+    }
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      method: "remote-ref",
+      remote: "origin",
+    }).success).toBe(true)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      method: "remote-ref",
+    }).success).toBe(false)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      method: "git-bundle",
+      remote: "origin",
     }).success).toBe(false)
   })
 
@@ -120,7 +159,7 @@ describe("session transfer request", () => {
       sessionId: "session-1",
       transferId: `transfer-${"d".repeat(32)}`,
       confirmation: "target-does-not-have-session" as const,
-      client: "desktop" as const,
+      initiatedByClient: "desktop" as const,
     }
     expect(sessionTransferRecoverSourceParamsSchema.parse(params)).toEqual(params)
     expect(sessionTransferRecoverSourceParamsSchema.safeParse({
@@ -134,7 +173,7 @@ describe("session transfer request", () => {
       sessionId: "session-1",
       transferId: `transfer-${"d".repeat(32)}`,
       confirmation: "keep-target-session" as const,
-      client: "desktop" as const,
+      initiatedByClient: "desktop" as const,
     }
     expect(sessionTransferResolveConflictParamsSchema.parse(params)).toEqual(params)
     expect(sessionTransferResolveConflictParamsSchema.safeParse({

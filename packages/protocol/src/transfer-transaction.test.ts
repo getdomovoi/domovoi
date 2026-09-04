@@ -149,6 +149,26 @@ describe("session transfer manifest", () => {
 })
 
 describe("transactional transfer rpc", () => {
+  it("carries verified initiating-client provenance across the machine boundary", () => {
+    const request = {
+      sessionId: "session-1",
+      sourceMachineId,
+      sourceProjectId: "project-source",
+      lineageCommit: "6".repeat(40),
+      ownershipGeneration: 2,
+      contractVersion: 1,
+      method: "git-bundle" as const,
+      coverage: { included: [], excluded: [], warnings: [] },
+      initiatedByClient: "desktop" as const,
+    }
+    expect(transferTargetPreflightParamsSchema.parse(request)).toEqual(request)
+    expect(transferTargetPreflightParamsSchema.safeParse({
+      ...request,
+      initiatedByClient: undefined,
+      client: "desktop",
+    }).success).toBe(false)
+  })
+
   it("registers preview and recovery queries as reads and transaction writes as mutations", () => {
     expect(rpcMethods["session.transferPreview"].params).toBe(sessionTransferPreviewParamsSchema)
     expect(rpcMethods["session.transferRecoverSource"].params)
@@ -187,7 +207,7 @@ describe("transactional transfer rpc", () => {
       contractVersion: 1,
       method: "git-bundle",
       coverage: { included: [], excluded: [], warnings: [] },
-      client: "desktop",
+      initiatedByClient: "desktop",
     }
     expect(transferTargetPreflightParamsSchema.safeParse(request).success).toBe(true)
     const { contractVersion: _version, ...unversioned } = request
@@ -253,7 +273,7 @@ describe("transactional transfer rpc", () => {
     expect(transferPrepareParamsSchema.safeParse({
       manifest,
       manifestDigest: digest("8"),
-      client: "desktop",
+      initiatedByClient: "desktop",
     }).success).toBe(true)
     for (const state of ["receiving", "prepared", "committed"] as const) {
       const result = state === "receiving"
@@ -278,7 +298,7 @@ describe("transactional transfer rpc", () => {
       sequence: 0,
       bytes: "QUJD",
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     }).success).toBe(true)
     expect(transferMemberResultSchema.safeParse({
       state: "receiving",
@@ -309,7 +329,7 @@ describe("transactional transfer rpc", () => {
       sequence: 0,
       bytes: zeroBytesBase64(byteLength),
       final,
-      client: "desktop",
+      initiatedByClient: "desktop",
     }).success
 
     expect(request(0, false)).toBe(false)
