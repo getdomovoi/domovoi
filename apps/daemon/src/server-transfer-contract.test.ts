@@ -189,6 +189,39 @@ async function openClient(
 }
 
 describe("transactional session transfer RPC", () => {
+  it("requires a hello identity before an authenticated socket can call RPCs", async () => {
+    const { source } = await transferFixture()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", source),
+      authToken: "correct-horse-battery-staple",
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const address = daemon.address!
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`, {
+      headers: { authorization: `Bearer ${daemon.authToken}` },
+    })
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const call = rpc(socket)
+
+    await expect(call("workspace.get", {})).resolves.toMatchObject({
+      error: { code: -32001, message: "Connection identity is required" },
+    })
+    await expect(call("session.send", {
+      sessionId: source.sessions[0]!.id,
+      prompt: "run without an actor",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32001, message: "Connection identity is required" },
+    })
+    socket.close()
+  })
+
   it("requires a matching authenticated client to preview or move a source", async () => {
     const { source } = await transferFixture()
     const store = new SqliteWorkspaceStore(":memory:", source)

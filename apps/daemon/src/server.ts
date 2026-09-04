@@ -2837,6 +2837,12 @@ export class DomovoiDaemon {
       return
     }
 
+    if (!this.#authenticatedActors.has(socket)) {
+      this.#appendPreAuthAudit("authentication")
+      this.#rejectAuthentication(socket, request.id, "Connection identity is required")
+      return
+    }
+
     if (!this.#registerAudit(socket, request.id, method, paramsResult.data)) {
       this.#appendAudit({
         actor: this.#authenticatedActors.get(socket) ?? { kind: "daemon", component: "rpc" },
