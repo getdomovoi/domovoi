@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { FleetForgetParams, FleetForgetResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
@@ -91,6 +91,9 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
   const [emergencyStopPending, setEmergencyStopPending] = useState(false)
   const [emergencyStopOutcome, setEmergencyStopOutcome] = useState<SystemEmergencyStopResult | null>(null)
   const [emergencyStopError, setEmergencyStopError] = useState<string | null>(null)
+  // The fleet is daemon state, held here so every surface reads one list.
+  // null means the daemon has not described it on this connection.
+  const [fleet, setFleet] = useState<FleetSnapshot | null>(null)
   const snapshot = visibleWorkspaceSnapshot(workspace, target)
   const updateSnapshotFrom = useCallback((client: DomovoiClient, next: WorkspaceSnapshot) => {
     setWorkspace((current) => applyConnectionSnapshot(
@@ -120,6 +123,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     setReconnecting(false)
     setProtocolError(null)
     setAuthenticationRequired(null)
+    setFleet(null)
     setWorkspace({ target, snapshot: null })
     const client = new DomovoiClient(url, kind, {
       budgets: workspaceBudgets,
@@ -150,7 +154,24 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       if (active) setConnected(false)
     }
     const onConnected = () => {
-      if (active) setConnected(true)
+      if (!active) return
+      setConnected(true)
+      // fleet.changed is not coalesced, so a client that was away may have
+      // missed one. Every connection relists rather than trusting what it held.
+      void client.listFleet().then(
+        (next) => {
+          if (active && isCurrentConnection(clientRef.current, client)) setFleet(next)
+        },
+        () => {
+          // A daemon that cannot describe its fleet still runs this machine.
+          if (active && isCurrentConnection(clientRef.current, client)) setFleet(null)
+        },
+      )
+    }
+    const onFleetChanged = (event: Event) => {
+      if (active && isCurrentConnection(clientRef.current, client)) {
+        setFleet((event as CustomEvent<FleetSnapshot>).detail)
+      }
     }
     const onReconnecting = (event: Event) => {
       if (active) setReconnecting((event as CustomEvent<{ active: boolean }>).detail.active)
@@ -167,6 +188,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     client.addEventListener("workspace-delta", onDelta)
     client.addEventListener("emergency-stopped", onEmergencyStopped)
     client.addEventListener("connected", onConnected)
+    client.addEventListener("fleet-changed", onFleetChanged)
     client.addEventListener("disconnected", onDisconnected)
     client.addEventListener("reconnecting", onReconnecting)
     client.addEventListener("protocol-error", onProtocolError)
@@ -188,6 +210,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       client.removeEventListener("workspace-delta", onDelta)
       client.removeEventListener("emergency-stopped", onEmergencyStopped)
       client.removeEventListener("connected", onConnected)
+      client.removeEventListener("fleet-changed", onFleetChanged)
       client.removeEventListener("disconnected", onDisconnected)
       client.removeEventListener("reconnecting", onReconnecting)
       client.removeEventListener("protocol-error", onProtocolError)
@@ -524,14 +547,31 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     if (!client) throw new Error("Daemon connection is not open")
     const deadline = Deadline.start(pairingBudgetMs)
     try {
-      return await completePairing({
+      const paired = await completePairing({
         request,
         deadline,
         enroll: (params, remaining) => client.enrollMachine(params, { deadline: remaining }),
       })
+      if (isCurrentConnection(clientRef.current, client)) setFleet(paired.fleet)
+      return paired
     } finally {
       deadline.clear()
     }
+  }, [])
+
+  // A forget answers with the fleet as the daemon now holds it, or with a
+  // refusal that changed nothing. Only the former replaces what is shown.
+  const forgetMachine = useCallback(async (
+    params: Omit<FleetForgetParams, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<FleetForgetResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    const result = await client.forgetMachine(params, options)
+    if (result.outcome !== "refused" && isCurrentConnection(clientRef.current, client)) {
+      setFleet(result.fleet)
+    }
+    return result
   }, [])
 
   const authorizeArtifact = useCallback(async (
@@ -676,6 +716,8 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     emergencyStopOutcome,
     emergencyStopPending,
     exportAudit,
+    fleet,
+    forgetMachine,
     forkSession,
     getSkillInventory,
     listSkills,

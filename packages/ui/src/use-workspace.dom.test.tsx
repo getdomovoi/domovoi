@@ -1,13 +1,14 @@
 import { act, cleanup, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, workspaceDeltaSchema } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, workspaceDeltaSchema } from "@getdomovoi/protocol"
 
 import {
   completeHandshake,
   FakeWebSocket,
   installFakeWebSocket,
   notify,
+  respond,
   sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
@@ -113,7 +114,7 @@ describe("useWorkspace connection lifecycle", () => {
     await reconnecting
 
     expect(harness.sockets.map((socket) => socket.url)).toEqual([daemonUrl, daemonUrl])
-    expect(first.sent).toHaveLength(1)
+    expect(sentRequests(first, "system.hello")).toHaveLength(1)
     expect(sentRequests(harness.socket(1), "system.hello")[0]?.params).toMatchObject({ clientId })
     expect(view.result.current.terminalClientId).toBe(clientId)
     expect(view.result.current.connected).toBe(true)
@@ -238,5 +239,143 @@ describe("useWorkspace connection lifecycle", () => {
     await drive(() => vi.advanceTimersByTime(backoffCeilingMs))
     expect(harness.sockets).toHaveLength(1)
     expect(view.result.current.connected).toBe(false)
+  })
+})
+
+describe("useWorkspace fleet", () => {
+  const machineId = `machine-${"c".repeat(32)}`
+  const unenrolled = { entries: [{ kind: "unenrolled" as const, machineId }] }
+  const remote = {
+    id: machineId,
+    label: "workshop",
+    platform: "linux",
+    arch: "x64",
+    version: "0.4.2",
+    capabilities: ["sessions" as const],
+    protocolVersion,
+    transports: [],
+    connection: "direct" as const,
+    verifiedRoute: {
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      lastAuthenticatedAt: "2026-09-04T12:00:00.000Z",
+    },
+    heartbeat: { state: "online" as const, lastSeenAt: "2026-09-04T12:00:00.000Z" },
+    health: "healthy" as const,
+    self: false,
+  }
+  const enrolledFleet = { entries: [{ kind: "machine" as const, machine: remote }] }
+
+  it("holds no fleet before the daemon has listed one", () => {
+    const view = mountWorkspace()
+    expect(view.result.current.fleet).toBeNull()
+  })
+
+  it("lists the fleet as soon as the handshake lands and installs the answer", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+
+    expect(sentRequests(socket, "fleet.list")).toHaveLength(1)
+    await drive(() => respond(socket, "fleet.list", unenrolled))
+
+    expect(view.result.current.fleet).toEqual(unenrolled)
+  })
+
+  it("replaces the fleet when the daemon says it changed", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+    await drive(() => respond(socket, "fleet.list", { entries: [] }))
+
+    await drive(() => notify(socket, "fleet.changed", unenrolled))
+
+    expect(view.result.current.fleet).toEqual(unenrolled)
+  })
+
+  it("lists again on every reconnect instead of trusting what it held", async () => {
+    const view = mountWorkspace()
+    const first = harness.socket(0)
+    await drive(() => completeHandshake(first))
+    await drive(() => respond(first, "fleet.list", unenrolled))
+    expect(view.result.current.fleet).toEqual(unenrolled)
+
+    await drive(() => first.drop(1006, "daemon restarted"))
+    await drive(() => vi.advanceTimersToNextTimer())
+    const second = harness.socket(1)
+    await drive(() => completeHandshake(second))
+
+    expect(sentRequests(second, "fleet.list")).toHaveLength(1)
+    await drive(() => respond(second, "fleet.list", { entries: [] }))
+    expect(view.result.current.fleet).toEqual({ entries: [] })
+  })
+
+  it("pairs through one fleet.enroll request and installs the fleet it returns", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+    await drive(() => respond(socket, "fleet.list", { entries: [] }))
+
+    let paired!: Promise<unknown>
+    await drive(() => {
+      paired = view.result.current.pairMachine({
+        endpoint: "wss://workshop.tailnet:47831/rpc",
+        code: "hearth-quiet-ember-42",
+        label: "studio-desktop",
+      })
+    })
+    const requests = sentRequests(socket, "fleet.enroll")
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.params).toEqual({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
+      client: "web",
+    })
+    expect(sentRequests(socket, "device.claim")).toHaveLength(0)
+    expect(sentRequests(socket, "system.hello")).toHaveLength(1)
+
+    await drive(() => respond(socket, "fleet.enroll", { outcome: "enrolled", machineId, fleet: enrolledFleet }))
+
+    await expect(paired).resolves.toMatchObject({ outcome: "enrolled", machineId, label: "workshop" })
+    expect(view.result.current.fleet).toEqual(enrolledFleet)
+  })
+
+  it("forgets through fleet.forget and installs the fleet it returns", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+    await drive(() => respond(socket, "fleet.list", enrolledFleet))
+
+    let forgotten!: Promise<unknown>
+    await drive(() => {
+      forgotten = view.result.current.forgetMachine({ machineId })
+    })
+    expect(sentRequests(socket, "fleet.forget")[0]?.params).toEqual({ machineId, client: "web" })
+
+    await drive(() => respond(socket, "fleet.forget", {
+      outcome: "forgotten",
+      machineId,
+      remoteRevocation: "unconfirmed",
+      fleet: { entries: [] },
+    }))
+
+    await expect(forgotten).resolves.toMatchObject({ outcome: "forgotten", remoteRevocation: "unconfirmed" })
+    expect(view.result.current.fleet).toEqual({ entries: [] })
+  })
+
+  it("keeps the fleet it holds when a forget is refused", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+    await drive(() => respond(socket, "fleet.list", enrolledFleet))
+
+    let refused!: Promise<unknown>
+    await drive(() => {
+      refused = view.result.current.forgetMachine({ machineId })
+    })
+    await drive(() => respond(socket, "fleet.forget", { outcome: "refused", reason: "operation-in-progress" }))
+
+    await expect(refused).resolves.toEqual({ outcome: "refused", reason: "operation-in-progress" })
+    expect(view.result.current.fleet).toEqual(enrolledFleet)
   })
 })
