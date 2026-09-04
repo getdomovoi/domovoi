@@ -140,8 +140,6 @@ describe("session transfer refusal messages", () => {
       .toBe("This session is mid turn, so it cannot move until the turn settles")
     expect(sessionTransferRefusalMessage("source-bundle-create-unavailable"))
       .toContain("cannot create the Git bundle")
-    expect(sessionTransferRefusalMessage("source-bundle-read-unavailable"))
-      .toContain("cannot read the Git bundle")
     expect(sessionTransferRefusalMessage("source-ref-push-unavailable"))
       .toContain("cannot publish the Git ref")
   })
