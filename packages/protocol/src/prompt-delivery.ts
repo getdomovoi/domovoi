@@ -22,9 +22,17 @@ const deliveryStatusSchema = z.object({
 
 export const providerPromptBudgetSchema = z.object({
   unit: z.literal("utf16-code-units"),
-  limit: z.literal(maximumProviderPromptCodeUnits),
-  used: nonnegativeCountSchema.max(maximumProviderPromptCodeUnits),
-}).strict()
+  limit: z.number().int().positive(),
+  used: nonnegativeCountSchema,
+}).strict().superRefine((budget, context) => {
+  if (budget.used > budget.limit) {
+    context.addIssue({
+      code: "custom",
+      path: ["used"],
+      message: "Measured prompt size cannot exceed the recorded budget",
+    })
+  }
+})
 
 export const providerPromptHandoffDeliverySchema = z.discriminatedUnion("status", [
   deliveryStatusSchema,
