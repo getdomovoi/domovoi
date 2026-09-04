@@ -47,7 +47,7 @@ export function selectTransport(
   return orderedTransports(candidates).find((candidate) => {
     // An SSH tunnel is only reached for when someone configured one. A relay
     // is eligible only after its caller has established a configured route;
-    // the self-hosted route contract is recorded in docs/self-hosted-relay.md.
+    // the encrypted route contract is recorded in docs/encrypted-relay.md.
     if (candidate.kind === "ssh") return candidate.configured === true
     if (candidate.kind === "relay") return relayAvailable
     return true
