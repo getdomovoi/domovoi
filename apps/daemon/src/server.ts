@@ -11,6 +11,8 @@ import {
   credentialSchema,
   type MachineCapability,
   type FleetMachine,
+  fleetMachineDescriptorSchema,
+  type FleetMachineDescriptor,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
@@ -18,7 +20,6 @@ import {
   sourcePreflight,
   transferPreflight,
   type TransferReceipt,
-  machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
   demoWorkspace,
@@ -68,7 +69,7 @@ import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { createMachineDialer } from "./machine-dial.js"
-import { MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
+import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
@@ -262,9 +263,12 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "session.history",
   "session.evidence",
   "audit.query",
+  "fleet.heartbeat",
 ])
 const machineRpcMethods = new Set<RpcMethod>([
   "system.hello",
+  "fleet.heartbeat",
+  "device.revokeCurrent",
   "transfer.preflight",
   "transfer.prepare",
   "transfer.member",
@@ -805,6 +809,7 @@ export class DomovoiDaemon {
   #http: HttpServer | undefined
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
+  #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
   #persistenceFailures = 0
   #persistenceUnavailable = false
@@ -910,12 +915,15 @@ export class DomovoiDaemon {
       machines: () => this.#store.fleet?.snapshot(
         this.#snapshot.machine.id,
         Date.now(),
-      ).machines ?? [],
+      ).entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : []) ?? [],
       credentials: this.#machineCredentials,
-      open: ({ endpoint, expectedMachineId, credential, signal }) => openMachineSocket({
+      dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
+      open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
         endpoint,
         expectedMachineId,
         credential,
+        deadline,
+        callTimeoutMs: defaultMachineCallTimeoutMs,
         ...(signal ? { signal } : {}),
       }),
     })
@@ -972,6 +980,21 @@ export class DomovoiDaemon {
           ?? options.statePath === undefined,
       },
     )
+    this.#snapshot = this.#store.load()
+    if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
+      // Picking either identity would silently reassign the ownership of every
+      // stored session. Fail before providers or listeners can do any work.
+      if (!options.store) void Promise.resolve(this.#store.close()).catch((error: unknown) => {
+        this.#reportError("Closing mismatched workspace state failed", error)
+      })
+      throw new Error("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+    }
+    if (options.machineIdentity) {
+      // A saved machine row is not evidence of this executable's platform or
+      // version after a restart/upgrade. Keep provider readiness separately.
+      this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
+    }
+    this.#localMachine = structuredClone(this.#snapshot.machine)
     const usagePath = options.store || statePath === ":memory:"
       ? ":memory:"
       : join(dirname(statePath), "usage.sqlite")
@@ -980,7 +1003,6 @@ export class DomovoiDaemon {
     this.#pairing = this.#store.devices
       ? new PairingCodeService(this.#store.devices)
       : undefined
-    this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
@@ -1028,24 +1050,24 @@ export class DomovoiDaemon {
 
   // The local daemon is the one machine this registry can observe directly, so
   // its heartbeat is refreshed whenever a client reads the fleet.
+  #machineDescriptor(): FleetMachineDescriptor {
+    const machine = this.#localMachine
+    return fleetMachineDescriptorSchema.parse({
+      id: machine.id, label: machine.name, platform: machine.platform,
+      arch: machine.arch, version: machine.version, capabilities: [...localMachineCapabilities], protocolVersion,
+      transports: advertisedTransports({
+        host: this.host, port: this.address?.port ?? this.requestedPort,
+        ...(this.#tls ? { tls: true } : {}),
+        ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
+      }),
+    })
+  }
+
   #recordThisMachine(): void {
-    const machine = this.#snapshot.machine
     try {
       this.#store.fleet?.record({
-        id: machine.id,
-        label: machine.name,
-        platform: machine.platform,
-        arch: machine.arch,
-        version: machine.version,
+        ...this.#machineDescriptor(),
         connection: "local",
-        capabilities: [...localMachineCapabilities],
-        protocolVersion,
-        transports: advertisedTransports({
-          host: this.host,
-          port: this.address?.port ?? this.requestedPort,
-          ...(this.#tls ? { tls: true } : {}),
-          ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
-        }),
       }, Date.now())
     } catch (error) {
       this.#reportError("Domovoi could not record this machine in the fleet", error)
@@ -1546,7 +1568,8 @@ export class DomovoiDaemon {
     if (sourceCapability) return this.#refusedTransferPreview(params, sourceCapability)
 
     const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-    const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
+    const target = fleet?.entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : [])
+      .find((machine) => machine.id === params.targetMachineId)
     if (!target) return this.#refusedTransferPreview(params, "target-unreachable")
     const reachable = transferPreflight({
       source: { ...target, id: this.#snapshot.machine.id },
@@ -2774,6 +2797,7 @@ export class DomovoiDaemon {
         || request.method === "skill.read"
         || request.method === "audit.query"
         || request.method === "audit.export"
+        || request.method === "fleet.heartbeat"
         || request.method === "system.emergencyStop"
     } catch {
       return false
@@ -3144,6 +3168,13 @@ export class DomovoiDaemon {
       // The one method a machine may reach before it has a credential, because
       // presenting the pairing code is how it gets one. It grants nothing else.
       const params = paramsResult.data as RpcParams<"device.claim">
+      if (protocolCompatibility(protocolVersion, params.protocolVersion) !== "compatible") {
+        // The wire must be compatible before spending a short-lived code or a
+        // guessing attempt. No credential exists until the claim succeeds.
+        this.#error(socket, request.id, protocolVersionMismatchErrorCode,
+          "Update both daemons to the same protocol before pairing")
+        return
+      }
       if (!this.#pairing) {
         this.#error(socket, request.id, internalError, "Device pairing is unavailable")
         return
@@ -3153,6 +3184,7 @@ export class DomovoiDaemon {
           label: params.label,
           machineId: params.machineId,
         }, Date.now())
+        this.#disconnectInactiveDevices()
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
@@ -3241,7 +3273,7 @@ export class DomovoiDaemon {
         socket,
         request.id,
         daemonAuthenticationErrorCode,
-        "Machine connections may only use transfer RPCs",
+        "Machine connections may only use machine lifecycle and transfer RPCs",
       )
       return
     }
@@ -3259,6 +3291,24 @@ export class DomovoiDaemon {
     try {
       let changed = false
       let alreadyPersisted = false
+      if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (authenticatedActor?.kind !== "machine" || credential?.binding.kind !== "machine") {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "This method requires a machine-paired credential")
+          return
+        }
+        if (method === "fleet.heartbeat") {
+          this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
+        } else {
+          this.#store.devices!.revoke(credential.device.id)
+          this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
+          // The response precedes the close frame so the source can distinguish
+          // confirmed revocation from an ambiguous disconnected socket.
+          this.#send(socket, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
+          this.#disconnectInactiveDevices()
+        }
+        return
+      }
       if (method === "system.emergencyStop") {
         const params = paramsResult.data as RpcParams<"system.emergencyStop">
         const actor = this.#authenticatedActors.get(socket)
@@ -3668,32 +3718,6 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
-        })
-        return
-      }
-
-      if (method === "device.saveCredential") {
-        const params = paramsResult.data as RpcParams<"device.saveCredential">
-        // Keeping another machine's credential is device management, so a
-        // device credential must not reach it.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Managing paired devices requires the daemon credential",
-          )
-          return
-        }
-        if (!this.#machineCredentials) {
-          this.#error(socket, request.id, internalError, "Machine credentials are unavailable")
-          return
-        }
-        this.#machineCredentials.save(params.machineId, params.credential)
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({ saved: true }),
         })
         return
       }
@@ -4402,41 +4426,6 @@ export class DomovoiDaemon {
         return
       }
 
-      if (method === "device.machineCredential") {
-        const params = paramsResult.data as RpcParams<"device.machineCredential">
-        // Handing out another machine's credential is device management, so a
-        // device credential must not reach it.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Managing paired devices requires the daemon credential",
-          )
-          return
-        }
-        if (!this.#machineCredentials) {
-          this.#error(socket, request.id, internalError, "Machine credentials are unavailable")
-          return
-        }
-        const credential = this.#machineCredentials.forMachine(params.machineId)
-        if (credential === undefined) {
-          this.#error(
-            socket,
-            request.id,
-            machineCredentialMissingErrorCode,
-            "No credential is kept for that machine",
-          )
-          return
-        }
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({ credential }),
-        })
-        return
-      }
-
       if (method === "device.issueCode") {
         // Opening a pairing enrols a new device, so it is device management and
         // a device credential must not reach it: otherwise one paired device
@@ -4522,7 +4511,7 @@ export class DomovoiDaemon {
           id: request.id,
           result: rpcMethods[method].result.parse(
             this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-              ?? { machines: [] },
+              ?? { entries: [] },
           ),
         })
         return
