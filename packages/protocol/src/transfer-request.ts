@@ -67,12 +67,6 @@ export const sessionTransferParamsSchema = z.object({
   validateTransferMethod(params, context)
 })
 
-export const transferFromRefParamsSchema = z.object({
-  sessionId: z.string().trim().min(1).max(128),
-  remote: gitRemoteNameSchema,
-  initiatedByClient: clientKindSchema,
-}).strict()
-
 export const sessionTransferRecoverSourceParamsSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
   transferId: transferIdSchema,
@@ -90,11 +84,6 @@ export const sessionTransferResolveConflictParamsSchema = z.object({
 }).strict()
 
 export const sessionTransferResolveConflictResultSchema = workspaceSnapshotSchema
-
-export const transferFromRefResultSchema = z.object({
-  workspacePath: z.string().min(1),
-  checkpointCommit: commitShaSchema,
-}).strict()
 
 const succeededTransferResultSchema = z.object({
   outcome: z.literal("succeeded"),
@@ -185,9 +174,6 @@ export type SessionTransferResolveConflictParams = z.infer<
 export type SessionTransferResolveConflictResult = z.infer<
   typeof sessionTransferResolveConflictResultSchema
 >
-export type TransferFromRefParams = z.infer<typeof transferFromRefParamsSchema>
-export type TransferFromRefResult = z.infer<typeof transferFromRefResultSchema>
-
 export type SessionTransferRefusal =
   | TransferRefusal
   | SourceRefusal

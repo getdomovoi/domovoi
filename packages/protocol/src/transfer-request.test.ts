@@ -73,6 +73,30 @@ describe("session transfer request", () => {
     }).success).toBe(false)
   })
 
+  it("accepts a named remote only for the remote-ref path", () => {
+    const request = {
+      sessionId: "session-1",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      initiatedByClient: "desktop" as const,
+      contractVersion: 1 as const,
+      intentDigest: `sha256:${"c".repeat(64)}`,
+    }
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      method: "remote-ref",
+      remote: "origin",
+    }).success).toBe(true)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      method: "remote-ref",
+    }).success).toBe(false)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      method: "git-bundle",
+      remote: "origin",
+    }).success).toBe(false)
+  })
+
   it("reports where a moved session now lives", () => {
     expect(sessionTransferResultSchema.safeParse({
       outcome: "succeeded",
