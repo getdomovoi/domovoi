@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, utimes } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -294,12 +294,13 @@ describe("file transfer transaction journal", () => {
     const root = join(scratch, "transactions")
     const transactions = new FileTransferTransactions(root, {
       retentionMs: 100,
-      now: () => Date.now() + 1_000,
+      now: () => 2_000,
     })
     const manifest = manifestFor(Buffer.from("state"), Buffer.from("repository"))
     const manifestDigest = sessionTransferManifestDigest(manifest)
     await transactions.prepare(manifest, manifestDigest)
     await rm(join(root, transferId, "activity.json"))
+    await utimes(join(root, transferId), new Date(1_000), new Date(1_000))
 
     await expect(transactions.pruneExpired()).resolves.toEqual([transferId])
     await expect(transactions.status(transferId, manifestDigest))
