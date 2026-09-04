@@ -1,7 +1,12 @@
 import type { SkillEnablementReview, SkillSummary } from "./skills.js"
 import { expect, it } from "vitest"
 
-import { selectableTurnSkills, turnSkillRefusalFrom, turnSkillSelectionFor } from "./turn-skill-selection.js"
+import {
+  enabledSkillsMissingFromCatalog,
+  selectableTurnSkills,
+  turnSkillRefusalFrom,
+  turnSkillSelectionFor,
+} from "./turn-skill-selection.js"
 
 const digest = (character: string) => `sha256:${character.repeat(64)}` as const
 const manifest = { version: 1 as const, capabilities: ["filesystem.read" as const] }
@@ -44,6 +49,33 @@ it("offers only skills the project reviewed and enabled", () => {
   )
 
   expect(offered.map((entry) => entry.id)).toEqual([alpha.id])
+})
+
+it("pins each offer to the review the daemon will compare it against", () => {
+  // The catalog has moved on from what was reviewed. The daemon looks the skill
+  // up in the snapshot's enablements and refuses a reference that disagrees
+  // with it, so the review is the only digest worth sending.
+  const edited = { ...alpha, contentDigest: digest("f") }
+
+  const offered = selectableTurnSkills([edited], [review(alpha)], "project-one")
+
+  expect(offered[0]?.contentDigest).toBe(alpha.contentDigest)
+  expect(offered[0]?.name).toBe(edited.name)
+})
+
+it("names an enabled skill the catalog does not describe, without being asked twice", () => {
+  expect(enabledSkillsMissingFromCatalog([alpha], [review(alpha), review(beta)], "project-one"))
+    .toEqual([beta.id])
+  expect(enabledSkillsMissingFromCatalog([alpha, beta], [review(alpha), review(beta)], "project-one"))
+    .toEqual([])
+})
+
+it("reports nothing missing when a skill is enabled for another project", () => {
+  const elsewhere = { ...review(beta), projectId: "project-two" }
+
+  expect(enabledSkillsMissingFromCatalog([alpha], [review(alpha), elsewhere], "project-one"))
+    .toEqual([])
+  expect(enabledSkillsMissingFromCatalog([alpha], [review(alpha)], undefined)).toEqual([])
 })
 
 it("orders what it offers by name, so the same catalog reads the same way twice", () => {

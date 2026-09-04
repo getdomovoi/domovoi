@@ -8,26 +8,59 @@ import {
 
 export type SelectableTurnSkill = Pick<SkillSummary, "id" | "name" | "contentDigest" | "manifest">
 
+/**
+ * The digest and manifest come from the enablement review rather than the
+ * catalog, because the review is what the daemon compares a selection against:
+ * it looks the skill up in the snapshot's enablements and refuses the turn when
+ * the reference does not match that review. A catalog read at some other moment
+ * is a second opinion nobody asked for, and disagreeing with the snapshot is
+ * the one way a client can turn a valid choice into a refused one.
+ *
+ * The catalog is still what supplies the name, which is why a client holding a
+ * stale one shows an old label rather than sending an invalid selection.
+ */
 export function selectableTurnSkills(
   skills: readonly SkillSummary[],
   enablements: readonly SkillEnablementReview[],
   projectId: string | undefined,
 ): SelectableTurnSkill[] {
   if (!projectId) return []
-  const enabled = new Set(
+  const enabled = new Map(
     enablements
       .filter((review) => review.projectId === projectId && review.enabled)
-      .map((review) => review.skillId),
+      .map((review) => [review.skillId, review]),
   )
   return skills
-    .filter((skill) => enabled.has(skill.id))
-    .map((skill) => ({
-      id: skill.id,
-      name: skill.name,
-      contentDigest: skill.contentDigest,
-      manifest: skill.manifest,
-    }))
+    .flatMap((skill) => {
+      const review = enabled.get(skill.id)
+      if (!review) return []
+      return [{
+        id: skill.id,
+        name: skill.name,
+        contentDigest: review.contentDigest,
+        manifest: review.manifest,
+      }]
+    })
     .sort((left, right) => left.name.localeCompare(right.name))
+}
+
+/**
+ * A skill the project has enabled but the catalog does not describe. The phone
+ * asks for the catalog once and keeps it, so this is how it learns that what it
+ * holds no longer covers what the snapshot says is enabled, without polling.
+ */
+export function enabledSkillsMissingFromCatalog(
+  skills: readonly SkillSummary[],
+  enablements: readonly SkillEnablementReview[],
+  projectId: string | undefined,
+): string[] {
+  if (!projectId) return []
+  const known = new Set(skills.map((skill) => skill.id))
+  return enablements
+    .filter((review) => review.projectId === projectId && review.enabled)
+    .map((review) => review.skillId)
+    .filter((skillId) => !known.has(skillId))
+    .sort()
 }
 
 /**
