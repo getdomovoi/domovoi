@@ -143,7 +143,7 @@ describe("target transfer preflight", () => {
   })
 })
 
-async function preparedTransfer() {
+async function preparedTransfer(options: { malformedState?: boolean } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-target-transfer-"))
   scratchDirectories.push(scratch)
   const source = structuredClone(demoWorkspace)
@@ -194,6 +194,7 @@ async function preparedTransfer() {
     readIgnoredArtifactSource: async () => Buffer.from("<h1>preview</h1>\n"),
     readAnnotationCrop: async () => Buffer.from("pngbytes"),
   })
+  if (options.malformedState) Reflect.deleteProperty(intent.state, "thread")
   const packaged = createSessionTransferPackage(intent, {
     transferId: `transfer-${"1".repeat(32)}`,
     checkpointCommit,
@@ -216,6 +217,38 @@ async function preparedTransfer() {
 }
 
 describe("target transfer commit", () => {
+  it("validates portable state before restoring repository bytes", async () => {
+    const { packaged, transactions } = await preparedTransfer({ malformedState: true })
+    const restoreSessionFromBundle = vi.fn(async () => ({
+      path: "/target/session-billing",
+      branch: "domovoi/session-billing",
+      baseCommit: checkpointCommit,
+    }))
+
+    await expect(commitPreparedSessionTransfer({
+      snapshot: targetWorkspace(),
+      transferId: packaged.manifest.transferId,
+      manifestDigest: packaged.manifestDigest,
+      transactions,
+      projectHasLineage: async () => true,
+      workspace: { restoreSessionFromBundle },
+      annotationVisualContext: { storeUpload: vi.fn() },
+      usageLedger: { replaceTransferredSession: vi.fn() },
+      save: vi.fn(),
+      now: () => "2026-09-03T21:01:00.000Z",
+    })).rejects.toThrow()
+
+    expect(restoreSessionFromBundle).not.toHaveBeenCalled()
+    await expect(transactions.status(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )).resolves.toEqual({
+      state: "failed",
+      transferId: packaged.manifest.transferId,
+      reason: "state-import-failed",
+    })
+  })
+
   it("restores every resource before publishing one runnable target session", async () => {
     const { packaged, transactions, usage } = await preparedTransfer()
     const restoreSessionFromBundle = vi.fn(async () => ({

@@ -346,21 +346,8 @@ export async function commitPreparedSessionTransfer(input: {
     }
   }
 
-  let stage: "repository" | "state" | "resources" | "persistence" = "repository"
+  let stage: "repository" | "state" | "resources" | "persistence" = "state"
   try {
-    await input.transactions.markRecovering(input.transferId, input.manifestDigest, stage)
-    const restored = await restoreRepository(
-      input.snapshot,
-      manifest,
-      input.manifestDigest,
-      input.transactions,
-      input.workspace,
-    )
-    if (restored.baseCommit !== manifest.project.checkpointCommit) {
-      throw new Error("The restored repository does not match the transferred checkpoint")
-    }
-
-    stage = "state"
     await input.transactions.markRecovering(input.transferId, input.manifestDigest, stage)
     const stateBytes = await input.transactions.readMember(
       input.transferId,
@@ -373,6 +360,19 @@ export async function commitPreparedSessionTransfer(input: {
       || state.session.ownershipGeneration !== manifest.ownership.fromGeneration
     ) {
       throw new Error("Transferred session state does not match its manifest")
+    }
+
+    stage = "repository"
+    await input.transactions.markRecovering(input.transferId, input.manifestDigest, stage)
+    const restored = await restoreRepository(
+      input.snapshot,
+      manifest,
+      input.manifestDigest,
+      input.transactions,
+      input.workspace,
+    )
+    if (restored.baseCommit !== manifest.project.checkpointCommit) {
+      throw new Error("The restored repository does not match the transferred checkpoint")
     }
 
     stage = "resources"
