@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createEmptyWorkspace, demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -21,6 +21,30 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("preserves 0.3 workspace state and bound credentials across the 0.4 wire change", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-protocol-migration-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const original = new SqliteWorkspaceStore(databasePath, structuredClone(demoWorkspace))
+    const paired = original.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+    const before = original.load()
+    await original.close()
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify({ ...before, protocolVersion: "0.3.0" }))
+    database.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+    try {
+      expect(reopened.recovery).toBeUndefined()
+      expect(reopened.load()).toEqual({ ...before, protocolVersion })
+      expect(reopened.devices.verify(paired.token)?.device).toEqual(paired.device)
+      expect(await readdir(scratch)).not.toEqual(expect.arrayContaining([expect.stringContaining("snapshot-corrupt")]))
+    } finally {
+      await reopened.close()
+    }
+  })
+
   it("keeps committed transfer ownership after restart and active project changes", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-ownership-"))
     scratchDirectories.push(scratch)

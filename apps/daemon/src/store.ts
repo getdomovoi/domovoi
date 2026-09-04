@@ -152,6 +152,13 @@ function migrateStoredWorkspace(value: unknown): {
   }
   const migrated = structuredClone(value)
   let repaired = false
+  // Enrollment changes RPCs and the separate fleet table, not workspace state.
+  // Do not quarantine a valid local workspace just because its wire version is
+  // old. Only this reviewed predecessor is migrated; full validation still runs.
+  if (typeof migrated.protocolVersion === "string" && /^0\.3\.\d+$/.test(migrated.protocolVersion)) {
+    migrated.protocolVersion = protocolVersion
+    repaired = true
+  }
   const inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }> = []
   if (Array.isArray(migrated.approvals)) {
     for (const approval of migrated.approvals) {
