@@ -3,6 +3,7 @@ import { View } from "react-native"
 import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
+  enabledSkillsMissingFromCatalog,
   fleetSnapshotSchema,
   selectableTurnSkills,
   skillSummariesSchema,
@@ -164,11 +165,33 @@ export function App() {
     }
   }, [call])
 
+  // Enablements ride the snapshot, so the phone is told the moment one changes
+  // and never has to poll. What it cannot learn that way is the name of a skill
+  // it has never seen, so the catalog is asked for again only when the snapshot
+  // names an enabled skill this catalog does not describe.
+  const catalogIncomplete = useMemo(
+    () => enabledSkillsMissingFromCatalog(
+      skillCatalog ?? [],
+      snapshot?.skillEnablements ?? [],
+      snapshot?.project?.id,
+    ).length > 0,
+    [skillCatalog, snapshot],
+  )
+
   // The catalog is asked for when the picker is opened, for the same reason the
-  // fleet is: a phone should not hold what it is not showing.
+  // fleet is: a phone should not hold what it is not showing. A reconnect drops
+  // what was read on the old connection, because a daemon that restarted may be
+  // serving a different project entirely.
   useEffect(() => {
-    if (skillsOpen && status === "open" && !skillCatalog && !skillsLoading) void loadSkills()
-  }, [loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
+    if (status === "open") return
+    setSkillCatalog(undefined)
+  }, [status])
+
+  useEffect(() => {
+    if (!skillsOpen || status !== "open" || skillsLoading) return
+    if (skillCatalog && !catalogIncomplete) return
+    void loadSkills()
+  }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
   // The list is asked for when the tab is opened rather than kept warm, because
   // a phone should not hold a subscription it is not showing. Depending on the

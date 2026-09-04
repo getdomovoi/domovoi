@@ -9,6 +9,7 @@
     "ios": "expo start --ios",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "prestart": "pnpm --filter @getdomovoi/protocol build",
+    "pretypecheck": "pnpm --filter @getdomovoi/protocol build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
