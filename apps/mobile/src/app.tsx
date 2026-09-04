@@ -73,6 +73,10 @@ export function App() {
   const [fleetProblem, setFleetProblem] = useState("")
   const [confirmPause, setConfirmPause] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  // How long an approval has been waiting is only true for as long as the
+  // clock it was measured against. It ticks while the list is on screen and
+  // stops when it is not, because nothing off screen needs a fresh minute.
+  const [now, setNow] = useState(() => Date.now())
 
   // The saved credential is what makes the app usable the second time it is
   // opened, so it is restored before anything is drawn.
@@ -199,6 +203,13 @@ export function App() {
   useEffect(() => {
     if (tab === "fleet" && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
+
+  useEffect(() => {
+    if (tab !== "sessions") return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(timer)
+  }, [tab])
 
   // A failure recorded against a connection that has since dropped says nothing
   // about the fleet, and leaving it up tells the person something that is no
@@ -394,6 +405,8 @@ export function App() {
                 machineCount={fleet?.length}
                 notice={notice}
                 refreshing={refreshing}
+                now={now}
+                onOpenApproval={setOpenApprovalId}
                 onRefresh={() => void refreshWorkspace()}
                 onOpenSession={(sessionId) => {
                   // A draft is written for one session. Carrying it into
