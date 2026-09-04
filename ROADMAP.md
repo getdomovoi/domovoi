@@ -376,7 +376,18 @@ Three holes found on 2026-09-04 were inside items already marked complete: a pai
 read another machine's workspace, concurrent daemon starts raced on machine identity, and a
 credential could act as either a machine or a person. A second pass over the fleet surface
 underneath the transfer work is queued, weighted toward credential handling and transport
-ordering, where a mistake is both reachable from another machine and quiet.
+ordering, where a mistake is both reachable from another machine and quiet. The self-hosted relay
+preflight closed the immediate credential blockers: credentials are fixed-width, exact client or
+machine bindings determine the authenticated actor, activity is recorded only after an accepted
+hello, and both legacy credential shapes are retired in one migration. That preflight is not the
+full second pass. Resume with enrollment, revocation and rotation; transport authentication and
+ordering; install and supervision; then WSL discovery and interop. Transfer itself is excluded
+because its ownership and recovery contract already received joint review.
+
+One known lifecycle finding remains parked with that audit: `MachineCredentialStore.forget()` has
+no production caller, so an outbound machine credential remains in the OS keychain until it is
+overwritten. Deletion needs an authoritative revocation, removal, or re-pair event before that
+method can be wired safely.
 
 - [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
@@ -391,9 +402,26 @@ ordering, where a mistake is both reachable from another machine and quiet.
   3. LAN connection;
   4. direct tailnet connection;
   5. SSH tunnel where explicitly configured;
-  6. outbound relay fallback after hosted services exist (slot reserved; nothing advertises or
-     dials a relay until Goal 3 ships the service).
+  6. an end-to-end encrypted, self-hosted outbound relay when one is configured.
+  - Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open
+    items below replace the earlier assumption that relay had to wait for the hosted Goal 3
+    service.
 - [x] Authenticate every connection even inside a tailnet
+- [ ] Keep a daemon reachable while its tailnet or network identity changes through the
+  self-hosted rendezvous in `docs/self-hosted-relay.md`
+  - The daemon and client both dial outward. The relay is a separate internet-facing app and sees
+    bounded ciphertext plus metadata, never Domovoi plaintext or endpoint credentials.
+  - Relay admission requires both the current paired-device bearer and proof of its channel key;
+    the daemon root token is never valid on relay ingress. Pairing remains direct-only for the
+    alpha.
+- [ ] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
+  suite or public-key shape in protocol
+- [ ] Make relay routes and capabilities a discriminated protocol contract
+  - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
+    encrypted artifact-byte path exists, and clients read that absence from the route rather than
+    maintaining their own list.
+- [ ] Ship the generation-fenced outbound manager and separate self-hosted relay app with bounded
+  pre-authentication input, buffers, streams, idle time, and explicit backpressure
 - [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
   a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
@@ -430,15 +458,11 @@ ordering, where a mistake is both reachable from another machine and quiet.
   - An interrupted move is reconciled by the daemon itself. Operator recovery is offered only
     once the daemon records that it cannot reach the target, and the call rechecks the target
     before releasing anything.
-  - `transferBeginParams` in `packages/protocol/src/transfer-rpc.ts` carries the session id, the
-    source machine, the method, a digest, a byte count, and an optional `sinceCommit`. Nothing
-    else. The thread, artifacts, annotations, working plan, and usage ledger stay on the source
-    machine, so a transferred session arrives with its worktree and none of its history.
-  - This contradicts the checked line above it: the dialog names what travels, and a person
-    reading it reasonably expects their thread and artifacts on the other machine.
-  - Found on 2026-09-03 while deciding whether the working plan should travel. Adding one kind of
-    state alone would be worse than none, because the session would arrive looking complete.
-    Deliberately kept out of the working-plan work; it is a transfer-contract change of its own.
+  - The versioned transfer contract carries the repository and checkpoint, thread, artifacts and
+    promoted artifact sources, annotations and crops, working plan, usage, and runtime settings.
+    Provider credentials and state, terminals, approval rules, skill authority, audit history,
+    ignored files, external databases, and Auto consent remain machine-local. The daemon reports
+    these coverage keys and warnings to the dialog instead of relying on fixed client prose.
 - [x] Record every attempted move in the thread as a receipt that names the reason the daemon
   refused rather than a generic failure
 - [x] Add a Fleet surface listing machine platform, architecture, version, connection, health,
@@ -453,6 +477,8 @@ Completion proof:
   by unit tests that stub `wsl.exe`;
 - repository bytes never flow through a filesystem sync layer;
 - revoked devices lose access promptly;
+- a daemon remains reachable from a paired phone across private-network identity changes without
+  exposing payload plaintext to the relay, and a bearer or channel key alone cannot enter;
 - interrupted transfers recover without losing either worktree;
 - a session can be moved to another paired machine from the client, and a refused move names the
   reason the daemon gave;
@@ -466,8 +492,9 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
 
 - [ ] OAuth/passkey account service
 - [ ] Account-scoped device registry and short-lived client sessions
-- [ ] Outbound daemon connection manager and horizontally scalable relay
-- [ ] Payload-level end-to-end encryption between client and daemon
+- [ ] Hosted, horizontally scalable deployment of the self-hosted relay wire
+- [ ] Preserve payload-level end-to-end encryption through the hosted relay while adding accounts
+  and multitenant routing
 - [ ] Relay protocol version negotiation, backpressure, reconnect, and resumable subscriptions
 - [ ] Hosted usage, subscription, billing, and relay-entitlement management
 - [ ] Device/session revocation and security-event history
@@ -620,7 +647,9 @@ dependent work starts.
 - WebSocket JSON-RPC is the client/daemon protocol; gRPC is not required for the current surfaces.
 - The daemon owns sessions, Git, tools, terminals, credentials, and canonical state.
 - Code stays on its execution machine; Domovoi does not add a filesystem sync layer.
-- Remote connectivity prefers direct private-network transport and later uses an outbound relay.
+- Remote connectivity prefers direct private-network transport, then a configured self-hosted
+  end-to-end encrypted relay. A later hosted service uses the same payload boundary rather than
+  defining the first relay contract.
 - SQLite is owned directly by the daemon; an ORM is not currently justified.
 - Domovoi is open-core. The daemon, protocol, clients, and local transports are Apache-2.0; hosted
   account, billing, relay, vault, and team services may remain separate.
