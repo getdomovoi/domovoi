@@ -1,6 +1,14 @@
 import type { DaemonErrorSink, DaemonServerOptions } from "./server.js"
 import { DomovoiDaemon as DomovoiDaemonImplementation } from "./server.js"
 
+export {
+  createProductionDaemon,
+  type ProductionDaemonCredential,
+  type ProductionDaemonEndpoint,
+  type ProductionDaemonHandle,
+  type ProductionDaemonOptions,
+} from "./production-daemon.js"
+
 export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
 
 // The daemon's constructor takes every seam its own tests inject. A consumer
