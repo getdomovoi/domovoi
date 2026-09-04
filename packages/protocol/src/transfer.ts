@@ -129,6 +129,23 @@ export const transferReceiptSchema = z.object({
   startedAt: z.string().datetime({ offset: true }),
   completedAt: z.string().datetime({ offset: true }),
 }).strict().superRefine((receipt, context) => {
+  if (receipt.outcome === "succeeded" && receipt.reason !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "A successful transfer cannot record a refusal reason",
+    })
+  }
+  if (
+    (receipt.outcome === "failed" || receipt.outcome === "refused")
+    && receipt.reason === undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "An unsuccessful transfer must record its reason",
+    })
+  }
   if (
     receipt.outcome === "source-recovered"
     && receipt.reason !== "target-ownership-unconfirmed"

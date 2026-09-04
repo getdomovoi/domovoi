@@ -264,11 +264,11 @@ export const sessionSummarySchema = z.object({
       message: "Transfer metadata requires a transfer lifecycle state",
     })
   }
-  if (transferState && !session.workspacePath) {
+  if ((transferState || session.state === "ownership-conflict") && !session.workspacePath) {
     context.addIssue({
       code: "custom",
       path: ["workspacePath"],
-      message: "A transferred source retains its recovery worktree",
+      message: "A transferred or conflicted source retains its recovery worktree",
     })
   }
   if (transferState && session.activeTurnId) {

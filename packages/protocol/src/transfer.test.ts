@@ -128,6 +128,21 @@ describe("transferReceiptSchema", () => {
     }).success).toBe(true)
   })
 
+  it("couples every receipt outcome to an honest reason", () => {
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      reason: "target-unreachable",
+    }).success).toBe(false)
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      outcome: "refused",
+    }).success).toBe(false)
+    expect(transferReceiptSchema.safeParse({
+      ...receipt,
+      outcome: "failed",
+    }).success).toBe(false)
+  })
+
   it("records who knowingly reclaimed a source without target confirmation", () => {
     const recovered = {
       ...receipt,

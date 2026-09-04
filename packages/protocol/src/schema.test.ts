@@ -708,6 +708,9 @@ describe("workspace protocol", () => {
       state: "ownership-conflict",
       ownershipConflict: { otherGeneration: 4, recoveryAction: "none" },
     })
+    const conflictWithoutRecoveryWorktree = structuredClone(conflicted)
+    delete conflictWithoutRecoveryWorktree.sessions[2]!.workspacePath
+    expect(workspaceSnapshotSchema.safeParse(conflictWithoutRecoveryWorktree).success).toBe(false)
 
     const hiddenConflict = structuredClone(conflicted)
     hiddenConflict.sessions[2]!.state = "idle"
