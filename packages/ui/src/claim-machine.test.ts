@@ -8,6 +8,7 @@ const device = {
   id: `device-${"a".repeat(32)}`,
   label: "studio-ipad",
   pairedAt: "2026-08-31T12:00:00.000Z",
+  binding: { kind: "machine", machineId: `machine-${"b".repeat(32)}` },
 }
 
 function transport(result: unknown = { device, token: credential }) {
