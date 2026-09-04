@@ -11,7 +11,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { sessionTransferManifestDigest } from "./session-transfer-package.js"
-import { FileTransferTransactions } from "./transfer-transactions.js"
+import { FileTransferTransactions, writeAllTransferBytes } from "./transfer-transactions.js"
 
 const scratchDirectories: string[] = []
 const transferId = `transfer-${"a".repeat(32)}`
@@ -80,6 +80,22 @@ function manifestFor(
 }
 
 describe("file transfer transaction journal", () => {
+  it("retries short filesystem writes until every member byte is durable", async () => {
+    const writes: Buffer[] = []
+    const writer = {
+      async write(bytes: Uint8Array, offset: number, length: number) {
+        const bytesWritten = Math.min(2, length)
+        writes.push(Buffer.from(bytes.subarray(offset, offset + bytesWritten)))
+        return { bytesWritten }
+      },
+    }
+
+    await writeAllTransferBytes(writer, Buffer.from("transfer"))
+
+    expect(Buffer.concat(writes).toString("utf8")).toBe("transfer")
+    expect(writes).toHaveLength(4)
+  })
+
   it("prepares the same manifest idempotently across process restarts", async () => {
     const { root, transactions } = await journal()
     const manifest = manifestFor(Buffer.from("state"), Buffer.from("repository"))

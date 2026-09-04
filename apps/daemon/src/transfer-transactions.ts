@@ -43,6 +43,34 @@ type FileTransferTransactionOptions = {
   now?: () => number
 }
 
+type TransferFileWriter = {
+  write(
+    bytes: Uint8Array,
+    offset: number,
+    length: number,
+    position: null,
+  ): Promise<{ bytesWritten: number }>
+}
+
+export async function writeAllTransferBytes(
+  writer: TransferFileWriter,
+  bytes: Uint8Array,
+): Promise<void> {
+  let offset = 0
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await writer.write(
+      bytes,
+      offset,
+      bytes.byteLength - offset,
+      null,
+    )
+    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) {
+      throw new Error("Transfer member write made no progress")
+    }
+    offset += bytesWritten
+  }
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`
   try {
@@ -542,7 +570,7 @@ export class FileTransferTransactions {
           const bytes = await readFile(join(chunkPath, chunk.name))
           byteLength += bytes.byteLength
           digest.update(bytes)
-          await handle.write(bytes)
+          await writeAllTransferBytes(handle, bytes)
         }
         await handle.sync()
       } finally {
