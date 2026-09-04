@@ -713,6 +713,22 @@ describe("transactional session transfer RPC", () => {
       clientId: "studio-mac",
       recoveredAt: "2026-09-03T22:10:00.000Z",
     })
+    const approval = structuredClone(demoWorkspace.approvals[0]!)
+    approval.sessionId = packaged.manifest.sessionId
+    recovered.approvals = [approval]
+    recovered.workingPlans = [{
+      sessionId: packaged.manifest.sessionId,
+      revision: 1,
+      structureRevision: 1,
+      steps: [{
+        id: "plan-step-waiting",
+        text: "Wait for approval",
+        status: "pending",
+        blocker: { kind: "approval", approvalId: approval.id },
+      }],
+      createdAt: "2026-09-03T22:10:00.000Z",
+      updatedAt: "2026-09-03T22:10:00.000Z",
+    }]
     const store = new SqliteWorkspaceStore(":memory:", recovered)
     let statusCalls = 0
     const remoteCall = vi.fn(async (method: string) => {
@@ -760,6 +776,8 @@ describe("transactional session transfer RPC", () => {
       kind: "system",
       body: "Session ownership conflict detected.",
     })
+    expect(store.load().approvals).toHaveLength(0)
+    expect(store.load().workingPlans[0]?.steps[0]).not.toHaveProperty("blocker")
   })
 
   it("clears a recovery claim after the target authoritatively reports no ownership", async () => {
@@ -798,6 +816,53 @@ describe("transactional session transfer RPC", () => {
         sessionId: packaged.manifest.sessionId,
         target: targetMachineId,
       })])
+  })
+
+  it("fails closed in memory when a proven ownership conflict cannot persist", async () => {
+    const { staged, packaged } = await stagedTransferFixture()
+    const recovered = recoverUnconfirmedSourceTransfer(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      recoveredAt: "2026-09-03T22:10:00.000Z",
+    })
+    const store = new SqliteWorkspaceStore(":memory:", recovered)
+    vi.spyOn(store, "saveAsync").mockRejectedValue(new Error("disk unavailable"))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      connectToMachine: async () => ({
+        call: async () => ({
+          state: "committed",
+          transferId: packaged.manifest.transferId,
+          workspacePath: `/target/${packaged.manifest.sessionId}`,
+          checkpointCommit,
+          ownershipGeneration: 2,
+        }),
+        close: () => {},
+      }),
+      errorSink: () => {},
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    await vi.waitFor(async () => {
+      const current = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
+      expect(current.sessions[0]?.state).toBe("ownership-conflict")
+    })
+    await expect(call("session.send", {
+      sessionId: packaged.manifest.sessionId,
+      prompt: "Continue here",
+      client: "desktop",
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "This session has conflicting owners and is read-only" },
+    })
+    expect(store.load().sessions[0]?.state).toBe("idle")
+    socket.close()
   })
 
   it("reconciles an ambiguous live transfer after returning the incomplete result", async () => {

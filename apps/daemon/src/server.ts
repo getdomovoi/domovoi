@@ -1981,18 +1981,39 @@ export class DomovoiDaemon {
 
     const providerThread = session.providerThreadId
     const provider = session.runtime.provider
+    const detectedAt = new Date().toISOString()
     const conflicted = markSourceOwnershipConflict(this.#snapshot, {
       sessionId: session.id,
       transferId: recovery.transferId,
       otherMachineId: recovery.targetMachineId,
       otherGeneration: remote.ownershipGeneration,
-      detectedAt: new Date().toISOString(),
+      detectedAt,
     })
+    const removedApprovalIds = new Set(conflicted.approvals.flatMap((approval) => (
+      approval.sessionId === session.id ? [approval.id] : []
+    )))
     conflicted.approvals = conflicted.approvals.filter(
-      (approval) => approval.sessionId !== session.id,
+      (approval) => !removedApprovalIds.has(approval.id),
     )
-    await this.#persistTransferSnapshot(workspaceSnapshotSchema.parse(conflicted))
-    this.#closeSessionTerminals(session.id)
+    conflicted.workingPlans = clearWorkingPlanApprovalBlockers(
+      conflicted.workingPlans,
+      removedApprovalIds,
+      detectedAt,
+    ).plans
+    const authoritative = workspaceSnapshotSchema.parse(conflicted)
+
+    // Proof of another owner changes the in-memory authority boundary before
+    // any fallible cleanup or disk write. The machine that made the unverified
+    // recovery claim stops, even when persistence or provider cleanup fails.
+    this.#snapshot = authoritative
+    this.#sessionHistory.invalidate(session.id)
+    this.#syncArtifactWatchers()
+    this.#broadcastSnapshot()
+    try {
+      this.#closeSessionTerminals(session.id)
+    } catch (error) {
+      this.#reportError("Domovoi could not stop terminals after detecting duplicate ownership", error)
+    }
     this.#appendAudit({
       actor: { kind: "daemon", component: "transfer-reconciliation" },
       action: "session.ownership-conflict",
@@ -2012,6 +2033,14 @@ export class DomovoiDaemon {
         "Domovoi could not stop a provider after detecting duplicate ownership",
         error,
       ))
+    }
+    try {
+      if (this.#store.saveAsync) await this.#store.saveAsync(authoritative)
+      else this.#store.save(authoritative)
+      this.#persistenceSucceeded()
+    } catch (error) {
+      this.#persistenceFailed(error)
+      this.#reportError("Domovoi could not persist a detected ownership conflict", error)
     }
   }
 
