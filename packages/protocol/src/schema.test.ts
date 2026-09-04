@@ -18,6 +18,7 @@ import {
   providerModelSchema,
   providerFailureSchema,
   providerRuntimeSchema,
+  protocolVersion,
   helloParamsSchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
@@ -68,6 +69,11 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
+  it("uses a breaking minor for machine-bound pairing", () => {
+    expect(protocolVersion).toBe("0.2.0")
+    expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
+  })
+
   const workingPlan: WorkingPlan = {
     sessionId: "session-billing",
     revision: 7,
