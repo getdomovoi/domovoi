@@ -4,6 +4,7 @@ import type {
   SkillDocument,
   SkillEnablementReview,
   SkillSummary,
+  TurnSkillSelection,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -14,7 +15,9 @@ import {
   maximumReviewedSkillCandidates,
   maximumSkillContextLength,
   prepareProjectSkillContext,
+  prepareTurnSkillContext,
   renderProjectSkillContext,
+  TurnSkillSelectionError,
 } from "./skill-context.js"
 import type { SkillCatalog } from "./skills.js"
 
@@ -66,7 +69,141 @@ function catalog(documents: SkillDocument[]): SkillCatalog {
   }
 }
 
+function explicitSelection(reviewed: SkillEnablementReview): TurnSkillSelection {
+  return {
+    mode: "turn-explicit",
+    skills: [{
+      skillId: reviewed.skillId,
+      review: {
+        contentDigest: reviewed.contentDigest,
+        manifest: reviewed.manifest,
+      },
+    }],
+  }
+}
+
 describe("agentPromptWithSkills", () => {
+  it("treats an exact turn selection as required and excludes unselected defaults", async () => {
+    const alpha = skill("skill-aaaaaaaaaaaa", "alpha")
+    const beta = skill("skill-bbbbbbbbbbbb", "beta", digest("b"))
+    const betaReview = review("project-one", beta)
+    const skillCatalog = catalog([
+      { skill: alpha, content: "Use alpha." },
+      { skill: beta, content: "Use beta." },
+    ])
+    const snapshot = {
+      project: { id: "project-one" },
+      skillEnablements: [review("project-one", alpha), betaReview],
+    } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+
+    const prepared = await prepareTurnSkillContext(
+      skillCatalog,
+      snapshot,
+      explicitSelection(betaReview),
+    )
+    const { prompt, delivery } = renderProjectSkillContext(
+      prepared,
+      prepared.deliverable.length,
+      "Run tests",
+    )
+
+    expect(prepared.retention).toBe("required")
+    expect(skillCatalog.read).toHaveBeenCalledOnce()
+    expect(skillCatalog.read).toHaveBeenCalledWith(beta.id)
+    expect(prompt).toContain("Use beta.")
+    expect(prompt).not.toContain("Use alpha.")
+    expect(delivery).toMatchObject({
+      selection: "turn-explicit",
+      delivered: [{ id: beta.id }],
+      omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] },
+    })
+  })
+
+  it("uses an explicit empty selection instead of project defaults", async () => {
+    const current = skill("skill-aaaaaaaaaaaa", "alpha")
+    const skillCatalog = catalog([{ skill: current, content: "Use alpha." }])
+    const snapshot = {
+      project: { id: "project-one" },
+      skillEnablements: [review("project-one", current)],
+    } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+
+    const prepared = await prepareTurnSkillContext(skillCatalog, snapshot, {
+      mode: "turn-explicit",
+      skills: [],
+    })
+    const rendered = renderProjectSkillContext(prepared, 0, "Run tests")
+
+    expect(prepared).toMatchObject({
+      retention: "required",
+      selection: "turn-explicit",
+      deliverable: [],
+    })
+    expect(rendered.prompt).toBe("Run tests")
+    expect(rendered.delivery).toMatchObject({ selection: "turn-explicit", delivered: [] })
+    expect(skillCatalog.read).not.toHaveBeenCalled()
+  })
+
+  it("refuses an explicit skill whose enablement review changed before reading it", async () => {
+    const current = skill("skill-aaaaaaaaaaaa", "alpha", digest("b"))
+    const skillCatalog = catalog([{ skill: current, content: "Changed instructions." }])
+    const snapshot = {
+      project: { id: "project-one" },
+      skillEnablements: [review("project-one", current)],
+    } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+
+    const selected = prepareTurnSkillContext(skillCatalog, snapshot, {
+      mode: "turn-explicit",
+      skills: [{
+        skillId: current.id,
+        review: {
+          contentDigest: digest("a"),
+          manifest: current.manifest,
+        },
+      }],
+    })
+
+    await expect(selected).rejects.toBeInstanceOf(TurnSkillSelectionError)
+    await expect(selected).rejects.toMatchObject({
+      refusal: {
+        kind: "turn-skill-selection-refused",
+        skillId: current.id,
+        reason: "review-changed",
+      },
+    })
+    expect(skillCatalog.read).not.toHaveBeenCalled()
+  })
+
+  it("refuses unavailable, unenabled, and policy-blocked explicit skills", async () => {
+    const current = skill("skill-aaaaaaaaaaaa", "alpha")
+    const currentReview = review("project-one", current)
+    const enabled = {
+      project: { id: "project-one" },
+      skillEnablements: [currentReview],
+    } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+    const disabled = {
+      ...enabled,
+      skillEnablements: [review("project-one", current, false)],
+    }
+    const missingCatalog = catalog([])
+
+    await expect(prepareTurnSkillContext(
+      catalog([{ skill: current, content: "Use alpha." }]),
+      disabled,
+      explicitSelection(currentReview),
+    )).rejects.toMatchObject({ refusal: { skillId: current.id, reason: "not-enabled" } })
+    await expect(prepareTurnSkillContext(
+      missingCatalog,
+      enabled,
+      explicitSelection(currentReview),
+    )).rejects.toMatchObject({ refusal: { skillId: current.id, reason: "unavailable" } })
+    await expect(prepareTurnSkillContext(
+      catalog([{ skill: current, content: "Use alpha." }]),
+      enabled,
+      explicitSelection(currentReview),
+      { requireTrusted: true },
+    )).rejects.toMatchObject({ refusal: { skillId: current.id, reason: "policy" } })
+  })
+
   it("injects only current exact reviewed skills in deterministic escaped form", async () => {
     const alpha = skill("skill-aaaaaaaaaaaa", "alpha")
     const beta = skill("skill-bbbbbbbbbbbb", "beta", digest("b"))
