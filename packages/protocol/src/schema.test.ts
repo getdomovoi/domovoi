@@ -593,6 +593,14 @@ describe("workspace protocol", () => {
       ownershipGeneration: 3,
       transfer: { phase: "transferring", nextGeneration: 4 },
     })
+    const selfTransfer = structuredClone(transferring)
+    if (selfTransfer.sessions[2]!.transfer?.phase !== "transferring") {
+      throw new Error("Expected a transfer in progress")
+    }
+    selfTransfer.machine.id = `machine-${"f".repeat(32)}`
+    selfTransfer.project!.machineId = selfTransfer.machine.id
+    selfTransfer.sessions[2]!.transfer.targetMachineId = selfTransfer.machine.id
+    expect(workspaceSnapshotSchema.safeParse(selfTransfer).success).toBe(false)
 
     const wrongGeneration = structuredClone(transferring)
     if (wrongGeneration.sessions[2]!.transfer?.phase !== "transferring") {

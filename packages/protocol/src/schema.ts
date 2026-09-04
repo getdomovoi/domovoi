@@ -843,6 +843,13 @@ export const workspaceSnapshotSchema = z.object({
         path: ["sessions", index, "projectId"],
       })
     }
+    if (session.transfer?.targetMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "A session transfer must target another machine",
+        path: ["sessions", index, "transfer", "targetMachineId"],
+      })
+    }
     if (session.transferredFrom?.sourceMachineId === snapshot.machine.id) {
       context.addIssue({
         code: "custom",
