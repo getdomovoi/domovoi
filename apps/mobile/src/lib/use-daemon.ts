@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { AppState } from "react-native"
-import { applyWorkspaceDelta, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import {
+  applyWorkspaceDelta,
+  workspaceSnapshotSchema,
+  type WorkspaceDelta,
+  type WorkspaceSnapshot,
+} from "@getdomovoi/protocol"
 
 import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { DaemonConnection, type DaemonStatus } from "./daemon"
@@ -85,5 +90,14 @@ export function useDaemon(url: string | undefined, token: string | undefined) {
     return daemon.call(method, params)
   }, [])
 
-  return { snapshot, status, fault, call }
+  // A client normally resyncs through the greeting on every reconnect, so this
+  // exists for the one case that is not a reconnect: a person who wants to know
+  // that what they are looking at is current, right now.
+  const refresh = useCallback(async () => {
+    const daemon = connection.current
+    if (!daemon?.isOpen()) throw new Error("The daemon connection is not open")
+    setSnapshot(workspaceSnapshotSchema.parse(await daemon.call("workspace.get", {})))
+  }, [])
+
+  return { snapshot, status, fault, call, refresh }
 }

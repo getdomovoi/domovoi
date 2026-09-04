@@ -14,6 +14,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { artifactRows, findArtifact } from "./artifact-rows"
+import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
 import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
@@ -29,6 +30,7 @@ import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
 import { promptProblem, sessionDetail } from "./session-detail"
+import { shellState } from "./shell-state"
 import { waitingCount } from "./session-rows"
 import {
   missingSkillProblem,
@@ -69,6 +71,7 @@ export function App() {
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
   const [confirmPause, setConfirmPause] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   // The saved credential is what makes the app usable the second time it is
   // opened, so it is restored before anything is drawn.
@@ -86,7 +89,14 @@ export function App() {
     return () => { live = false }
   }, [])
 
-  const { snapshot, status, fault, call } = useDaemon(connectTo?.url, connectTo?.token)
+  const { snapshot, status, fault, call, refresh } = useDaemon(connectTo?.url, connectTo?.token)
+  const notice = connectionNotice(status, fault, snapshot !== undefined)
+  const shell = shellState({
+    restoringCredential: restoring,
+    hasCredential: connectTo !== undefined,
+    hasSnapshot: snapshot !== undefined,
+    fault,
+  })
   const waiting = snapshot ? waitingCount(snapshot) : 0
 
   const openApproval = useMemo(
@@ -161,10 +171,18 @@ export function App() {
   }, [loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
   // The list is asked for when the tab is opened rather than kept warm, because
-  // a phone should not hold a subscription it is not showing.
+  // a phone should not hold a subscription it is not showing. Depending on the
+  // status is what makes it ask again when the connection comes back.
   useEffect(() => {
     if (tab === "fleet" && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
+
+  // A failure recorded against a connection that has since dropped says nothing
+  // about the fleet, and leaving it up tells the person something that is no
+  // longer true.
+  useEffect(() => {
+    if (status !== "open") setFleetProblem("")
+  }, [status])
 
   const decide = async (decision: ApprovalDecision) => {
     if (!openApproval) return
@@ -187,6 +205,18 @@ export function App() {
       await call("session.pause", { sessionId, client: clientKind })
     } finally {
       setPausing(false)
+    }
+  }
+
+  const refreshWorkspace = async () => {
+    setRefreshing(true)
+    try {
+      await refresh()
+    } catch {
+      // The banner already says the connection is down, and a second sentence
+      // saying the same thing is noise on a phone.
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -339,6 +369,9 @@ export function App() {
               <SessionsScreen
                 snapshot={snapshot}
                 machineCount={fleet?.length}
+                notice={notice}
+                refreshing={refreshing}
+                onRefresh={() => void refreshWorkspace()}
                 onOpenSession={(sessionId) => {
                   // A draft is written for one session. Carrying it into
                   // another one would let a reply meant for one agent start a
@@ -353,12 +386,8 @@ export function App() {
               />
             ) : (
               <View className="flex-1 items-center justify-center gap-2 p-6">
-                <Text variant="title">Not connected</Text>
-                <Text variant="meta" className="text-center">
-                  {restoring
-                    ? "Looking for a saved daemon."
-                    : "Add your daemon address and pairing token in Settings."}
-                </Text>
+                <Text variant="title">{shell.headline}</Text>
+                <Text variant="meta" className="text-center">{shell.detail}</Text>
               </View>
             )
           ) : null}
@@ -367,6 +396,8 @@ export function App() {
               fleet={fleet}
               loading={fleetLoading}
               problem={fleetProblem}
+              notice={notice}
+              connected={status === "open"}
               onRefresh={() => void loadFleet()}
             />
           ) : null}

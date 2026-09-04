@@ -1,10 +1,12 @@
-import { ScrollView, View } from "react-native"
+import { RefreshControl, ScrollView, View } from "react-native"
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import { ConnectionBanner } from "../components/connection-banner"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
 import { Text } from "../components/ui/text"
+import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
 import { sessionRows, waitingCount, type SessionRow } from "../session-rows"
 
@@ -43,22 +45,34 @@ function SessionCard({ row, onOpen }: { row: SessionRow, onOpen: (id: string) =>
 export function SessionsScreen({
   snapshot,
   machineCount,
+  notice,
+  refreshing,
   onOpenSession,
   onPauseAll,
+  onRefresh,
 }: {
   snapshot: WorkspaceSnapshot
   // Unknown until the fleet has been asked, and a phone claiming one machine
   // because it has only counted the one it is talking to is a lie on screen.
   machineCount: number | undefined
+  notice: ConnectionNotice | undefined
+  refreshing: boolean
   onOpenSession: (sessionId: string) => void
   onPauseAll: () => void
+  onRefresh: () => void
 }) {
   const rows = sessionRows(snapshot)
   const waiting = waitingCount(snapshot)
   const running = snapshot.sessions.filter((session) => session.state === "active").length
 
   return (
-    <ScrollView className="flex-1 bg-background" contentContainerClassName="gap-3 p-4 pb-8">
+    <ScrollView
+      className="flex-1 bg-background"
+      contentContainerClassName="gap-3 p-4 pb-8"
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#919198" />
+      }
+    >
       <View className="flex-row items-center justify-between">
         <View className="gap-1">
           <Text variant="heading">Sessions</Text>
@@ -71,10 +85,22 @@ export function SessionsScreen({
         <Button title="Pause all" onPress={onPauseAll} />
       </View>
 
+      <ConnectionBanner notice={notice} />
+
       {waiting > 0 ? (
         <Card className="border-warn-border bg-warn-bg">
           <Text className="text-[13px] font-semibold text-warn-fg">
             {waiting} approval{waiting === 1 ? "" : "s"} waiting
+          </Text>
+        </Card>
+      ) : null}
+
+      {/* This snapshot came from the daemon, so an empty list is a fact about
+          the machine rather than a phone that has not been told anything. */}
+      {rows.length === 0 ? (
+        <Card>
+          <Text variant="meta">
+            No sessions on this machine. Start one from the desktop.
           </Text>
         </Card>
       ) : null}
