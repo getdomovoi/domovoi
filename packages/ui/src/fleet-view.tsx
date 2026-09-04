@@ -10,6 +10,7 @@ import {
   type TransportCandidate,
 } from "@getdomovoi/protocol"
 
+import { fleetUpdateAvailable } from "./fleet-updates.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   AlertDialog,
@@ -62,6 +63,7 @@ function sessionSummary(count: number): string {
 
 function MachineCard({
   machine,
+  fleet,
   sessionCount,
   inUse,
   connected,
@@ -69,6 +71,7 @@ function MachineCard({
   onOpenTerminal,
 }: {
   machine: FleetMachine
+  fleet: readonly FleetMachine[]
   sessionCount: number | undefined
   inUse: boolean
   connected: boolean
@@ -76,12 +79,18 @@ function MachineCard({
   onOpenTerminal?: ((machineId: string) => void) | undefined
 }) {
   const transports = orderedMachineTransports(machine)
+  const updateVersion = fleetUpdateAvailable(machine, fleet)
   return (
     <div role="group" aria-label={machine.label} className="rounded-xl border bg-card p-3.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-semibold text-strong">{machine.label}</span>
         <Badge variant={healthVariant[machine.health]}>{healthLabel[machine.health]}</Badge>
         {machine.self ? <Badge variant="outline">This machine</Badge> : null}
+        {updateVersion ? (
+          <Badge variant="warning" title={`This machine runs ${machine.version}`}>
+            UPDATE {updateVersion}
+          </Badge>
+        ) : null}
         <span className="ml-auto flex items-center gap-1.5">
           {inUse ? (
             <span className="font-machine text-[10px] text-faint">In use</span>
@@ -278,6 +287,7 @@ export function FleetView({
               <MachineCard
                 key={machine.id}
                 machine={machine}
+                fleet={machines}
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
                 inUse={machine.id === currentMachineId}
                 connected={connected}

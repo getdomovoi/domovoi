@@ -258,3 +258,12 @@ it("does not offer machine actions while the daemon is unreachable", () => {
   expect(card.getByRole("button", { name: "Use studio" })).toHaveProperty("disabled", true)
   expect(card.getByRole("button", { name: "Terminal on studio" })).toHaveProperty("disabled", true)
 })
+
+it("marks a machine running an older daemon than the fleet", () => {
+  renderFleet({ machines: [local, { ...studio, version: "0.4.1" }] })
+
+  const behind = within(screen.getByRole("group", { name: "studio" }))
+  expect(behind.getByText("UPDATE 0.4.2")).toBeTruthy()
+  const current = within(screen.getByRole("group", { name: "workshop" }))
+  expect(current.queryByText(/^UPDATE/u)).toBeNull()
+})
