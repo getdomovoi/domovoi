@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import {
   transferCommitResultSchema,
   transferMemberResultSchema,
@@ -29,6 +31,14 @@ type RemoteTransferResult =
   | TransferPrepareResult
   | TransferMemberResult
   | TransferCommitResult
+type Session = WorkspaceSnapshot["sessions"][number]
+type TransferringLifecycle = Extract<NonNullable<Session["transfer"]>, {
+  phase: "transferring"
+}>
+type FrozenSourceSession = Session & {
+  state: "transferring"
+  transfer: TransferringLifecycle
+}
 
 function sourceSession(
   snapshot: WorkspaceSnapshot,
@@ -143,6 +153,122 @@ export function completeSourceSessionTransfer(
   }
   delete completed.providerThreadId
   delete completed.providerFailure
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
+function frozenSourceSession(
+  snapshot: WorkspaceSnapshot,
+  transferId: string,
+  sessionId?: string,
+): FrozenSourceSession {
+  const session = snapshot.sessions.find((candidate) => (
+    candidate.transfer?.transferId === transferId
+    && (sessionId === undefined || candidate.id === sessionId)
+  ))
+  if (session?.state !== "transferring" || session.transfer?.phase !== "transferring") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  return session as FrozenSourceSession
+}
+
+export function thawSourceSessionTransfer(
+  snapshot: WorkspaceSnapshot,
+  transferId: string,
+  thawedAt: string,
+): WorkspaceSnapshot {
+  const frozen = frozenSourceSession(snapshot, transferId)
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, frozen.id)
+  if (session.transfer?.phase !== "transferring") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  session.state = session.transfer.resumeState
+  session.updatedAt = thawedAt
+  delete session.transfer
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
+export function recoverUnconfirmedSourceTransfer(
+  snapshot: WorkspaceSnapshot,
+  input: {
+    sessionId: string
+    transferId: string
+    client: ClientKind
+    clientId?: string
+    recoveredAt: string
+  },
+): WorkspaceSnapshot {
+  const frozen = frozenSourceSession(snapshot, input.transferId, input.sessionId)
+  const targetMachineId = frozen.transfer.targetMachineId
+  const generation = frozen.ownershipGeneration ?? 0
+  const candidate = thawSourceSessionTransfer(snapshot, input.transferId, input.recoveredAt)
+  const recovered = sourceSession(candidate, input.sessionId)
+  recovered.sourceRecovery = {
+    transferId: input.transferId,
+    targetMachineId,
+    generation,
+    recoveredAt: input.recoveredAt,
+    decidedBy: {
+      client: input.client,
+      ...(input.clientId ? { clientId: input.clientId } : {}),
+    },
+  }
+  candidate.thread.push({
+    id: `system-transfer-recovery-${randomUUID()}`,
+    sessionId: recovered.id,
+    kind: "system",
+    body: "Source ownership recovered without target confirmation.",
+    detail: `The ${input.client} client confirmed that machine ${targetMachineId} does not hold this session. If that claim was wrong, both machines may contain live work and Domovoi will stop this source when it detects the conflict.`,
+    createdAt: input.recoveredAt,
+  })
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
+export function markSourceOwnershipConflict(
+  snapshot: WorkspaceSnapshot,
+  input: {
+    sessionId: string
+    transferId: string
+    otherMachineId: string
+    otherGeneration: number
+    detectedAt: string
+  },
+): WorkspaceSnapshot {
+  const current = sourceSession(snapshot, input.sessionId)
+  const recovery = current.sourceRecovery
+  if (
+    !recovery
+    || recovery.transferId !== input.transferId
+    || recovery.targetMachineId !== input.otherMachineId
+    || input.otherGeneration <= (current.ownershipGeneration ?? 0)
+  ) {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  const candidate = structuredClone(snapshot)
+  const session = sourceSession(candidate, input.sessionId)
+  // The machine that made the unverified claim stops. The target did not take
+  // that risk and remains usable. This worktree stays intact because it may be
+  // the only copy of work created after the mistaken recovery.
+  session.state = "ownership-conflict"
+  session.updatedAt = input.detectedAt
+  session.ownershipConflict = {
+    transferId: input.transferId,
+    otherMachineId: input.otherMachineId,
+    otherGeneration: input.otherGeneration,
+    detectedAt: input.detectedAt,
+    recoveryAction: "none",
+  }
+  delete session.activeTurnId
+  delete session.providerThreadId
+  delete session.providerFailure
+  candidate.thread.push({
+    id: `system-transfer-conflict-${randomUUID()}`,
+    sessionId: session.id,
+    kind: "system",
+    body: "Session ownership conflict detected.",
+    detail: `Machine ${input.otherMachineId} holds ownership generation ${input.otherGeneration}. This source is read-only and its recovery worktree is preserved until a person chooses which work to keep.`,
+    createdAt: input.detectedAt,
+  })
   return workspaceSnapshotSchema.parse(candidate)
 }
 

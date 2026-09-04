@@ -13,9 +13,12 @@ import {
 import {
   completeSourceSessionTransfer,
   freezeSourceSessionTransfer,
+  markSourceOwnershipConflict,
+  recoverUnconfirmedSourceTransfer,
   sendPreparedSessionTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
+  thawSourceSessionTransfer,
 } from "./session-transfer-source.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 
@@ -127,6 +130,79 @@ describe("source transfer lifecycle", () => {
       },
     })
     expect(completed.sessions[0]).not.toHaveProperty("providerThreadId")
+  })
+
+  it("restores the exact settled state after an authoritative refusal", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    source.sessions[0]!.state = "failed"
+    const frozen = freezeSourceSessionTransfer(
+      source,
+      intent,
+      packaged.manifest.transferId,
+      "2026-09-03T22:00:00.000Z",
+    )
+    const staged = stageSourceSessionCheckpoint(frozen, packaged.manifest)
+
+    const thawed = thawSourceSessionTransfer(
+      staged,
+      packaged.manifest.transferId,
+      "2026-09-03T22:01:00.000Z",
+    )
+
+    expect(thawed.sessions[0]).toMatchObject({
+      state: "failed",
+      baseCommit: checkpointCommit,
+    })
+    expect(thawed.sessions[0]).not.toHaveProperty("transfer")
+  })
+
+  it("retains who reclaimed an unverifiable source and freezes that source on later conflict", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const staged = stageSourceSessionCheckpoint(
+      freezeSourceSessionTransfer(
+        source,
+        intent,
+        packaged.manifest.transferId,
+        "2026-09-03T22:00:00.000Z",
+      ),
+      packaged.manifest,
+    )
+    const recovered = recoverUnconfirmedSourceTransfer(staged, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      client: "desktop",
+      clientId: "studio-mac",
+      recoveredAt: "2026-09-03T22:02:00.000Z",
+    })
+    expect(recovered.sessions[0]).toMatchObject({
+      state: "idle",
+      sourceRecovery: {
+        transferId: packaged.manifest.transferId,
+        targetMachineId,
+        generation: 4,
+        decidedBy: { client: "desktop", clientId: "studio-mac" },
+      },
+    })
+    expect(recovered.thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Source ownership recovered without target confirmation.",
+    })
+
+    const conflicted = markSourceOwnershipConflict(recovered, {
+      sessionId: packaged.manifest.sessionId,
+      transferId: packaged.manifest.transferId,
+      otherMachineId: targetMachineId,
+      otherGeneration: 5,
+      detectedAt: "2026-09-03T23:00:00.000Z",
+    })
+    expect(conflicted.sessions[0]).toMatchObject({
+      state: "ownership-conflict",
+      ownershipConflict: { recoveryAction: "none", otherGeneration: 5 },
+    })
+    expect(conflicted.thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Session ownership conflict detected.",
+    })
   })
 })
 
