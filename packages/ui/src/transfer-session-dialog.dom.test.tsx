@@ -60,6 +60,7 @@ function renderDialog(overrides: {
   onTransfer?: (params: unknown) => Promise<SessionTransferResult>
   onTransferred?: (machineId: string) => void
   onOutcome?: (result: SessionTransferResult) => void
+  coverage?: unknown
 } = {}) {
   const onTransfer = vi.fn(overrides.onTransfer ?? (() => Promise.resolve(succeeded)))
   const onTransferred = vi.fn(overrides.onTransferred ?? (() => {}))
@@ -77,7 +78,22 @@ function renderDialog(overrides: {
       lineageCommit: "b".repeat(40),
       sourceHeadCommit: "c".repeat(40),
     },
-    coverage: { included: [{ kind: "repository" as const }], excluded: [], warnings: [] },
+    coverage: overrides.coverage ?? {
+      included: [
+        { kind: "repository" as const },
+        { kind: "thread" as const },
+        { kind: "working-plan" as const },
+        { kind: "annotations" as const },
+      ],
+      excluded: [
+        { kind: "terminals" as const },
+        { kind: "provider-credentials" as const },
+        { kind: "skill-authority" as const },
+        { kind: "approval-rules" as const },
+        { kind: "ignored-files" as const },
+      ],
+      warnings: [{ kind: "tracked-sensitive-files-may-travel" as const }],
+    },
   }))
   const user = userEvent.setup()
   render(
@@ -126,27 +142,24 @@ it("refuses a target that needs an upgrade and says why", () => {
   expect(screen.getByRole("button", { name: "Move session" }).hasAttribute("disabled")).toBe(true)
 })
 
-it("lists what travels with the session", () => {
+it("lists what travels with the session", async () => {
   renderDialog()
 
-  const travels = screen.getByRole("group", { name: "Travels with the session" })
+  const travels = await screen.findByRole("group", { name: "Travels with the session" })
   for (const item of [
+    "Repository, at the checkpoint commit",
     "Thread",
-    "Plan",
-    "Tool and test results",
+    "Working plan",
     "Annotations",
-    "Permission mode",
-    "Tracked changes",
-    "Non-ignored untracked files",
   ]) expect(travels.textContent).toContain(item)
 })
 
-it("lists what does not travel with the session", () => {
+it("lists what does not travel with the session", async () => {
   renderDialog()
 
-  const stays = screen.getByRole("group", { name: "Does not travel" })
+  const stays = await screen.findByRole("group", { name: "Does not travel" })
   for (const item of [
-    "Running dev servers and PTYs, which restart there",
+    "Running dev servers and terminals, which restart there",
     "Provider credentials",
     "Skills enabled for this project, which are reviewed again there",
     "Standing approval rules, which are approved again there",
@@ -227,6 +240,25 @@ it("tells the operator to pair the target again when its credential was retired"
     .toContain("That machine must be paired again before a session can move to it")
 })
 
+it("lists what the daemon says the move carries, not a list written here", async () => {
+  renderDialog({
+    coverage: {
+      included: [{ kind: "thread" }, { kind: "artifacts", count: 2 }],
+      excluded: [{ kind: "terminals" }],
+      warnings: [{ kind: "provider-restart-required" }],
+    },
+  })
+
+  const carried = await screen.findByRole("group", { name: "Travels with the session" })
+
+  expect(carried.textContent).toContain("Thread")
+  expect(carried.textContent).toContain("Artifacts (2)")
+  expect(carried.textContent).not.toContain("Repository")
+  expect(screen.getByRole("group", { name: "Does not travel" }).textContent)
+    .toContain("Running dev servers and terminals, which restart there")
+  expect(screen.getByText(/The provider has to be started again on the target/)).toBeTruthy()
+})
+
 it("keeps the session where it is when the move fails", async () => {
   const { user, onTransferred } = renderDialog({
     onTransfer: () => Promise.resolve({
@@ -256,16 +288,18 @@ it("reports a transport error without claiming the session moved", async () => {
   expect(onTransferred).not.toHaveBeenCalled()
 })
 
-it("does not promise that secrets stay behind", () => {
+it("does not promise that secrets stay behind", async () => {
   renderDialog()
 
+  await screen.findByRole("group", { name: "Does not travel" })
   expect(screen.queryByText(".env and secrets")).toBeNull()
   expect(screen.getByText(/travels regardless of its name/u)).toBeTruthy()
 })
 
-it("does not promise that skills travel", () => {
+it("does not promise that skills travel", async () => {
   renderDialog()
 
+  await screen.findByRole("group", { name: "Does not travel" })
   expect(screen.queryByText("Active skills")).toBeNull()
   expect(screen.getByText(/reviewed again there/u)).toBeTruthy()
 })

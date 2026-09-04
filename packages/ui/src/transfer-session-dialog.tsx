@@ -30,27 +30,7 @@ import { Input } from "./components/ui/input"
 // These lists are prose, and prose is how a promise outruns the product: the
 // earlier version claimed skills travelled and secrets did not, and neither was
 // true. Keep every line checkable against what a transfer actually sends.
-const travelsWithSession = [
-  "Thread",
-  "Plan",
-  "Tool and test results",
-  "Annotations",
-  "Permission mode",
-  "Tracked changes",
-  "Non-ignored untracked files",
-] as const
-
-const staysBehind = [
-  "Running dev servers and PTYs, which restart there",
-  "Provider credentials",
-  "Skills enabled for this project, which are reviewed again there",
-  "Standing approval rules, which are approved again there",
-  "Ignored files, including ignored build output",
-] as const
-
-// A checkpoint commits with `git add --all`, so anything tracked or not ignored
-// travels whatever it is called. Saying "secrets stay behind" was false.
-const transferCaveat = "A tracked or non-ignored file travels regardless of its name, including a committed .env or database file. Only ignored files stay behind."
+import { transferCoverageLists } from "./transfer-coverage.js"
 
 type TransferCheck = { label: string; ready: boolean }
 
@@ -143,6 +123,11 @@ export function TransferSessionDialog({
     ).finally(() => { if (active) setPreviewing(false) })
     return () => { active = false }
   }, [method, onPreview, open, remote, session.id, target.id])
+
+  // What the move carries is the daemon's answer, so it is read off the preview
+  // rather than described here. Before the preview lands there is nothing
+  // truthful to list, and the move is refused without it anyway.
+  const coverage = preview ? transferCoverageLists(preview.coverage) : undefined
 
   const wasOpen = useRef(open)
   useEffect(() => {
@@ -276,12 +261,24 @@ export function TransferSessionDialog({
           </Field>
         ) : null}
 
-        <div className="flex flex-col gap-4 sm:flex-row">
-          <FixedList label="Travels with the session" items={travelsWithSession} />
-          <FixedList label="Does not travel" items={staysBehind} />
-        </div>
+        {coverage ? (
+          <>
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <FixedList label="Travels with the session" items={coverage.included} />
+              <FixedList label="Does not travel" items={coverage.excluded} />
+            </div>
 
-        <p className="m-0 text-[11px] leading-relaxed text-warning">{transferCaveat}</p>
+            {coverage.warnings.map((warning) => (
+              <p key={warning} className="m-0 text-[11px] leading-relaxed text-warning">{warning}</p>
+            ))}
+          </>
+        ) : (
+          <p className="m-0 text-[12px] leading-relaxed text-muted-foreground">
+            {previewing
+              ? `Asking ${source.label} what this move would carry`
+              : `${source.label} has not said what this move would carry`}
+          </p>
+        )}
 
         <DialogFooter>
           <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
