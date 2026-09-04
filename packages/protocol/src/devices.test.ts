@@ -30,6 +30,20 @@ describe("pairedDeviceSchema", () => {
     expect(pairedDeviceSchema.parse(seen)).toEqual(seen)
   })
 
+  it("explains a credential revoked by the identity-binding migration", () => {
+    const migrated = {
+      ...device,
+      revokedAt: "2026-09-04T00:00:00.000Z",
+      revocationReason: "legacy-unbound-credential",
+    }
+
+    expect(pairedDeviceSchema.parse(migrated)).toEqual(migrated)
+    expect(pairedDeviceSchema.safeParse({
+      ...device,
+      revocationReason: "legacy-unbound-credential",
+    }).success).toBe(false)
+  })
+
   it("rejects an identifier that is not a device identity", () => {
     expect(pairedDeviceSchema.safeParse({ ...device, id: "ipad" }).success).toBe(false)
   })

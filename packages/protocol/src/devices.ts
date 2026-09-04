@@ -18,7 +18,16 @@ export const pairedDeviceSchema = z.object({
   pairedAt: z.string().datetime({ offset: true }),
   lastSeenAt: z.string().datetime({ offset: true }).optional(),
   revokedAt: z.string().datetime({ offset: true }).optional(),
-}).strict()
+  revocationReason: z.literal("legacy-unbound-credential").optional(),
+}).strict().superRefine((device, context) => {
+  if (device.revocationReason !== undefined && device.revokedAt === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["revocationReason"],
+      message: "A device revocation reason requires a revocation time",
+    })
+  }
+})
 
 export const devicePairParamsSchema = z.object({
   label: deviceLabelSchema,
