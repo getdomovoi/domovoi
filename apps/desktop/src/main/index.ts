@@ -1,12 +1,12 @@
-import { homedir } from "node:os"
+import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
-import { randomBytes } from "node:crypto"
 
-import { DomovoiDaemon } from "@getdomovoi/daemon"
+import { createProductionDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
+import { ownDesktopDaemon } from "./desktop-daemon.js"
 import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
@@ -49,7 +49,6 @@ const desktopPlatform: DesktopPlatform = process.platform
 const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
 let launchSmokeStage = "main"
 let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
-const rpcToken = process.env.DOMOVOI_AUTH_TOKEN ?? randomBytes(32).toString("base64url")
 const deepLinks = new DesktopDeepLinkQueue()
 const ownedDaemon = new OwnedDaemonLifecycle((error) => {
   console.error("Owned daemon failed to stop during desktop shutdown", error)
@@ -91,15 +90,18 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
-async function ensureDaemon(): Promise<void> {
-  const daemon = new DomovoiDaemon({
-    host: "127.0.0.1",
-    port: 47831,
-    authToken: rpcToken,
+// Desktop, the CLI, and the service build a daemon the same way, from the
+// same environment, so a paired device keeps meeting the same identity and
+// credential no matter which of them started the daemon.
+const ensureDaemon = ownDesktopDaemon(
+  () => createProductionDaemon({
+    environment: process.env,
+    homeDirectory: homedir(),
+    machineLabel: hostname(),
     errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
-  })
-  await ownedDaemon.start(daemon)
-}
+  }),
+  ownedDaemon,
+)
 
 function windowDecorationPath(): string {
   return join(app.getPath("userData"), windowDecorationFileName)
@@ -218,7 +220,7 @@ registerDesktopIpc(ipcMain, {
   authorized: authorizedDesktopSender,
   mainWindow: () => mainWindow,
   focusMainWindow,
-  rpcToken,
+  rpcEndpoint: ensureDaemon,
   platform: desktopPlatform,
   fileSystem: desktopFileSystem,
   openDirectoryDialog: {

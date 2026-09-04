@@ -6,7 +6,6 @@
     "paths": {
       "@/*": ["../../packages/ui/src/*"],
       "@getdomovoi/daemon": ["../daemon/src/public.ts"],
-      "@getdomovoi/daemon/internal": ["../daemon/src/server.ts"],
       "@getdomovoi/protocol": ["../../packages/protocol/src/index.ts"],
       "@getdomovoi/ui": ["../../packages/ui/src/index.ts"]
     }

@@ -34,7 +34,7 @@ export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecora
 
 export type DesktopWindowBridge = {
   platform: "darwin" | "linux" | "win32"
-  getRpcToken(): Promise<string>
+  getRpcEndpoint(): Promise<{ url: string; token: string }>
   captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{
     mimeType: "image/png"
     width: number
