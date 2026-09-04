@@ -19,9 +19,10 @@ import { skillEnablementReviewsSchema } from "./skills.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
 
-// Machine credentials became identity-bound in 0.2.0. A 0.1 peer cannot
-// participate safely because its hello supplies an unverified machine id.
-export const protocolVersion = "0.2.0" as const
+// Machine credentials became identity-bound in 0.2.0. Client credentials gain
+// the same binding and every wire credential becomes fixed-width in 0.3.0, so
+// an older peer must fail at hello rather than proceed with weaker identity.
+export const protocolVersion = "0.3.0" as const
 
 export const connectionIdSchema = z.string().uuid()
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
