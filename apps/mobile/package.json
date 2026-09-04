@@ -10,7 +10,7 @@
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "prestart": "pnpm --filter @getdomovoi/protocol build",
     "pretypecheck": "pnpm --filter @getdomovoi/protocol build",
-    "test": "vitest run",
+    "test": "vitest run && jest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -26,9 +26,15 @@
     "react-native-safe-area-context": "~5.7.0"
   },
   "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@react-native/jest-preset": "0.86.3",
+    "@testing-library/react-native": "^14.0.1",
     "@types/react": "~19.2.2",
     "@vitest/coverage-v8": "catalog:",
+    "jest": "^29.7.0",
+    "jest-expo": "~57.0.5",
     "tailwindcss": "^3.4.17",
+    "test-renderer": "^1.2.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
