@@ -86,7 +86,7 @@ export function App() {
     return () => { live = false }
   }, [])
 
-  const { snapshot, status, problem, call } = useDaemon(connectTo?.url, connectTo?.token)
+  const { snapshot, status, fault, call } = useDaemon(connectTo?.url, connectTo?.token)
   const waiting = snapshot ? waitingCount(snapshot) : 0
 
   const openApproval = useMemo(
@@ -375,7 +375,7 @@ export function App() {
               url={url}
               token={token}
               status={status}
-              problem={problem}
+              fault={fault}
               onChangeUrl={setUrl}
               onChangeToken={setToken}
               onConnect={() => {

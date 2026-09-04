@@ -2,23 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { AppState } from "react-native"
 import { applyWorkspaceDelta, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { DaemonConnection, type DaemonStatus } from "./daemon"
 import { retryDelayMs } from "./reconnect"
-
-export type DaemonState = {
-  snapshot: WorkspaceSnapshot | undefined
-  status: DaemonStatus
-  problem: string
-  retryingInMs: number | undefined
-}
 
 export function useDaemon(url: string | undefined, token: string | undefined) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | undefined>(undefined)
   const [status, setStatus] = useState<DaemonStatus>("closed")
-  const [problem, setProblem] = useState("")
+  const [fault, setFault] = useState<ConnectionFault | undefined>(undefined)
   const connection = useRef<DaemonConnection | undefined>(undefined)
   const attempt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Set when the daemon has given an answer it will give again to every retry.
+  // Nothing reopens the connection after that except the person changing the
+  // credential, which re-runs this effect and clears it.
+  const givenUp = useRef(false)
 
   useEffect(() => {
     if (!url || !token) {
@@ -27,23 +25,29 @@ export function useDaemon(url: string | undefined, token: string | undefined) {
     }
     let live = true
     attempt.current = 0
+    givenUp.current = false
+    setFault(undefined)
 
     const open = () => {
-      if (!live) return
+      if (!live || givenUp.current) return
       const daemon = new DaemonConnection(url, token, {
         onSnapshot: (next) => {
           // A greeting that answers is the only proof the connection works, so
           // the backoff resets here rather than when the socket opens.
           attempt.current = 0
-          setProblem("")
+          setFault(undefined)
           setSnapshot(next)
         },
         onDelta: (delta: WorkspaceDelta) =>
           setSnapshot((current) => current ? applyWorkspaceDelta(current, delta) : current),
         onStatus: setStatus,
-        onError: setProblem,
+        onError: (cause) => {
+          const next = connectionFault(cause)
+          setFault(next)
+          if (!next.retriable) givenUp.current = true
+        },
         onClosed: () => {
-          if (!live) return
+          if (!live || givenUp.current) return
           attempt.current += 1
           timer.current = setTimeout(open, retryDelayMs(attempt.current))
         },
@@ -59,6 +63,7 @@ export function useDaemon(url: string | undefined, token: string | undefined) {
     // the person staring at a stale screen.
     const subscription = AppState.addEventListener("change", (next) => {
       if (next !== "active") return
+      if (givenUp.current) return
       if (connection.current?.isOpen()) return
       if (timer.current) clearTimeout(timer.current)
       attempt.current = 0
@@ -80,5 +85,5 @@ export function useDaemon(url: string | undefined, token: string | undefined) {
     return daemon.call(method, params)
   }, [])
 
-  return { snapshot, status, problem, call }
+  return { snapshot, status, fault, call }
 }

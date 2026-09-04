@@ -3,6 +3,7 @@ import { ScrollView, TextInput, View } from "react-native"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
+import type { ConnectionFault } from "../lib/connection-fault"
 import type { DaemonStatus } from "../lib/daemon"
 
 const statusLabel: Record<DaemonStatus, string> = {
@@ -15,7 +16,7 @@ export function SettingsScreen({
   url,
   token,
   status,
-  problem,
+  fault,
   onChangeUrl,
   onChangeToken,
   onConnect,
@@ -24,7 +25,7 @@ export function SettingsScreen({
   url: string
   token: string
   status: DaemonStatus
-  problem: string
+  fault: ConnectionFault | undefined
   onChangeUrl: (value: string) => void
   onChangeToken: (value: string) => void
   onConnect: () => void
@@ -66,8 +67,15 @@ export function SettingsScreen({
         </View>
         <Button title="Connect" variant="primary" onPress={onConnect} />
         <Button title="Forget this daemon" variant="ghost" onPress={onForget} />
-        <Text variant="meta">{statusLabel[status]}</Text>
-        {problem ? <Text className="text-[12px] text-destructive">{problem}</Text> : null}
+        <Text variant="meta">
+          {fault && !fault.retriable ? "Not connected, and not trying again" : statusLabel[status]}
+        </Text>
+        {fault ? (
+          <View className="gap-1">
+            <Text className="text-[12px] font-semibold text-destructive">{fault.headline}</Text>
+            <Text variant="meta" className="text-[11px]">{fault.detail}</Text>
+          </View>
+        ) : null}
       </Card>
 
       <Text variant="meta">

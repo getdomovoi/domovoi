@@ -11,9 +11,11 @@ type Pending = { resolve: (value: unknown) => void, reject: (error: Error) => vo
 
 // A refusal can carry structured data saying what the daemon objected to, and a
 // plain Error throws it away. The turn skill refusal is read out of this, so
-// the phone can name the skill rather than show the sentence and guess.
+// the phone can name the skill rather than show the sentence and guess. The
+// code is what separates a refusal that will never change from one worth
+// retrying, and it is the daemon's own constant rather than its wording.
 export class DaemonError extends Error {
-  constructor(message: string, readonly data: unknown) {
+  constructor(message: string, readonly code: number | undefined, readonly data: unknown) {
     super(message)
     this.name = "DaemonError"
   }
@@ -37,7 +39,9 @@ export class DaemonConnection {
       onSnapshot: (snapshot: WorkspaceSnapshot) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       onStatus: (status: DaemonStatus) => void
-      onError: (message: string) => void
+      // The cause rather than its sentence, because whether a refusal is worth
+      // retrying is decided by the daemon's error code, not its wording.
+      onError: (cause: unknown) => void
       onClosed: () => void
     },
   ) {}
@@ -61,7 +65,7 @@ export class DaemonConnection {
           this.handlers.onSnapshot(snapshot as WorkspaceSnapshot)
         },
         (cause: Error) => {
-          this.handlers.onError(cause.message)
+          this.handlers.onError(cause)
           this.close()
         },
       )
@@ -71,7 +75,7 @@ export class DaemonConnection {
       let message: {
         id?: number
         result?: unknown
-        error?: { message?: string, data?: unknown }
+        error?: { code?: number, message?: string, data?: unknown }
         method?: string
         params?: unknown
       }
@@ -87,6 +91,7 @@ export class DaemonConnection {
         if (message.error) {
           pending.reject(new DaemonError(
             message.error.message ?? "The daemon refused",
+            message.error.code,
             message.error.data,
           ))
         } else {
@@ -111,7 +116,7 @@ export class DaemonConnection {
     }
 
     socket.onerror = () => {
-      if (!this.#closed) this.handlers.onError(`Cannot reach ${this.url}`)
+      if (!this.#closed) this.handlers.onError(new Error(`Cannot reach ${this.url}`))
     }
 
     socket.onclose = () => {
