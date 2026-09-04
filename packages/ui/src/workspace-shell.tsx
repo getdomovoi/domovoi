@@ -1837,7 +1837,12 @@ export function forkSessionBlockedReason(
     return "This session is moving to another machine"
   }
   if (session.state === "transferred") {
-    return "This session moved to another machine"
+    // A release is not a move that worked. Saying it moved would tell the
+    // person their transfer succeeded when it was a conflict they settled.
+    return session.transfer?.phase === "transferred"
+      && session.transfer.completion === "conflict-released"
+      ? "This machine gave up its claim on this session"
+      : "This session moved to another machine"
   }
   if (session.state === "ownership-conflict") {
     return "Two machines claim this session"

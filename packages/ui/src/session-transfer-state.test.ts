@@ -36,6 +36,30 @@ it("treats a session that has moved away as read-only", () => {
   expect(sessionIsArchiveReadOnly(session)).toBe(false)
 })
 
+it("does not call a conflict release a completed move", () => {
+  const released = {
+    ...session,
+    state: "transferred" as const,
+    transfer: {
+      phase: "transferred" as const,
+      transferId: `transfer-${"a".repeat(32)}`,
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      generation: 3,
+      manifestDigest: `sha256:${"c".repeat(64)}`,
+      completedAt: "2026-09-04T10:00:00.000Z",
+      completion: "conflict-released" as const,
+    },
+  }
+
+  expect(forkSessionBlockedReason(released, undefined)).toBe(
+    "This machine gave up its claim on this session",
+  )
+  expect(forkSessionBlockedReason(
+    { ...released, transfer: { ...released.transfer, completion: "committed" as const } },
+    undefined,
+  )).toBe("This session moved to another machine")
+})
+
 it("refuses to fork a session that has moved or is moving", () => {
   expect(forkSessionBlockedReason({ ...session, state: "transferred" }, undefined))
     .toMatch(/moved|another machine/iu)

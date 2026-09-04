@@ -26,7 +26,7 @@ export type TransferOutcomeNotice = {
   title: string
   detail: string
   // The action the operator takes next, when there is one they can take.
-  action: "resume" | "retry" | "check-status" | "confirm-source-recovery" | undefined
+  action: Exclude<Incomplete["recoveryAction"], "none"> | undefined
 }
 
 // A machine the session came from still holds the read-only copy it kept, and
@@ -86,8 +86,11 @@ export function transferOutcomeNotice(
     case "ownership-conflict":
       return {
         title: "Both machines claim the session",
-        detail: `${stayed} Do not work on it here until the conflict is settled.`,
-        action: undefined,
+        // The only safe way out is one-way: this machine gives up the claim and
+        // keeps its worktree to read. Saying that here means the person meets
+        // the trade before the confirmation rather than after it.
+        detail: `${stayed} Settling it hands the session to the other machine and leaves a read-only copy here.`,
+        action: "keep-target-session",
       }
   }
 }

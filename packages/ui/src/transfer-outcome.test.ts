@@ -29,7 +29,12 @@ describe("transferOutcomeNotice", () => {
         state: "ownership-unconfirmed",
         recoveryAction: "confirm-source-recovery",
       },
-      { outcome: "incomplete", transferId, state: "ownership-conflict", recoveryAction: "none" },
+      {
+        outcome: "incomplete",
+        transferId,
+        state: "ownership-conflict",
+        recoveryAction: "keep-target-session",
+      },
     ]
 
     for (const state of states) {
