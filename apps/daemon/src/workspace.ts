@@ -98,6 +98,7 @@ export class WorkspaceEvidenceUnstableError extends Error {
 export type GitWorkspaceServiceOptions = {
   afterEvidenceObservation?: (observation: "status") => void | Promise<void>
   afterCheckpointStaging?: () => void | Promise<void>
+  afterIgnoredArtifactValidation?: () => void | Promise<void>
 }
 
 export interface WorkspaceService {
@@ -183,6 +184,25 @@ async function restrictBundlePermissions(path: string): Promise<void> {
   // by the account that made it.
   if (process.platform === "win32") return
   await chmod(path, 0o600)
+}
+
+async function readBoundedFileHandle(
+  handle: Awaited<ReturnType<typeof open>>,
+  maximumBytes: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let byteLength = 0
+  for await (const value of handle.createReadStream({ autoClose: false })) {
+    signal?.throwIfAborted()
+    const chunk = Buffer.from(value)
+    byteLength += chunk.byteLength
+    if (byteLength > maximumBytes) {
+      throw new Error("Artifact source is unavailable for transfer")
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks, byteLength)
 }
 
 // The protocol refuses an unsafe path at the wire, and this refuses it again at
@@ -593,11 +613,15 @@ export class GitWorkspaceService implements WorkspaceService {
   readonly worktreeRoot: string
   readonly #afterEvidenceObservation?: GitWorkspaceServiceOptions["afterEvidenceObservation"]
   readonly #afterCheckpointStaging?: GitWorkspaceServiceOptions["afterCheckpointStaging"]
+  readonly #afterIgnoredArtifactValidation?: GitWorkspaceServiceOptions[
+    "afterIgnoredArtifactValidation"
+  ]
 
   constructor(worktreeRoot: string, options: GitWorkspaceServiceOptions = {}) {
     this.worktreeRoot = resolve(worktreeRoot)
     this.#afterEvidenceObservation = options.afterEvidenceObservation
     this.#afterCheckpointStaging = options.afterCheckpointStaging
+    this.#afterIgnoredArtifactValidation = options.afterIgnoredArtifactValidation
   }
 
   async inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo> {
@@ -811,24 +835,48 @@ export class GitWorkspaceService implements WorkspaceService {
     ) {
       throw new Error("Artifact source is unavailable for transfer")
     }
+    let handle: Awaited<ReturnType<typeof open>>
     try {
-      await git(root, ["check-ignore", "--quiet", "--", path], signal)
-    } catch (error) {
-      signal?.throwIfAborted()
-      if ((error as { code?: unknown }).code === 1) return undefined
-      throw error
-    }
-    let bytes: Buffer
-    try {
-      bytes = await readFile(canonicalPath)
+      handle = await open(lexicalPath, constants.O_RDONLY | constants.O_NOFOLLOW)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+        throw new Error("Artifact source is unavailable for transfer", { cause: error })
+      }
       throw error
     }
-    if (bytes.byteLength > maximumPreviewSourceBytes) {
-      throw new Error("Artifact source is unavailable for transfer")
+    try {
+      const opened = await handle.stat()
+      if (
+        !opened.isFile()
+        || opened.dev !== metadata.dev
+        || opened.ino !== metadata.ino
+        || opened.size > maximumPreviewSourceBytes
+      ) {
+        throw new Error("Artifact source is unavailable for transfer")
+      }
+      try {
+        await git(root, ["check-ignore", "--quiet", "--", path], signal)
+      } catch (error) {
+        signal?.throwIfAborted()
+        if ((error as { code?: unknown }).code === 1) return undefined
+        throw error
+      }
+      await this.#afterIgnoredArtifactValidation?.()
+      const bytes = await readBoundedFileHandle(handle, maximumPreviewSourceBytes, signal)
+      const after = await handle.stat()
+      if (
+        bytes.byteLength !== opened.size
+        || after.size !== opened.size
+        || after.mtimeMs !== opened.mtimeMs
+        || after.ctimeMs !== opened.ctimeMs
+      ) {
+        throw new Error("Artifact source is unavailable for transfer")
+      }
+      return bytes
+    } finally {
+      await handle.close()
     }
-    return bytes
   }
 
   async writeTransferredArtifactSource(

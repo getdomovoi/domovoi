@@ -840,6 +840,25 @@ describe("GitWorkspaceService transfer resources", () => {
       Buffer.from("different\n"),
     )).rejects.toThrow("Transferred artifact source conflicts with an existing file")
   })
+
+  it.runIf(process.platform !== "win32")(
+    "never follows an ignored artifact path swapped to a machine-local symlink",
+    async () => {
+      const { scratch, workspace } = await repositoryWithIgnoredPreview()
+      const artifactPath = join(workspace.path, "previews", "preview.html")
+      const secretPath = join(scratch, "machine-secret.txt")
+      await writeFile(secretPath, "machine-only-secret\n")
+      const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+        afterIgnoredArtifactValidation: async () => {
+          await rm(artifactPath)
+          await symlink(secretPath, artifactPath)
+        },
+      })
+
+      await expect(service.readIgnoredArtifactSource(workspace.path, "previews/preview.html"))
+        .rejects.toThrow("Artifact source is unavailable for transfer")
+    },
+  )
 })
 
 describe("GitWorkspaceService bundle restore", () => {
