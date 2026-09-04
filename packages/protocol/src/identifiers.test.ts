@@ -15,8 +15,10 @@ import {
   credentialSchema,
   forkRequestIdSchema,
   machineIdSchema,
+  sha256DigestSchema,
   toolKindSchema,
   toolStatusSchema,
+  transferIdSchema,
 } from "./identifiers.js"
 import {
   annotationSetStatusParamsSchema,
@@ -127,6 +129,17 @@ describe("machine id", () => {
     expect(machineIdSchema.safeParse(`machine-${"a".repeat(32)}`).success).toBe(true)
     expect(machineIdSchema.safeParse(`machine-${"A".repeat(32)}`).success).toBe(false)
     expect(machineIdSchema.safeParse("laptop").success).toBe(false)
+  })
+})
+
+describe("transfer identifiers", () => {
+  it("accepts canonical transfer ids and SHA-256 digests only", () => {
+    expect(transferIdSchema.safeParse(`transfer-${"a".repeat(32)}`).success).toBe(true)
+    expect(transferIdSchema.safeParse(`transfer-${"A".repeat(32)}`).success).toBe(false)
+    expect(transferIdSchema.safeParse(`transfer-${"a".repeat(31)}`).success).toBe(false)
+    expect(sha256DigestSchema.safeParse(`sha256:${"b".repeat(64)}`).success).toBe(true)
+    expect(sha256DigestSchema.safeParse(`sha256:${"B".repeat(64)}`).success).toBe(false)
+    expect(sha256DigestSchema.safeParse(`sha512:${"b".repeat(64)}`).success).toBe(false)
   })
 })
 
