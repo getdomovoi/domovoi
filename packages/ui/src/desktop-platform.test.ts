@@ -12,7 +12,7 @@ import {
 function bridge(overrides: Partial<DesktopWindowBridge> = {}): DesktopWindowBridge {
   return {
     platform: "linux",
-    getRpcToken: vi.fn(async () => "token"),
+    getRpcEndpoint: vi.fn(async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "token" })),
     captureAnnotation: vi.fn(),
     notify: vi.fn(async () => true),
     onNotificationActivate: vi.fn(() => vi.fn()),

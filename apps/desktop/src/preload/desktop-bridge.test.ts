@@ -34,6 +34,37 @@ describe("createDesktopWindowBridge", () => {
     expect(bridge).not.toHaveProperty("clipboard")
   })
 
+  it("hands the renderer the daemon endpoint the main process resolved", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "linux")
+    const endpoint = { url: "wss://[::1]:50123/rpc", token: "factory-token" }
+
+    target.invoke.mockResolvedValueOnce(endpoint)
+    await expect(bridge.getRpcEndpoint()).resolves.toEqual(endpoint)
+    expect(target.invoke).toHaveBeenCalledWith("domovoi:rpc-endpoint")
+  })
+
+  it("rejects a daemon endpoint that is not a bearer token for a websocket URL", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "linux")
+
+    for (const reply of [
+      "factory-token",
+      null,
+      [{ url: "ws://127.0.0.1:47831/rpc", token: "factory-token" }],
+      { url: "ws://127.0.0.1:47831/rpc" },
+      { token: "factory-token" },
+      { url: "ws://127.0.0.1:47831/rpc", token: "" },
+      { url: "", token: "factory-token" },
+      { url: "http://127.0.0.1:47831/rpc", token: "factory-token" },
+      { url: "not a url", token: "factory-token" },
+      { url: "ws://127.0.0.1:47831/rpc", token: "factory-token", host: "127.0.0.1" },
+    ]) {
+      target.invoke.mockResolvedValueOnce(reply)
+      await expect(bridge.getRpcEndpoint()).rejects.toThrow("Desktop returned an invalid daemon endpoint")
+    }
+  })
+
   it("validates renderer inputs before IPC", async () => {
     const target = ipc()
     const bridge = createDesktopWindowBridge(target, "win32")

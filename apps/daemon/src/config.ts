@@ -48,7 +48,7 @@ export function parseDaemonEnvironment(
   // plaintext because nothing it carries reaches a network.
   if (!loopbackHosts.has(host) && !tls) {
     throw new DaemonConfigurationError(
-      "Non-loopback DOMOVOI_HOST requires TLS: set DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH",
+      `Non-loopback DOMOVOI_HOST requires TLS for ${host}: set DOMOVOI_TLS_CERT_PATH and DOMOVOI_TLS_KEY_PATH`,
     )
   }
 
