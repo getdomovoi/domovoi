@@ -42,6 +42,7 @@ export const pairingCodeSchema = z.string().regex(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/
 export const deviceClaimParamsSchema = z.object({
   code: pairingCodeSchema,
   label: deviceLabelSchema,
+  machineId: machineIdSchema,
 }).strict()
 
 export const deviceIssueCodeResultSchema = z.object({

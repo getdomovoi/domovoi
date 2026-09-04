@@ -711,7 +711,6 @@ const clientHelloParamsSchema = z.object({
 
 const machineHelloParamsSchema = z.object({
   client: z.literal("machine"),
-  machineId: machineIdSchema,
   clientVersion: z.string().min(1).max(64),
   protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: z.string().min(1).optional(),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  deviceClaimParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
   deviceRevokeParamsSchema,
@@ -60,6 +61,19 @@ describe("devicePairResultSchema", () => {
 
   it("rejects a credential that is not the issued shape", () => {
     expect(devicePairResultSchema.safeParse({ device, token: "short" }).success).toBe(false)
+  })
+})
+
+describe("deviceClaimParamsSchema", () => {
+  it("binds a claimed credential to the source machine", () => {
+    const claim = {
+      code: "hearth-quiet-ember-42",
+      label: "studio-mac",
+      machineId: `machine-${"a".repeat(32)}`,
+    }
+    expect(deviceClaimParamsSchema.parse(claim)).toEqual(claim)
+    const { machineId: _machineId, ...unbound } = claim
+    expect(deviceClaimParamsSchema.safeParse(unbound).success).toBe(false)
   })
 })
 
