@@ -13,6 +13,12 @@ export const sessionTransferContractRefusalSchema = z.enum([
   "target-project-mismatch",
   "target-session-newer",
   "target-session-diverged",
+  "target-lineage-check-unavailable",
+  "target-bundle-restore-unavailable",
+  "target-ref-restore-unavailable",
+  "target-artifact-import-unavailable",
+  "target-usage-import-unavailable",
+  "target-state-persistence-unavailable",
 ])
 
 export type SessionTransferContractRefusal = z.infer<
@@ -35,4 +41,10 @@ export const sessionTransferContractRefusalMessage: Record<
   "target-project-mismatch": "The target project does not share this session's Git history",
   "target-session-newer": "The target already has a newer generation of this session",
   "target-session-diverged": "The target has a different copy of this session and needs manual recovery",
+  "target-lineage-check-unavailable": "The target cannot verify the project's Git history, so it cannot accept the session",
+  "target-bundle-restore-unavailable": "The target cannot restore Git bundle transfers",
+  "target-ref-restore-unavailable": "The target cannot restore Git ref transfers",
+  "target-artifact-import-unavailable": "The target cannot restore the promoted artifact sources in this session",
+  "target-usage-import-unavailable": "The target cannot restore this session's usage history",
+  "target-state-persistence-unavailable": "The target cannot atomically persist transferred session ownership",
 }

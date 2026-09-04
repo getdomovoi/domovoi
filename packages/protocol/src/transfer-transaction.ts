@@ -18,6 +18,7 @@ import {
   transferChunkSchema,
   transferStreamRefusalSchema,
 } from "./transfer-stream.js"
+import { transferMethodSchema } from "./transfer.js"
 
 export const sessionTransferManifestDomain = "domovoi.session-transfer-manifest.v1\0" as const
 export const sessionTransferMemberIdSchema = z.string().regex(/^[a-z][a-z0-9:._-]{0,255}$/)
@@ -82,14 +83,23 @@ export const sessionTransferTargetRefusalSchema = z.enum([
   "target-project-mismatch",
   "target-session-newer",
   "target-session-diverged",
+  "target-lineage-check-unavailable",
+  "target-bundle-restore-unavailable",
+  "target-ref-restore-unavailable",
+  "target-artifact-import-unavailable",
+  "target-usage-import-unavailable",
+  "target-state-persistence-unavailable",
 ])
 
 export const transferTargetPreflightParamsSchema = z.object({
+  contractVersion: sessionTransferContractVersionSchema,
   sessionId: z.string().trim().min(1).max(128),
   sourceMachineId: machineIdSchema,
   sourceProjectId: z.string().trim().min(1).max(512),
   lineageCommit: commitShaSchema,
   ownershipGeneration: safeGenerationSchema,
+  method: transferMethodSchema,
+  coverage: sessionTransferCoverageSchema,
   client: clientKindSchema,
 }).strict()
 

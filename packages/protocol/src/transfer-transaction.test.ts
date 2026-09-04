@@ -173,14 +173,20 @@ describe("transactional transfer rpc", () => {
   })
 
   it("checks target lineage and ownership before a preview promises a move", () => {
-    expect(transferTargetPreflightParamsSchema.safeParse({
+    const request = {
       sessionId: "session-1",
       sourceMachineId,
       sourceProjectId: "project-source",
       lineageCommit: "6".repeat(40),
       ownershipGeneration: 2,
+      contractVersion: 1,
+      method: "git-bundle",
+      coverage: { included: [], excluded: [], warnings: [] },
       client: "desktop",
-    }).success).toBe(true)
+    }
+    expect(transferTargetPreflightParamsSchema.safeParse(request).success).toBe(true)
+    const { contractVersion: _version, ...unversioned } = request
+    expect(transferTargetPreflightParamsSchema.safeParse(unversioned).success).toBe(false)
     expect(transferTargetPreflightResultSchema.safeParse({
       allowed: true,
       targetProjectId: "project-target",
@@ -190,6 +196,17 @@ describe("transactional transfer rpc", () => {
       allowed: false,
       reason: "target-project-mismatch",
     }).success).toBe(true)
+    for (const reason of [
+      "target-lineage-check-unavailable",
+      "target-bundle-restore-unavailable",
+      "target-ref-restore-unavailable",
+      "target-artifact-import-unavailable",
+      "target-usage-import-unavailable",
+      "target-state-persistence-unavailable",
+    ] as const) {
+      expect(transferTargetPreflightResultSchema.safeParse({ allowed: false, reason }).success)
+        .toBe(true)
+    }
     expect(transferTargetPreflightResultSchema.safeParse({
       allowed: false,
       reason: "session-approval-pending",
