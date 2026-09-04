@@ -14,6 +14,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import {
+  sessionTransferManifestDigest,
   type PackagedSessionTransfer,
   type PreparedSessionTransferIntent,
 } from "./session-transfer-package.js"
@@ -69,6 +70,7 @@ export function freezeSourceSessionTransfer(
     intentDigest: intent.preview.intentDigest,
     nextGeneration: intent.state.session.ownershipGeneration + 1,
     startedAt,
+    package: { state: "preparing" },
   }
   return workspaceSnapshotSchema.parse(candidate)
 }
@@ -93,7 +95,15 @@ export function stageSourceSessionCheckpoint(
   }
 
   const candidate = structuredClone(snapshot)
-  sourceSession(candidate, manifest.sessionId).baseCommit = manifest.project.checkpointCommit
+  const staged = sourceSession(candidate, manifest.sessionId)
+  staged.baseCommit = manifest.project.checkpointCommit
+  if (staged.transfer?.phase !== "transferring") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  staged.transfer.package = {
+    state: "staged",
+    manifestDigest: sessionTransferManifestDigest(manifest),
+  }
   return workspaceSnapshotSchema.parse(candidate)
 }
 
@@ -109,6 +119,7 @@ export function completeSourceSessionTransfer(
     !session
     || session.state !== "transferring"
     || session.transfer?.phase !== "transferring"
+    || session.transfer.package.state !== "staged"
     || session.transfer.nextGeneration !== committed.ownershipGeneration
     || session.baseCommit !== committed.checkpointCommit
   ) {
@@ -126,6 +137,7 @@ export function completeSourceSessionTransfer(
     transferId: committed.transferId,
     targetMachineId: session.transfer.targetMachineId,
     generation: committed.ownershipGeneration,
+    manifestDigest: session.transfer.package.manifestDigest,
     completedAt,
   }
   delete completed.providerThreadId

@@ -108,6 +108,7 @@ export function importSessionTransferState(
     targetProjectId: string
     workspacePath: string
     transferId: string
+    manifestDigest: string
     ownershipGeneration: number
     checkpointCommit: string
     completedAt: string
@@ -144,6 +145,7 @@ export function importSessionTransferState(
       transferId: input.transferId,
       sourceMachineId: input.sourceMachineId,
       generation: input.ownershipGeneration,
+      manifestDigest: input.manifestDigest,
       checkpointCommit: input.checkpointCommit,
       completedAt: input.completedAt,
     },

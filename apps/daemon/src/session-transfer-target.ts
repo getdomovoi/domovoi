@@ -340,6 +340,7 @@ export async function commitPreparedSessionTransfer(input: {
       targetProjectId: input.snapshot.project.id,
       workspacePath: restored.path,
       transferId: manifest.transferId,
+      manifestDigest: input.manifestDigest,
       ownershipGeneration: manifest.ownership.toGeneration,
       checkpointCommit: manifest.project.checkpointCommit,
       completedAt,

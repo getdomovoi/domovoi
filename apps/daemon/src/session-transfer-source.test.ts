@@ -97,11 +97,15 @@ describe("source transfer lifecycle", () => {
         targetMachineId,
         intentDigest: intent.preview.intentDigest,
         nextGeneration: 5,
+        package: { state: "preparing" },
       },
     })
 
     const staged = stageSourceSessionCheckpoint(frozen, packaged.manifest)
     expect(staged.sessions[0]?.baseCommit).toBe(checkpointCommit)
+    expect(staged.sessions[0]?.transfer).toMatchObject({
+      package: { state: "staged", manifestDigest: packaged.manifestDigest },
+    })
     const completed = completeSourceSessionTransfer(staged, {
       state: "committed",
       transferId: packaged.manifest.transferId,
@@ -118,6 +122,7 @@ describe("source transfer lifecycle", () => {
         transferId: packaged.manifest.transferId,
         targetMachineId,
         generation: 5,
+        manifestDigest: packaged.manifestDigest,
       },
     })
     expect(completed.sessions[0]).not.toHaveProperty("providerThreadId")

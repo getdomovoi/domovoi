@@ -124,6 +124,7 @@ describe("portable session transfer state", () => {
       targetProjectId: "project-target",
       workspacePath: "/target/session-billing",
       transferId: `transfer-${"d".repeat(32)}`,
+      manifestDigest: `sha256:${"e".repeat(64)}`,
       ownershipGeneration: 5,
       checkpointCommit,
       completedAt: "2026-09-03T20:00:00.000Z",
