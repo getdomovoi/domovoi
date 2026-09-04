@@ -662,6 +662,7 @@ export type DaemonServerOptions = {
   machineCredentials?: MachineCredentials
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
   transferTransactions?: FileTransferTransactions
+  outgoingTransferTransactions?: FileTransferTransactions
   sessionTransferTimeoutMs?: number
   connectToMachine?: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
@@ -769,6 +770,7 @@ export class DomovoiDaemon {
   #machineCredentials: MachineCredentials | undefined
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
   #transferTransactions: FileTransferTransactions
+  #outgoingTransferTransactions: FileTransferTransactions
   #sessionTransferTimeoutMs: number
   #connectToMachine: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
@@ -834,11 +836,16 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    const transferRoot = statePath === ":memory:"
+      ? join(tmpdir(), `domovoi-transfer-transactions-${randomUUID()}`)
+      : join(dirname(statePath), "transfers")
     this.#transferTransactions = options.transferTransactions ?? new FileTransferTransactions(
-      statePath === ":memory:"
-        ? join(tmpdir(), `domovoi-transfer-transactions-${randomUUID()}`)
-        : join(dirname(statePath), "transfers"),
+      join(transferRoot, "incoming"),
     )
+    this.#outgoingTransferTransactions = options.outgoingTransferTransactions
+      ?? new FileTransferTransactions(
+        join(transferRoot, "outgoing"),
+      )
     this.#annotationVisualContext = options.annotationVisualContext
       ?? new AnnotationVisualContextService({
         root: join(dirname(statePath), "annotation-crops"),
@@ -979,6 +986,10 @@ export class DomovoiDaemon {
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
 
+    await Promise.all([
+      this.#transferTransactions.pruneExpired(),
+      this.#outgoingTransferTransactions.pruneExpired(),
+    ])
     await this.#recoverSessionArchives()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()

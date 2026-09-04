@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import WebSocket from "ws"
 
 import {
@@ -137,6 +137,29 @@ async function openMachine(daemon: DomovoiDaemon): Promise<WebSocket> {
 }
 
 describe("transactional session transfer RPC", () => {
+  it("prunes incoming and outgoing transfer journals before listening", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-retention-startup-"))
+    scratchDirectories.push(scratch)
+    const incoming = new FileTransferTransactions(join(scratch, "incoming"))
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    const pruneIncoming = vi.spyOn(incoming, "pruneExpired")
+    const pruneOutgoing = vi.spyOn(outgoing, "pruneExpired")
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", targetSnapshot()),
+      authToken: "correct-horse-battery-staple",
+      transferTransactions: incoming,
+      outgoingTransferTransactions: outgoing,
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    expect(pruneIncoming).toHaveBeenCalledOnce()
+    expect(pruneOutgoing).toHaveBeenCalledOnce()
+  })
+
   it("accepts, restores, and idempotently commits a transfer from its source machine", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
     scratchDirectories.push(scratch)
