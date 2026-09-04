@@ -424,6 +424,54 @@ describe("transactional session transfer RPC", () => {
     expect(pruneOutgoing).toHaveBeenCalledOnce()
   })
 
+  it("reconciles the worktree head before thawing a preparing source after restart", async () => {
+    const { source, intent, packaged } = await transferFixture()
+    const frozen = freezeSourceSessionTransfer(
+      source,
+      intent,
+      packaged.manifest.transferId,
+      "2026-09-03T22:00:00.000Z",
+      { client: "desktop", clientId: "studio-mac" },
+    )
+    const store = new SqliteWorkspaceStore(":memory:", frozen)
+    const transferFingerprint = vi.fn(async () => ({
+      headCommit: checkpointCommit,
+      digest: `sha256:${"0".repeat(64)}`,
+    }))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint,
+      },
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+
+    await daemon.start()
+
+    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("idle"))
+    expect(transferFingerprint).toHaveBeenCalledWith(
+      source.sessions[0]!.workspacePath,
+      expect.any(AbortSignal),
+    )
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "idle",
+      baseCommit: checkpointCommit,
+    })
+  })
+
   it("finishes a committed staged transfer after the source restarts", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-restart-"))
     scratchDirectories.push(scratch)
@@ -1568,6 +1616,108 @@ describe("transactional session transfer RPC", () => {
       client: "desktop",
     })).resolves.toMatchObject({
       result: { allowed: false, reason: "target-pairing-required" },
+    })
+    socket.close()
+  })
+
+  it.each([
+    { failure: "package read", failCheckpointPersistence: false },
+    { failure: "checkpoint snapshot persistence", failCheckpointPersistence: true },
+  ])("retains the checkpoint base when $failure fails before target delivery", async ({
+    failCheckpointPersistence,
+  }) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-package-failure-"))
+    scratchDirectories.push(scratch)
+    const { source } = await transferFixture()
+    const session = source.sessions[0]!
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    if (failCheckpointPersistence) {
+      const save = store.saveAsync.bind(store)
+      let saveCount = 0
+      vi.spyOn(store, "saveAsync").mockImplementation(async (snapshot) => {
+        saveCount += 1
+        if (saveCount === 2) throw new Error("checkpoint snapshot write failed")
+        await save(snapshot)
+      })
+    }
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion,
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    let checkpointed = false
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      workspaceService: {
+        inspect: async () => ({
+          root: source.project!.path,
+          name: source.project!.name,
+          branch: source.project!.branch,
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => {
+          checkpointed = true
+          return { commit: checkpointCommit, changedFiles: [] }
+        },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => ({
+          headCommit: checkpointed ? checkpointCommit : baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => { throw new Error("bundle read failed") },
+      connectToMachine: async () => ({
+        call: async (method) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    const preview = await call("session.transferPreview", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })
+    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+
+    await expect(call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    })).resolves.toMatchObject({
+      result: { outcome: "refused", reason: "session-resource-unavailable" },
+    })
+    expect(store.load().sessions[0]).toMatchObject({
+      id: session.id,
+      state: "idle",
+      baseCommit: checkpointCommit,
     })
     socket.close()
   })

@@ -82,6 +82,7 @@ import {
   freezeSourceSessionTransfer,
   markSourceOwnershipConflict,
   recoverUnconfirmedSourceTransfer,
+  recordPreparingSourceCheckpoint,
   sendPreparedSessionTransfer,
   stageOutgoingSessionTransferPackage,
   stageSourceSessionCheckpoint,
@@ -1819,10 +1820,24 @@ export class DomovoiDaemon {
     try {
         if (lifecycle.package.state === "preparing") {
           // Target contact is forbidden until the staged digest is durable, so
-          // a crash in preparing cannot have transferred ownership.
+          // a crash in preparing cannot have transferred ownership. The Git
+          // checkpoint may still have committed before its snapshot write, so
+          // reconcile the actual HEAD before making the source writable.
+          if (!frozen.workspacePath || !this.#workspaceService.transferFingerprint) {
+            throw new SessionTransferStateError("session-resource-unavailable")
+          }
+          const fingerprint = await this.#workspaceService.transferFingerprint(
+            frozen.workspacePath,
+            parentSignal,
+          )
+          const reconciled = recordPreparingSourceCheckpoint(
+            this.#snapshot,
+            lifecycle.transferId,
+            fingerprint.headCommit,
+          )
           await this.#persistTransferSnapshot(
             thawSourceSessionTransfer(
-              this.#snapshot,
+              reconciled,
               lifecycle.transferId,
               new Date().toISOString(),
             ),
@@ -2230,6 +2245,10 @@ export class DomovoiDaemon {
         signal,
       )
       checkpointCommit = checkpoint.commit
+      await this.#persistTransferSnapshot(
+        recordPreparingSourceCheckpoint(this.#snapshot, transferId, checkpoint.commit),
+        sourceSession.id,
+      )
       const fingerprint = await this.#workspaceService.transferFingerprint!(
         sourceSession.workspacePath!,
         signal,
@@ -2392,8 +2411,16 @@ export class DomovoiDaemon {
         }
       }
       const completedAt = new Date().toISOString()
+      const currentSource = this.#snapshot.sessions.find(
+        (session) => session.id === sourceSession.id,
+      )
+      const sourceForThaw = currentSource?.transfer?.phase === "transferring"
+        && currentSource.transfer.transferId === transferId
+        && currentSource.transfer.package.state === "preparing"
+        ? recordPreparingSourceCheckpoint(this.#snapshot, transferId, checkpointCommit)
+        : this.#snapshot
       await this.#persistTransferSnapshot(
-        thawSourceSessionTransfer(this.#snapshot, transferId, completedAt),
+        thawSourceSessionTransfer(sourceForThaw, transferId, completedAt),
         sourceSession.id,
       )
       if (packaged) {

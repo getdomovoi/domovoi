@@ -120,6 +120,20 @@ export function stageSourceSessionCheckpoint(
   return workspaceSnapshotSchema.parse(candidate)
 }
 
+export function recordPreparingSourceCheckpoint(
+  snapshot: WorkspaceSnapshot,
+  transferId: string,
+  checkpointCommit: string,
+): WorkspaceSnapshot {
+  const frozen = frozenSourceSession(snapshot, transferId)
+  if (frozen.transfer.package.state !== "preparing") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
+  const candidate = structuredClone(snapshot)
+  sourceSession(candidate, frozen.id).baseCommit = checkpointCommit
+  return workspaceSnapshotSchema.parse(candidate)
+}
+
 export function completeSourceSessionTransfer(
   snapshot: WorkspaceSnapshot,
   committed: CommittedTransfer,
