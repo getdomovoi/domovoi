@@ -7,6 +7,7 @@ import {
   fleetDirectEndpointSchema,
   fleetMachineDescriptorSchema,
   machineIdSchema,
+  protocolCompatibility,
   protocolVersion,
   protocolVersionMismatchErrorCode,
   rpcResponseSchema,
@@ -184,13 +185,19 @@ function openMachineChannel(input: SocketInput): Promise<MachineChannel> {
 }
 
 function handshakeIdentity(result: unknown): string {
-  const snapshot = systemHelloResultSchema.safeParse(result)
-  if (snapshot.success) return machineIdSchema.parse(snapshot.data.machine.id)
   const version = result && typeof result === "object" && "protocolVersion" in result ? result.protocolVersion : undefined
   // An untrusted error must not turn arbitrary peer text into a logged version.
-  if (typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version) && version.length <= 64 && version !== protocolVersion) {
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || version.length > 64) {
+    throw new MachineDescriptorError()
+  }
+  if (protocolCompatibility(protocolVersion, version) !== "compatible") {
     throw new MachineProtocolMismatchError(version)
   }
+  // The durable snapshot schema pins our local version. Compatible peers can
+  // differ in patch version; validate their full shape without changing any
+  // published remote fact. Only the checked identity leaves this function.
+  const snapshot = systemHelloResultSchema.safeParse({ ...result as object, protocolVersion })
+  if (snapshot.success) return machineIdSchema.parse(snapshot.data.machine.id)
   throw new MachineDescriptorError()
 }
 
@@ -258,7 +265,9 @@ export async function readMachineDescriptor(
   const parsed = fleetMachineDescriptorSchema.safeParse(result)
   if (!parsed.success || JSON.stringify(parsed.data).includes(credential)) throw new MachineDescriptorError()
   if (parsed.data.id !== expectedMachineId) throw new MachineIdentityMismatchError()
-  if (parsed.data.protocolVersion !== protocolVersion) throw new MachineProtocolMismatchError(parsed.data.protocolVersion)
+  if (protocolCompatibility(protocolVersion, parsed.data.protocolVersion) !== "compatible") {
+    throw new MachineProtocolMismatchError(parsed.data.protocolVersion)
+  }
   deadline.throwIfExpired()
   return parsed.data
 }

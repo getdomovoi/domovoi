@@ -20,7 +20,7 @@ afterEach(async () => {
   }
 })
 
-async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string } = {}) {
+async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string; heartbeatVersion?: string } = {}) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   servers.push(server)
   await once(server, "listening")
@@ -29,7 +29,7 @@ async function target(overrides: { heartbeatId?: string; label?: string; silence
   const workspace = createEmptyWorkspace({ ...demoWorkspace.machine, id: targetId })
   const descriptor = {
     id: overrides.heartbeatId ?? targetId, label: overrides.label ?? "studio", platform: "darwin", arch: "arm64",
-    version: "0.0.1", protocolVersion, capabilities: ["sessions"], transports: [],
+    version: "0.0.1", protocolVersion: overrides.heartbeatVersion ?? protocolVersion, capabilities: ["sessions"], transports: [],
   }
   server.on("connection", (socket) => {
     connections += 1
@@ -87,6 +87,14 @@ describe("machine enrollment socket", () => {
   it("checks the identity again in the authenticated descriptor", async () => {
     const machine = await target({ heartbeatId: sourceId })
     await expect(claimMachineSocket(machine.input)).rejects.toThrow("different machine")
+  })
+
+  it("retains a compatible descriptor patch version rather than requiring literal equality", async () => {
+    const remoteVersion = `${protocolVersion.split(".").slice(0, 2).join(".")}.1`
+    const machine = await target({ heartbeatVersion: remoteVersion })
+    const claimed = await claimMachineSocket(machine.input)
+    try { expect(claimed.descriptor.protocolVersion).toBe(remoteVersion) }
+    finally { claimed.connection.close() }
   })
 
   it("refuses a claim bound to another machine before sending its credential", async () => {

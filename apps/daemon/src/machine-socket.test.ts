@@ -121,6 +121,20 @@ describe("openMachineSocket", () => {
     })).rejects.toThrow(`That machine speaks protocol 9.9.9, this daemon speaks ${protocolVersion}`)
   })
 
+  it("accepts a compatible patch version without skipping workspace or identity validation", async () => {
+    const remoteVersion = `${protocolVersion.split(".").slice(0, 2).join(".")}.1`
+    const machine = await machineServer(() => ({ ...structuredClone(machineWorkspace), protocolVersion: remoteVersion }))
+    const connection = await openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43) })
+    connection.close()
+    expect(machine.seen).toHaveLength(1)
+
+    const invalid = await machineServer(() => ({ ...structuredClone(machineWorkspace), sessions: "invalid", protocolVersion: remoteVersion }))
+    await expect(openMachineSocket({ endpoint: invalid.endpoint, credential: "n".repeat(43) }))
+      .rejects.toThrow("invalid descriptor")
+    await expect(openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43), expectedMachineId: `machine-${"f".repeat(32)}` }))
+      .rejects.toThrow("different machine")
+  })
+
   it("classifies a rejected machine credential without exposing its history", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
     servers.push(server)
