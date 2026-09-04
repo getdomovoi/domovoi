@@ -559,6 +559,7 @@ describe("workspace protocol", () => {
       intentDigest: `sha256:${"d".repeat(64)}`,
       nextGeneration: 4,
       startedAt: "2026-09-03T18:00:00.000Z",
+      resumeState: "idle",
       package: { state: "preparing" },
     }
     expect(workspaceSnapshotSchema.parse(transferring).sessions[2]).toMatchObject({

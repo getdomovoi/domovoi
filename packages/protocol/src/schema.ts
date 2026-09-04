@@ -154,6 +154,7 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
     intentDigest: sha256DigestSchema,
     nextGeneration: ownershipGenerationSchema,
     startedAt: z.string().datetime({ offset: true }),
+    resumeState: z.enum(["idle", "done", "failed"]),
     package: sessionTransferPackageSchema,
   }).strict(),
   z.object({
