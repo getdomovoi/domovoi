@@ -2977,7 +2977,28 @@ export class DomovoiDaemon {
             params.manifestDigest,
           )
           if (result.state === "unknown") {
-            this.#send(socket, { jsonrpc: "2.0", id: request.id, result })
+            // The imported session, not the bounded transaction journal, is
+            // the durable ownership record. Status therefore remains
+            // authoritative after journal retention removes the package.
+            const imported = this.#snapshot.sessions.find((session) => (
+              session.transferredFrom?.transferId === params.transferId
+              && session.transferredFrom.manifestDigest === params.manifestDigest
+              && session.transferredFrom.sourceMachineId === actor.machineId
+            ))
+            const origin = imported?.transferredFrom
+            const durable = imported?.workspacePath
+              && origin
+              && imported.baseCommit === origin.checkpointCommit
+              && imported.ownershipGeneration === origin.generation
+              ? rpcMethods[method].result.parse({
+                  state: "committed",
+                  transferId: params.transferId,
+                  workspacePath: imported.workspacePath,
+                  checkpointCommit: origin.checkpointCommit,
+                  ownershipGeneration: origin.generation,
+                })
+              : result
+            this.#send(socket, { jsonrpc: "2.0", id: request.id, result: durable })
             return
           }
         }

@@ -254,6 +254,14 @@ describe("transactional session transfer RPC", () => {
     await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
       result: { state: "committed" },
     })
+    await transactions.remove(packaged.manifest.transferId, packaged.manifestDigest)
+    await expect(call("transfer.status", commitParams)).resolves.toMatchObject({
+      result: {
+        state: "committed",
+        checkpointCommit,
+        ownershipGeneration: 2,
+      },
+    })
 
     const loaded = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
     expect(loaded.sessions).toHaveLength(1)
