@@ -197,6 +197,30 @@ describe("resolveExecution", () => {
     })
   })
 
+  it("accepts a contained file target addressed through the worktree alias", async () => {
+    const root = await project()
+    const aliasParent = await project()
+    const alias = join(aliasParent, "worktree-alias")
+    await symlink(root, alias, process.platform === "win32" ? "junction" : "dir")
+    await mkdir(join(root, "src"))
+
+    await expect(resolveExecution({
+      workspaceRoot: alias,
+      cwd: alias,
+      command: "Write",
+      filePath: join(alias, "src", "new-file.ts"),
+    })).resolves.toMatchObject({
+      state: "resolved",
+      record: {
+        kind: "workspace-file-tool",
+        coverage: "tool-and-workspace-scope",
+        cwd: ".",
+        tool: "Write",
+        scope: "workspace",
+      },
+    })
+  })
+
   it("rejects blocked, missing, and outside-worktree file targets", async () => {
     const root = await project()
     const outside = await project()
