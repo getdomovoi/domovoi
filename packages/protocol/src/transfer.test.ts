@@ -122,6 +122,10 @@ describe("transferReceiptSchema", () => {
       reason: "target-unreachable" as const,
     }
     expect(transferReceiptSchema.parse(refused).reason).toBe("target-unreachable")
+    expect(transferReceiptSchema.safeParse({
+      ...refused,
+      reason: "session-state-changed",
+    }).success).toBe(true)
   })
 
   it("records who knowingly reclaimed a source without target confirmation", () => {

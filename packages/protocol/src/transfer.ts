@@ -4,6 +4,7 @@ import { clientIdentityIdSchema, commitShaSchema, machineIdSchema } from "./iden
 import { clientKindSchema, type SessionSummary } from "./schema.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
 import { transferStreamRefusalSchema } from "./transfer-stream.js"
+import { sessionTransferContractRefusalSchema } from "./transfer-contract-refusals.js"
 
 export const transferMethodSchema = z.enum(["git-bundle", "remote-ref"])
 
@@ -118,6 +119,7 @@ export const transferReceiptSchema = z.object({
     transferRefusalSchema,
     sourceRefusalSchema,
     transferStreamRefusalSchema,
+    sessionTransferContractRefusalSchema,
     z.literal("target-ownership-unconfirmed"),
   ]).optional(),
   decidedBy: z.object({
