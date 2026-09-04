@@ -135,6 +135,7 @@ import type { ProviderProbe } from "./providers.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
+import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
   PublicRpcError,
@@ -787,6 +788,7 @@ export class DomovoiDaemon {
   #store: WorkspaceStore
   #persistenceFailures = 0
   #persistenceUnavailable = false
+  #snapshotPersistenceTail: Promise<void> = Promise.resolve()
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -1615,19 +1617,41 @@ export class DomovoiDaemon {
     }
   }
 
-  async #persistTransferSnapshot(candidate: WorkspaceSnapshot): Promise<void> {
-    try {
-      if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
-      else this.#store.save(candidate)
-    } catch (error) {
-      this.#persistenceFailed(error)
-      throw error
-    }
-    this.#persistenceSucceeded()
-    this.#snapshot = candidate
-    this.#sessionHistory.invalidate()
-    this.#syncArtifactWatchers()
-    this.#broadcastSnapshot()
+  #serializeSnapshotPersistence<T>(operation: () => Promise<T>): Promise<T> {
+    const running = this.#snapshotPersistenceTail.then(operation, operation)
+    this.#snapshotPersistenceTail = running.then(() => undefined, () => undefined)
+    return running
+  }
+
+  async #persistTransferSnapshot(
+    candidate: WorkspaceSnapshot,
+    sessionId: string,
+  ): Promise<void> {
+    await this.#serializeSnapshotPersistence(async () => {
+      // Different session resource queues may move concurrently. Resolve this
+      // session-owned write against the latest snapshot at the serialization
+      // point; assigning the remembered whole snapshot would erase whichever
+      // transfer persisted first.
+      const persisted = workspaceSnapshotSchema.parse(
+        mergeSessionSnapshotSlice(this.#snapshot, candidate, sessionId),
+      )
+      try {
+        if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+        else this.#store.save(persisted)
+      } catch (error) {
+        this.#persistenceFailed(error)
+        throw error
+      }
+      this.#persistenceSucceeded()
+      // An unrelated session can keep streaming while the disk write awaits.
+      // Merge once more instead of replacing those newer in-memory changes.
+      this.#snapshot = workspaceSnapshotSchema.parse(
+        mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
+      )
+      this.#sessionHistory.invalidate(sessionId)
+      this.#syncArtifactWatchers()
+      this.#broadcastSnapshot()
+    })
   }
 
   #recordVersionedTransferReceipt(input: {
@@ -1694,7 +1718,10 @@ export class DomovoiDaemon {
       detail: `Ownership generation ${committed.ownershipGeneration} moved at checkpoint ${committed.checkpointCommit}. This recovery worktree is read-only.`,
       createdAt: completedAt,
     })
-    await this.#persistTransferSnapshot(workspaceSnapshotSchema.parse(completed))
+    await this.#persistTransferSnapshot(
+      workspaceSnapshotSchema.parse(completed),
+      source.id,
+    )
     await this.#outgoingTransferTransactions.remove(
       lifecycle.transferId,
       manifestDigest,
@@ -1736,11 +1763,14 @@ export class DomovoiDaemon {
     const lifecycle = source.transfer
     const checkpointCommit = source.baseCommit
     if (!checkpointCommit) throw new SessionTransferStateError("session-state-changed")
-    await this.#persistTransferSnapshot(thawSourceSessionTransfer(
-      this.#snapshot,
-      lifecycle.transferId,
-      completedAt,
-    ))
+    await this.#persistTransferSnapshot(
+      thawSourceSessionTransfer(
+        this.#snapshot,
+        lifecycle.transferId,
+        completedAt,
+      ),
+      source.id,
+    )
     if (lifecycle.package.state === "staged") {
       await this.#outgoingTransferTransactions.remove(
         lifecycle.transferId,
@@ -1778,11 +1808,14 @@ export class DomovoiDaemon {
         if (lifecycle.package.state === "preparing") {
           // Target contact is forbidden until the staged digest is durable, so
           // a crash in preparing cannot have transferred ownership.
-          await this.#persistTransferSnapshot(thawSourceSessionTransfer(
-            this.#snapshot,
-            lifecycle.transferId,
-            new Date().toISOString(),
-          ))
+          await this.#persistTransferSnapshot(
+            thawSourceSessionTransfer(
+              this.#snapshot,
+              lifecycle.transferId,
+              new Date().toISOString(),
+            ),
+            frozen.id,
+          )
           return
         }
         const manifestDigest = lifecycle.package.manifestDigest
@@ -2005,12 +2038,15 @@ export class DomovoiDaemon {
     if (remote.transferId !== recovery.transferId) return
     if (remote.state === "unknown" || remote.state === "aborted") {
       const confirmedAt = new Date().toISOString()
-      await this.#persistTransferSnapshot(clearConfirmedSourceRecovery(this.#snapshot, {
-        sessionId: session.id,
-        transferId: recovery.transferId,
-        targetMachineId: recovery.targetMachineId,
-        confirmedAt,
-      }))
+      await this.#persistTransferSnapshot(
+        clearConfirmedSourceRecovery(this.#snapshot, {
+          sessionId: session.id,
+          transferId: recovery.transferId,
+          targetMachineId: recovery.targetMachineId,
+          confirmedAt,
+        }),
+        session.id,
+      )
       this.#appendAudit({
         actor: { kind: "daemon", component: "transfer-reconciliation" },
         action: "session.source-recovery-cleared",
@@ -2169,7 +2205,7 @@ export class DomovoiDaemon {
       startedAt,
       { client: params.client, ...(clientId ? { clientId } : {}) },
     )
-    await this.#persistTransferSnapshot(frozen)
+    await this.#persistTransferSnapshot(frozen, sourceSession.id)
     this.#closeSessionTerminals(sourceSession.id)
 
     let packaged: ReturnType<typeof createSessionTransferPackage> | undefined
@@ -2244,6 +2280,7 @@ export class DomovoiDaemon {
       await stageOutgoingSessionTransferPackage(this.#outgoingTransferTransactions, packaged)
       await this.#persistTransferSnapshot(
         stageSourceSessionCheckpoint(this.#snapshot, packaged.manifest),
+        sourceSession.id,
       )
 
       const connection = await this.#connectToMachine(prepared.target.id, signal)
@@ -2280,6 +2317,7 @@ export class DomovoiDaemon {
         const completedAt = new Date().toISOString()
         await this.#persistTransferSnapshot(
           thawSourceSessionTransfer(this.#snapshot, transferId, completedAt),
+          sourceSession.id,
         )
         await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
           .catch((cleanupError) => this.#reportError(
@@ -2344,6 +2382,7 @@ export class DomovoiDaemon {
       const completedAt = new Date().toISOString()
       await this.#persistTransferSnapshot(
         thawSourceSessionTransfer(this.#snapshot, transferId, completedAt),
+        sourceSession.id,
       )
       if (packaged) {
         await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
@@ -3817,7 +3856,7 @@ export class DomovoiDaemon {
           ...(actor.clientId ? { clientId: actor.clientId } : {}),
           recoveredAt,
         })
-        await this.#persistTransferSnapshot(recovered)
+        await this.#persistTransferSnapshot(recovered, session.id)
         await this.#outgoingTransferTransactions.remove(
           lifecycle.transferId,
           manifestDigest,
@@ -7285,15 +7324,17 @@ export class DomovoiDaemon {
   }
 
   async #persistSnapshot(): Promise<void> {
-    this.#sessionHistory.invalidate()
-    try {
-      if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
-      else this.#store.save(this.#snapshot)
-    } catch (error) {
-      this.#persistenceFailed(error)
-      throw error
-    }
-    this.#persistenceSucceeded()
+    await this.#serializeSnapshotPersistence(async () => {
+      this.#sessionHistory.invalidate()
+      try {
+        if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
+        else this.#store.save(this.#snapshot)
+      } catch (error) {
+        this.#persistenceFailed(error)
+        throw error
+      }
+      this.#persistenceSucceeded()
+    })
   }
 
   #persistenceFailed(error: unknown): void {

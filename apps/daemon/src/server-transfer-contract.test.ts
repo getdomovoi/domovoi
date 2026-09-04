@@ -1692,4 +1692,177 @@ describe("transactional session transfer RPC", () => {
     })
     socket.close()
   })
+
+  it("never loses one source freeze when two sessions move concurrently", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-concurrent-source-"))
+    scratchDirectories.push(scratch)
+    const source = structuredClone(demoWorkspace)
+    source.machine.id = sourceMachineId
+    source.project = {
+      ...source.project!,
+      machineId: sourceMachineId,
+      path: "/source/project",
+    }
+    const sessions = source.sessions.slice(0, 2)
+    for (const [index, session] of sessions.entries()) {
+      session.state = "idle"
+      session.workspacePath = `/source/session-${index}`
+      session.baseCommit = baseCommit
+      session.ownershipGeneration = 1
+      session.runtime.auto = false
+      delete session.activeTurnId
+      delete session.providerThreadId
+    }
+    source.sessions = sessions
+    source.activeSessionId = sessions[0]!.id
+    const sessionIds = new Set(sessions.map(({ id }) => id))
+    source.thread = source.thread.filter((item) => sessionIds.has(item.sessionId))
+    source.artifacts = source.artifacts.filter((artifact) => sessionIds.has(artifact.sessionId))
+    source.workingPlans = source.workingPlans.filter((plan) => sessionIds.has(plan.sessionId))
+    source.annotations = source.annotations.filter((annotation) => sessionIds.has(annotation.sessionId))
+    source.approvals = []
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const originalSave = store.saveAsync.bind(store)
+    let releaseFirstFreeze = () => {}
+    let signalFirstFreeze = () => {}
+    const firstFreeze = new Promise<void>((resolve) => { signalFirstFreeze = resolve })
+    let signalSecondFreezePersisted = () => {}
+    const secondFreezePersisted = new Promise<void>((resolve) => {
+      signalSecondFreezePersisted = resolve
+    })
+    let saveCount = 0
+    vi.spyOn(store, "saveAsync").mockImplementation(async (snapshot) => {
+      const callNumber = ++saveCount
+      if (callNumber === 1) {
+        signalFirstFreeze()
+        await new Promise<void>((resolve) => {
+          releaseFirstFreeze = resolve
+        })
+      }
+      await originalSave(snapshot)
+      if (callNumber === 2) signalSecondFreezePersisted()
+    })
+    const checkpointed = new Set<string>()
+    const targetTransactions = new FileTransferTransactions(join(scratch, "target"))
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: new FileTransferTransactions(join(scratch, "outgoing")),
+      workspaceService: {
+        inspect: async () => ({
+          root: "/source/project",
+          name: "source",
+          branch: "main",
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async (path) => {
+          checkpointed.add(path)
+          return { commit: checkpointCommit, changedFiles: [] }
+        },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async (path) => ({
+          headCommit: checkpointed.has(path) ? checkpointCommit : baseCommit,
+          digest: `sha256:${"e".repeat(64)}`,
+        }),
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK exact session"),
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          if (method === "transfer.status") {
+            return targetTransactions.status(String(params.transferId), String(params.manifestDigest))
+          }
+          if (method === "transfer.prepare") {
+            return targetTransactions.prepare(params.manifest as never, String(params.manifestDigest))
+          }
+          if (method === "transfer.member") return targetTransactions.acceptMember(params as never)
+          if (method === "transfer.commit") {
+            const manifest = await targetTransactions.manifest(
+              String(params.transferId),
+              String(params.manifestDigest),
+            )
+            return {
+              state: "committed",
+              transferId: manifest.transferId,
+              workspacePath: `/target/${manifest.sessionId}`,
+              checkpointCommit: manifest.project.checkpointCommit,
+              ownershipGeneration: manifest.ownership.toGeneration,
+            }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    const approved = new Map<string, { contractVersion: 1; intentDigest: string }>()
+    for (const session of sessions) {
+      const response = await call("session.transferPreview", {
+        sessionId: session.id,
+        targetMachineId,
+        client: "desktop",
+      })
+      expect(response.result).toMatchObject({
+        allowed: true,
+        contractVersion: 1,
+        intentDigest: expect.any(String),
+      })
+      approved.set(session.id, response.result as { contractVersion: 1; intentDigest: string })
+    }
+
+    const moves = sessions.map((session) => call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.get(session.id)!.contractVersion,
+      intentDigest: approved.get(session.id)!.intentDigest,
+    }))
+    await firstFreeze
+    // The old implementation can persist the second whole-snapshot candidate
+    // while the first is blocked, then overwrite it when the first resumes.
+    // The serialized slice implementation intentionally makes this race lose
+    // the timeout before releasing the first save.
+    await Promise.race([
+      secondFreezePersisted,
+      new Promise<void>((resolve) => setTimeout(resolve, 100)),
+    ])
+    releaseFirstFreeze()
+    await expect(moves[1]).resolves.toMatchObject({ result: { outcome: "succeeded" } })
+    await expect(moves[0]).resolves.toMatchObject({ result: { outcome: "succeeded" } })
+
+    expect(store.load().sessions).toEqual(expect.arrayContaining(sessions.map((session) => (
+      expect.objectContaining({
+        id: session.id,
+        state: "transferred",
+        ownershipGeneration: 2,
+      })
+    ))))
+    socket.close()
+  })
 })
