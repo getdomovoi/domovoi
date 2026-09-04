@@ -16,11 +16,45 @@ import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
-import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+
+async function greetCli(socket: import("ws").WebSocket): Promise<void> {
+  const requestId = 1
+  await new Promise<void>((resolve, reject) => {
+    const settle = (finish: () => void) => {
+      socket.off("message", receive)
+      socket.off("close", closed)
+      socket.off("error", failed)
+      finish()
+    }
+    const receive = (data: { toString(): string }) => {
+      const message = JSON.parse(data.toString()) as {
+        id?: number
+        error?: { message?: string }
+      }
+      if (message.id !== requestId) return
+      settle(() => {
+        if (message.error) reject(new Error(message.error.message ?? "Daemon refused the CLI connection"))
+        else resolve()
+      })
+    }
+    const closed = () => settle(() => reject(new Error("Daemon connection closed")))
+    const failed = (error: Error) => settle(() => reject(error))
+    socket.on("message", receive)
+    socket.once("close", closed)
+    socket.once("error", failed)
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "system.hello",
+      params: { client: "cli", clientVersion: "0.0.1", protocolVersion },
+    }))
+  })
+}
 
 async function requestPairingCode(
   config: { host: string; port: number; tls?: unknown },
@@ -31,12 +65,13 @@ async function requestPairingCode(
   const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
     headers: { authorization: `Bearer ${token}` },
   })
-  const requestId = 1
+  const requestId = 2
   try {
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await greetCli(socket)
     const result = await new Promise<DeviceIssueCodeResult>((resolve, reject) => {
       // The daemon broadcasts notifications on the same socket, so only the
       // reply carrying this request's id may settle it, and a socket that
@@ -85,12 +120,13 @@ async function requestProjectOpen(
   const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
     headers: { authorization: `Bearer ${token}` },
   })
-  const requestId = 1
+  const requestId = 2
   try {
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
     })
+    await greetCli(socket)
     await new Promise<void>((resolve, reject) => {
       // A daemon that accepts the socket and then says nothing would otherwise
       // hold this open forever, so the wait is bounded and every listener is
@@ -126,7 +162,7 @@ async function requestProjectOpen(
         jsonrpc: "2.0",
         id: requestId,
         method: "project.open",
-        params: { path, client: "desktop" },
+        params: { path, client: "cli" },
       }))
     })
   } finally {
