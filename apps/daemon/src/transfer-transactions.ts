@@ -241,6 +241,10 @@ export class FileTransferTransactions {
     return stored.manifest
   }
 
+  async sourceMachineId(transferId: string): Promise<string> {
+    return (await this.#stored(transferId)).manifest.sourceMachineId
+  }
+
   async memberPath(
     transferId: string,
     manifestDigest: string,

@@ -62,6 +62,11 @@ import { TransferAssembler } from "./transfer-assembler.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { openMachineSocket } from "./machine-socket.js"
 import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-source.js"
+import { FileTransferTransactions } from "./transfer-transactions.js"
+import {
+  commitPreparedSessionTransfer,
+  preflightSessionTransferTarget,
+} from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
 } from "./codex.js"
@@ -604,6 +609,10 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
   "capture" | "storeUpload"
 >
 
+type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "close"> & Partial<
+  Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
+>
+
 export function protectedAnnotationCropRefs(snapshot: WorkspaceSnapshot): string[] {
   const refs = new Set<string>()
   for (const annotation of snapshot.annotations) {
@@ -640,7 +649,7 @@ export type DaemonServerOptions = {
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
-  usageLedger?: Pick<UsageLedger, "record" | "session" | "close">
+  usageLedger?: DaemonUsageLedger
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
   errorSink?: DaemonErrorSink
@@ -652,6 +661,7 @@ export type DaemonServerOptions = {
   advertiseHost?: string
   machineCredentials?: MachineCredentials
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
+  transferTransactions?: FileTransferTransactions
   sessionTransferTimeoutMs?: number
   connectToMachine?: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
@@ -738,7 +748,7 @@ export class DomovoiDaemon {
   #terminals = new Map<string, ActiveTerminal>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status">
-  #usageLedger: Pick<UsageLedger, "record" | "session" | "close">
+  #usageLedger: DaemonUsageLedger
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
@@ -758,6 +768,7 @@ export class DomovoiDaemon {
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
+  #transferTransactions: FileTransferTransactions
   #sessionTransferTimeoutMs: number
   #connectToMachine: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
@@ -823,6 +834,11 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    this.#transferTransactions = options.transferTransactions ?? new FileTransferTransactions(
+      statePath === ":memory:"
+        ? join(tmpdir(), `domovoi-transfer-transactions-${randomUUID()}`)
+        : join(dirname(statePath), "transfers"),
+    )
     this.#annotationVisualContext = options.annotationVisualContext
       ?? new AnnotationVisualContextService({
         root: join(dirname(statePath), "annotation-crops"),
@@ -2336,6 +2352,264 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ saved: true }),
+        })
+        return
+      }
+
+      if (
+        method === "transfer.preflight"
+        || method === "transfer.prepare"
+        || method === "transfer.member"
+        || method === "transfer.commit"
+        || method === "transfer.status"
+        || method === "transfer.abort"
+      ) {
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires the daemon credential",
+          )
+          return
+        }
+        const actor = this.#authenticatedActors.get(socket)
+        if (actor?.kind !== "machine") {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "Accepting a session transfer requires a machine connection",
+          )
+          return
+        }
+
+        if (method === "transfer.preflight") {
+          const params = paramsResult.data as RpcParams<"transfer.preflight">
+          if (params.sourceMachineId !== actor.machineId) {
+            this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+            return
+          }
+          if (!this.#workspaceService.projectHasLineage) {
+            this.#error(socket, request.id, internalError, "This machine cannot verify project lineage")
+            return
+          }
+          const result = await preflightSessionTransferTarget(
+            this.#snapshot,
+            params,
+            (path, commit) => this.#workspaceService.projectHasLineage!(path, commit, signal),
+          )
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(result),
+          })
+          return
+        }
+
+        if (method === "transfer.prepare") {
+          const params = paramsResult.data as RpcParams<"transfer.prepare">
+          if (params.manifest.sourceMachineId !== actor.machineId) {
+            this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+            return
+          }
+          if (params.manifest.targetMachineId !== this.#snapshot.machine.id) {
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                state: "refused",
+                transferId: params.manifest.transferId,
+                reason: "session-state-invalid",
+              }),
+            })
+            return
+          }
+          if (!this.#workspaceService.projectHasLineage) {
+            this.#error(socket, request.id, internalError, "This machine cannot verify project lineage")
+            return
+          }
+          const ready = await preflightSessionTransferTarget(this.#snapshot, {
+            sessionId: params.manifest.sessionId,
+            sourceMachineId: params.manifest.sourceMachineId,
+            sourceProjectId: params.manifest.project.sourceProjectId,
+            lineageCommit: params.manifest.project.lineageCommit,
+            ownershipGeneration: params.manifest.ownership.fromGeneration,
+            client: params.client,
+          }, (path, commit) => this.#workspaceService.projectHasLineage!(path, commit, signal))
+          const result = ready.allowed
+            ? ready.targetProjectId === params.manifest.project.targetProjectId
+              ? await this.#transferTransactions.prepare(params.manifest, params.manifestDigest)
+              : {
+                  state: "refused" as const,
+                  transferId: params.manifest.transferId,
+                  reason: "target-project-changed" as const,
+                }
+            : {
+                state: "refused" as const,
+                transferId: params.manifest.transferId,
+                reason: ready.reason,
+              }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(result),
+          })
+          return
+        }
+
+        if (method === "transfer.member") {
+          const params = paramsResult.data as RpcParams<"transfer.member">
+          let sourceMachineId: string
+          try {
+            sourceMachineId = await this.#transferTransactions.sourceMachineId(params.transferId)
+          } catch {
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                state: "refused",
+                transferId: params.transferId,
+                reason: "digest-mismatch",
+              }),
+            })
+            return
+          }
+          if (sourceMachineId !== actor.machineId) {
+            this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+            return
+          }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(
+              await this.#transferTransactions.acceptMember(params),
+            ),
+          })
+          return
+        }
+
+        const params = paramsResult.data as
+          | RpcParams<"transfer.commit">
+          | RpcParams<"transfer.status">
+          | RpcParams<"transfer.abort">
+        if (method === "transfer.status") {
+          const result = await this.#transferTransactions.status(
+            params.transferId,
+            params.manifestDigest,
+          )
+          if (result.state === "unknown") {
+            this.#send(socket, { jsonrpc: "2.0", id: request.id, result })
+            return
+          }
+        }
+        const manifest = await this.#transferTransactions.manifest(
+          params.transferId,
+          params.manifestDigest,
+        )
+        if (manifest.sourceMachineId !== actor.machineId) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
+          return
+        }
+        if (method === "transfer.status") {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await this.#transferTransactions.status(
+              params.transferId,
+              params.manifestDigest,
+            )),
+          })
+          return
+        }
+        if (method === "transfer.abort") {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await this.#transferTransactions.abort(
+              params.transferId,
+              params.manifestDigest,
+            )),
+          })
+          return
+        }
+        if (
+          !this.#workspaceService.projectHasLineage
+          || !this.#usageLedger.replaceTransferredSession
+        ) {
+          this.#error(socket, request.id, internalError, "This machine cannot commit session transfers")
+          return
+        }
+        const before = this.#snapshot
+        const committed = await commitPreparedSessionTransfer({
+          snapshot: before,
+          transferId: params.transferId,
+          manifestDigest: params.manifestDigest,
+          transactions: this.#transferTransactions,
+          projectHasLineage: (path, commit) => (
+            this.#workspaceService.projectHasLineage!(path, commit, signal)
+          ),
+          workspace: {
+            ...(this.#workspaceService.restoreSessionFromBundle
+              ? { restoreSessionFromBundle: (path: string, sessionId: string) => (
+                  this.#workspaceService.restoreSessionFromBundle!(path, sessionId, signal)
+                ) }
+              : {}),
+            ...(this.#workspaceService.restoreSessionFromRef
+              ? { restoreSessionFromRef: (
+                  path: string,
+                  remote: string,
+                  sessionId: string,
+                  expectedCommit?: string,
+                ) => this.#workspaceService.restoreSessionFromRef!(
+                  path,
+                  remote,
+                  sessionId,
+                  expectedCommit,
+                  signal,
+                ) }
+              : {}),
+            ...(this.#workspaceService.writeTransferredArtifactSource
+              ? { writeTransferredArtifactSource: (
+                  path: string,
+                  artifactPath: string,
+                  bytes: Uint8Array,
+                ) => this.#workspaceService.writeTransferredArtifactSource!(
+                  path,
+                  artifactPath,
+                  bytes,
+                  signal,
+                ) }
+              : {}),
+          },
+          annotationVisualContext: this.#annotationVisualContext,
+          usageLedger: {
+            replaceTransferredSession: (sessionId, records) => (
+              this.#usageLedger.replaceTransferredSession!(sessionId, records)
+            ),
+          },
+          save: async (candidate) => {
+            try {
+              if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
+              else this.#store.save(candidate)
+            } catch (error) {
+              this.#persistenceFailed(error)
+              throw error
+            }
+            this.#persistenceSucceeded()
+          },
+          now: () => new Date().toISOString(),
+        })
+        if (committed.snapshot !== before) {
+          this.#snapshot = committed.snapshot
+          this.#sessionHistory.invalidate(manifest.sessionId)
+          this.#syncArtifactWatchers()
+          this.#broadcastSnapshot()
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(committed.result),
         })
         return
       }
