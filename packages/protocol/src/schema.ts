@@ -185,6 +185,7 @@ export const sessionSourceRecoverySchema = z.object({
   transferId: transferIdSchema,
   targetMachineId: machineIdSchema,
   generation: ownershipGenerationSchema,
+  manifestDigest: sha256DigestSchema,
   recoveredAt: z.string().datetime({ offset: true }),
   decidedBy: z.object({
     client: clientKindSchema,

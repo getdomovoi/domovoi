@@ -185,6 +185,7 @@ describe("source transfer lifecycle", () => {
         transferId: packaged.manifest.transferId,
         targetMachineId,
         generation: 4,
+        manifestDigest: packaged.manifestDigest,
         decidedBy: { client: "desktop", clientId: "studio-mac" },
       },
     })

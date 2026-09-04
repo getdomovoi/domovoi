@@ -202,14 +202,19 @@ export function recoverUnconfirmedSourceTransfer(
   },
 ): WorkspaceSnapshot {
   const frozen = frozenSourceSession(snapshot, input.transferId, input.sessionId)
+  if (frozen.transfer.package.state !== "staged") {
+    throw new SessionTransferStateError("session-state-changed")
+  }
   const targetMachineId = frozen.transfer.targetMachineId
   const generation = frozen.ownershipGeneration ?? 0
+  const manifestDigest = frozen.transfer.package.manifestDigest
   const candidate = thawSourceSessionTransfer(snapshot, input.transferId, input.recoveredAt)
   const recovered = sourceSession(candidate, input.sessionId)
   recovered.sourceRecovery = {
     transferId: input.transferId,
     targetMachineId,
     generation,
+    manifestDigest,
     recoveredAt: input.recoveredAt,
     decidedBy: {
       client: input.client,

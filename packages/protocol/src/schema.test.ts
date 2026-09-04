@@ -49,6 +49,7 @@ import {
   sessionForkParamsSchema,
   sessionPauseParamsSchema,
   sessionSendParamsSchema,
+  sessionSourceRecoverySchema,
   sessionTransferLifecycleSchema,
   skillSummarySchema,
   skillDocumentSchema,
@@ -661,6 +662,14 @@ describe("workspace protocol", () => {
   })
 
   it("retains an attributed source recovery and freezes the claimant on detected conflict", () => {
+    expect(sessionSourceRecoverySchema.safeParse({
+      transferId: `transfer-${"a".repeat(32)}`,
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      generation: 3,
+      recoveredAt: "2026-09-03T18:10:00.000Z",
+      decidedBy: { client: "desktop", clientId: "studio-mac" },
+    }).success).toBe(false)
+
     const recovered = structuredClone(demoWorkspace)
     const session = recovered.sessions[2]!
     session.state = "idle"
@@ -671,6 +680,7 @@ describe("workspace protocol", () => {
       transferId: `transfer-${"a".repeat(32)}`,
       targetMachineId: `machine-${"b".repeat(32)}`,
       generation: 3,
+      manifestDigest: `sha256:${"c".repeat(64)}`,
       recoveredAt: "2026-09-03T18:10:00.000Z",
       decidedBy: { client: "desktop", clientId: "studio-mac" },
     }
