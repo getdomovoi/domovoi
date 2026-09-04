@@ -440,8 +440,17 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
-  sendMessage(sessionId: string, prompt: string): Promise<WorkspaceSnapshot> {
-    return this.request("session.send", { sessionId, prompt, client: this.kind })
+  sendMessage(
+    sessionId: string,
+    prompt: string,
+    skillSelection?: RpcParams<"session.send">["skillSelection"],
+  ): Promise<WorkspaceSnapshot> {
+    return this.request("session.send", {
+      sessionId,
+      prompt,
+      client: this.kind,
+      ...(skillSelection ? { skillSelection } : {}),
+    })
   }
 
   revertSessionFile(sessionId: string, path: string): Promise<WorkspaceSnapshot> {

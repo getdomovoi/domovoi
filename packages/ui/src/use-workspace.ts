@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferResult } from "@getdomovoi/protocol"
+import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiRequestOptions } from "./client"
 import { openClaimConnection } from "./claim-socket"
@@ -237,10 +237,14 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     )
   }, [updateSnapshotFrom])
 
-  const sendMessage = useCallback(async (sessionId: string, prompt: string) => {
+  const sendMessage = useCallback(async (
+    sessionId: string,
+    prompt: string,
+    skillSelection?: TurnSkillSelection,
+  ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt))
+    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection))
   }, [updateSnapshotFrom])
 
   const createCheckpoint = useCallback(async (sessionId: string, label?: string) => {
