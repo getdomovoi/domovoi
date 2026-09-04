@@ -71,6 +71,21 @@ async function openTransferDialog(result: SessionTransferResult) {
       currentMachineId={local.id}
       onSelectMachine={onSelectMachine}
       onTransferSession={onTransferSession}
+      onPreviewTransfer={(async () => ({
+        allowed: true,
+        contractVersion: 1,
+        sessionId: "session-billing",
+        sourceMachineId: "machine-local",
+        targetMachineId: "machine-studio",
+        intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        project: {
+          sourceProjectId: "project-one",
+          targetProjectId: "project-two",
+          lineageCommit: "b".repeat(40),
+          sourceHeadCommit: "c".repeat(40),
+        },
+        coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
+      })) as never}
       {...handlers}
     />,
   )
@@ -82,6 +97,10 @@ async function openTransferDialog(result: SessionTransferResult) {
 it("opens the transfer dialog from the composer device menu", async () => {
   await openTransferDialog({
     outcome: "succeeded",
+    contractVersion: 1,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     workspacePath: "/worktrees/session",
     checkpointCommit: "c".repeat(40),
   })
@@ -92,6 +111,10 @@ it("opens the transfer dialog from the composer device menu", async () => {
 it("moves the session and switches to the target machine", async () => {
   const { user, snapshot, studio, onTransferSession, onSelectMachine } = await openTransferDialog({
     outcome: "succeeded",
+    contractVersion: 1,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     workspacePath: "/worktrees/session",
     checkpointCommit: "c".repeat(40),
   })
@@ -99,6 +122,8 @@ it("moves the session and switches to the target machine", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransferSession).toHaveBeenCalledWith({
+    contractVersion: 1,
+    intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: snapshot.activeSessionId,
     targetMachineId: studio.id,
     method: "git-bundle",
@@ -109,6 +134,10 @@ it("moves the session and switches to the target machine", async () => {
 it("records the move in the thread as a receipt", async () => {
   const { user } = await openTransferDialog({
     outcome: "succeeded",
+    contractVersion: 1,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     workspacePath: "/worktrees/session",
     checkpointCommit: "c".repeat(40),
   })
@@ -136,7 +165,13 @@ it("records a refusal with the reason the daemon gave", async () => {
 })
 
 it("records a failed move without inventing a reason", async () => {
-  const { user, snapshot, onSelectMachine } = await openTransferDialog({ outcome: "failed" })
+  const { user, snapshot, onSelectMachine } = await openTransferDialog({
+    outcome: "incomplete",
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    state: "failed",
+    reason: "persistence-failed",
+    recoveryAction: "none",
+  })
 
   await user.click(screen.getByRole("button", { name: "Move session" }))
 

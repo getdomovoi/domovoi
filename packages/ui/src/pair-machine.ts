@@ -1,3 +1,15 @@
+import { protocolVersion, type RpcParams } from "@getdomovoi/protocol"
+
+import { clientVersion } from "./client.js"
+
+// The greeting a freshly paired credential makes. It is a machine, not this
+// desktop or browser, and omitting the protocol version would mean 0.1.0 to the
+// daemon and be refused as a mismatch, so both are stated here where a test can
+// read them rather than inline at the call.
+export function machineHelloParams(credential: string): RpcParams<"system.hello"> {
+  return { client: "machine", clientVersion, protocolVersion, authToken: credential }
+}
+
 import { machineIdSchema } from "@getdomovoi/protocol"
 
 import { claimMachine, type ClaimConnection } from "./claim-machine.js"
@@ -22,6 +34,7 @@ export type PairedMachine = {
 
 export async function pairMachine(input: {
   request: PairMachineRequest
+  machineId: string
   open: (endpoint: string) => Promise<ClaimConnection>
   identify: (input: { endpoint: string; credential: string }) => Promise<{ id: string; name: string }>
   saveCredential: (input: { machineId: string; credential: string }) => Promise<void>
@@ -30,6 +43,7 @@ export async function pairMachine(input: {
     endpoint: input.request.endpoint,
     code: input.request.code,
     label: input.request.label,
+    machineId: input.machineId,
     open: input.open,
   })
 

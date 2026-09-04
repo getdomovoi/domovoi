@@ -92,6 +92,15 @@ describe("audit RPC contracts", () => {
     ))).toEqual([])
   })
 
+  it("does not expose pre-transactional transfer endpoints", () => {
+    expect(Object.keys(rpcMethods).filter((method) => [
+      "transfer.have",
+      "transfer.fromRef",
+      "transfer.begin",
+      "transfer.chunk",
+    ].includes(method))).toEqual([])
+  })
+
   it("requires exact reviewed skill content for enablement", () => {
     expect(rpcMethods["skill.setEnabled"].params.parse({
       id: "skill-111111111111",
@@ -410,22 +419,15 @@ describe("authenticated client identity", () => {
 
   it("identifies a peer daemon as a machine actor", () => {
     const machineId = `machine-${"a".repeat(32)}`
-    expect(helloParamsSchema.parse({
-      client: "machine",
-      machineId,
-      clientVersion: "0.0.1",
-      protocolVersion: "0.1.0",
-    })).toMatchObject({ client: "machine", machineId })
-    expect(helloParamsSchema.safeParse({
+    const hello = {
       client: "machine",
       clientVersion: "0.0.1",
       protocolVersion: "0.1.0",
-    }).success).toBe(false)
+    } as const
+    expect(helloParamsSchema.parse(hello)).toEqual(hello)
     expect(helloParamsSchema.safeParse({
-      client: "desktop",
+      ...hello,
       machineId,
-      clientVersion: "0.0.1",
-      protocolVersion: "0.1.0",
     }).success).toBe(false)
     expect(auditActorSchema.parse({ kind: "machine", machineId }))
       .toEqual({ kind: "machine", machineId })

@@ -10,7 +10,10 @@ export type MachineSelection =
 const refusalByHealth: Partial<Record<FleetHealth, string>> = {
   degraded: "That machine is not responding",
   unreachable: "That machine cannot be reached",
-  "version-mismatch": "That machine speaks a different protocol version",
+  // fleetMachineHealth maps machine-ahead to version-mismatch, so the remote is
+  // the newer one. The older machine is this one, and telling the operator to
+  // update the remote sent them to the wrong machine.
+  "version-mismatch": "That machine speaks a newer protocol version, so update Domovoi here",
   "upgrade-required": "That machine has to be upgraded first",
 }
 

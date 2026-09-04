@@ -136,6 +136,10 @@ function requestAbortError(signal: AbortSignal): Error {
   return new DOMException("Daemon RPC request aborted", "AbortError")
 }
 
+// Every greeting this package sends carries the same build, so pairing and the
+// workspace connection cannot drift apart.
+export const clientVersion = "0.0.1"
+
 export class DomovoiClient extends EventTarget {
   readonly url: string
   readonly kind: ClientKind
@@ -229,7 +233,7 @@ export class DomovoiClient extends EventTarget {
           this.request("system.hello", {
             client: this.kind,
             clientId: this.clientId,
-            clientVersion: "0.0.1",
+            clientVersion,
             protocolVersion,
             ...(this.#authToken ? { authToken: this.#authToken } : {}),
           }).then(
@@ -656,11 +660,45 @@ export class DomovoiClient extends EventTarget {
 
   // Moving a session is one request that either lands, is refused with a
   // reason, or fails. The caller renders whichever came back.
+  previewSessionTransfer(
+    params: Omit<RpcParams<"session.transferPreview">, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"session.transferPreview">> {
+    return this.request("session.transferPreview", { ...params, client: this.kind }, options)
+  }
+
   transferSession(
     params: Omit<SessionTransferParams, "client">,
     options?: DomovoiRequestOptions,
   ): Promise<SessionTransferResult> {
     return this.request("session.transfer", { ...params, client: this.kind }, options)
+  }
+
+  // Two exits from a stalled move, and the confirmation the operator made
+  // decides which one is called. Routing here rather than at the surface keeps
+  // the claim they agreed to and the method that acts on it together.
+  releaseSession(
+    params: {
+      sessionId: string
+      transferId: string
+      confirmation: "target-does-not-have-session" | "keep-target-session"
+    },
+    options?: DomovoiRequestOptions,
+  ): Promise<unknown> {
+    if (params.confirmation === "keep-target-session") {
+      return this.request("session.transferResolveConflict", {
+        sessionId: params.sessionId,
+        transferId: params.transferId,
+        confirmation: "keep-target-session",
+        client: this.kind,
+      }, options)
+    }
+    return this.request("session.transferRecoverSource", {
+      sessionId: params.sessionId,
+      transferId: params.transferId,
+      confirmation: "target-does-not-have-session",
+      client: this.kind,
+    }, options)
   }
 
   listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {

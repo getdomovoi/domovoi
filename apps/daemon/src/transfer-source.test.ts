@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   demoWorkspace,
+  protocolVersion,
   type FleetMachine,
   type SessionSummary,
   type TransferReceipt,
@@ -25,7 +26,7 @@ const target: FleetMachine = {
   connection: "tailnet",
   capabilities: ["sessions"],
   heartbeat: { state: "online", lastSeenAt: "2026-09-01T09:00:00.000Z" },
-  protocolVersion: "0.1.0",
+  protocolVersion,
   transports: [
     { kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true },
   ],

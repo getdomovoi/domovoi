@@ -1,19 +1,29 @@
 import { z } from "zod"
 
 import {
-  transferBeginParamsSchema,
-  transferBeginResultSchema,
-  transferChunkParamsSchema,
-  transferChunkResultSchema,
-  transferHaveParamsSchema,
-  transferHaveResultSchema,
-} from "./transfer-rpc.js"
-import {
   sessionTransferParamsSchema,
+  sessionTransferPreviewParamsSchema,
+  sessionTransferRecoverSourceParamsSchema,
+  sessionTransferRecoverSourceResultSchema,
+  sessionTransferResolveConflictParamsSchema,
+  sessionTransferResolveConflictResultSchema,
   sessionTransferResultSchema,
-  transferFromRefParamsSchema,
-  transferFromRefResultSchema,
 } from "./transfer-request.js"
+import { sessionTransferPreviewSchema } from "./transfer-contract.js"
+import {
+  transferAbortParamsSchema,
+  transferAbortResultSchema,
+  transferCommitParamsSchema,
+  transferCommitResultSchema,
+  transferMemberParamsSchema,
+  transferMemberResultSchema,
+  transferPrepareParamsSchema,
+  transferPrepareResultSchema,
+  transferStatusParamsSchema,
+  transferStatusResultSchema,
+  transferTargetPreflightParamsSchema,
+  transferTargetPreflightResultSchema,
+} from "./transfer-transaction.js"
 
 import {
   maximumSessionHistoryPageItems,
@@ -703,7 +713,6 @@ const clientHelloParamsSchema = z.object({
 
 const machineHelloParamsSchema = z.object({
   client: z.literal("machine"),
-  machineId: machineIdSchema,
   clientVersion: z.string().min(1).max(64),
   protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: z.string().min(1).optional(),
@@ -1147,21 +1156,41 @@ export const rpcMethods = {
     params: sessionTransferParamsSchema,
     result: sessionTransferResultSchema,
   },
-  "transfer.fromRef": {
-    params: transferFromRefParamsSchema,
-    result: transferFromRefResultSchema,
+  "session.transferPreview": {
+    params: sessionTransferPreviewParamsSchema,
+    result: sessionTransferPreviewSchema,
   },
-  "transfer.have": {
-    params: transferHaveParamsSchema,
-    result: transferHaveResultSchema,
+  "session.transferRecoverSource": {
+    params: sessionTransferRecoverSourceParamsSchema,
+    result: sessionTransferRecoverSourceResultSchema,
   },
-  "transfer.begin": {
-    params: transferBeginParamsSchema,
-    result: transferBeginResultSchema,
+  "session.transferResolveConflict": {
+    params: sessionTransferResolveConflictParamsSchema,
+    result: sessionTransferResolveConflictResultSchema,
   },
-  "transfer.chunk": {
-    params: transferChunkParamsSchema,
-    result: transferChunkResultSchema,
+  "transfer.prepare": {
+    params: transferPrepareParamsSchema,
+    result: transferPrepareResultSchema,
+  },
+  "transfer.preflight": {
+    params: transferTargetPreflightParamsSchema,
+    result: transferTargetPreflightResultSchema,
+  },
+  "transfer.member": {
+    params: transferMemberParamsSchema,
+    result: transferMemberResultSchema,
+  },
+  "transfer.commit": {
+    params: transferCommitParamsSchema,
+    result: transferCommitResultSchema,
+  },
+  "transfer.status": {
+    params: transferStatusParamsSchema,
+    result: transferStatusResultSchema,
+  },
+  "transfer.abort": {
+    params: transferAbortParamsSchema,
+    result: transferAbortResultSchema,
   },
   "device.machineCredential": {
     params: deviceMachineCredentialParamsSchema,
@@ -1300,7 +1329,9 @@ export const rpcMethodMutations = {
   "terminal.resize": "read-only",
   "terminal.close": "read-only",
   "fleet.list": "read-only",
-  "transfer.have": "read-only",
+  "session.transferPreview": "read-only",
+  "transfer.preflight": "read-only",
+  "transfer.status": "read-only",
   "device.machineCredential": "read-only",
   "device.list": "read-only",
   "session.evidence": "read-only",
@@ -1320,9 +1351,12 @@ export const rpcMethodMutations = {
   "device.revoke": "mutating",
   "device.rotate": "mutating",
   "session.transfer": "mutating",
-  "transfer.fromRef": "mutating",
-  "transfer.begin": "mutating",
-  "transfer.chunk": "mutating",
+  "session.transferRecoverSource": "mutating",
+  "session.transferResolveConflict": "mutating",
+  "transfer.prepare": "mutating",
+  "transfer.member": "mutating",
+  "transfer.commit": "mutating",
+  "transfer.abort": "mutating",
   "system.pauseAll": "mutating",
   "system.emergencyStop": "mutating",
   "skill.setEnabled": "mutating",

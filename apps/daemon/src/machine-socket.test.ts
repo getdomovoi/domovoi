@@ -3,12 +3,25 @@ import { once } from "node:events"
 import { WebSocketServer } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, demoWorkspace } from "@getdomovoi/protocol"
 
-import { openMachineSocket } from "./machine-socket.js"
+import {
+  MachinePairingRequiredError,
+  openMachineSocket as openMachineSocketWithoutDefaults,
+} from "./machine-socket.js"
 
 const servers: WebSocketServer[] = []
-const peerMachineId = `machine-${"a".repeat(32)}`
+
+function openMachineSocket(
+  input: Omit<Parameters<typeof openMachineSocketWithoutDefaults>[0], "expectedMachineId"> & {
+    expectedMachineId?: string
+  },
+) {
+  return openMachineSocketWithoutDefaults({
+    ...input,
+    expectedMachineId: input.expectedMachineId ?? demoWorkspace.machine.id,
+  })
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
@@ -36,6 +49,22 @@ async function machineServer(handler: (message: Record<string, unknown>) => unkn
 }
 
 describe("openMachineSocket", () => {
+  it("refuses an endpoint answered by a different machine", async () => {
+    const machine = await machineServer((message) => {
+      if (message.method === "system.hello") return structuredClone(demoWorkspace)
+      return { state: "unknown" }
+    })
+
+    const opening = openMachineSocket({
+      endpoint: machine.endpoint,
+      expectedMachineId: `machine-${"f".repeat(32)}`,
+      credential: "n".repeat(43),
+    })
+    void opening.then((connection) => connection.close(), () => {})
+    await expect(opening).rejects.toThrow("The endpoint answered as a different machine")
+    expect(machine.seen).toHaveLength(1)
+  })
+
   it("says hello with the credential before anything else", async () => {
     const machine = await machineServer((message) => {
       if (message.method === "system.hello") return structuredClone(demoWorkspace)
@@ -44,7 +73,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     await connection.call("transfer.begin", { sessionId: "session-1" })
@@ -54,12 +82,12 @@ describe("openMachineSocket", () => {
       method: "system.hello",
       params: {
         client: "machine",
-        machineId: peerMachineId,
         clientVersion: "0.0.1",
-        protocolVersion: "0.1.0",
+        protocolVersion: "0.2.0",
         authToken: "n".repeat(43),
       },
     })
+    expect((machine.seen[0]!.params as Record<string, unknown>)).not.toHaveProperty("machineId")
     expect(machine.seen[1]).toMatchObject({ method: "transfer.begin" })
   })
 
@@ -73,9 +101,36 @@ describe("openMachineSocket", () => {
 
     await expect(openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
-    })).rejects.toThrow("That machine speaks protocol 9.9.9, this daemon speaks 0.1.0")
+    })).rejects.toThrow("That machine speaks protocol 9.9.9, this daemon speaks 0.2.0")
+  })
+
+  it("classifies a rejected machine credential without exposing its history", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+    servers.push(server)
+    await once(server, "listening")
+    server.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        socket.send(JSON.stringify({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: {
+            code: daemonAuthenticationErrorCode,
+            message: "Daemon authentication failed",
+          },
+        }))
+      })
+    })
+    const address = server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+
+    const opening = openMachineSocket({
+      endpoint: `ws://127.0.0.1:${port}/rpc`,
+      credential: "n".repeat(43),
+    })
+    await expect(opening).rejects.toBeInstanceOf(MachinePairingRequiredError)
+    await expect(opening).rejects.toThrow("That machine must be paired again")
   })
 
   it("answers each call with the reply that carries its id", async () => {
@@ -86,7 +141,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     const [first, second] = await Promise.all([
@@ -121,7 +175,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
 
@@ -149,7 +202,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
 
@@ -160,7 +212,6 @@ describe("openMachineSocket", () => {
   it("refuses a plaintext endpoint that leaves this machine", async () => {
     await expect(openMachineSocket({
       endpoint: "ws://studio.tailnet:47831/rpc",
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })).rejects.toThrow("Refusing to authenticate over an unencrypted connection")
   })
@@ -173,7 +224,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     connection.close()
@@ -190,7 +240,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
       callTimeoutMs: 100,
     })
@@ -208,7 +257,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
       callTimeoutMs: 5_000,
       maximumPendingCalls: 2,
@@ -233,7 +281,6 @@ describe("openMachineSocket", () => {
 
     const connection = await openMachineSocket({
       endpoint: machine.endpoint,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
     })
     const call = connection.call("transfer.chunk", {}, cancelled.signal)
@@ -253,7 +300,6 @@ describe("openMachineSocket", () => {
 
     const opening = openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
       signal: cancelled.signal,
     })
@@ -274,7 +320,6 @@ describe("openMachineSocket", () => {
     const fired: (() => void)[] = []
     const opening = openMachineSocket({
       endpoint: `ws://127.0.0.1:${port}/rpc`,
-      machineId: peerMachineId,
       credential: "n".repeat(43),
       scheduler: {
         setTimeout: (callback: () => void) => {

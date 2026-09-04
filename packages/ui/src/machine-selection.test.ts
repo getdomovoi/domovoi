@@ -38,7 +38,10 @@ describe("machineSelection", () => {
 
   it("refuses a machine speaking another protocol", () => {
     expect(machineSelection({ ...machine, health: "version-mismatch" }))
-      .toEqual({ selectable: false, reason: "That machine speaks a different protocol version" })
+      .toEqual({
+      selectable: false,
+      reason: "That machine speaks a newer protocol version, so update Domovoi here",
+    })
   })
 
   it("refuses a machine that has to be upgraded first", () => {

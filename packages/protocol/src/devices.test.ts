@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  deviceClaimParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
   deviceRevokeParamsSchema,
@@ -27,6 +28,20 @@ describe("pairedDeviceSchema", () => {
       revokedAt: "2026-08-31T13:00:00.000Z",
     }
     expect(pairedDeviceSchema.parse(seen)).toEqual(seen)
+  })
+
+  it("explains a credential revoked by the identity-binding migration", () => {
+    const migrated = {
+      ...device,
+      revokedAt: "2026-09-04T00:00:00.000Z",
+      revocationReason: "legacy-unbound-credential",
+    }
+
+    expect(pairedDeviceSchema.parse(migrated)).toEqual(migrated)
+    expect(pairedDeviceSchema.safeParse({
+      ...device,
+      revocationReason: "legacy-unbound-credential",
+    }).success).toBe(false)
   })
 
   it("rejects an identifier that is not a device identity", () => {
@@ -60,6 +75,19 @@ describe("devicePairResultSchema", () => {
 
   it("rejects a credential that is not the issued shape", () => {
     expect(devicePairResultSchema.safeParse({ device, token: "short" }).success).toBe(false)
+  })
+})
+
+describe("deviceClaimParamsSchema", () => {
+  it("binds a claimed credential to the source machine", () => {
+    const claim = {
+      code: "hearth-quiet-ember-42",
+      label: "studio-mac",
+      machineId: `machine-${"a".repeat(32)}`,
+    }
+    expect(deviceClaimParamsSchema.parse(claim)).toEqual(claim)
+    const { machineId: _machineId, ...unbound } = claim
+    expect(deviceClaimParamsSchema.safeParse(unbound).success).toBe(false)
   })
 })
 

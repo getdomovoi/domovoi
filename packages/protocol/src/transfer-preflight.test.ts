@@ -56,6 +56,12 @@ describe("transferPreflight", () => {
       .toEqual({ allowed: false, reason: "target-upgrade-required" })
   })
 
+  it("explains when the machine must be paired again", () => {
+    expect(transferRefusalSchema.safeParse("target-pairing-required").success).toBe(true)
+    expect(transferRefusalMessage["target-pairing-required"])
+      .toBe("That machine must be paired again before a session can move to it")
+  })
+
   it("refuses a target that cannot run sessions", () => {
     expect(transferPreflight({ source, target: { ...target, capabilities: ["terminals"] } }))
       .toEqual({ allowed: false, reason: "target-cannot-run-sessions" })

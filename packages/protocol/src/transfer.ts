@@ -4,6 +4,7 @@ import { clientIdentityIdSchema, commitShaSchema, machineIdSchema } from "./iden
 import { clientKindSchema, type SessionSummary } from "./schema.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
 import { transferStreamRefusalSchema } from "./transfer-stream.js"
+import { sessionTransferContractRefusalSchema } from "./transfer-contract-refusals.js"
 
 export const transferMethodSchema = z.enum(["git-bundle", "remote-ref"])
 
@@ -22,6 +23,9 @@ export const sourceRefusalSchema = z.enum([
   "session-turn-active",
   "session-archived",
   "session-has-no-worktree",
+  "session-recovery-unresolved",
+  "source-bundle-create-unavailable",
+  "source-ref-push-unavailable",
 ])
 
 export type SourceRefusal = z.infer<typeof sourceRefusalSchema>
@@ -30,6 +34,9 @@ export const sourceRefusalMessage: Record<SourceRefusal, string> = {
   "session-turn-active": "This session is mid turn, so it cannot move until the turn settles",
   "session-archived": "This session is archived, so there is nothing left to move",
   "session-has-no-worktree": "This session has no worktree, so there is nothing to move",
+  "session-recovery-unresolved": "Confirm the earlier target's ownership before moving this recovered session",
+  "source-bundle-create-unavailable": "This machine cannot create the Git bundle needed to move the session",
+  "source-ref-push-unavailable": "This machine cannot publish the Git ref needed to move the session",
 }
 export type TransferMethod = z.infer<typeof transferMethodSchema>
 export type TransferStep = z.infer<typeof transferStepSchema>
@@ -47,6 +54,9 @@ export function sourcePreflight(input: { session: SessionSummary }): SourcePrefl
   }
   if (session.state === "archiving" || session.state === "archived") {
     return { allowed: false, reason: "session-archived" }
+  }
+  if (session.sourceRecovery) {
+    return { allowed: false, reason: "session-recovery-unresolved" }
   }
   if (!session.workspacePath) return { allowed: false, reason: "session-has-no-worktree" }
   return { allowed: true }
@@ -111,13 +121,15 @@ export const transferReceiptSchema = z.object({
   // The source keeps its recovery checkpoint, so a transfer can always be
   // undone from the machine that sent it. A receipt cannot say otherwise.
   recoveryCheckpointRetained: z.literal(true),
-  outcome: z.enum(["succeeded", "failed", "refused"]),
+  outcome: z.enum(["succeeded", "failed", "refused", "source-recovered"]),
   // A transfer can be refused before it starts, or by the target once the
   // bytes arrive, and a receipt records whichever it was.
   reason: z.union([
     transferRefusalSchema,
     sourceRefusalSchema,
     transferStreamRefusalSchema,
+    sessionTransferContractRefusalSchema,
+    z.literal("target-ownership-unconfirmed"),
   ]).optional(),
   decidedBy: z.object({
     client: clientKindSchema,
@@ -125,6 +137,44 @@ export const transferReceiptSchema = z.object({
   }).strict(),
   startedAt: z.string().datetime({ offset: true }),
   completedAt: z.string().datetime({ offset: true }),
-}).strict()
+}).strict().superRefine((receipt, context) => {
+  if (receipt.outcome === "succeeded" && receipt.reason !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "A successful transfer cannot record a refusal reason",
+    })
+  }
+  if (
+    (receipt.outcome === "failed" || receipt.outcome === "refused")
+    && receipt.reason === undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "An unsuccessful transfer must record its reason",
+    })
+  }
+  if (
+    receipt.outcome === "source-recovered"
+    && receipt.reason !== "target-ownership-unconfirmed"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "Source recovery must name its unconfirmed ownership risk",
+    })
+  }
+  if (
+    receipt.outcome !== "source-recovered"
+    && receipt.reason === "target-ownership-unconfirmed"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["reason"],
+      message: "Only an explicit source recovery can record unconfirmed ownership",
+    })
+  }
+})
 
 export type TransferReceipt = z.infer<typeof transferReceiptSchema>

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DomovoiClient, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 
@@ -276,7 +276,7 @@ describe("DomovoiClient", () => {
       params: {
         client: "web",
         clientId: client.clientId,
-        protocolVersion: "0.1.0",
+        protocolVersion,
         authToken: "secret-token",
       },
     })
@@ -1678,6 +1678,8 @@ describe("DomovoiClient session transfer and devices", () => {
     const { client, socket } = await connected()
 
     const moving = client.transferSession({
+      contractVersion: 1,
+      intentDigest: `sha256:${"a".repeat(64)}`,
       sessionId: "session-billing",
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "git-bundle",
@@ -1690,6 +1692,10 @@ describe("DomovoiClient session transfer and devices", () => {
         outcome: "succeeded",
         workspacePath: "/worktrees/session-billing",
         checkpointCommit: "c".repeat(40),
+        contractVersion: 1,
+        transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ownershipGeneration: 2,
+        coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
       },
     })
 
@@ -1697,9 +1703,15 @@ describe("DomovoiClient session transfer and devices", () => {
       outcome: "succeeded",
       workspacePath: "/worktrees/session-billing",
       checkpointCommit: "c".repeat(40),
+      contractVersion: 1,
+      transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ownershipGeneration: 2,
+      coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     })
     expect(sent.method).toBe("session.transfer")
     expect(sent.params).toEqual({
+      contractVersion: 1,
+      intentDigest: `sha256:${"a".repeat(64)}`,
       sessionId: "session-billing",
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "git-bundle",
@@ -1712,6 +1724,8 @@ describe("DomovoiClient session transfer and devices", () => {
     const { client, socket } = await connected()
 
     const moving = client.transferSession({
+      contractVersion: 1,
+      intentDigest: `sha256:${"a".repeat(64)}`,
       sessionId: "session-billing",
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "remote-ref",
@@ -1722,6 +1736,8 @@ describe("DomovoiClient session transfer and devices", () => {
 
     await expect(moving).resolves.toEqual({ outcome: "refused", reason: "target-unreachable" })
     expect(sent.params).toEqual({
+      contractVersion: 1,
+      intentDigest: `sha256:${"a".repeat(64)}`,
       sessionId: "session-billing",
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "remote-ref",

@@ -9,14 +9,19 @@ import {
   clientKindSchema,
   commitShaSchema,
   forkRequestIdSchema,
+  machineIdSchema,
+  sha256DigestSchema,
   toolKindSchema,
   toolStatusSchema,
+  transferIdSchema,
 } from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
 
-export const protocolVersion = "0.1.0" as const
+// Machine credentials became identity-bound in 0.2.0. A 0.1 peer cannot
+// participate safely because its hello supplies an unverified machine id.
+export const protocolVersion = "0.2.0" as const
 
 export const connectionIdSchema = z.string().uuid()
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
@@ -26,6 +31,9 @@ export const sessionStateSchema = z.enum([
   "idle",
   "done",
   "failed",
+  "transferring",
+  "transferred",
+  "ownership-conflict",
   "archiving",
   "archived",
 ])
@@ -122,12 +130,123 @@ export const projectSchema = z.object({
 
 export const sessionForkOriginSchema = z.object({
   sourceSessionId: z.string().min(1),
+  sourceMachineId: machineIdSchema.optional(),
   checkpointId: z.string().min(1),
   checkpointCommit: commitShaSchema,
   requestId: forkRequestIdSchema,
   client: clientKindSchema,
   requestedRuntime: runtimeSchema,
 })
+
+const ownershipGenerationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
+
+export const sessionTransferReconciliationReasonSchema = z.enum([
+  "target-unreachable",
+  "target-timeout",
+  "target-pairing-required",
+])
+
+export const sessionTransferReconciliationSchema = z.object({
+  state: z.literal("ownership-unconfirmed"),
+  reason: sessionTransferReconciliationReasonSchema,
+  firstFailedAt: z.string().datetime({ offset: true }),
+  lastFailedAt: z.string().datetime({ offset: true }),
+  attemptCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  recoveryAction: z.literal("confirm-source-recovery"),
+}).strict().superRefine((failure, context) => {
+  if (Date.parse(failure.firstFailedAt) > Date.parse(failure.lastFailedAt)) {
+    context.addIssue({
+      code: "custom",
+      path: ["lastFailedAt"],
+      message: "The last reconciliation failure cannot precede the first",
+    })
+  }
+})
+
+const sessionTransferPackageSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("preparing") }).strict(),
+  z.object({
+    state: z.literal("staged"),
+    manifestDigest: sha256DigestSchema,
+    reconciliation: sessionTransferReconciliationSchema.optional(),
+  }).strict(),
+])
+
+export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
+  z.object({
+    phase: z.literal("transferring"),
+    transferId: transferIdSchema,
+    targetMachineId: machineIdSchema,
+    intentDigest: sha256DigestSchema,
+    nextGeneration: ownershipGenerationSchema,
+    startedAt: z.string().datetime({ offset: true }),
+    resumeState: z.enum(["idle", "done", "failed"]),
+    method: z.enum(["git-bundle", "remote-ref"]),
+    requestedBy: z.object({
+      client: clientKindSchema,
+      clientId: clientIdentityIdSchema.optional(),
+    }).strict(),
+    package: sessionTransferPackageSchema,
+  }).strict(),
+  z.object({
+    phase: z.literal("transferred"),
+    transferId: transferIdSchema,
+    targetMachineId: machineIdSchema,
+    generation: ownershipGenerationSchema,
+    manifestDigest: sha256DigestSchema,
+    completedAt: z.string().datetime({ offset: true }),
+    // Older snapshots predate the distinction, and every such record was a
+    // target-acknowledged commit. New conflict releases name themselves.
+    completion: z.enum(["committed", "conflict-released"]).default("committed"),
+  }).strict(),
+])
+
+export const sessionTransferOriginSchema = z.object({
+  transferId: transferIdSchema,
+  sourceMachineId: machineIdSchema,
+  generation: ownershipGenerationSchema,
+  manifestDigest: sha256DigestSchema,
+  checkpointCommit: commitShaSchema,
+  completedAt: z.string().datetime({ offset: true }),
+}).strict()
+
+export const sessionSourceRecoverySchema = z.object({
+  transferId: transferIdSchema,
+  targetMachineId: machineIdSchema,
+  generation: ownershipGenerationSchema,
+  manifestDigest: sha256DigestSchema,
+  recoveredAt: z.string().datetime({ offset: true }),
+  decidedBy: z.object({
+    client: clientKindSchema,
+    clientId: clientIdentityIdSchema.optional(),
+  }).strict(),
+}).strict()
+
+const sessionOwnershipConflictCommon = {
+  transferId: transferIdSchema,
+  otherMachineId: machineIdSchema,
+  otherGeneration: ownershipGenerationSchema,
+  detectedAt: z.string().datetime({ offset: true }),
+  // `none` was persisted before the safe one-way release existed. Parsing it
+  // upgrades that stranded state without pretending the conflict is gone.
+  recoveryAction: z.union([
+    z.literal("keep-target-session"),
+    z.literal("none"),
+  ]).transform(() => "keep-target-session" as const),
+} as const
+
+export const sessionOwnershipConflictSchema = z.union([
+  z.object({
+    ...sessionOwnershipConflictCommon,
+    kind: z.literal("recovery-contradicted").default("recovery-contradicted"),
+  }).strict(),
+  z.object({
+    ...sessionOwnershipConflictCommon,
+    kind: z.literal("target-session-detected"),
+    reason: z.enum(["target-session-newer", "target-session-diverged"]),
+    manifestDigest: sha256DigestSchema,
+  }).strict(),
+])
 
 export const sessionSummarySchema = z.object({
   id: z.string().min(1),
@@ -148,6 +267,11 @@ export const sessionSummarySchema = z.object({
   archiveCheckpoint: commitShaSchema.optional(),
   archivedAt: z.string().datetime().optional(),
   forkedFrom: sessionForkOriginSchema.optional(),
+  ownershipGeneration: ownershipGenerationSchema.optional(),
+  transfer: sessionTransferLifecycleSchema.optional(),
+  transferredFrom: sessionTransferOriginSchema.optional(),
+  sourceRecovery: sessionSourceRecoverySchema.optional(),
+  ownershipConflict: sessionOwnershipConflictSchema.optional(),
 }).superRefine((session, context) => {
   const archiveState = session.state === "archiving" || session.state === "archived"
   if (!archiveState && (
@@ -171,6 +295,146 @@ export const sessionSummarySchema = z.object({
     for (const field of ["workspacePath", "providerThreadId", "activeTurnId"] as const) {
       if (session[field]) context.addIssue({ code: "custom", path: [field], message: "Archived sessions cannot retain active resources" })
     }
+  }
+  const transferState = session.state === "transferring" || session.state === "transferred"
+  if (transferState && session.transfer?.phase !== session.state) {
+    context.addIssue({
+      code: "custom",
+      path: ["transfer"],
+      message: "A transfer lifecycle state requires matching transfer metadata",
+    })
+  }
+  if (!transferState && session.transfer !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["transfer"],
+      message: "Transfer metadata requires a transfer lifecycle state",
+    })
+  }
+  if ((transferState || session.state === "ownership-conflict") && !session.workspacePath) {
+    context.addIssue({
+      code: "custom",
+      path: ["workspacePath"],
+      message: "A transferred or conflicted source retains its recovery worktree",
+    })
+  }
+  if (transferState && session.activeTurnId) {
+    context.addIssue({
+      code: "custom",
+      path: ["activeTurnId"],
+      message: "A session cannot transfer during an active turn",
+    })
+  }
+  if (session.state === "transferring" && session.transfer?.phase === "transferring") {
+    if (
+      session.ownershipGeneration === undefined
+      || session.transfer.nextGeneration !== session.ownershipGeneration + 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["transfer", "nextGeneration"],
+        message: "A transfer must advance session ownership by one generation",
+      })
+    }
+  }
+  if (session.state === "transferred" && session.transfer?.phase === "transferred") {
+    if (
+      session.ownershipGeneration === undefined
+      || session.transfer.generation !== session.ownershipGeneration
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["transfer", "generation"],
+        message: "Transferred ownership metadata must name the current generation",
+      })
+    }
+    for (const field of ["providerThreadId", "providerFailure"] as const) {
+      if (session[field]) {
+        context.addIssue({
+          code: "custom",
+          path: [field],
+          message: "A transferred source cannot retain live provider state",
+        })
+      }
+    }
+  }
+  if (
+    session.transferredFrom
+    && (
+      session.ownershipGeneration === undefined
+      || session.transferredFrom.generation > session.ownershipGeneration
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["transferredFrom", "generation"],
+      message: "Transfer provenance cannot be newer than session ownership",
+    })
+  }
+  if (
+    session.sourceRecovery
+    && (
+      session.ownershipGeneration === undefined
+      || session.sourceRecovery.generation > session.ownershipGeneration
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceRecovery", "generation"],
+      message: "Source recovery cannot claim a newer ownership generation",
+    })
+  }
+  if (session.state === "ownership-conflict") {
+    const conflict = session.ownershipConflict
+    const recovery = session.sourceRecovery
+    if (!conflict) {
+      context.addIssue({
+        code: "custom",
+        path: ["ownershipConflict"],
+        message: "An ownership conflict requires its competing owner",
+      })
+    } else if (conflict.kind === "recovery-contradicted") {
+      if (
+        !recovery
+        || conflict.transferId !== recovery.transferId
+        || conflict.otherMachineId !== recovery.targetMachineId
+        || session.ownershipGeneration === undefined
+        || conflict.otherGeneration <= session.ownershipGeneration
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["ownershipConflict"],
+          message: "A recovery conflict must explain the source recovery it contradicted",
+        })
+      }
+    } else if (
+      recovery !== undefined
+      || session.ownershipGeneration === undefined
+      || (
+        conflict.reason === "target-session-newer"
+          ? conflict.otherGeneration <= session.ownershipGeneration
+          : conflict.otherGeneration > session.ownershipGeneration
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["ownershipConflict"],
+        message: "A directly detected conflict must preserve the target ownership evidence",
+      })
+    }
+    if (session.activeTurnId || session.providerThreadId || session.providerFailure) {
+      context.addIssue({
+        code: "custom",
+        path: ["state"],
+        message: "The machine that made an unverified recovery claim stops on conflict",
+      })
+    }
+  } else if (session.ownershipConflict !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["ownershipConflict"],
+      message: "Ownership conflict metadata requires an ownership-conflict state",
+    })
   }
 })
 
@@ -642,32 +906,67 @@ export const workspaceSnapshotSchema = z.object({
         path: ["sessions", index, "projectId"],
       })
     }
+    if (session.transfer?.targetMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "A session transfer must target another machine",
+        path: ["sessions", index, "transfer", "targetMachineId"],
+      })
+    }
+    if (session.transferredFrom?.sourceMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Transfer provenance must name another machine",
+        path: ["sessions", index, "transferredFrom", "sourceMachineId"],
+      })
+    }
+    if (session.sourceRecovery?.targetMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "Source recovery must name another machine",
+        path: ["sessions", index, "sourceRecovery", "targetMachineId"],
+      })
+    }
+    if (session.ownershipConflict?.otherMachineId === snapshot.machine.id) {
+      context.addIssue({
+        code: "custom",
+        message: "An ownership conflict must name another machine",
+        path: ["sessions", index, "ownershipConflict", "otherMachineId"],
+      })
+    }
     if (session.forkedFrom) {
       const origin = session.forkedFrom
-      if (!sessionIds.has(origin.sourceSessionId) || origin.sourceSessionId === session.id) {
+      const externalOrigin = origin.sourceMachineId !== undefined
+        && origin.sourceMachineId !== snapshot.machine.id
+      if (
+        origin.sourceSessionId === session.id
+        || (!externalOrigin && !sessionIds.has(origin.sourceSessionId))
+      ) {
         context.addIssue({
           code: "custom",
-          message: "Fork source must reference another existing session",
+          message: "A local fork source must reference another existing session",
           path: ["sessions", index, "forkedFrom", "sourceSessionId"],
         })
       }
       const checkpoint = snapshot.thread.find((item) => item.id === origin.checkpointId)
-      if (checkpoint && (
-        checkpoint.kind !== "checkpoint"
-        || checkpoint.sessionId !== origin.sourceSessionId
-        || checkpoint.commit !== origin.checkpointCommit
-      )) {
-        context.addIssue({
-          code: "custom",
-          message: "Fork checkpoint must belong to the source session",
-          path: ["sessions", index, "forkedFrom", "checkpointId"],
-        })
-      } else if (!checkpoint && !snapshot.historyTruncated) {
-        context.addIssue({
-          code: "custom",
-          message: "Fork checkpoint must exist unless snapshot history is truncated",
-          path: ["sessions", index, "forkedFrom", "checkpointId"],
-        })
+      if (!externalOrigin) {
+        if (checkpoint && (
+          checkpoint.kind !== "checkpoint"
+          || checkpoint.sessionId !== origin.sourceSessionId
+          || checkpoint.commit !== origin.checkpointCommit
+        )) {
+          context.addIssue({
+            code: "custom",
+            message: "Fork checkpoint must belong to the source session",
+            path: ["sessions", index, "forkedFrom", "checkpointId"],
+          })
+        } else if (!checkpoint && !snapshot.historyTruncated) {
+          context.addIssue({
+            code: "custom",
+            message: "Fork checkpoint must exist unless snapshot history is truncated",
+            path: ["sessions", index, "forkedFrom", "checkpointId"],
+          })
+        }
       }
       if (forkRequestIds.has(origin.requestId)) {
         context.addIssue({
@@ -802,6 +1101,10 @@ export type Machine = z.infer<typeof machineSchema>
 export type Project = z.infer<typeof projectSchema>
 export type SessionSummary = z.infer<typeof sessionSummarySchema>
 export type SessionForkOrigin = z.infer<typeof sessionForkOriginSchema>
+export type SessionTransferReconciliation = z.infer<typeof sessionTransferReconciliationSchema>
+export type SessionTransferReconciliationReason = z.infer<
+  typeof sessionTransferReconciliationReasonSchema
+>
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>
 export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>

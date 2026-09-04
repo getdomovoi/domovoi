@@ -35,6 +35,7 @@ describe("claimMachine", () => {
       endpoint: "wss://workshop.tailnet:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })
 
@@ -50,6 +51,7 @@ describe("claimMachine", () => {
       endpoint: "ws://127.0.0.1:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })).resolves.toBeTruthy()
   })
@@ -61,6 +63,7 @@ describe("claimMachine", () => {
       endpoint: "ws://workshop.tailnet:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })).rejects.toThrow(MachineClaimError)
     expect(io.open).not.toHaveBeenCalled()
@@ -73,6 +76,7 @@ describe("claimMachine", () => {
       endpoint: "https://workshop.tailnet",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })).rejects.toThrow(MachineClaimError)
     expect(io.open).not.toHaveBeenCalled()
@@ -83,7 +87,7 @@ describe("claimMachine", () => {
     async (endpoint) => {
       const io = transport()
 
-      await expect(claimMachine({ endpoint, code, label: "studio-ipad", open: io.open }))
+      await expect(claimMachine({ endpoint, code, label: "studio-ipad", machineId: `machine-${"b".repeat(32)}`, open: io.open }))
         .rejects.toThrow(MachineClaimError)
       expect(io.open).not.toHaveBeenCalled()
     },
@@ -96,6 +100,7 @@ describe("claimMachine", () => {
       endpoint: "wss://workshop.tailnet:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })
 
@@ -109,6 +114,7 @@ describe("claimMachine", () => {
       endpoint: "wss://workshop.tailnet:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })).rejects.toThrow("Pairing was refused")
     expect(io.closed).toEqual(["wss://workshop.tailnet:47831/rpc"])
@@ -121,6 +127,7 @@ describe("claimMachine", () => {
       endpoint: "wss://workshop.tailnet:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     }).catch((error: Error) => error)
 
@@ -134,7 +141,26 @@ describe("claimMachine", () => {
       endpoint: "wss://workshop.tailnet:47831/rpc",
       code,
       label: "studio-ipad",
+      machineId: `machine-${"b".repeat(32)}`,
       open: io.open,
     })).rejects.toThrow(MachineClaimError)
+  })
+})
+
+it("names the machine the credential is being issued for", async () => {
+  const io = transport()
+
+  await claimMachine({
+    endpoint: "ws://127.0.0.1:47831/rpc",
+    code,
+    label: "studio-ipad",
+    machineId: `machine-${"b".repeat(32)}`,
+    open: io.open,
+  })
+
+  expect(io.calls[0]?.params).toEqual({
+    code,
+    label: "studio-ipad",
+    machineId: `machine-${"b".repeat(32)}`,
   })
 })
