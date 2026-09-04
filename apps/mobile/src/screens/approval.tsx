@@ -16,6 +16,8 @@ function facts(approval: ApprovalRequest): Array<{ key: string, value: string, t
     { key: "Directory", value: approval.directory },
     { key: "Affects", value: approval.affects, tone: "text-warning" },
     { key: "Network", value: approval.network },
+    { key: "Estimated", value: approval.estimatedDuration },
+    { key: "Checkpoint", value: approval.checkpoint },
   ]
 }
 
@@ -42,6 +44,7 @@ export function ApprovalScreen({
       </View>
 
       <ScrollView contentContainerClassName="gap-3 px-4 pb-8">
+        <Text className="font-medium">{approval.operation}</Text>
         <Card className="bg-code">
           <Text className="font-mono text-[12px] text-foreground">{approval.command}</Text>
         </Card>
