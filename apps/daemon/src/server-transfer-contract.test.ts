@@ -312,8 +312,11 @@ describe("transactional session transfer RPC", () => {
     const store = new SqliteWorkspaceStore(":memory:", staged)
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     await stageOutgoingSessionTransferPackage(outgoing, packaged)
+    let statusCalls = 0
     const remoteCall = vi.fn(async (method: string) => {
       if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
+      statusCalls += 1
+      if (statusCalls === 1) throw new Error("target temporarily unavailable")
       return {
         state: "committed",
         transferId: packaged.manifest.transferId,
@@ -327,6 +330,7 @@ describe("transactional session transfer RPC", () => {
       store,
       authToken: "correct-horse-battery-staple",
       outgoingTransferTransactions: outgoing,
+      sessionTransferRetryMs: 10,
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     })
@@ -335,7 +339,7 @@ describe("transactional session transfer RPC", () => {
     await daemon.start()
 
     await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
-    expect(remoteCall).toHaveBeenCalledOnce()
+    expect(remoteCall).toHaveBeenCalledTimes(2)
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferred",
       ownershipGeneration: 2,
@@ -710,12 +714,13 @@ describe("transactional session transfer RPC", () => {
       recoveredAt: "2026-09-03T22:10:00.000Z",
     })
     const store = new SqliteWorkspaceStore(":memory:", recovered)
-    let matchingTransfer = false
+    let statusCalls = 0
     const remoteCall = vi.fn(async (method: string) => {
       if (method !== "transfer.status") throw new Error(`Unexpected ${method}`)
+      statusCalls += 1
       return {
         state: "committed",
-        transferId: matchingTransfer
+        transferId: statusCalls > 1
           ? packaged.manifest.transferId
           : `transfer-${"0".repeat(32)}`,
         workspacePath: `/target/${packaged.manifest.sessionId}`,
@@ -728,17 +733,14 @@ describe("transactional session transfer RPC", () => {
       store,
       authToken: "correct-horse-battery-staple",
       connectToMachine: async () => ({ call: remoteCall, close: () => {} }),
+      sessionTransferRetryMs: 10,
       artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
     })
     running.push(daemon)
 
     await daemon.start()
-    await vi.waitFor(() => expect(remoteCall).toHaveBeenCalledOnce())
-    expect(store.load().sessions[0]?.state).toBe("idle")
-    matchingTransfer = true
-    const socket = await openClient(daemon)
-    await rpc(socket)("fleet.list", {})
     await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
+    expect(remoteCall).toHaveBeenCalledTimes(2)
 
     expect(store.load().sessions[0]).toMatchObject({
       state: "ownership-conflict",
@@ -758,7 +760,6 @@ describe("transactional session transfer RPC", () => {
       kind: "system",
       body: "Session ownership conflict detected.",
     })
-    socket.close()
   })
 
   it("clears a recovery claim after the target authoritatively reports no ownership", async () => {

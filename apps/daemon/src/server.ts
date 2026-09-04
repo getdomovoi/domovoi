@@ -721,6 +721,7 @@ export type DaemonServerOptions = {
   transferTransactions?: FileTransferTransactions
   outgoingTransferTransactions?: FileTransferTransactions
   sessionTransferTimeoutMs?: number
+  sessionTransferRetryMs?: number
   connectToMachine?: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -829,6 +830,9 @@ export class DomovoiDaemon {
   #transferTransactions: FileTransferTransactions
   #outgoingTransferTransactions: FileTransferTransactions
   #sessionTransferTimeoutMs: number
+  #sessionTransferRetryMs: number
+  #transferReconciliationTimer: ReturnType<typeof setTimeout> | undefined
+  #transferRecoveries = new Set<string>()
   #connectToMachine: (machineId: string, signal?: AbortSignal) => Promise<{
     call: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>
     close: () => void
@@ -850,6 +854,10 @@ export class DomovoiDaemon {
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
+    this.#sessionTransferRetryMs = options.sessionTransferRetryMs ?? 30_000
+    if (!Number.isSafeInteger(this.#sessionTransferRetryMs) || this.#sessionTransferRetryMs <= 0) {
+      throw new RangeError("Transfer retry interval must be a positive integer")
+    }
     // With nothing supplied, this daemon reaches other machines itself: the
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
@@ -1174,6 +1182,10 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    if (this.#transferReconciliationTimer) {
+      clearTimeout(this.#transferReconciliationTimer)
+      this.#transferReconciliationTimer = undefined
+    }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
     const stopping = this.#finishStop()
@@ -1707,7 +1719,10 @@ export class DomovoiDaemon {
     })
   }
 
-  async #recoverSessionTransfer(sessionId: string): Promise<void> {
+  async #recoverSessionTransfer(
+    sessionId: string,
+    parentSignal?: AbortSignal,
+  ): Promise<void> {
     const frozen = this.#snapshot.sessions.find((session) => session.id === sessionId)
     const lifecycle = frozen?.transfer
     if (frozen?.state !== "transferring" || lifecycle?.phase !== "transferring") return
@@ -1741,7 +1756,7 @@ export class DomovoiDaemon {
           } finally {
             connection.close()
           }
-        }, this.#sessionTransferTimeoutMs, "Transfer status check timed out")
+        }, this.#sessionTransferTimeoutMs, "Transfer status check timed out", parentSignal)
         if (remote.state === "committed") {
           await this.#completeVersionedSourceTransfer(
             frozen.id,
@@ -1778,7 +1793,7 @@ export class DomovoiDaemon {
             } finally {
               connection.close()
             }
-          }, this.#sessionTransferTimeoutMs, "Transfer recovery timed out")
+          }, this.#sessionTransferTimeoutMs, "Transfer recovery timed out", parentSignal)
           if (retried.state === "committed") {
             await this.#completeVersionedSourceTransfer(
               frozen.id,
@@ -1838,7 +1853,7 @@ export class DomovoiDaemon {
               } finally {
                 connection.close()
               }
-            }, this.#sessionTransferTimeoutMs, "Transfer abort timed out")
+            }, this.#sessionTransferTimeoutMs, "Transfer abort timed out", parentSignal)
             if (aborted.state === "committed") {
               await this.#completeVersionedSourceTransfer(
                 frozen.id,
@@ -1868,7 +1883,7 @@ export class DomovoiDaemon {
             } finally {
               connection.close()
             }
-          }, this.#sessionTransferTimeoutMs, "Transfer resume timed out")
+          }, this.#sessionTransferTimeoutMs, "Transfer resume timed out", parentSignal)
           if (resumed.state === "committed") {
             await this.#completeVersionedSourceTransfer(
               frozen.id,
@@ -1895,17 +1910,25 @@ export class DomovoiDaemon {
   #scheduleSessionTransferRecovery(): void {
     for (const session of this.#snapshot.sessions) {
       if (session.state !== "transferring" || session.transfer?.phase !== "transferring") continue
+      if (this.#transferRecoveries.has(session.id)) continue
+      this.#transferRecoveries.add(session.id)
       void this.#mutations.enqueue(
         `session:${session.id}`,
-        () => this.#recoverSessionTransfer(session.id),
+        (signal) => this.#recoverSessionTransfer(session.id, signal),
       ).catch((error) => this.#reportError(
         `Domovoi could not schedule transfer recovery ${session.transfer!.transferId}`,
         error,
-      ))
+      )).finally(() => {
+        this.#transferRecoveries.delete(session.id)
+        this.#armTransferReconciliation()
+      })
     }
   }
 
-  async #checkRecoveredSourceOwnership(sessionId: string): Promise<void> {
+  async #checkRecoveredSourceOwnership(
+    sessionId: string,
+    parentSignal?: AbortSignal,
+  ): Promise<void> {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     const recovery = session?.sourceRecovery
     if (!session || !recovery || sessionIsReadOnly(session)) return
@@ -1927,7 +1950,7 @@ export class DomovoiDaemon {
           connection.close()
         }
       }, Math.min(this.#sessionTransferTimeoutMs, this.#agentTimeoutMs),
-      "Recovered ownership check timed out")
+      "Recovered ownership check timed out", parentSignal)
     } catch {
       return
     }
@@ -1999,12 +2022,30 @@ export class DomovoiDaemon {
       this.#ownershipChecks.add(session.id)
       void this.#mutations.enqueue(
         `session:${session.id}`,
-        () => this.#checkRecoveredSourceOwnership(session.id),
+        (signal) => this.#checkRecoveredSourceOwnership(session.id, signal),
       ).catch((error) => this.#reportError(
         `Domovoi could not schedule recovered ownership check ${session.id}`,
         error,
-      )).finally(() => this.#ownershipChecks.delete(session.id))
+      )).finally(() => {
+        this.#ownershipChecks.delete(session.id)
+        this.#armTransferReconciliation()
+      })
     }
+  }
+
+  #armTransferReconciliation(): void {
+    if (this.#stopping || this.#stopped || this.#transferReconciliationTimer) return
+    const pending = this.#snapshot.sessions.some((session) => (
+      (session.state === "transferring" && session.transfer?.phase === "transferring")
+      || (session.sourceRecovery !== undefined && !sessionIsReadOnly(session))
+    ))
+    if (!pending) return
+    this.#transferReconciliationTimer = setTimeout(() => {
+      this.#transferReconciliationTimer = undefined
+      this.#scheduleSessionTransferRecovery()
+      this.#scheduleRecoveredOwnershipChecks()
+    }, this.#sessionTransferRetryMs)
+    this.#transferReconciliationTimer.unref?.()
   }
 
   async #sendVersionedSessionTransfer(
@@ -5738,6 +5779,10 @@ export class DomovoiDaemon {
       })
 
       if (changed) this.#broadcastNotification("workspace.changed", clientSnapshot)
+      if (method === "project.open") {
+        this.#scheduleSessionTransferRecovery()
+        this.#scheduleRecoveredOwnershipChecks()
+      }
     } catch (error) {
       if (signal?.aborted) {
         this.#error(socket, request.id, internalError, "Operation cancelled by emergency stop")
@@ -6518,8 +6563,12 @@ export class DomovoiDaemon {
     operation: (signal: AbortSignal) => Promise<T>,
     timeoutMs: number,
     message: string,
+    parentSignal?: AbortSignal,
   ): Promise<T> {
-    return withAbortTimeout(operation, timeoutMs, message, this.#workspaceAbort.signal)
+    const signal = parentSignal
+      ? AbortSignal.any([this.#workspaceAbort.signal, parentSignal])
+      : this.#workspaceAbort.signal
+    return withAbortTimeout(operation, timeoutMs, message, signal)
   }
 
   #emergencyFailureMessage(error: unknown, fallback: string): string {
