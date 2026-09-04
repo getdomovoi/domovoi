@@ -1692,6 +1692,10 @@ describe("DomovoiClient session transfer and devices", () => {
         outcome: "succeeded",
         workspacePath: "/worktrees/session-billing",
         checkpointCommit: "c".repeat(40),
+        contractVersion: 1,
+        transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ownershipGeneration: 2,
+        coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
       },
     })
 
@@ -1699,6 +1703,10 @@ describe("DomovoiClient session transfer and devices", () => {
       outcome: "succeeded",
       workspacePath: "/worktrees/session-billing",
       checkpointCommit: "c".repeat(40),
+      contractVersion: 1,
+      transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ownershipGeneration: 2,
+      coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     })
     expect(sent.method).toBe("session.transfer")
     expect(sent.params).toEqual({

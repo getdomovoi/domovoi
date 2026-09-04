@@ -48,6 +48,10 @@ const succeeded: SessionTransferResult = {
   outcome: "succeeded",
   workspacePath: "/worktrees/session-billing",
   checkpointCommit: "c".repeat(40),
+  contractVersion: 1,
+  transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  ownershipGeneration: 2,
+  coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
 }
 
 function renderDialog(overrides: {
@@ -215,7 +219,13 @@ it("states the reason the daemon refused rather than a generic failure", async (
 
 it("keeps the session where it is when the move fails", async () => {
   const { user, onTransferred } = renderDialog({
-    onTransfer: () => Promise.resolve({ outcome: "failed" }),
+    onTransfer: () => Promise.resolve({
+      outcome: "incomplete" as const,
+      transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      state: "failed" as const,
+      reason: "persistence-failed" as const,
+      recoveryAction: "retry" as const,
+    }),
   })
 
   await user.click(screen.getByRole("button", { name: "Move session" }))

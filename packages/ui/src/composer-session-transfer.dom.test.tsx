@@ -97,6 +97,10 @@ async function openTransferDialog(result: SessionTransferResult) {
 it("opens the transfer dialog from the composer device menu", async () => {
   await openTransferDialog({
     outcome: "succeeded",
+    contractVersion: 1,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     workspacePath: "/worktrees/session",
     checkpointCommit: "c".repeat(40),
   })
@@ -107,6 +111,10 @@ it("opens the transfer dialog from the composer device menu", async () => {
 it("moves the session and switches to the target machine", async () => {
   const { user, snapshot, studio, onTransferSession, onSelectMachine } = await openTransferDialog({
     outcome: "succeeded",
+    contractVersion: 1,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     workspacePath: "/worktrees/session",
     checkpointCommit: "c".repeat(40),
   })
@@ -126,6 +134,10 @@ it("moves the session and switches to the target machine", async () => {
 it("records the move in the thread as a receipt", async () => {
   const { user } = await openTransferDialog({
     outcome: "succeeded",
+    contractVersion: 1,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
     workspacePath: "/worktrees/session",
     checkpointCommit: "c".repeat(40),
   })
@@ -153,7 +165,13 @@ it("records a refusal with the reason the daemon gave", async () => {
 })
 
 it("records a failed move without inventing a reason", async () => {
-  const { user, snapshot, onSelectMachine } = await openTransferDialog({ outcome: "failed" })
+  const { user, snapshot, onSelectMachine } = await openTransferDialog({
+    outcome: "incomplete",
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    state: "failed",
+    reason: "persistence-failed",
+    recoveryAction: "retry",
+  })
 
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
