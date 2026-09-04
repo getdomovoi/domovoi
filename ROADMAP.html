@@ -631,7 +631,13 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract lives in the repository rather than only in the project
+<li>[x] Vendor the Claude Design system contract so it lives in the repository
+<ul>
+<li><code>design/design_system_domovoi/</code> holds the tokens and now <code>readme.md</code>, the system's own contract: content rules, the colour and type contract, the fixed chrome values, motion, interaction states, iconography, and the component inventory. <code>DESIGN.md</code> points at it.
+</li>
+<li>Specimen cards and per-component prompts stay in the project deliberately. They are static mirrors of components this repository does not implement, so vendoring them would add files nothing checks against and the recorded revision would then police drift in copies nobody reads. Read a component's <code>.prompt.md</code> from the project when implementing that component.
+</li>
+</ul>
 </li>
 <li>[x] Port the live terminal-pane restyle from the current design revision
 <ul>

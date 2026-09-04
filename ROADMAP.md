@@ -334,8 +334,14 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - Sizes live as tokens in `packages/ui/src/styles.css` with a test comparing them against the
     table in `DESIGN.md`, so drift fails in both directions. Claude Design settled the desktop
     chrome as a 38px titlebar and a permanent 62px rail, with no horizontal 62px header.
-- [ ] Vendor the Claude Design system tokens, specimen cards, and component prompts so the contract
-  lives in the repository rather than only in the project
+- [x] Vendor the Claude Design system contract so it lives in the repository
+  - `design/design_system_domovoi/` holds the tokens and now `readme.md`, the system's own
+    contract: content rules, the colour and type contract, the fixed chrome values, motion,
+    interaction states, iconography, and the component inventory. `DESIGN.md` points at it.
+  - Specimen cards and per-component prompts stay in the project deliberately. They are static
+    mirrors of components this repository does not implement, so vendoring them would add files
+    nothing checks against and the recorded revision would then police drift in copies nobody
+    reads. Read a component's `.prompt.md` from the project when implementing that component.
 - [x] Port the live terminal-pane restyle from the current design revision
   - The chrome moved to the sidebar surface and line spacing opened to 1.85. The revision's
     per-line treatment, a prompt span and a left-border highlight for command, pass, and fail rows,
