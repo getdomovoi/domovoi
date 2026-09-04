@@ -47,7 +47,9 @@ export function SessionsScreen({
   onPauseAll,
 }: {
   snapshot: WorkspaceSnapshot
-  machineCount: number
+  // Unknown until the fleet has been asked, and a phone claiming one machine
+  // because it has only counted the one it is talking to is a lie on screen.
+  machineCount: number | undefined
   onOpenSession: (sessionId: string) => void
   onPauseAll: () => void
 }) {
@@ -61,7 +63,9 @@ export function SessionsScreen({
         <View className="gap-1">
           <Text variant="heading">Sessions</Text>
           <Text variant="meta">
-            {machineCount} machine{machineCount === 1 ? "" : "s"} · {running} running
+            {machineCount === undefined
+              ? `${running} running`
+              : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${running} running`}
           </Text>
         </View>
         <Button title="Pause all" onPress={onPauseAll} />

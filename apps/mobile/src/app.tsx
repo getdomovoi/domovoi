@@ -171,7 +171,7 @@ export function App() {
             snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
-                machineCount={1}
+                machineCount={fleet?.length}
                 onOpenSession={setOpenSessionId}
                 onPauseAll={() => setConfirmPause(true)}
               />
