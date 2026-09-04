@@ -51,18 +51,30 @@ function targetWorkspace(): WorkspaceSnapshot {
 
 describe("target transfer preflight", () => {
   const params = {
+    contractVersion: 1 as const,
     sessionId: "session-1",
     sourceMachineId,
     sourceProjectId: "project-source",
     lineageCommit: baseCommit,
     ownershipGeneration: 2,
+    method: "git-bundle" as const,
+    coverage: { included: [], excluded: [], warnings: [] },
     client: "desktop" as const,
+  }
+
+  const capabilities = {
+    verifyLineage: true,
+    restoreGitBundle: true,
+    restoreGitRef: true,
+    importArtifactSources: true,
+    importUsage: true,
+    persistOwnership: true,
   }
 
   it("requires the open target project to share the source lineage", async () => {
     const workspace = targetWorkspace()
     const projectHasLineage = vi.fn(async () => true)
-    await expect(preflightSessionTransferTarget(workspace, params, projectHasLineage))
+    await expect(preflightSessionTransferTarget(workspace, params, projectHasLineage, capabilities))
       .resolves.toEqual({
         allowed: true,
         targetProjectId: "project-target",
@@ -71,10 +83,10 @@ describe("target transfer preflight", () => {
     expect(projectHasLineage).toHaveBeenCalledWith("/target/project", baseCommit)
 
     projectHasLineage.mockResolvedValue(false)
-    await expect(preflightSessionTransferTarget(workspace, params, projectHasLineage))
+    await expect(preflightSessionTransferTarget(workspace, params, projectHasLineage, capabilities))
       .resolves.toEqual({ allowed: false, reason: "target-project-mismatch" })
     workspace.project = null
-    await expect(preflightSessionTransferTarget(workspace, params, projectHasLineage))
+    await expect(preflightSessionTransferTarget(workspace, params, projectHasLineage, capabilities))
       .resolves.toEqual({ allowed: false, reason: "target-project-missing" })
   })
 
@@ -86,11 +98,48 @@ describe("target transfer preflight", () => {
       projectId: "project-target",
       ownershipGeneration: 3,
     })
-    await expect(preflightSessionTransferTarget(workspace, params, async () => true))
+    await expect(preflightSessionTransferTarget(workspace, params, async () => true, capabilities))
       .resolves.toEqual({ allowed: false, reason: "target-session-newer" })
     workspace.sessions[0]!.ownershipGeneration = 1
-    await expect(preflightSessionTransferTarget(workspace, params, async () => true))
+    await expect(preflightSessionTransferTarget(workspace, params, async () => true, capabilities))
       .resolves.toEqual({ allowed: false, reason: "target-session-diverged" })
+  })
+
+  it("refuses before transfer when the target cannot commit the declared payload", async () => {
+    const workspace = targetWorkspace()
+    const cases = [
+      ["verifyLineage", "target-lineage-check-unavailable"],
+      ["restoreGitBundle", "target-bundle-restore-unavailable"],
+      ["importUsage", "target-usage-import-unavailable"],
+      ["persistOwnership", "target-state-persistence-unavailable"],
+    ] as const
+    for (const [capability, reason] of cases) {
+      await expect(preflightSessionTransferTarget(
+        workspace,
+        params,
+        async () => true,
+        { ...capabilities, [capability]: false },
+      )).resolves.toEqual({ allowed: false, reason })
+    }
+    await expect(preflightSessionTransferTarget(
+      workspace,
+      { ...params, method: "remote-ref" },
+      async () => true,
+      { ...capabilities, restoreGitRef: false },
+    )).resolves.toEqual({ allowed: false, reason: "target-ref-restore-unavailable" })
+    await expect(preflightSessionTransferTarget(
+      workspace,
+      {
+        ...params,
+        coverage: {
+          included: [{ kind: "artifact-sources", count: 1 }],
+          excluded: [],
+          warnings: [],
+        },
+      },
+      async () => true,
+      { ...capabilities, importArtifactSources: false },
+    )).resolves.toEqual({ allowed: false, reason: "target-artifact-import-unavailable" })
   })
 })
 

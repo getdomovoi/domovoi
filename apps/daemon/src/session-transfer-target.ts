@@ -59,6 +59,15 @@ type TargetUsageLedger = {
   ): void
 }
 
+export type TargetTransferCapabilities = {
+  verifyLineage: boolean
+  restoreGitBundle: boolean
+  restoreGitRef: boolean
+  importArtifactSources: boolean
+  importUsage: boolean
+  persistOwnership: boolean
+}
+
 type TransferFailureReason = Extract<
   Awaited<ReturnType<FileTransferTransactions["status"]>>,
   { state: "failed" }
@@ -68,6 +77,7 @@ export async function preflightSessionTransferTarget(
   snapshot: WorkspaceSnapshot,
   rawParams: TransferTargetPreflightParams,
   projectHasLineage: (repositoryPath: string, lineageCommit: string) => Promise<boolean>,
+  capabilities: TargetTransferCapabilities,
 ): Promise<TransferTargetPreflightResult> {
   const params = transferTargetPreflightParamsSchema.parse(rawParams)
   const existing = snapshot.sessions.find((session) => session.id === params.sessionId)
@@ -83,6 +93,45 @@ export async function preflightSessionTransferTarget(
     return transferTargetPreflightResultSchema.parse({
       allowed: false,
       reason: "target-project-missing",
+    })
+  }
+  if (!capabilities.verifyLineage) {
+    return transferTargetPreflightResultSchema.parse({
+      allowed: false,
+      reason: "target-lineage-check-unavailable",
+    })
+  }
+  if (params.method === "git-bundle" && !capabilities.restoreGitBundle) {
+    return transferTargetPreflightResultSchema.parse({
+      allowed: false,
+      reason: "target-bundle-restore-unavailable",
+    })
+  }
+  if (params.method === "remote-ref" && !capabilities.restoreGitRef) {
+    return transferTargetPreflightResultSchema.parse({
+      allowed: false,
+      reason: "target-ref-restore-unavailable",
+    })
+  }
+  const carriesArtifactSources = params.coverage.included.some(
+    (entry) => entry.kind === "artifact-sources" && entry.count !== 0,
+  )
+  if (carriesArtifactSources && !capabilities.importArtifactSources) {
+    return transferTargetPreflightResultSchema.parse({
+      allowed: false,
+      reason: "target-artifact-import-unavailable",
+    })
+  }
+  if (!capabilities.importUsage) {
+    return transferTargetPreflightResultSchema.parse({
+      allowed: false,
+      reason: "target-usage-import-unavailable",
+    })
+  }
+  if (!capabilities.persistOwnership) {
+    return transferTargetPreflightResultSchema.parse({
+      allowed: false,
+      reason: "target-state-persistence-unavailable",
     })
   }
   if (!await projectHasLineage(snapshot.project.path, params.lineageCommit)) {

@@ -8,6 +8,7 @@ import WebSocket from "ws"
 import {
   demoWorkspace,
   workspaceSnapshotSchema,
+  type SessionTransferCoverage,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -1026,11 +1027,14 @@ describe("transactional session transfer RPC", () => {
     const packaged = await packagedTransfer()
 
     await expect(call("transfer.preflight", {
+      contractVersion: packaged.manifest.version,
       sessionId: packaged.manifest.sessionId,
       sourceMachineId,
       sourceProjectId: packaged.manifest.project.sourceProjectId,
       lineageCommit: baseCommit,
       ownershipGeneration: packaged.manifest.ownership.fromGeneration,
+      method: packaged.manifest.repository.method,
+      coverage: packaged.manifest.coverage,
       client: "desktop",
     })).resolves.toMatchObject({
       result: { allowed: true, targetProjectId: "project-target" },
@@ -1133,6 +1137,68 @@ describe("transactional session transfer RPC", () => {
     socket.close()
   })
 
+  it("refuses an unsupported target transport before accepting transfer bytes", async () => {
+    const snapshot = targetSnapshot()
+    const transactions = new FileTransferTransactions(":memory:")
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      transferTransactions: transactions,
+      workspaceService: {
+        inspect: async () => ({
+          root: "/target/project",
+          name: "project",
+          branch: "main",
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        projectHasLineage: async () => true,
+      },
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openMachine(daemon)
+    const call = rpc(socket)
+    const packaged = await packagedTransfer()
+    const preflight = {
+      contractVersion: packaged.manifest.version,
+      sessionId: packaged.manifest.sessionId,
+      sourceMachineId,
+      sourceProjectId: packaged.manifest.project.sourceProjectId,
+      lineageCommit: baseCommit,
+      ownershipGeneration: packaged.manifest.ownership.fromGeneration,
+      method: packaged.manifest.repository.method,
+      coverage: packaged.manifest.coverage,
+      client: "desktop",
+    }
+
+    await expect(call("transfer.preflight", preflight)).resolves.toMatchObject({
+      result: { allowed: false, reason: "target-bundle-restore-unavailable" },
+    })
+    await expect(call("transfer.prepare", {
+      manifest: packaged.manifest,
+      manifestDigest: packaged.manifestDigest,
+      client: "desktop",
+    })).resolves.toMatchObject({
+      result: {
+        state: "refused",
+        transferId: packaged.manifest.transferId,
+        reason: "target-bundle-restore-unavailable",
+      },
+    })
+    await expect(transactions.status(
+      packaged.manifest.transferId,
+      packaged.manifestDigest,
+    )).resolves.toEqual({ state: "unknown", transferId: packaged.manifest.transferId })
+    socket.close()
+  })
+
   it("previews the exact portable contract without freezing the source", async () => {
     const source = structuredClone(demoWorkspace)
     source.machine.id = sourceMachineId
@@ -1204,11 +1270,12 @@ describe("transactional session transfer RPC", () => {
     const socket = await openClient(daemon)
     const call = rpc(socket)
 
-    await expect(call("session.transferPreview", {
+    const previewResponse = await call("session.transferPreview", {
       sessionId: session.id,
       targetMachineId,
       client: "desktop",
-    })).resolves.toMatchObject({
+    })
+    expect(previewResponse).toMatchObject({
       result: {
         allowed: true,
         sessionId: session.id,
@@ -1223,14 +1290,21 @@ describe("transactional session transfer RPC", () => {
         },
       },
     })
+    const preview = previewResponse.result as {
+      contractVersion: 1
+      coverage: SessionTransferCoverage
+    }
     expect(remoteCalls).toEqual([{
       method: "transfer.preflight",
       params: {
+        contractVersion: preview.contractVersion,
         sessionId: session.id,
         sourceMachineId,
         sourceProjectId: source.project.id,
         lineageCommit: baseCommit,
         ownershipGeneration: 3,
+        method: "git-bundle",
+        coverage: preview.coverage,
         client: "desktop",
       },
     }])

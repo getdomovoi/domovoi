@@ -89,6 +89,7 @@ import {
 import {
   commitPreparedSessionTransfer,
   preflightSessionTransferTarget,
+  type TargetTransferCapabilities,
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
@@ -1466,6 +1467,18 @@ export class DomovoiDaemon {
     }
   }
 
+  #targetTransferCapabilities(): TargetTransferCapabilities {
+    return {
+      verifyLineage: this.#workspaceService.projectHasLineage !== undefined,
+      restoreGitBundle: this.#workspaceService.restoreSessionFromBundle !== undefined,
+      restoreGitRef: this.#workspaceService.restoreSessionFromRef !== undefined,
+      importArtifactSources: this.#workspaceService.writeTransferredArtifactSource !== undefined,
+      importUsage: this.#usageLedger.replaceTransferredSession !== undefined,
+      persistOwnership: this.#store.saveTransferredSnapshot !== undefined
+        && this.#store.transferOwnership !== undefined,
+    }
+  }
+
   async #prepareTransferPreview(
     params: RpcParams<"session.transferPreview">,
     signal?: AbortSignal,
@@ -1536,11 +1549,14 @@ export class DomovoiDaemon {
     try {
       const targetReady = rpcMethods["transfer.preflight"].result.parse(
         await connection.call("transfer.preflight", {
+          contractVersion: sessionTransferContractVersion,
           sessionId: session.id,
           sourceMachineId: this.#snapshot.machine.id,
           sourceProjectId: this.#snapshot.project.id,
           lineageCommit: projectHead,
           ownershipGeneration: session.ownershipGeneration ?? 0,
+          method: params.method,
+          coverage: collected.coverage,
           client: params.client,
         }, signal),
       )
@@ -3297,14 +3313,13 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
             return
           }
-          if (!this.#workspaceService.projectHasLineage) {
-            this.#error(socket, request.id, internalError, "This machine cannot verify project lineage")
-            return
-          }
           const result = await preflightSessionTransferTarget(
             this.#snapshot,
             params,
-            (path, commit) => this.#workspaceService.projectHasLineage!(path, commit, signal),
+            (path, commit) => this.#workspaceService.projectHasLineage
+              ? this.#workspaceService.projectHasLineage(path, commit, signal)
+              : Promise.resolve(false),
+            this.#targetTransferCapabilities(),
           )
           this.#send(socket, {
             jsonrpc: "2.0",
@@ -3351,18 +3366,19 @@ export class DomovoiDaemon {
             })
             return
           }
-          if (!this.#workspaceService.projectHasLineage) {
-            this.#error(socket, request.id, internalError, "This machine cannot verify project lineage")
-            return
-          }
           const ready = await preflightSessionTransferTarget(this.#snapshot, {
+            contractVersion: params.manifest.version,
             sessionId: params.manifest.sessionId,
             sourceMachineId: params.manifest.sourceMachineId,
             sourceProjectId: params.manifest.project.sourceProjectId,
             lineageCommit: params.manifest.project.lineageCommit,
             ownershipGeneration: params.manifest.ownership.fromGeneration,
+            method: params.manifest.repository.method,
+            coverage: params.manifest.coverage,
             client: params.client,
-          }, (path, commit) => this.#workspaceService.projectHasLineage!(path, commit, signal))
+          }, (path, commit) => this.#workspaceService.projectHasLineage
+            ? this.#workspaceService.projectHasLineage(path, commit, signal)
+            : Promise.resolve(false), this.#targetTransferCapabilities())
           const result = ready.allowed
             ? ready.targetProjectId === params.manifest.project.targetProjectId
               ? await this.#transferTransactions.prepare(params.manifest, params.manifestDigest)
