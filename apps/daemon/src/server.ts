@@ -247,6 +247,15 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "session.evidence",
   "audit.query",
 ])
+const machineRpcMethods = new Set<RpcMethod>([
+  "system.hello",
+  "transfer.preflight",
+  "transfer.prepare",
+  "transfer.member",
+  "transfer.commit",
+  "transfer.status",
+  "transfer.abort",
+])
 
 class RuntimeValidationError extends Error {}
 class TransferResponseIdentityError extends Error {}
@@ -2824,6 +2833,17 @@ export class DomovoiDaemon {
         id: request.id,
         error: { code: invalidRequest, message: "Request id is already in flight" },
       })
+      return
+    }
+
+    const authenticatedActor = this.#authenticatedActors.get(socket)
+    if (authenticatedActor?.kind === "machine" && !machineRpcMethods.has(method)) {
+      this.#error(
+        socket,
+        request.id,
+        daemonAuthenticationErrorCode,
+        "Machine connections may only use transfer RPCs",
+      )
       return
     }
 

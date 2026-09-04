@@ -251,7 +251,22 @@ describe("transactional session transfer RPC", () => {
     }
 
     const machineSocket = await openMachine(daemon, targetMachineId)
-    await expect(rpc(machineSocket)("session.transferPreview", request)).resolves.toMatchObject({
+    const machineCall = rpc(machineSocket)
+    for (const [method, params] of [
+      ["workspace.get", {}],
+      ["session.send", {
+        sessionId: source.sessions[0]!.id,
+        prompt: "run outside the transfer role",
+        client: "desktop",
+      }],
+      ["session.archive", { sessionId: source.sessions[0]!.id, client: "desktop" }],
+      ["system.emergencyStop", { client: "desktop" }],
+    ] as const) {
+      await expect(machineCall(method, params)).resolves.toMatchObject({
+        error: { code: -32001, message: "Machine connections may only use transfer RPCs" },
+      })
+    }
+    await expect(machineCall("session.transferPreview", request)).resolves.toMatchObject({
       error: { code: -32001 },
     })
     const webSocket = await openClient(daemon, undefined, "web")
@@ -270,7 +285,7 @@ describe("transactional session transfer RPC", () => {
       contractVersion: approved.contractVersion,
       intentDigest: approved.intentDigest,
     }
-    await expect(rpc(machineSocket)("session.transfer", transfer)).resolves.toMatchObject({
+    await expect(machineCall("session.transfer", transfer)).resolves.toMatchObject({
       error: { code: -32001 },
     })
     await expect(rpc(webSocket)("session.transfer", transfer)).resolves.toMatchObject({
