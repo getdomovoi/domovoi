@@ -13,6 +13,9 @@
     "directory": "apps/daemon"
   },
   "homepage": "https://domovoi.sh",
+  "bugs": {
+    "url": "https://github.com/getdomovoi/domovoi/issues"
+  },
   "bin": {
     "domovoid": "./dist/index.js"
   },

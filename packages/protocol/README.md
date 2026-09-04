@@ -2,19 +2,31 @@
 
 Typed schemas and shared types for the Domovoi daemon and clients.
 
+## Installation
+
+`@getdomovoi/protocol` is not yet on a package registry, so there is no version to install from
+npm. The package itself is ready to be published: `pnpm test:packages` checks what the tarball
+contains, and `pnpm test:install` installs that tarball into a scratch project outside the
+workspace and imports it with npm, pnpm, and Bun, then type checks a consumer under the
+`nodenext`, `bundler`, and `node10` module resolutions.
+
+After the first release the install is the ordinary one:
+
+```bash
+npm install @getdomovoi/protocol
+```
+
+The package is ESM with bundled type declarations. Node 22 or newer is required. On Node versions
+that support `require` of an ES module the package also loads from CommonJS.
+
 ## Workspace use
 
-`@getdomovoi/protocol` is not currently published to a package registry. Until the first release,
-use it from this repository's pnpm workspace. Other workspace packages depend on it with
-`workspace:*`.
+Other packages in this repository depend on it with `workspace:*` and consume the build output.
 
 ```bash
 pnpm install
 pnpm --filter @getdomovoi/protocol build
 ```
-
-The package is standard ESM, but npm, pnpm, and Bun registry installation will only be supported
-after publication.
 
 ## Usage
 

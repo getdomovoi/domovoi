@@ -2,6 +2,7 @@
   "name": "@getdomovoi/protocol",
   "version": "0.0.1",
   "description": "Typed wire protocol shared by Domovoi daemons and clients.",
+  "keywords": ["domovoi", "protocol", "json-rpc", "schema", "zod"],
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -13,15 +14,24 @@
     "directory": "packages/protocol"
   },
   "homepage": "https://domovoi.sh",
+  "bugs": {
+    "url": "https://github.com/getdomovoi/domovoi/issues"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": ["dist"],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

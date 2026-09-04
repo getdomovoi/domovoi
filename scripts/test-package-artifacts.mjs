@@ -5,6 +5,9 @@ import { join } from "node:path"
 
 import { inspectArchive, packPackage } from "./pack-package.mjs"
 
+const unresolvedSpecifier = /^(workspace|catalog|link|file|portal):/
+const dependencyFields = ["dependencies", "peerDependencies", "optionalDependencies"]
+
 async function packedPackage(selector) {
   const destination = mkdtempSync(join(tmpdir(), "domovoi pack-"))
 
@@ -15,10 +18,35 @@ async function packedPackage(selector) {
   }
 }
 
+function entryPaths(manifest) {
+  const paths = new Set()
+  const collect = (value) => {
+    if (typeof value === "string") {
+      if (value.startsWith("./")) paths.add(value.slice(2))
+      return
+    }
+    if (value && typeof value === "object") for (const nested of Object.values(value)) collect(nested)
+  }
+
+  for (const field of ["exports", "bin", "main", "types"]) collect(manifest[field])
+  return [...paths]
+}
+
+function unresolvedDependencies(manifest) {
+  const unresolved = []
+  for (const field of dependencyFields) {
+    for (const [name, range] of Object.entries(manifest[field] ?? {})) {
+      if (unresolvedSpecifier.test(range)) unresolved.push(`${field}.${name} is ${range}`)
+    }
+  }
+  return unresolved
+}
+
 const contracts = [
   {
     selector: "@getdomovoi/protocol",
     requiredFiles: ["README.md", "LICENSE", "package.json", "dist/index.js", "dist/index.d.ts"],
+    exports: [".", "./package.json"],
   },
   {
     selector: "@getdomovoi/daemon",
@@ -44,13 +72,27 @@ for (const contract of contracts) {
   assert.equal(manifest.publishConfig?.access, "public")
   assert.equal(manifest.homepage, "https://domovoi.sh")
   assert.equal(manifest.engines?.node, ">=22")
+  assert.ok(manifest.description, `${contract.selector} must describe itself for the registry`)
+  assert.ok(manifest.bugs?.url, `${contract.selector} must say where to report bugs`)
+  assert.ok(
+    manifest.repository?.url?.startsWith("git+https://"),
+    `${contract.selector} must carry a resolvable repository url`,
+  )
 
-  if (contract.exports) {
-    assert.deepEqual(
-      Object.keys(manifest.exports ?? {}),
-      contract.exports,
-      `${contract.selector} must publish exactly these entry points`,
-    )
+  assert.deepEqual(
+    unresolvedDependencies(manifest),
+    [],
+    `${contract.selector} must not publish workspace-only dependency ranges`,
+  )
+
+  assert.deepEqual(
+    Object.keys(manifest.exports ?? {}),
+    contract.exports,
+    `${contract.selector} must publish exactly these entry points`,
+  )
+
+  for (const entry of entryPaths(manifest)) {
+    assert.ok(files.has(entry), `${contract.selector} names ${entry} but does not pack it`)
   }
 
   for (const requiredFile of contract.requiredFiles) {
@@ -59,6 +101,7 @@ for (const contract of contracts) {
 
   for (const file of files) {
     assert.doesNotMatch(file, /(^|\/)(src|test|tests)(\/|$)/, `${contract.selector} leaked ${file}`)
+    assert.doesNotMatch(file, /\.map$/, `${contract.selector} leaked the source map ${file}`)
   }
 }
 
