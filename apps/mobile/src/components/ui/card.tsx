@@ -2,7 +2,7 @@ import { Pressable, View, type PressableProps, type ViewProps } from "react-nati
 
 import { cn } from "../../lib/cn"
 
-const base = "rounded-lg border border-border bg-card p-3.5"
+const base = "rounded-2xl border border-border bg-card p-3.5"
 
 export function Card({ className, ...props }: ViewProps) {
   return <View className={cn(base, className)} {...props} />

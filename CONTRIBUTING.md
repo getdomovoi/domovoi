@@ -115,11 +115,18 @@ Every workspace package shares one version and is released as one compatibility 
 release intent of a change with `pnpm changeset` and commit the generated file alongside the
 change. `pnpm release:status` lists changed packages that still lack metadata, and
 `pnpm release:invariants` fails when package versions drift apart, a workflow references an
-action by a mutable tag, or `ROADMAP.html` is stale relative to `ROADMAP.md`.
+action by a mutable tag, `ROADMAP.html` is stale relative to `ROADMAP.md`, or the phone's
+generated design tokens are stale relative to `packages/ui/src/styles.css`.
 
 `ROADMAP.md` is the reviewed roadmap source. `ROADMAP.html` is generated from it by
 `scripts/roadmap-html.mjs`; run `pnpm roadmap:html` after editing the Markdown and commit both
 files together.
+
+`apps/mobile/src/theme/tokens.generated.js` and its `.d.ts` are generated from
+`packages/ui/src/styles.css` by `scripts/mobile-tokens.mjs`: the oklch colours as sRGB hex,
+the radius steps derived from `--radius`, and one registered font name per weight. React Native
+reads none of those from CSS, so the phone has no copy of its own. Run `pnpm mobile:tokens`
+after editing the stylesheet and commit the generated files with it.
 
 Documentation-only and repository-tooling changes do not need a changeset. See
 [docs/distribution.md](docs/distribution.md) for the release model.
