@@ -169,8 +169,10 @@ describe("session transfer refusal messages", () => {
       ...transferRefusalSchema.options,
       ...sourceRefusalSchema.options,
       ...transferStreamRefusalSchema.options,
-      "session-approval-pending" as const,
-      "target-project-mismatch" as const,
+      // Listed by hand, this missed session-resource-unavailable when the
+      // contract gained it. The schema is the authority on what can be
+      // refused, so a new key is covered the moment it is added.
+      ...sessionTransferContractRefusalSchema.options,
     ]
     for (const reason of reasons) {
       expect(sessionTransferRefusalMessage(reason).length).toBeGreaterThan(0)
