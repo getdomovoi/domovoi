@@ -154,6 +154,16 @@ export class FileTransferTransactions {
   async acceptMember(rawParams: TransferMemberParams): Promise<TransferMemberResult> {
     const params = transferMemberParamsSchema.parse(rawParams)
     const stored = await this.#stored(params.transferId)
+    const current = await this.#status(params.transferId)
+    if (current.state === "aborted" || current.state === "committed") {
+      return this.#memberRefusal(params, "session-state-changed")
+    }
+    if (current.state === "recovering" || current.state === "failed") {
+      return this.#memberRefusal(params, "session-resource-unavailable")
+    }
+    if (current.state === "prepared") {
+      return transferMemberResultSchema.parse({ state: "prepared", transferId: params.transferId })
+    }
     await this.#touch(params.transferId)
     const descriptor = stored.manifest.members.find(
       (member) => member.memberId === params.memberId,
@@ -332,6 +342,7 @@ export class FileTransferTransactions {
     stage: TransferRecoveryStage,
   ): Promise<void> {
     await this.manifest(transferId, manifestDigest)
+    await this.#assertNotTerminal(transferId)
     await this.#writeStatus(transferId, { state: "recovering", transferId, stage })
   }
 
@@ -341,6 +352,7 @@ export class FileTransferTransactions {
     reason: TransferFailureReason,
   ): Promise<void> {
     await this.manifest(transferId, manifestDigest)
+    await this.#assertNotTerminal(transferId)
     await this.#writeStatus(transferId, { state: "failed", transferId, reason })
   }
 
@@ -440,6 +452,13 @@ export class FileTransferTransactions {
     return transferStatusResultSchema.parse(
       JSON.parse(await readFile(join(this.#path(transferId), statusFile), "utf8")),
     )
+  }
+
+  async #assertNotTerminal(transferId: string): Promise<void> {
+    const current = await this.#status(transferId)
+    if (current.state === "committed" || current.state === "aborted") {
+      throw new Error(`Transfer transaction is ${current.state}`)
+    }
   }
 
   async #writeStatus(transferId: string, status: TransferStatusResult): Promise<void> {
@@ -593,7 +612,7 @@ export class FileTransferTransactions {
 
   #memberRefusal(
     params: Pick<TransferMemberParams, "transferId">,
-    reason: "chunk-out-of-order" | "transfer-too-large" | "digest-mismatch",
+    reason: Extract<TransferMemberResult, { state: "refused" }>["reason"],
   ): TransferMemberResult {
     return transferMemberResultSchema.parse({
       state: "refused",

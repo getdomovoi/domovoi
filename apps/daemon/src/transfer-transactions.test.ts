@@ -227,6 +227,31 @@ describe("file transfer transaction journal", () => {
       .rejects.toThrow("Transfer member is incomplete")
   })
 
+  it("does not resurrect an aborted transaction through a late member", async () => {
+    const { transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const manifest = manifestFor(stateBytes, Buffer.from("repository"))
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    await expect(transactions.abort(transferId, manifestDigest))
+      .resolves.toEqual({ state: "aborted", transferId })
+
+    await expect(transactions.acceptMember({
+      transferId,
+      memberId: "state",
+      sequence: 0,
+      bytes: stateBytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })).resolves.toEqual({
+      state: "refused",
+      transferId,
+      reason: "session-state-changed",
+    })
+    await expect(transactions.status(transferId, manifestDigest))
+      .resolves.toEqual({ state: "aborted", transferId })
+  })
+
   it("records recovery and commit before an acknowledgement can be lost", async () => {
     const { root, transactions } = await journal()
     const manifest = manifestFor(Buffer.from("state"), Buffer.from("repository"))
@@ -245,6 +270,11 @@ describe("file transfer transaction journal", () => {
     }
     await transactions.markCommitted(transferId, manifestDigest, committed)
     const reopened = new FileTransferTransactions(root)
+    await expect(reopened.status(transferId, manifestDigest)).resolves.toEqual(committed)
+    await expect(reopened.markRecovering(transferId, manifestDigest, "resources"))
+      .rejects.toThrow("committed")
+    await expect(reopened.markFailed(transferId, manifestDigest, "resource-import-failed"))
+      .rejects.toThrow("committed")
     await expect(reopened.status(transferId, manifestDigest)).resolves.toEqual(committed)
     await expect(reopened.abort(transferId, manifestDigest)).resolves.toEqual(committed)
   })
