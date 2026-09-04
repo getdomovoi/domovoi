@@ -1,7 +1,7 @@
 import type { SkillEnablementReview, SkillSummary } from "@getdomovoi/protocol"
 import { expect, it } from "vitest"
 
-import { selectableTurnSkills, turnSkillSelectionFor } from "./turn-skill-selection.js"
+import { selectableTurnSkills, turnSkillRefusalFrom, turnSkillSelectionFor } from "./turn-skill-selection.js"
 
 const digest = (character: string) => `sha256:${character.repeat(64)}` as const
 const manifest = { version: 1 as const, capabilities: ["filesystem.read" as const] }
@@ -69,4 +69,22 @@ it("drops a chosen skill the catalog no longer offers rather than inventing a re
     mode: "turn-explicit",
     skills: [{ skillId: alpha.id, review: { contentDigest: alpha.contentDigest, manifest } }],
   })
+})
+
+it("reads a refusal out of a failed send and ignores anything else", () => {
+  const refused = Object.assign(new Error("Selected skill changed"), {
+    data: {
+      kind: "turn-skill-selection-refused",
+      skillId: alpha.id,
+      reason: "review-changed",
+    },
+  })
+
+  expect(turnSkillRefusalFrom(refused)).toEqual({
+    kind: "turn-skill-selection-refused",
+    skillId: alpha.id,
+    reason: "review-changed",
+  })
+  expect(turnSkillRefusalFrom(new Error("Daemon connection is not open"))).toBeUndefined()
+  expect(turnSkillRefusalFrom(undefined)).toBeUndefined()
 })

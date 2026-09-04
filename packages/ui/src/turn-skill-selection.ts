@@ -1,7 +1,9 @@
-import type {
-  SkillEnablementReview,
-  SkillSummary,
-  TurnSkillSelection,
+import {
+  turnSkillSelectionRefusalSchema,
+  type SkillEnablementReview,
+  type SkillSummary,
+  type TurnSkillSelection,
+  type TurnSkillSelectionRefusal,
 } from "@getdomovoi/protocol"
 
 export type SelectableTurnSkill = Pick<SkillSummary, "id" | "name" | "contentDigest" | "manifest">
@@ -50,4 +52,15 @@ export function turnSkillSelectionFor(
         review: { contentDigest: skill.contentDigest, manifest: skill.manifest },
       })),
   }
+}
+
+/**
+ * A refused send carries the skill and the reason as RPC error data. Anything
+ * else is an ordinary failure, so the chip marks nothing rather than guessing.
+ */
+export function turnSkillRefusalFrom(cause: unknown): TurnSkillSelectionRefusal | undefined {
+  if (typeof cause !== "object" || cause === null) return undefined
+  const data = (cause as { data?: unknown }).data
+  const parsed = turnSkillSelectionRefusalSchema.safeParse(data)
+  return parsed.success ? parsed.data : undefined
 }
