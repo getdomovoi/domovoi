@@ -11,6 +11,7 @@ import {
   collectAuditExport,
   downloadAuditExport,
 } from "./audit-log-view"
+import { Deadline } from "./deadline"
 
 const entry: AuditEntry = {
   id: "audit-111111111111",
@@ -120,18 +121,24 @@ describe("audit log view", () => {
         hasMore: false,
       })
 
-    const exported = await collectAuditExport(onExport, { query: "session" }, {
-      signal: new AbortController().signal,
-      deadlineAt: Date.now() + 30_000,
-    })
+    vi.useFakeTimers()
+    try {
+      const exported = await collectAuditExport(onExport, { query: "session" }, {
+        signal: new AbortController().signal,
+        budgetMs: 30_000,
+      })
 
-    expect(onExport).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ before: entry.id, limit: 500 }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    )
-    expect(exported.entryCount).toBe(2)
-    expect(exported.content.trimEnd().split("\n")).toHaveLength(2)
+      expect(onExport).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ before: entry.id, limit: 500 }),
+        expect.objectContaining({ signal: expect.any(AbortSignal), deadline: expect.any(Deadline) }),
+      )
+      expect(exported.entryCount).toBe(2)
+      expect(exported.content.trimEnd().split("\n")).toHaveLength(2)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("fails an unstable paginated export instead of producing a partial file", async () => {
@@ -144,9 +151,15 @@ describe("audit log view", () => {
       nextCursor: entry.id,
     }))
 
-    await expect(collectAuditExport(onExport, {}, {
-      signal: new AbortController().signal,
-      deadlineAt: Date.now() + 30_000,
-    })).rejects.toThrow("repeated a continuation cursor")
+    vi.useFakeTimers()
+    try {
+      await expect(collectAuditExport(onExport, {}, {
+        signal: new AbortController().signal,
+        budgetMs: 30_000,
+      })).rejects.toThrow("repeated a continuation cursor")
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
