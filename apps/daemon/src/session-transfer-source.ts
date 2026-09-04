@@ -512,7 +512,7 @@ async function stageMember(
       sequence: 0,
       bytes: "",
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     if (result.state === "refused") throw new Error(`Transfer journal refused ${result.reason}`)
     return
@@ -527,7 +527,7 @@ async function stageMember(
       sequence,
       bytes: chunk.toString("base64"),
       final,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
     if (result.state === "refused") throw new Error(`Transfer journal refused ${result.reason}`)
     sequence += 1
@@ -567,7 +567,7 @@ async function sendMember(input: {
   manifest: SessionTransferManifest
   manifestDigest: string
   memberId: string
-  client: ClientKind
+  initiatedByClient: ClientKind
   call: (method: string, params: Record<string, unknown>) => Promise<unknown>
 }): Promise<TransferMemberResult> {
   const bytes = await input.transactions.readMember(
@@ -593,7 +593,7 @@ async function sendMember(input: {
       sequence,
       bytes: chunk.toString("base64"),
       final: sequence === chunks.length - 1,
-      client: input.client,
+      initiatedByClient: input.initiatedByClient,
       }),
     ))
     if (result.state === "refused") return result
@@ -614,7 +614,7 @@ export async function sendPreparedSessionTransfer(input: {
   transactions: FileTransferTransactions
   transferId: string
   manifestDigest: string
-  client: ClientKind
+  initiatedByClient: ClientKind
   call: (method: string, params: Record<string, unknown>) => Promise<unknown>
 }): Promise<RemoteTransferResult> {
   let status: TransferStatusResult
@@ -624,7 +624,7 @@ export async function sendPreparedSessionTransfer(input: {
       transferStatusResultSchema.parse(await input.call("transfer.status", {
         transferId: input.transferId,
         manifestDigest: input.manifestDigest,
-        client: input.client,
+        initiatedByClient: input.initiatedByClient,
       })),
     )
   } catch {
@@ -643,7 +643,7 @@ export async function sendPreparedSessionTransfer(input: {
     transferPrepareResultSchema.parse(await input.call("transfer.prepare", {
       manifest,
       manifestDigest: input.manifestDigest,
-      client: input.client,
+      initiatedByClient: input.initiatedByClient,
     })),
   )
   if (prepared.state === "committed" || prepared.state === "refused") return prepared
@@ -662,7 +662,7 @@ export async function sendPreparedSessionTransfer(input: {
     transferCommitResultSchema.parse(await input.call("transfer.commit", {
       transferId: input.transferId,
       manifestDigest: input.manifestDigest,
-      client: input.client,
+      initiatedByClient: input.initiatedByClient,
     })),
   )
 }

@@ -45,7 +45,11 @@ function deferLiveTurns(snapshot: typeof demoWorkspace): () => void {
   }
 }
 
-function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
+function authenticatedSocket(
+  daemon: DomovoiDaemon,
+  url: string,
+  client: "desktop" | "tablet" = "desktop",
+): WebSocket {
   const socket = new WebSocket(url, {
     headers: { authorization: `Bearer ${daemon.authToken}` },
   })
@@ -89,8 +93,8 @@ function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
           id: automaticHelloId,
           method: "system.hello",
           params: {
-            client: "desktop",
-            clientId: "desktop-terminal-test",
+            client,
+            clientId: `${client}-terminal-test`,
             clientVersion: "0.0.1",
             protocolVersion,
           },
@@ -107,8 +111,8 @@ function authenticatedSocket(daemon: DomovoiDaemon, url: string): WebSocket {
           id: automaticHelloId,
           method: "system.hello",
           params: {
-            client: "desktop",
-            clientId: "desktop-terminal-test",
+            client,
+            clientId: `${client}-terminal-test`,
             clientVersion: "0.0.1",
             protocolVersion,
           },
@@ -777,7 +781,7 @@ describe("terminal RPC", () => {
     })
     await vi.waitFor(() => expect(workspaceService.checkpoint).toHaveBeenCalledOnce())
 
-    const stopped = await rpc("system.emergencyStop", { client: "phone" })
+    const stopped = await rpc("system.emergencyStop", { client: "desktop" })
     await expect(emergencyNotification).resolves.toMatchObject({
       method: "system.emergencyStopped",
       params: {
@@ -1140,7 +1144,7 @@ describe("terminal RPC", () => {
     await expect(intruder.rpc("terminal.input", {
       terminalId: "terminal-owned",
       data: "rm -rf /\r",
-      client: "desktop",
+      client: "tablet",
       clientId: "desktop-owner",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Terminal is owned by another client" },
@@ -1151,7 +1155,7 @@ describe("terminal RPC", () => {
       terminalId: "terminal-owned",
       cols: 200,
       rows: 60,
-      client: "desktop",
+      client: "tablet",
       clientId: "desktop-owner",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Terminal is owned by another client" },
@@ -1160,7 +1164,7 @@ describe("terminal RPC", () => {
 
     await expect(intruder.rpc("terminal.close", {
       terminalId: "terminal-owned",
-      client: "desktop",
+      client: "tablet",
       clientId: "desktop-owner",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Terminal is owned by another client" },
@@ -1534,7 +1538,11 @@ describe("terminal RPC", () => {
       return response
     }
 
-    const tabletSocket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const tabletSocket = authenticatedSocket(
+      daemon,
+      `ws://${address.host}:${address.port}/rpc`,
+      "tablet",
+    )
     await new Promise<void>((resolve, reject) => {
       tabletSocket.once("open", resolve)
       tabletSocket.once("error", reject)

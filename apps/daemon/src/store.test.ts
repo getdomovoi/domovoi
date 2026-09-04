@@ -400,7 +400,10 @@ describe("SqliteWorkspaceStore", () => {
     scratchDirectories.push(scratch)
     const databasePath = join(scratch, "state.sqlite")
     const first = new SqliteWorkspaceStore(databasePath, demoWorkspace)
-    const paired = first.devices.pair({ label: "studio-ipad", binding: { kind: "client" } })
+    const paired = first.devices.pair({
+      label: "studio-ipad",
+      binding: { kind: "client", client: "phone" },
+    })
     first.close()
 
     const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)

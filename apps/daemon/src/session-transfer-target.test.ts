@@ -59,7 +59,7 @@ describe("target transfer preflight", () => {
     ownershipGeneration: 2,
     method: "git-bundle" as const,
     coverage: { included: [], excluded: [], warnings: [] },
-    client: "desktop" as const,
+    initiatedByClient: "desktop" as const,
   }
 
   const capabilities = {
@@ -218,7 +218,7 @@ async function preparedTransfer(options: { malformedState?: boolean } = {}) {
       sequence: 0,
       bytes: entry.bytes.toString("base64"),
       final: true,
-      client: "desktop",
+      initiatedByClient: "desktop",
     })
   }
   return { packaged, transactions, usage }
