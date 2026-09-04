@@ -738,7 +738,14 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!pathStaysInside(root, lexicalPath)) {
       throw new Error("Artifact path must stay inside the session worktree")
     }
-    const [metadata, canonicalPath] = await Promise.all([lstat(lexicalPath), realpath(lexicalPath)])
+    let metadata: Awaited<ReturnType<typeof lstat>>
+    let canonicalPath: string
+    try {
+      [metadata, canonicalPath] = await Promise.all([lstat(lexicalPath), realpath(lexicalPath)])
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+      throw error
+    }
     if (
       !metadata.isFile()
       || metadata.isSymbolicLink()
@@ -754,7 +761,13 @@ export class GitWorkspaceService implements WorkspaceService {
       if ((error as { code?: unknown }).code === 1) return undefined
       throw error
     }
-    const bytes = await readFile(canonicalPath)
+    let bytes: Buffer
+    try {
+      bytes = await readFile(canonicalPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+      throw error
+    }
     if (bytes.byteLength > maximumPreviewSourceBytes) {
       throw new Error("Artifact source is unavailable for transfer")
     }

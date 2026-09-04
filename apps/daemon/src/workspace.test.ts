@@ -767,6 +767,9 @@ describe("GitWorkspaceService transfer resources", () => {
       .resolves.toBeUndefined()
     await expect(service.readIgnoredArtifactSource(workspace.path, "../outside.html"))
       .rejects.toThrow("Artifact path must stay inside the session worktree")
+    await rm(join(workspace.path, "previews", "preview.html"))
+    await expect(service.readIgnoredArtifactSource(workspace.path, "previews/preview.html"))
+      .resolves.toBeUndefined()
 
     const target = await service.createSessionWorkspace(
       join(workspace.path, "..", "..", "project"),
