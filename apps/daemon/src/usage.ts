@@ -376,8 +376,12 @@ function turnUsageFromRow(value: unknown): TurnUsage {
     totalTokens: Number(row.total_tokens),
     costSource: row.cost_source as NormalizedUsage["costSource"],
     ...reportedContextOccupancy(row.context_tokens, row.context_window_tokens),
-    ...(typeof row.cost_micros === "number" ? { costMicros: row.cost_micros } : {}),
-    ...(typeof row.currency === "string" ? { currency: row.currency } : {}),
+    ...(row.cost_source === "provider-reported" && typeof row.cost_micros === "number"
+      ? { costMicros: row.cost_micros }
+      : {}),
+    ...(row.cost_source === "provider-reported" && typeof row.currency === "string"
+      ? { currency: row.currency }
+      : {}),
   }
   return {
     sessionId: String(row.session_id),

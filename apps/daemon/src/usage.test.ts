@@ -251,6 +251,53 @@ describe("provider usage telemetry", () => {
     target.close()
   })
 
+  it("drops stale cost fields from an unavailable row before transfer", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-stale-cost-"))
+    const path = join(directory, "state.sqlite")
+    try {
+      const ledger = new UsageLedger(path)
+      ledger.record({
+        sessionId: "session-1",
+        turnId: "turn-1",
+        provider: "claude-code",
+        model: "claude-opus-5",
+        usage: normalizeUsage({
+          inputTokens: 4,
+          cost: { amount: 0.01, currency: "USD" },
+        }),
+      })
+      ledger.close()
+      const database = new DatabaseSync(path)
+      database.prepare(`
+        UPDATE provider_usage SET cost_source = 'unavailable'
+        WHERE session_id = 'session-1' AND turn_id = 'turn-1'
+      `).run()
+      database.close()
+
+      const reopened = new UsageLedger(path)
+      expect(reopened.transferSession("session-1")).toEqual([{
+        turnId: "turn-1",
+        provider: "claude-code",
+        model: "claude-opus-5",
+        inputTokens: 4,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 4,
+        costSource: "unavailable",
+      }])
+      expect(reopened.session("session-1")).toMatchObject({
+        costMicros: 0,
+        reportedCostTurns: 0,
+        unavailableCostTurns: 1,
+      })
+      expect(reopened.session("session-1")).not.toHaveProperty("currency")
+      reopened.close()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it.skipIf(process.platform === "win32")("keeps usage telemetry readable only by the owner", async () => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-permissions-"))
     const path = join(directory, "usage.sqlite")
