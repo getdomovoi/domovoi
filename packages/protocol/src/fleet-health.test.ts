@@ -90,6 +90,8 @@ describe("fleetMachineHealth", () => {
       "unreachable",
       "version-mismatch",
       "upgrade-required",
+      "pairing-required",
+      "credential-store-unavailable",
     ])
   })
 

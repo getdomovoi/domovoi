@@ -26,6 +26,7 @@ const machine = {
   heartbeat: { state: "online" as const, lastSeenAt: "2026-08-31T12:00:00.000Z" },
   self: true,
 }
+const described = <T>(value: T) => ({ kind: "machine" as const, machine: value })
 
 describe("fleetMachineSchema", () => {
   it("accepts a described machine", () => {
@@ -63,6 +64,24 @@ describe("fleetMachineSchema", () => {
 })
 
 describe("fleet machine transports", () => {
+  it("preserves a source-verified route absent from target advertisements", () => {
+    const remote = {
+      ...machine,
+      self: false,
+      connection: "direct",
+      transports: [{
+        kind: "lan",
+        endpoint: "wss://192.168.1.20:47831/rpc",
+        authenticated: true,
+      }],
+      verifiedRoute: {
+        endpoint: "wss://workshop.tailnet:443/rpc",
+        lastAuthenticatedAt: "2026-09-04T12:00:00.000Z",
+      },
+    }
+    expect(fleetMachineSchema.parse(remote)).toEqual(remote)
+  })
+
   it("carries the endpoints a client may dial", () => {
     expect(fleetMachineSchema.parse(machine).transports).toEqual(machine.transports)
   })
@@ -83,6 +102,12 @@ describe("fleet machine transports", () => {
 })
 
 describe("fleet machine health", () => {
+  it.each(["pairing-required", "credential-store-unavailable"])(
+    "describes %s separately from reachability",
+    (health) => {
+      expect(fleetMachineSchema.parse({ ...machine, self: false, health }).health).toBe(health)
+    },
+  )
   it("requires a described health state", () => {
     const { health: _health, ...withoutHealth } = machine
     expect(fleetMachineSchema.safeParse(withoutHealth).success).toBe(false)
@@ -123,12 +148,12 @@ describe("fleetMachineFactsSchema", () => {
 
 describe("fleetSnapshotSchema", () => {
   it("rejects two machines sharing an identifier", () => {
-    expect(fleetSnapshotSchema.safeParse({ machines: [machine, machine] }).success).toBe(false)
+    expect(fleetSnapshotSchema.safeParse({ entries: [described(machine), described(machine)] }).success).toBe(false)
   })
 
   it("rejects more than one machine claiming to be this daemon", () => {
     expect(fleetSnapshotSchema.safeParse({
-      machines: [machine, { ...machine, id: `machine-${"b".repeat(32)}` }],
+      entries: [described(machine), described({ ...machine, id: `machine-${"b".repeat(32)}` })],
     }).success).toBe(false)
   })
 
@@ -139,7 +164,29 @@ describe("fleetSnapshotSchema", () => {
       self: false,
       connection: "tailnet" as const,
     }
-    expect(fleetSnapshotSchema.parse({ machines: [machine, remote] }).machines).toHaveLength(2)
+    expect(fleetSnapshotSchema.parse({ entries: [described(machine), described(remote)] }).entries).toHaveLength(2)
+  })
+
+  it("keeps unfinished operations and orphan credentials visible without fabricated facts", () => {
+    const entries = [
+      described(machine),
+      {
+        kind: "pending",
+        id: "12345678-1234-4234-8234-123456789abc",
+        machineId: `machine-${"b".repeat(32)}`,
+        operation: "forget",
+        startedAt: "2026-09-04T12:00:00.000Z",
+      },
+      { kind: "unenrolled", machineId: `machine-${"c".repeat(32)}` },
+    ]
+    expect(fleetSnapshotSchema.parse({ entries }).entries).toEqual(entries)
+  })
+
+  it("refuses two lifecycle variants for the same machine", () => {
+    expect(fleetSnapshotSchema.safeParse({ entries: [
+      described(machine),
+      { kind: "unenrolled", machineId: machine.id },
+    ] }).success).toBe(false)
   })
 
   it("bounds the registry", () => {
@@ -148,7 +195,7 @@ describe("fleetSnapshotSchema", () => {
       id: `machine-${index.toString(16).padStart(32, "0")}`,
       self: false,
     }))
-    expect(fleetSnapshotSchema.safeParse({ machines }).success).toBe(false)
+    expect(fleetSnapshotSchema.safeParse({ entries: machines.map(described) }).success).toBe(false)
   })
 })
 
