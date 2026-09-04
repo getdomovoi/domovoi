@@ -7,6 +7,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
+    "pretest": "pnpm --filter @getdomovoi/protocol build",
+    "prestart": "pnpm --filter @getdomovoi/protocol build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
