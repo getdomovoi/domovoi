@@ -114,8 +114,7 @@ it("lists what travels with the session", () => {
     "Thread",
     "Plan",
     "Tool and test results",
-    "Open annotations",
-    "Active skills",
+    "Annotations",
     "Permission mode",
     "Tracked changes",
     "Non-ignored untracked files",
@@ -129,9 +128,9 @@ it("lists what does not travel with the session", () => {
   for (const item of [
     "Running dev servers and PTYs, which restart there",
     "Provider credentials",
-    ".env and secrets",
-    "Database state",
-    "Ignored build artifacts",
+    "Skills enabled for this project, which are reviewed again there",
+    "Standing approval rules, which are approved again there",
+    "Ignored files, including ignored build output",
   ]) expect(stays.textContent).toContain(item)
 })
 
@@ -215,4 +214,18 @@ it("reports a transport error without claiming the session moved", async () => {
 
   expect(screen.getByRole("alert").textContent).toContain("Daemon connection is not open")
   expect(onTransferred).not.toHaveBeenCalled()
+})
+
+it("does not promise that secrets stay behind", () => {
+  renderDialog()
+
+  expect(screen.queryByText(".env and secrets")).toBeNull()
+  expect(screen.getByText(/travels regardless of its name/u)).toBeTruthy()
+})
+
+it("does not promise that skills travel", () => {
+  renderDialog()
+
+  expect(screen.queryByText("Active skills")).toBeNull()
+  expect(screen.getByText(/reviewed again there/u)).toBeTruthy()
 })

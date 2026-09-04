@@ -25,14 +25,14 @@ import {
 import { Field, FieldLabel } from "./components/ui/field"
 import { Input } from "./components/ui/input"
 
-// The two lists are a product promise about what a move does, so they are
-// fixed here rather than derived from whatever the session happens to hold.
+// These lists are prose, and prose is how a promise outruns the product: the
+// earlier version claimed skills travelled and secrets did not, and neither was
+// true. Keep every line checkable against what a transfer actually sends.
 const travelsWithSession = [
   "Thread",
   "Plan",
   "Tool and test results",
-  "Open annotations",
-  "Active skills",
+  "Annotations",
   "Permission mode",
   "Tracked changes",
   "Non-ignored untracked files",
@@ -41,10 +41,14 @@ const travelsWithSession = [
 const staysBehind = [
   "Running dev servers and PTYs, which restart there",
   "Provider credentials",
-  ".env and secrets",
-  "Database state",
-  "Ignored build artifacts",
+  "Skills enabled for this project, which are reviewed again there",
+  "Standing approval rules, which are approved again there",
+  "Ignored files, including ignored build output",
 ] as const
+
+// A checkpoint commits with `git add --all`, so anything tracked or not ignored
+// travels whatever it is called. Saying "secrets stay behind" was false.
+const transferCaveat = "A tracked or non-ignored file travels regardless of its name, including a committed .env or database file. Only ignored files stay behind."
 
 type TransferCheck = { label: string; ready: boolean }
 
@@ -233,6 +237,8 @@ export function TransferSessionDialog({
           <FixedList label="Travels with the session" items={travelsWithSession} />
           <FixedList label="Does not travel" items={staysBehind} />
         </div>
+
+        <p className="m-0 text-[11px] leading-relaxed text-warning">{transferCaveat}</p>
 
         <DialogFooter>
           <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
