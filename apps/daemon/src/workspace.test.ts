@@ -750,6 +750,18 @@ describe("GitWorkspaceService transfer resources", () => {
     expect(checkpointed.digest).toBe(second.digest)
   })
 
+  it("stays stable when a tracked deletion is checkpointed", async () => {
+    const { service, workspace } = await repositoryWithIgnoredPreview()
+    await rm(join(workspace.path, "README.md"))
+    const before = await service.transferFingerprint(workspace.path)
+
+    const checkpoint = await service.checkpoint(workspace.path, "before-transfer")
+    const after = await service.transferFingerprint(workspace.path)
+
+    expect(after.headCommit).toBe(checkpoint.commit)
+    expect(after.digest).toBe(before.digest)
+  })
+
   it.runIf(process.platform !== "win32")(
     "refuses a transfer fingerprint when Git reports a non-UTF-8 path",
     async () => {

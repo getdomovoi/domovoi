@@ -460,15 +460,16 @@ async function transferWorktreeFingerprint(
     if (!pathStaysInside(worktreePath, candidate)) {
       throw new Error("Git returned a path outside the session worktree")
     }
-    hashField(hash, path)
     let metadata
     try {
       metadata = await lstat(candidate)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      hashField(hash, "missing")
+      // The fingerprint describes the effective tree that the checkpoint will
+      // carry. A tracked deletion is absent both before and after committing it.
       continue
     }
+    hashField(hash, path)
     if (metadata.isSymbolicLink()) {
       hashField(hash, "symlink")
       hashField(hash, await readlink(candidate))
