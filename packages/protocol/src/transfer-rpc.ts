@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { commitShaSchema, machineIdSchema } from "./identifiers.js"
+import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
 import { clientKindSchema } from "./schema.js"
 import { transferMethodSchema } from "./transfer.js"
 import {
@@ -11,7 +11,7 @@ import {
 
 export { maximumTransferBytes }
 
-export const transferIdSchema = z.string().regex(/^transfer-[0-9a-f]{32}$/)
+export { transferIdSchema }
 
 // The target is told what is coming before any bytes arrive, so it can refuse a
 // transfer it will not take rather than discovering that halfway through.

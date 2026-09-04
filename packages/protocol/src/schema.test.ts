@@ -466,6 +466,16 @@ describe("workspace protocol", () => {
     const presentMismatch = structuredClone(truncatedClient)
     presentMismatch.thread.push({ ...checkpoint, sessionId: snapshot.sessions[1]!.id })
     expect(workspaceSnapshotSchema.safeParse(presentMismatch).success).toBe(false)
+
+    const imported = structuredClone(snapshot)
+    const importedFork = imported.sessions.at(-1)!
+    importedFork.forkedFrom = {
+      ...importedFork.forkedFrom!,
+      sourceSessionId: "session-on-source-machine",
+      sourceMachineId: `machine-${"a".repeat(32)}`,
+      checkpointId: "checkpoint-on-source-machine",
+    }
+    expect(workspaceSnapshotSchema.safeParse(imported).success).toBe(true)
   })
 
   it("models durable session archive lifecycle and requests", () => {
@@ -533,6 +543,61 @@ describe("workspace protocol", () => {
       },
       "state",
     )
+  })
+
+  it("models a frozen source while session ownership moves", () => {
+    const transferring = structuredClone(demoWorkspace)
+    const session = transferring.sessions[2]!
+    session.state = "transferring"
+    session.workspacePath = "/worktrees/session-audit"
+    session.baseCommit = "a".repeat(40)
+    session.ownershipGeneration = 3
+    session.transfer = {
+      phase: "transferring",
+      transferId: `transfer-${"b".repeat(32)}`,
+      targetMachineId: `machine-${"c".repeat(32)}`,
+      intentDigest: `sha256:${"d".repeat(64)}`,
+      nextGeneration: 4,
+      startedAt: "2026-09-03T18:00:00.000Z",
+    }
+    expect(workspaceSnapshotSchema.parse(transferring).sessions[2]).toMatchObject({
+      state: "transferring",
+      ownershipGeneration: 3,
+      transfer: { phase: "transferring", nextGeneration: 4 },
+    })
+
+    const wrongGeneration = structuredClone(transferring)
+    if (wrongGeneration.sessions[2]!.transfer?.phase !== "transferring") {
+      throw new Error("Expected a transfer in progress")
+    }
+    wrongGeneration.sessions[2]!.transfer.nextGeneration = 5
+    expect(workspaceSnapshotSchema.safeParse(wrongGeneration).success).toBe(false)
+
+    const transferred = structuredClone(transferring)
+    transferred.sessions[2]!.state = "transferred"
+    transferred.sessions[2]!.ownershipGeneration = 4
+    transferred.sessions[2]!.transfer = {
+      phase: "transferred",
+      transferId: `transfer-${"b".repeat(32)}`,
+      targetMachineId: `machine-${"c".repeat(32)}`,
+      generation: 4,
+      completedAt: "2026-09-03T18:01:00.000Z",
+    }
+    delete transferred.sessions[2]!.providerThreadId
+    delete transferred.sessions[2]!.activeTurnId
+    delete transferred.sessions[2]!.providerFailure
+    expect(workspaceSnapshotSchema.parse(transferred).sessions[2]).toMatchObject({
+      state: "transferred",
+      transfer: { phase: "transferred", generation: 4 },
+    })
+
+    const liveProvider = structuredClone(transferred)
+    liveProvider.sessions[2]!.providerThreadId = "thread-still-live"
+    expect(workspaceSnapshotSchema.safeParse(liveProvider).success).toBe(false)
+
+    const missingLifecycle = structuredClone(transferred)
+    delete missingLifecycle.sessions[2]!.transfer
+    expect(workspaceSnapshotSchema.safeParse(missingLifecycle).success).toBe(false)
   })
 
   it("reserves a stable daemon shutdown error code", () => {

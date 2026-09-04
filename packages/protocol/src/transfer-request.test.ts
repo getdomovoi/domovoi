@@ -5,6 +5,7 @@ import { transferRefusalSchema } from "./transfer-preflight.js"
 import { transferStreamRefusalSchema } from "./transfer-stream.js"
 import {
   sessionTransferParamsSchema,
+  sessionTransferPreviewParamsSchema,
   sessionTransferRefusalMessage,
   sessionTransferResultSchema,
 } from "./transfer-request.js"
@@ -16,6 +17,25 @@ describe("session transfer request", () => {
       targetMachineId: `machine-${"b".repeat(32)}`,
       client: "desktop",
     }).success).toBe(true)
+  })
+
+  it("previews the same transfer before requiring its intent digest", () => {
+    const request = {
+      sessionId: "session-1",
+      targetMachineId: `machine-${"b".repeat(32)}`,
+      method: "git-bundle" as const,
+      client: "desktop" as const,
+    }
+    expect(sessionTransferPreviewParamsSchema.parse(request)).toEqual(request)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      contractVersion: 1,
+      intentDigest: `sha256:${"c".repeat(64)}`,
+    }).success).toBe(true)
+    expect(sessionTransferParamsSchema.safeParse({
+      ...request,
+      contractVersion: 1,
+    }).success).toBe(false)
   })
 
   it("refuses a target that is not a machine", () => {
@@ -32,6 +52,15 @@ describe("session transfer request", () => {
       workspacePath: "/worktrees/session-1",
       checkpointCommit: "c".repeat(40),
     }).success).toBe(true)
+    expect(sessionTransferResultSchema.safeParse({
+      outcome: "succeeded",
+      workspacePath: "/worktrees/session-1",
+      checkpointCommit: "c".repeat(40),
+      contractVersion: 1,
+      transferId: `transfer-${"d".repeat(32)}`,
+      ownershipGeneration: 2,
+      coverage: { included: [], excluded: [], warnings: [] },
+    }).success).toBe(true)
   })
 
   it("reports a refusal with the reason it was refused", () => {
@@ -47,6 +76,15 @@ describe("session transfer request", () => {
       outcome: "failed",
       reason: "target-unreachable",
     }).success).toBe(false)
+  })
+
+  it("reports an incomplete target recovery without claiming success", () => {
+    expect(sessionTransferResultSchema.safeParse({
+      outcome: "incomplete",
+      transferId: `transfer-${"d".repeat(32)}`,
+      state: "recovering",
+      stage: "persistence",
+    }).success).toBe(true)
   })
 })
 
@@ -71,6 +109,8 @@ describe("session transfer refusal messages", () => {
       ...transferRefusalSchema.options,
       ...sourceRefusalSchema.options,
       ...transferStreamRefusalSchema.options,
+      "session-approval-pending" as const,
+      "target-project-mismatch" as const,
     ]
     for (const reason of reasons) {
       expect(sessionTransferRefusalMessage(reason).length).toBeGreaterThan(0)

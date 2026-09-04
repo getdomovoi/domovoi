@@ -1,7 +1,15 @@
 import { z } from "zod"
 
-import { commitShaSchema, machineIdSchema } from "./identifiers.js"
+import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
 import { clientKindSchema } from "./schema.js"
+import {
+  sessionTransferContractRefusalMessage,
+  sessionTransferContractRefusalSchema,
+  sessionTransferContractVersionSchema,
+  sessionTransferCoverageSchema,
+  sessionTransferIntentDigestSchema,
+  type SessionTransferContractRefusal,
+} from "./transfer-contract.js"
 import { sourceRefusalMessage, sourceRefusalSchema, transferMethodSchema, type SourceRefusal } from "./transfer.js"
 import { transferRefusalMessage, transferRefusalSchema, type TransferRefusal } from "./transfer-preflight.js"
 import {
@@ -9,11 +17,15 @@ import {
   transferStreamRefusalSchema,
   type TransferStreamRefusal,
 } from "./transfer-stream.js"
+import {
+  transferFailureReasonSchema,
+  transferRecoveryStageSchema,
+} from "./transfer-transaction.js"
 
 // A remote name reaches git, where a leading dash would be read as an option.
 export const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).max(128)
 
-export const sessionTransferParamsSchema = z.object({
+const sessionTransferRequestFields = {
   sessionId: z.string().trim().min(1).max(128),
   targetMachineId: machineIdSchema,
   client: clientKindSchema,
@@ -21,7 +33,12 @@ export const sessionTransferParamsSchema = z.object({
   // happens unless the caller deliberately asks for the remote.
   method: transferMethodSchema.default("git-bundle"),
   remote: gitRemoteNameSchema.optional(),
-}).strict().superRefine((params, context) => {
+} as const
+
+function validateTransferMethod(
+  params: { method: "git-bundle" | "remote-ref", remote?: string | undefined },
+  context: z.RefinementCtx,
+): void {
   if (params.method === "remote-ref" && params.remote === undefined) {
     context.addIssue({
       code: "custom",
@@ -34,6 +51,25 @@ export const sessionTransferParamsSchema = z.object({
       code: "custom",
       path: ["remote"],
       message: "A bundle transfer does not use a remote",
+    })
+  }
+}
+
+export const sessionTransferPreviewParamsSchema = z.object(sessionTransferRequestFields)
+  .strict()
+  .superRefine(validateTransferMethod)
+
+export const sessionTransferParamsSchema = z.object({
+  ...sessionTransferRequestFields,
+  contractVersion: sessionTransferContractVersionSchema.optional(),
+  intentDigest: sessionTransferIntentDigestSchema.optional(),
+}).strict().superRefine((params, context) => {
+  validateTransferMethod(params, context)
+  if ((params.contractVersion === undefined) !== (params.intentDigest === undefined)) {
+    context.addIssue({
+      code: "custom",
+      path: params.contractVersion === undefined ? ["contractVersion"] : ["intentDigest"],
+      message: "A transfer contract version and preview intent digest must be sent together",
     })
   }
 })
@@ -49,36 +85,78 @@ export const transferFromRefResultSchema = z.object({
   checkpointCommit: commitShaSchema,
 }).strict()
 
-export const sessionTransferResultSchema = z.discriminatedUnion("outcome", [
-  z.object({
-    outcome: z.literal("succeeded"),
-    workspacePath: z.string().min(1),
-    checkpointCommit: commitShaSchema,
-  }).strict(),
+const succeededTransferResultSchema = z.object({
+  outcome: z.literal("succeeded"),
+  workspacePath: z.string().min(1),
+  checkpointCommit: commitShaSchema,
+  contractVersion: sessionTransferContractVersionSchema.optional(),
+  transferId: transferIdSchema.optional(),
+  ownershipGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  coverage: sessionTransferCoverageSchema.optional(),
+}).strict().superRefine((result, context) => {
+  const versionedFields = [
+    result.contractVersion,
+    result.transferId,
+    result.ownershipGeneration,
+    result.coverage,
+  ]
+  const count = versionedFields.filter((field) => field !== undefined).length
+  if (count !== 0 && count !== versionedFields.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["contractVersion"],
+      message: "A versioned transfer result must carry all ownership and coverage fields",
+    })
+  }
+})
+
+const refusedTransferResultSchema = z.object({
   // A refusal always says why, because the answer decides what the operator
   // does next: pick another machine, or wait for a turn to finish.
-  z.object({
-    outcome: z.literal("refused"),
-    reason: z.union([
-      transferRefusalSchema,
-      sourceRefusalSchema,
-      transferStreamRefusalSchema,
-    ]),
-  }).strict(),
+  outcome: z.literal("refused"),
+  reason: z.union([
+    transferRefusalSchema,
+    sourceRefusalSchema,
+    transferStreamRefusalSchema,
+    sessionTransferContractRefusalSchema,
+  ]),
+}).strict()
+
+export const sessionTransferResultSchema = z.union([
+  succeededTransferResultSchema,
+  refusedTransferResultSchema,
   z.object({ outcome: z.literal("failed") }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
+    state: z.literal("recovering"),
+    stage: transferRecoveryStageSchema,
+  }).strict(),
+  z.object({
+    outcome: z.literal("incomplete"),
+    transferId: transferIdSchema,
+    state: z.literal("failed"),
+    reason: transferFailureReasonSchema,
+  }).strict(),
 ])
 
+export type SessionTransferPreviewParams = z.infer<typeof sessionTransferPreviewParamsSchema>
 export type SessionTransferParams = z.infer<typeof sessionTransferParamsSchema>
 export type SessionTransferResult = z.infer<typeof sessionTransferResultSchema>
 export type TransferFromRefParams = z.infer<typeof transferFromRefParamsSchema>
 export type TransferFromRefResult = z.infer<typeof transferFromRefResultSchema>
 
-export type SessionTransferRefusal = TransferRefusal | SourceRefusal | TransferStreamRefusal
+export type SessionTransferRefusal =
+  | TransferRefusal
+  | SourceRefusal
+  | TransferStreamRefusal
+  | SessionTransferContractRefusal
 
 const sessionTransferRefusalMessages: Record<SessionTransferRefusal, string> = {
   ...transferRefusalMessage,
   ...sourceRefusalMessage,
   ...transferStreamRefusalMessage,
+  ...sessionTransferContractRefusalMessage,
 }
 
 // A refused move is only useful if it says what to do next, so the reason the

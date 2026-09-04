@@ -9,11 +9,11 @@ import {
   threadItemSchema,
   workingPlanSchema,
 } from "./schema.js"
-import { commitShaSchema, machineIdSchema } from "./identifiers.js"
+import { commitShaSchema, machineIdSchema, sha256DigestSchema } from "./identifiers.js"
 
 export const sessionTransferContractVersion = 1 as const
 export const sessionTransferContractVersionSchema = z.literal(sessionTransferContractVersion)
-export const sessionTransferIntentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
+export const sessionTransferIntentDigestSchema = sha256DigestSchema
 
 export const maximumSessionTransferThreadItems = 100_000
 export const maximumSessionTransferArtifacts = 10_000
@@ -281,6 +281,22 @@ export const sessionTransferContractRefusalSchema = z.enum([
   "target-session-diverged",
 ])
 
+export type SessionTransferContractRefusal = z.infer<typeof sessionTransferContractRefusalSchema>
+
+export const sessionTransferContractRefusalMessage: Record<SessionTransferContractRefusal, string> = {
+  "session-approval-pending": "Resolve the open approval before moving this session",
+  "session-transfer-in-progress": "This session is already moving to another machine",
+  "session-not-owned": "This machine no longer owns the session, so it cannot move it again",
+  "session-base-commit-missing": "Create a checkpoint before moving this session",
+  "session-state-changed": "The session changed after the transfer preview, so review the move again",
+  "session-state-invalid": "The session state could not be packaged safely, so repair it before moving",
+  "session-resource-unavailable": "A session resource could not be read, so the session cannot move yet",
+  "target-project-missing": "Open the matching project on the target machine before moving this session",
+  "target-project-mismatch": "The target project does not share this session's Git history",
+  "target-session-newer": "The target already has a newer generation of this session",
+  "target-session-diverged": "The target has a different copy of this session and needs manual recovery",
+}
+
 const previewCommon = {
   contractVersion: sessionTransferContractVersionSchema,
   sessionId: z.string().trim().min(1).max(128),
@@ -317,5 +333,4 @@ export type SessionTransferIncludedKind = z.infer<typeof sessionTransferIncluded
 export type SessionTransferExcludedKind = z.infer<typeof sessionTransferExcludedKindSchema>
 export type SessionTransferWarningKind = z.infer<typeof sessionTransferWarningKindSchema>
 export type SessionTransferCoverage = z.infer<typeof sessionTransferCoverageSchema>
-export type SessionTransferContractRefusal = z.infer<typeof sessionTransferContractRefusalSchema>
 export type SessionTransferPreview = z.infer<typeof sessionTransferPreviewSchema>

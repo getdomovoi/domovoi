@@ -10,10 +10,24 @@ import {
 } from "./transfer-rpc.js"
 import {
   sessionTransferParamsSchema,
+  sessionTransferPreviewParamsSchema,
   sessionTransferResultSchema,
   transferFromRefParamsSchema,
   transferFromRefResultSchema,
 } from "./transfer-request.js"
+import { sessionTransferPreviewSchema } from "./transfer-contract.js"
+import {
+  transferAbortParamsSchema,
+  transferAbortResultSchema,
+  transferCommitParamsSchema,
+  transferCommitResultSchema,
+  transferMemberParamsSchema,
+  transferMemberResultSchema,
+  transferPrepareParamsSchema,
+  transferPrepareResultSchema,
+  transferStatusParamsSchema,
+  transferStatusResultSchema,
+} from "./transfer-transaction.js"
 
 import {
   maximumSessionHistoryPageItems,
@@ -1147,6 +1161,10 @@ export const rpcMethods = {
     params: sessionTransferParamsSchema,
     result: sessionTransferResultSchema,
   },
+  "session.transferPreview": {
+    params: sessionTransferPreviewParamsSchema,
+    result: sessionTransferPreviewSchema,
+  },
   "transfer.fromRef": {
     params: transferFromRefParamsSchema,
     result: transferFromRefResultSchema,
@@ -1162,6 +1180,26 @@ export const rpcMethods = {
   "transfer.chunk": {
     params: transferChunkParamsSchema,
     result: transferChunkResultSchema,
+  },
+  "transfer.prepare": {
+    params: transferPrepareParamsSchema,
+    result: transferPrepareResultSchema,
+  },
+  "transfer.member": {
+    params: transferMemberParamsSchema,
+    result: transferMemberResultSchema,
+  },
+  "transfer.commit": {
+    params: transferCommitParamsSchema,
+    result: transferCommitResultSchema,
+  },
+  "transfer.status": {
+    params: transferStatusParamsSchema,
+    result: transferStatusResultSchema,
+  },
+  "transfer.abort": {
+    params: transferAbortParamsSchema,
+    result: transferAbortResultSchema,
   },
   "device.machineCredential": {
     params: deviceMachineCredentialParamsSchema,
@@ -1300,7 +1338,9 @@ export const rpcMethodMutations = {
   "terminal.resize": "read-only",
   "terminal.close": "read-only",
   "fleet.list": "read-only",
+  "session.transferPreview": "read-only",
   "transfer.have": "read-only",
+  "transfer.status": "read-only",
   "device.machineCredential": "read-only",
   "device.list": "read-only",
   "session.evidence": "read-only",
@@ -1323,6 +1363,10 @@ export const rpcMethodMutations = {
   "transfer.fromRef": "mutating",
   "transfer.begin": "mutating",
   "transfer.chunk": "mutating",
+  "transfer.prepare": "mutating",
+  "transfer.member": "mutating",
+  "transfer.commit": "mutating",
+  "transfer.abort": "mutating",
   "system.pauseAll": "mutating",
   "system.emergencyStop": "mutating",
   "skill.setEnabled": "mutating",

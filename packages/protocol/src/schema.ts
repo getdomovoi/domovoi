@@ -9,8 +9,11 @@ import {
   clientKindSchema,
   commitShaSchema,
   forkRequestIdSchema,
+  machineIdSchema,
+  sha256DigestSchema,
   toolKindSchema,
   toolStatusSchema,
+  transferIdSchema,
 } from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
 
@@ -26,6 +29,8 @@ export const sessionStateSchema = z.enum([
   "idle",
   "done",
   "failed",
+  "transferring",
+  "transferred",
   "archiving",
   "archived",
 ])
@@ -122,12 +127,33 @@ export const projectSchema = z.object({
 
 export const sessionForkOriginSchema = z.object({
   sourceSessionId: z.string().min(1),
+  sourceMachineId: machineIdSchema.optional(),
   checkpointId: z.string().min(1),
   checkpointCommit: commitShaSchema,
   requestId: forkRequestIdSchema,
   client: clientKindSchema,
   requestedRuntime: runtimeSchema,
 })
+
+const ownershipGenerationSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
+
+export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
+  z.object({
+    phase: z.literal("transferring"),
+    transferId: transferIdSchema,
+    targetMachineId: machineIdSchema,
+    intentDigest: sha256DigestSchema,
+    nextGeneration: ownershipGenerationSchema,
+    startedAt: z.string().datetime({ offset: true }),
+  }).strict(),
+  z.object({
+    phase: z.literal("transferred"),
+    transferId: transferIdSchema,
+    targetMachineId: machineIdSchema,
+    generation: ownershipGenerationSchema,
+    completedAt: z.string().datetime({ offset: true }),
+  }).strict(),
+])
 
 export const sessionSummarySchema = z.object({
   id: z.string().min(1),
@@ -148,6 +174,8 @@ export const sessionSummarySchema = z.object({
   archiveCheckpoint: commitShaSchema.optional(),
   archivedAt: z.string().datetime().optional(),
   forkedFrom: sessionForkOriginSchema.optional(),
+  ownershipGeneration: ownershipGenerationSchema.optional(),
+  transfer: sessionTransferLifecycleSchema.optional(),
 }).superRefine((session, context) => {
   const archiveState = session.state === "archiving" || session.state === "archived"
   if (!archiveState && (
@@ -170,6 +198,68 @@ export const sessionSummarySchema = z.object({
     }
     for (const field of ["workspacePath", "providerThreadId", "activeTurnId"] as const) {
       if (session[field]) context.addIssue({ code: "custom", path: [field], message: "Archived sessions cannot retain active resources" })
+    }
+  }
+  const transferState = session.state === "transferring" || session.state === "transferred"
+  if (transferState && session.transfer?.phase !== session.state) {
+    context.addIssue({
+      code: "custom",
+      path: ["transfer"],
+      message: "A transfer lifecycle state requires matching transfer metadata",
+    })
+  }
+  if (!transferState && session.transfer !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["transfer"],
+      message: "Transfer metadata requires a transfer lifecycle state",
+    })
+  }
+  if (transferState && !session.workspacePath) {
+    context.addIssue({
+      code: "custom",
+      path: ["workspacePath"],
+      message: "A transferred source retains its recovery worktree",
+    })
+  }
+  if (transferState && session.activeTurnId) {
+    context.addIssue({
+      code: "custom",
+      path: ["activeTurnId"],
+      message: "A session cannot transfer during an active turn",
+    })
+  }
+  if (session.state === "transferring" && session.transfer?.phase === "transferring") {
+    if (
+      session.ownershipGeneration === undefined
+      || session.transfer.nextGeneration !== session.ownershipGeneration + 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["transfer", "nextGeneration"],
+        message: "A transfer must advance session ownership by one generation",
+      })
+    }
+  }
+  if (session.state === "transferred" && session.transfer?.phase === "transferred") {
+    if (
+      session.ownershipGeneration === undefined
+      || session.transfer.generation !== session.ownershipGeneration
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["transfer", "generation"],
+        message: "Transferred ownership metadata must name the current generation",
+      })
+    }
+    for (const field of ["providerThreadId", "providerFailure"] as const) {
+      if (session[field]) {
+        context.addIssue({
+          code: "custom",
+          path: [field],
+          message: "A transferred source cannot retain live provider state",
+        })
+      }
     }
   }
 })
@@ -644,30 +734,37 @@ export const workspaceSnapshotSchema = z.object({
     }
     if (session.forkedFrom) {
       const origin = session.forkedFrom
-      if (!sessionIds.has(origin.sourceSessionId) || origin.sourceSessionId === session.id) {
+      const externalOrigin = origin.sourceMachineId !== undefined
+        && origin.sourceMachineId !== snapshot.machine.id
+      if (
+        origin.sourceSessionId === session.id
+        || (!externalOrigin && !sessionIds.has(origin.sourceSessionId))
+      ) {
         context.addIssue({
           code: "custom",
-          message: "Fork source must reference another existing session",
+          message: "A local fork source must reference another existing session",
           path: ["sessions", index, "forkedFrom", "sourceSessionId"],
         })
       }
       const checkpoint = snapshot.thread.find((item) => item.id === origin.checkpointId)
-      if (checkpoint && (
-        checkpoint.kind !== "checkpoint"
-        || checkpoint.sessionId !== origin.sourceSessionId
-        || checkpoint.commit !== origin.checkpointCommit
-      )) {
-        context.addIssue({
-          code: "custom",
-          message: "Fork checkpoint must belong to the source session",
-          path: ["sessions", index, "forkedFrom", "checkpointId"],
-        })
-      } else if (!checkpoint && !snapshot.historyTruncated) {
-        context.addIssue({
-          code: "custom",
-          message: "Fork checkpoint must exist unless snapshot history is truncated",
-          path: ["sessions", index, "forkedFrom", "checkpointId"],
-        })
+      if (!externalOrigin) {
+        if (checkpoint && (
+          checkpoint.kind !== "checkpoint"
+          || checkpoint.sessionId !== origin.sourceSessionId
+          || checkpoint.commit !== origin.checkpointCommit
+        )) {
+          context.addIssue({
+            code: "custom",
+            message: "Fork checkpoint must belong to the source session",
+            path: ["sessions", index, "forkedFrom", "checkpointId"],
+          })
+        } else if (!checkpoint && !snapshot.historyTruncated) {
+          context.addIssue({
+            code: "custom",
+            message: "Fork checkpoint must exist unless snapshot history is truncated",
+            path: ["sessions", index, "forkedFrom", "checkpointId"],
+          })
+        }
       }
       if (forkRequestIds.has(origin.requestId)) {
         context.addIssue({
