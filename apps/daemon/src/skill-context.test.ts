@@ -196,12 +196,18 @@ describe("agentPromptWithSkills", () => {
       enabled,
       explicitSelection(currentReview),
     )).rejects.toMatchObject({ refusal: { skillId: current.id, reason: "unavailable" } })
-    await expect(prepareTurnSkillContext(
+    const policyRefusal = prepareTurnSkillContext(
       catalog([{ skill: current, content: "Use alpha." }]),
       enabled,
       explicitSelection(currentReview),
       { requireTrusted: true },
-    )).rejects.toMatchObject({ refusal: { skillId: current.id, reason: "policy" } })
+    )
+    await expect(policyRefusal).rejects.toMatchObject({
+      refusal: { skillId: current.id, reason: "policy" },
+    })
+    await expect(policyRefusal).rejects.toThrow(
+      `Cannot send this turn: selected skill ${current.id} is blocked by the session trust policy. Review its trust state, or remove it from this turn and try again.`,
+    )
   })
 
   it("injects only current exact reviewed skills in deterministic escaped form", async () => {

@@ -121,15 +121,27 @@ function selectionError(
   skillId: string,
   reason: TurnSkillSelectionRefusal["reason"],
 ): TurnSkillSelectionError {
-  const action = {
-    "not-enabled": "Enable and review it for this project, or remove it from this turn",
-    unavailable: "Restore it on this machine, or remove it from this turn",
-    "review-changed": "Review and reselect it, or remove it from this turn",
-    policy: "Review its trust state, or remove it from this turn",
+  const { state, action } = {
+    "not-enabled": {
+      state: "not enabled for this project",
+      action: "Enable and review it for this project, or remove it from this turn",
+    },
+    unavailable: {
+      state: "unavailable on this machine",
+      action: "Restore it on this machine, or remove it from this turn",
+    },
+    "review-changed": {
+      state: "changed since it was selected",
+      action: "Review and reselect it, or remove it from this turn",
+    },
+    policy: {
+      state: "blocked by the session trust policy",
+      action: "Review its trust state, or remove it from this turn",
+    },
   }[reason]
   return new TurnSkillSelectionError(
     { kind: "turn-skill-selection-refused", skillId, reason },
-    `Cannot send this turn: selected skill ${skillId} is ${reason.replaceAll("-", " ")}. ${action} and try again.`,
+    `Cannot send this turn: selected skill ${skillId} is ${state}. ${action} and try again.`,
   )
 }
 
