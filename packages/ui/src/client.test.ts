@@ -1715,7 +1715,7 @@ describe("DomovoiClient session transfer and devices", () => {
       sessionId: "session-billing",
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "git-bundle",
-      client: "web",
+      initiatedByClient: "web",
     })
     client.disconnect()
   })
@@ -1742,7 +1742,7 @@ describe("DomovoiClient session transfer and devices", () => {
       targetMachineId: `machine-${"b".repeat(32)}`,
       method: "remote-ref",
       remote: "origin",
-      client: "web",
+      initiatedByClient: "web",
     })
     client.disconnect()
   })
@@ -1766,6 +1766,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
+      binding: { kind: "client", client: "tablet" },
       revokedAt: "2026-09-01T12:00:00.000Z",
     }
 
@@ -1785,6 +1786,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"e".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
+      binding: { kind: "client", client: "tablet" },
     }
 
     const rotating = client.rotateDevice({ deviceId: device.id })
