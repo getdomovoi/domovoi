@@ -377,4 +377,165 @@ describe("transactional session transfer RPC", () => {
     expect((store.load().sessions[0])?.state).toBe("idle")
     socket.close()
   })
+
+  it("freezes and stages the source before committing one target owner", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-source-rpc-"))
+    scratchDirectories.push(scratch)
+    const source = structuredClone(demoWorkspace)
+    source.machine.id = sourceMachineId
+    source.project = {
+      ...source.project!,
+      machineId: sourceMachineId,
+      path: "/source/project",
+    }
+    const session = source.sessions.find((candidate) => candidate.state === "idle")!
+    session.workspacePath = "/source/session"
+    session.baseCommit = baseCommit
+    session.ownershipGeneration = 3
+    session.runtime = {
+      provider: "claude-code",
+      model: "claude-opus-5",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: true,
+    }
+    delete session.providerThreadId
+    source.sessions = [session]
+    source.activeSessionId = session.id
+    source.thread = source.thread.filter((item) => item.sessionId === session.id)
+    source.artifacts = []
+    source.workingPlans = []
+    source.annotations = []
+    source.approvals = []
+    const store = new SqliteWorkspaceStore(":memory:", source)
+    store.fleet.record({
+      id: targetMachineId,
+      label: "studio",
+      platform: "linux",
+      arch: "x64",
+      version: "0.0.1",
+      connection: "local",
+      capabilities: ["sessions"],
+      protocolVersion: "0.1.0",
+      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+    }, Date.now())
+    const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
+    const targetTransactions = new FileTransferTransactions(join(scratch, "target"))
+    let checkpointed = false
+    let observedStagedSource = false
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      authToken: "correct-horse-battery-staple",
+      outgoingTransferTransactions: outgoing,
+      workspaceService: {
+        inspect: async () => ({
+          root: "/source/project",
+          name: "source",
+          branch: "main",
+          head: baseCommit,
+        }),
+        createSessionWorkspace: async () => ({
+          path: "/unused",
+          branch: "unused",
+          baseCommit,
+        }),
+        removeSessionWorkspace: async () => {},
+        checkpoint: async () => {
+          checkpointed = true
+          return { commit: checkpointCommit, changedFiles: [] }
+        },
+        restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+        transferFingerprint: async () => {
+          return {
+            headCommit: checkpointed ? checkpointCommit : baseCommit,
+            digest: `sha256:${"e".repeat(64)}`,
+          }
+        },
+        readIgnoredArtifactSource: async () => undefined,
+        bundleSession: async (_worktreePath, bundlePath) => ({
+          path: bundlePath,
+          commit: checkpointCommit,
+          incremental: false,
+        }),
+      },
+      readTransferBundle: async () => Buffer.from("PACK exact session"),
+      connectToMachine: async () => ({
+        call: async (method, params) => {
+          if (method === "transfer.preflight") {
+            return { allowed: true, targetProjectId: "project-target", lineageCommit: baseCommit }
+          }
+          if (method === "transfer.status") {
+            const frozen = store.load().sessions[0]!
+            observedStagedSource = frozen.state === "transferring"
+              && frozen.transfer?.phase === "transferring"
+              && frozen.transfer.package.state === "staged"
+            return targetTransactions.status(String(params.transferId), String(params.manifestDigest))
+          }
+          if (method === "transfer.prepare") {
+            return targetTransactions.prepare(
+              params.manifest as never,
+              String(params.manifestDigest),
+            )
+          }
+          if (method === "transfer.member") return targetTransactions.acceptMember(params as never)
+          if (method === "transfer.commit") {
+            const manifest = await targetTransactions.manifest(
+              String(params.transferId),
+              String(params.manifestDigest),
+            )
+            return {
+              state: "committed",
+              transferId: manifest.transferId,
+              workspacePath: `/target/${manifest.sessionId}`,
+              checkpointCommit: manifest.project.checkpointCommit,
+              ownershipGeneration: manifest.ownership.toGeneration,
+            }
+          }
+          throw new Error(`Unexpected ${method}`)
+        },
+        close: () => {},
+      }),
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    running.push(daemon)
+    await daemon.start()
+    const socket = await openClient(daemon)
+    const call = rpc(socket)
+    const preview = await call("session.transferPreview", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+    })
+    const approved = preview.result as { contractVersion: 1, intentDigest: string }
+
+    const moved = await call("session.transfer", {
+      sessionId: session.id,
+      targetMachineId,
+      client: "desktop",
+      contractVersion: approved.contractVersion,
+      intentDigest: approved.intentDigest,
+    })
+    expect(moved.result).toMatchObject({
+      outcome: "succeeded",
+      contractVersion: 1,
+      ownershipGeneration: 4,
+    })
+    expect(observedStagedSource).toBe(true)
+    expect(store.load().sessions[0]).toMatchObject({
+      state: "transferred",
+      ownershipGeneration: 4,
+      runtime: { auto: false },
+      transfer: { phase: "transferred" },
+    })
+    const transferred = store.load().sessions[0]!
+    if (transferred.transfer?.phase !== "transferred") {
+      throw new Error("Expected transferred source")
+    }
+    await expect(outgoing.status(
+      transferred.transfer.transferId,
+      transferred.transfer.manifestDigest,
+    )).resolves.toMatchObject({ state: "unknown" })
+    socket.close()
+  })
 })

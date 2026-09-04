@@ -49,6 +49,7 @@ import {
   type SessionHistoryEntry,
   type SessionTransferCoverage,
   type SessionTransferPreview,
+  type SessionTransferResult,
   type SystemEmergencyStopResult,
   type ClientKind,
   type Runtime,
@@ -68,10 +69,19 @@ import { sendSessionThroughRemote, sendSessionToMachine } from "./transfer-sourc
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import {
   collectSessionTransferState,
+  createSessionTransferPackage,
   finalizeSessionTransferIntent,
   type PreparedSessionTransferIntent,
 } from "./session-transfer-package.js"
 import { SessionTransferStateError } from "./session-transfer-state.js"
+import {
+  completeSourceSessionTransfer,
+  freezeSourceSessionTransfer,
+  sendPreparedSessionTransfer,
+  stageOutgoingSessionTransferPackage,
+  stageSourceSessionCheckpoint,
+  thawSourceSessionTransfer,
+} from "./session-transfer-source.js"
 import {
   commitPreparedSessionTransfer,
   preflightSessionTransferTarget,
@@ -1547,6 +1557,300 @@ export class DomovoiDaemon {
     }
   }
 
+  async #persistTransferSnapshot(candidate: WorkspaceSnapshot): Promise<void> {
+    try {
+      if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
+      else this.#store.save(candidate)
+    } catch (error) {
+      this.#persistenceFailed(error)
+      throw error
+    }
+    this.#persistenceSucceeded()
+    this.#snapshot = candidate
+    this.#sessionHistory.invalidate()
+    this.#syncArtifactWatchers()
+    this.#broadcastSnapshot()
+  }
+
+  #recordVersionedTransferReceipt(input: {
+    sessionId: string
+    targetMachineId: string
+    method: "git-bundle" | "remote-ref"
+    client: ClientKind
+    checkpointCommit: string
+    outcome: "succeeded" | "failed" | "refused"
+    reason?: TransferReceipt["reason"]
+    startedAt: string
+    completedAt: string
+  }): void {
+    try {
+      this.#store.transferReceipts?.record({
+        sessionId: input.sessionId,
+        sourceMachineId: this.#snapshot.machine.id,
+        targetMachineId: input.targetMachineId,
+        method: input.method,
+        checkpointId: `checkpoint-${input.checkpointCommit}`,
+        checkpointCommit: input.checkpointCommit,
+        recoveryCheckpointRetained: true,
+        outcome: input.outcome,
+        ...(input.reason ? { reason: input.reason } : {}),
+        decidedBy: { client: input.client },
+        startedAt: input.startedAt,
+        completedAt: input.completedAt,
+      })
+    } catch (error) {
+      this.#reportError("Domovoi could not record a transfer receipt", error)
+    }
+  }
+
+  async #sendVersionedSessionTransfer(
+    params: RpcParams<"session.transfer"> & { contractVersion: 1; intentDigest: string },
+    prepared: PreparedTransferPreview & {
+      target: FleetMachine
+      intent: PreparedSessionTransferIntent
+    },
+    signal?: AbortSignal,
+  ): Promise<SessionTransferResult> {
+    const startedAt = new Date().toISOString()
+    const transferId = `transfer-${randomUUID().replaceAll("-", "")}`
+    const sourceSession = this.#snapshot.sessions.find(
+      (candidate) => candidate.id === params.sessionId,
+    )!
+    const providerThread = sourceSession.providerThreadId
+    const provider = sourceSession.runtime.provider
+    const frozen = freezeSourceSessionTransfer(
+      this.#snapshot,
+      prepared.intent,
+      transferId,
+      startedAt,
+    )
+    await this.#persistTransferSnapshot(frozen)
+
+    let packaged: ReturnType<typeof createSessionTransferPackage> | undefined
+    let checkpointCommit = sourceSession.baseCommit ?? "0".repeat(40)
+    let targetDeliveryStarted = false
+    try {
+      const checkpoint = await this.#workspaceService.checkpoint(
+        sourceSession.workspacePath!,
+        "before-transfer",
+        signal,
+      )
+      checkpointCommit = checkpoint.commit
+      const fingerprint = await this.#workspaceService.transferFingerprint!(
+        sourceSession.workspacePath!,
+        signal,
+      )
+      if (
+        fingerprint.headCommit !== checkpoint.commit
+        || fingerprint.digest !== prepared.intent.worktreeDigest
+      ) {
+        throw new SessionTransferStateError("session-state-changed")
+      }
+
+      if (params.method === "git-bundle") {
+        const bundleSession = this.#workspaceService.bundleSession
+        const readBundle = this.#readTransferBundle
+        if (!bundleSession || !readBundle) {
+          throw new SessionTransferStateError("session-resource-unavailable")
+        }
+        const temporary = await mkdtemp(join(tmpdir(), "domovoi-transfer-package-"))
+        try {
+          const bundle = await bundleSession(
+            sourceSession.workspacePath!,
+            join(temporary, "repository.bundle"),
+            undefined,
+            signal,
+          )
+          const bytes = await readBundle(bundle.path)
+          packaged = createSessionTransferPackage(prepared.intent, {
+            transferId,
+            checkpointCommit: checkpoint.commit,
+            repository: { method: "git-bundle", bytes },
+            createdAt: startedAt,
+          })
+        } finally {
+          await rm(temporary, { recursive: true, force: true }).catch(() => {})
+        }
+      } else {
+        const pushSessionRef = this.#workspaceService.pushSessionRef
+        if (!pushSessionRef || !params.remote) {
+          throw new SessionTransferStateError("session-resource-unavailable")
+        }
+        const pushed = await pushSessionRef(
+          sourceSession.workspacePath!,
+          params.remote,
+          sourceSession.id,
+          signal,
+        )
+        packaged = createSessionTransferPackage(prepared.intent, {
+          transferId,
+          checkpointCommit: checkpoint.commit,
+          repository: {
+            method: "remote-ref",
+            remote: pushed.remote,
+            ref: pushed.ref,
+            commit: pushed.commit,
+          },
+          createdAt: startedAt,
+        })
+      }
+
+      await stageOutgoingSessionTransferPackage(this.#outgoingTransferTransactions, packaged)
+      await this.#persistTransferSnapshot(
+        stageSourceSessionCheckpoint(this.#snapshot, packaged.manifest),
+      )
+
+      const connection = await this.#connectToMachine(prepared.target.id, signal)
+      let remote
+      try {
+        targetDeliveryStarted = true
+        remote = await sendPreparedSessionTransfer({
+          transactions: this.#outgoingTransferTransactions,
+          transferId,
+          manifestDigest: packaged.manifestDigest,
+          client: params.client,
+          call: (method, remoteParams) => connection.call(method, remoteParams, signal),
+        })
+      } finally {
+        connection.close()
+      }
+
+      if (remote.state === "committed") {
+        const completedAt = new Date().toISOString()
+        const completed = completeSourceSessionTransfer(this.#snapshot, remote, completedAt)
+        completed.thread.push({
+          id: `system-transfer-sent-${randomUUID()}`,
+          sessionId: sourceSession.id,
+          kind: "system",
+          body: `Transferred to machine ${prepared.target.id}.`,
+          detail: `Ownership generation ${remote.ownershipGeneration} moved at checkpoint ${remote.checkpointCommit}. This recovery worktree is read-only.`,
+          createdAt: completedAt,
+        })
+        await this.#persistTransferSnapshot(workspaceSnapshotSchema.parse(completed))
+        await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
+          .catch((error) => this.#reportError("Domovoi could not remove an outgoing transfer package", error))
+        this.#recordVersionedTransferReceipt({
+          sessionId: sourceSession.id,
+          targetMachineId: prepared.target.id,
+          method: params.method,
+          client: params.client,
+          checkpointCommit: remote.checkpointCommit,
+          outcome: "succeeded",
+          startedAt,
+          completedAt,
+        })
+        if (providerThread) {
+          this.#loadedAgentThreads.delete(providerThreadKey(provider, providerThread))
+          void this.#agents.require(provider).stopThread(providerThread).catch((error) => {
+            this.#reportError("Domovoi could not stop a transferred provider thread", error)
+          })
+        }
+        return rpcMethods["session.transfer"].result.parse({
+          outcome: "succeeded",
+          workspacePath: remote.workspacePath,
+          checkpointCommit: remote.checkpointCommit,
+          contractVersion: 1,
+          transferId,
+          ownershipGeneration: remote.ownershipGeneration,
+          coverage: packaged.manifest.coverage,
+        })
+      }
+
+      if (remote.state === "refused" || remote.state === "aborted") {
+        const reason = remote.state === "refused" ? remote.reason : "session-state-changed"
+        const completedAt = new Date().toISOString()
+        await this.#persistTransferSnapshot(
+          thawSourceSessionTransfer(this.#snapshot, transferId, completedAt),
+        )
+        await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
+          .catch((cleanupError) => this.#reportError(
+            "Domovoi could not remove a refused outgoing transfer package",
+            cleanupError,
+          ))
+        this.#recordVersionedTransferReceipt({
+          sessionId: sourceSession.id,
+          targetMachineId: prepared.target.id,
+          method: params.method,
+          client: params.client,
+          checkpointCommit,
+          outcome: "refused",
+          reason,
+          startedAt,
+          completedAt,
+        })
+        return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
+      }
+
+      if (remote.state === "recovering") {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "recovering",
+          stage: remote.stage,
+          recoveryAction: "none",
+        }
+      }
+      if (remote.state === "failed") {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "failed",
+          reason: remote.reason,
+          recoveryAction: "retry",
+        }
+      }
+      if (remote.state === "unknown") {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "unknown",
+          recoveryAction: "check-status",
+        }
+      }
+      return {
+        outcome: "incomplete",
+        transferId,
+        state: remote.state === "prepared" ? "prepared" : "receiving",
+        recoveryAction: "resume",
+      }
+    } catch (error) {
+      if (targetDeliveryStarted) {
+        return {
+          outcome: "incomplete",
+          transferId,
+          state: "unknown",
+          recoveryAction: "check-status",
+        }
+      }
+      const completedAt = new Date().toISOString()
+      await this.#persistTransferSnapshot(
+        thawSourceSessionTransfer(this.#snapshot, transferId, completedAt),
+      )
+      if (packaged) {
+        await this.#outgoingTransferTransactions.remove(transferId, packaged.manifestDigest)
+          .catch((cleanupError) => this.#reportError(
+            "Domovoi could not remove a refused outgoing transfer package",
+            cleanupError,
+          ))
+      }
+      const reason = error instanceof SessionTransferStateError
+        ? error.reason
+        : "session-resource-unavailable"
+      this.#recordVersionedTransferReceipt({
+        sessionId: sourceSession.id,
+        targetMachineId: prepared.target.id,
+        method: params.method,
+        client: params.client,
+        checkpointCommit,
+        outcome: "refused",
+        reason,
+        startedAt,
+        completedAt,
+      })
+      return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
+    }
+  }
+
   #scheduleTransferExpiry(transferId: string): ReturnType<typeof setTimeout> {
     const expiry = setTimeout(() => this.#forgetTransfer(transferId), incomingTransferIdleMs)
     expiry.unref?.()
@@ -2801,6 +3105,62 @@ export class DomovoiDaemon {
           : this.#workspaceService.bundleSession !== undefined && this.#readTransferBundle !== undefined
         if (!canSend) {
           this.#error(socket, request.id, internalError, "This machine cannot send transfers")
+          return
+        }
+
+        if (params.contractVersion !== undefined && params.intentDigest !== undefined) {
+          const prepared = await this.#prepareTransferPreview({
+            sessionId: params.sessionId,
+            targetMachineId: params.targetMachineId,
+            client: params.client,
+            method: params.method,
+            ...(params.remote ? { remote: params.remote } : {}),
+          }, signal)
+          if (!prepared.preview.allowed || !prepared.target || !prepared.intent) {
+            const reason = prepared.preview.allowed
+              ? "session-state-invalid"
+              : prepared.preview.reason
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({ outcome: "refused", reason }),
+            })
+            return
+          }
+          if (prepared.preview.intentDigest !== params.intentDigest) {
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse({
+                outcome: "refused",
+                reason: "session-state-changed",
+              }),
+            })
+            return
+          }
+          const transferDeadline = new AbortController()
+          const timeout = setTimeout(() => transferDeadline.abort(), this.#sessionTransferTimeoutMs)
+          timeout.unref?.()
+          const transferSignal = signal
+            ? AbortSignal.any([signal, transferDeadline.signal])
+            : transferDeadline.signal
+          try {
+            const outcome = await this.#sendVersionedSessionTransfer(
+              params as RpcParams<"session.transfer"> & {
+                contractVersion: 1
+                intentDigest: string
+              },
+              { ...prepared, target: prepared.target, intent: prepared.intent },
+              transferSignal,
+            )
+            this.#send(socket, {
+              jsonrpc: "2.0",
+              id: request.id,
+              result: rpcMethods[method].result.parse(outcome),
+            })
+          } finally {
+            clearTimeout(timeout)
+          }
           return
         }
 
