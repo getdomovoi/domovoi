@@ -1336,6 +1336,79 @@ describe("transactional session transfer RPC", () => {
     socket.close()
   })
 
+  it.each([
+    ["bundle creation", "git-bundle", undefined, "source-bundle-create-unavailable", false],
+    ["ref publishing", "remote-ref", "origin", "source-ref-push-unavailable", false],
+  ] as const)(
+    "refuses preview before target contact when source %s is unavailable",
+    async (_label, method, remote, reason, canCreateBundle) => {
+      const { source } = await transferFixture()
+      const store = new SqliteWorkspaceStore(":memory:", source)
+      store.fleet.record({
+        id: targetMachineId,
+        label: "studio",
+        platform: "linux",
+        arch: "x64",
+        version: "0.0.1",
+        connection: "local",
+        capabilities: ["sessions"],
+        protocolVersion: "0.1.0",
+        transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      }, Date.now())
+      const connectToMachine = vi.fn(async () => ({
+        call: async () => ({
+          allowed: true,
+          targetProjectId: "project-target",
+          lineageCommit: baseCommit,
+        }),
+        close: () => {},
+      }))
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store,
+        authToken: "correct-horse-battery-staple",
+        workspaceService: {
+          inspect: async () => ({
+            root: source.project!.path,
+            name: source.project!.name,
+            branch: source.project!.branch,
+            head: baseCommit,
+          }),
+          createSessionWorkspace: async () => ({ path: "/unused", branch: "unused", baseCommit }),
+          removeSessionWorkspace: async () => {},
+          checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [] }),
+          restore: async () => ({ restoredCommit: checkpointCommit, recoveryCommit: checkpointCommit }),
+          transferFingerprint: async () => ({
+            headCommit: baseCommit,
+            digest: `sha256:${"e".repeat(64)}`,
+          }),
+          readIgnoredArtifactSource: async () => undefined,
+          ...(canCreateBundle ? {
+            bundleSession: async (_worktreePath: string, bundlePath: string) => ({
+              path: bundlePath,
+              commit: checkpointCommit,
+              incremental: false,
+            }),
+          } : {}),
+        },
+        connectToMachine,
+        artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+      })
+      running.push(daemon)
+      await daemon.start()
+      const socket = await openClient(daemon)
+      await expect(rpc(socket)("session.transferPreview", {
+        sessionId: source.sessions[0]!.id,
+        targetMachineId,
+        method,
+        ...(remote ? { remote } : {}),
+        client: "desktop",
+      })).resolves.toMatchObject({ result: { allowed: false, reason } })
+      expect(connectToMachine).not.toHaveBeenCalled()
+      socket.close()
+    },
+  )
+
   it("freezes and stages the source before committing one target owner", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-source-rpc-"))
     scratchDirectories.push(scratch)

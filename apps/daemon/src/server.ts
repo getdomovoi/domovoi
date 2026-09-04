@@ -51,6 +51,7 @@ import {
   type SessionTransferCoverage,
   type SessionTransferPreview,
   type SessionTransferResult,
+  type SourceRefusal,
   type TransferStatusResult,
   type SystemEmergencyStopResult,
   type ClientKind,
@@ -1488,6 +1489,18 @@ export class DomovoiDaemon {
     }
   }
 
+  #sourceTransferCapabilityRefusal(
+    method: "git-bundle" | "remote-ref",
+  ): SourceRefusal | undefined {
+    if (method === "git-bundle") {
+      if (!this.#workspaceService.bundleSession) return "source-bundle-create-unavailable"
+      return undefined
+    }
+    return this.#workspaceService.pushSessionRef
+      ? undefined
+      : "source-ref-push-unavailable"
+  }
+
   async #prepareTransferPreview(
     params: RpcParams<"session.transferPreview">,
     signal?: AbortSignal,
@@ -1496,6 +1509,8 @@ export class DomovoiDaemon {
     if (!session) return this.#refusedTransferPreview(params, "session-state-invalid")
     const sourceReady = sourcePreflight({ session })
     if (!sourceReady.allowed) return this.#refusedTransferPreview(params, sourceReady.reason)
+    const sourceCapability = this.#sourceTransferCapabilityRefusal(params.method)
+    if (sourceCapability) return this.#refusedTransferPreview(params, sourceCapability)
 
     const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
     const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
