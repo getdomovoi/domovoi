@@ -42,6 +42,22 @@ describe("sourcePreflight", () => {
     expect(sourcePreflight({ session: withoutWorktree as SessionSummary }))
       .toEqual({ allowed: false, reason: "session-has-no-worktree" })
   })
+
+  it("refuses to move an owner recovered without target confirmation", () => {
+    expect(sourcePreflight({
+      session: {
+        ...session,
+        sourceRecovery: {
+          transferId: `transfer-${"c".repeat(32)}`,
+          targetMachineId,
+          generation: session.ownershipGeneration ?? 0,
+          manifestDigest: `sha256:${"d".repeat(64)}`,
+          recoveredAt: "2026-09-03T22:00:00.000Z",
+          decidedBy: { client: "desktop" },
+        },
+      },
+    })).toEqual({ allowed: false, reason: "session-recovery-unresolved" })
+  })
 })
 
 describe("planTransfer", () => {

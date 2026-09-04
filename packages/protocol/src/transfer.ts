@@ -23,6 +23,7 @@ export const sourceRefusalSchema = z.enum([
   "session-turn-active",
   "session-archived",
   "session-has-no-worktree",
+  "session-recovery-unresolved",
 ])
 
 export type SourceRefusal = z.infer<typeof sourceRefusalSchema>
@@ -31,6 +32,7 @@ export const sourceRefusalMessage: Record<SourceRefusal, string> = {
   "session-turn-active": "This session is mid turn, so it cannot move until the turn settles",
   "session-archived": "This session is archived, so there is nothing left to move",
   "session-has-no-worktree": "This session has no worktree, so there is nothing to move",
+  "session-recovery-unresolved": "Confirm the earlier target's ownership before moving this recovered session",
 }
 export type TransferMethod = z.infer<typeof transferMethodSchema>
 export type TransferStep = z.infer<typeof transferStepSchema>
@@ -48,6 +50,9 @@ export function sourcePreflight(input: { session: SessionSummary }): SourcePrefl
   }
   if (session.state === "archiving" || session.state === "archived") {
     return { allowed: false, reason: "session-archived" }
+  }
+  if (session.sourceRecovery) {
+    return { allowed: false, reason: "session-recovery-unresolved" }
   }
   if (!session.workspacePath) return { allowed: false, reason: "session-has-no-worktree" }
   return { allowed: true }
