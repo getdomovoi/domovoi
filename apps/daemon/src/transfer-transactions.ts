@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { open, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { open, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import {
@@ -31,9 +31,17 @@ type TransferFailureReason = Extract<TransferStatusResult, { state: "failed" }>[
 
 const manifestFile = "manifest.json"
 const statusFile = "status.json"
+const activityFile = "activity.json"
 const membersDirectory = "members"
 const chunksDirectory = "chunks"
 const chunkName = /^(0|[1-9][0-9]*)-(0|1)\.chunk$/u
+
+export const defaultTransferJournalRetentionMs = 7 * 24 * 60 * 60 * 1_000
+
+type FileTransferTransactionOptions = {
+  retentionMs?: number
+  now?: () => number
+}
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`
@@ -47,9 +55,16 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 export class FileTransferTransactions {
   readonly #root: string
+  readonly #retentionMs: number
+  readonly #now: () => number
 
-  constructor(root: string) {
+  constructor(root: string, options: FileTransferTransactionOptions = {}) {
     this.#root = root
+    this.#retentionMs = options.retentionMs ?? defaultTransferJournalRetentionMs
+    this.#now = options.now ?? Date.now
+    if (!Number.isSafeInteger(this.#retentionMs) || this.#retentionMs <= 0) {
+      throw new RangeError("Transfer journal retention must be a positive integer")
+    }
   }
 
   async prepare(
@@ -82,6 +97,11 @@ export class FileTransferTransactions {
           JSON.stringify({ state: "receiving", transferId: manifest.transferId }),
           { flag: "wx", mode: 0o600, flush: true },
         ),
+        writeFile(
+          join(temporary, activityFile),
+          JSON.stringify({ lastActivityAt: this.#now() }),
+          { flag: "wx", mode: 0o600, flush: true },
+        ),
       ])
       try {
         await rename(temporary, path)
@@ -102,6 +122,7 @@ export class FileTransferTransactions {
         reason: "digest-mismatch",
       })
     }
+    await this.#touch(manifest.transferId)
     const status = await this.#status(manifest.transferId)
     if (status.state === "committed") return transferPrepareResultSchema.parse(status)
     if (status.state === "aborted") {
@@ -133,6 +154,7 @@ export class FileTransferTransactions {
   async acceptMember(rawParams: TransferMemberParams): Promise<TransferMemberResult> {
     const params = transferMemberParamsSchema.parse(rawParams)
     const stored = await this.#stored(params.transferId)
+    await this.#touch(params.transferId)
     const descriptor = stored.manifest.members.find(
       (member) => member.memberId === params.memberId,
     )
@@ -320,6 +342,42 @@ export class FileTransferTransactions {
     return aborted
   }
 
+  async remove(transferId: string, manifestDigest: string): Promise<void> {
+    await this.manifest(transferId, manifestDigest)
+    await rm(this.#path(transferId), { recursive: true, force: true })
+  }
+
+  async pruneExpired(): Promise<string[]> {
+    await mkdir(this.#root, { recursive: true, mode: 0o700 })
+    const removed: string[] = []
+    for (const entry of await readdir(this.#root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const parsed = transferIdSchema.safeParse(entry.name)
+      if (!parsed.success) continue
+      let lastActivityAt: number
+      try {
+        const raw: unknown = JSON.parse(
+          await readFile(join(this.#path(parsed.data), activityFile), "utf8"),
+        )
+        if (typeof raw !== "object" || raw === null) throw new Error("invalid activity")
+        const value = (raw as Record<string, unknown>).lastActivityAt
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new Error("invalid activity")
+        }
+        lastActivityAt = value
+      } catch {
+        // Journals written before the activity marker, or damaged after a
+        // crash, still need a retention bound. Directory metadata is a
+        // conservative fallback because every published status changes it.
+        lastActivityAt = (await stat(this.#path(parsed.data))).mtimeMs
+      }
+      if (this.#now() - lastActivityAt <= this.#retentionMs) continue
+      await rm(this.#path(parsed.data), { recursive: true, force: true })
+      removed.push(parsed.data)
+    }
+    return removed.sort()
+  }
+
   #path(transferId: string): string {
     return join(this.#root, transferIdSchema.parse(transferId))
   }
@@ -358,6 +416,15 @@ export class FileTransferTransactions {
       join(this.#path(transferId), statusFile),
       transferStatusResultSchema.parse(status),
     )
+    await this.#touch(transferId)
+  }
+
+  async #touch(transferId: string): Promise<void> {
+    const lastActivityAt = this.#now()
+    if (!Number.isFinite(lastActivityAt) || lastActivityAt < 0) {
+      throw new Error("Transfer journal clock is invalid")
+    }
+    await writeJson(join(this.#path(transferId), activityFile), { lastActivityAt })
   }
 
   async #missingMembers(manifest: SessionTransferManifest): Promise<string[]> {

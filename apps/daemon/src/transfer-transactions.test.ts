@@ -15,6 +15,7 @@ import { FileTransferTransactions } from "./transfer-transactions.js"
 
 const scratchDirectories: string[] = []
 const transferId = `transfer-${"a".repeat(32)}`
+const secondTransferId = `transfer-${"d".repeat(32)}`
 const sourceMachineId = `machine-${"b".repeat(32)}`
 const targetMachineId = `machine-${"c".repeat(32)}`
 const sha256 = (character: string) => `sha256:${character.repeat(64)}`
@@ -32,11 +33,15 @@ async function journal() {
   return { root, transactions: new FileTransferTransactions(root) }
 }
 
-function manifestFor(stateBytes: Buffer, repositoryBytes: Buffer): SessionTransferManifest {
+function manifestFor(
+  stateBytes: Buffer,
+  repositoryBytes: Buffer,
+  id = transferId,
+): SessionTransferManifest {
   const digest = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
   return sessionTransferManifestSchema.parse({
     version: 1,
-    transferId,
+    transferId: id,
     sessionId: "session-1",
     sourceMachineId,
     targetMachineId,
@@ -186,5 +191,85 @@ describe("file transfer transaction journal", () => {
     const reopened = new FileTransferTransactions(root)
     await expect(reopened.status(transferId, manifestDigest)).resolves.toEqual(committed)
     await expect(reopened.abort(transferId, manifestDigest)).resolves.toEqual(committed)
+  })
+
+  it("removes only the exact terminal transaction and all of its bytes", async () => {
+    const { transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const repositoryBytes = Buffer.from("repository")
+    const manifest = manifestFor(stateBytes, repositoryBytes)
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    await transactions.acceptMember({
+      transferId,
+      memberId: "state",
+      sequence: 0,
+      bytes: stateBytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+    await transactions.acceptMember({
+      transferId,
+      memberId: "repository",
+      sequence: 0,
+      bytes: repositoryBytes.toString("base64"),
+      final: true,
+      client: "desktop",
+    })
+
+    await expect(transactions.remove(transferId, sha256("0")))
+      .rejects.toThrow("Transfer manifest digest changed")
+    await expect(transactions.readMember(transferId, manifestDigest, "repository"))
+      .resolves.toEqual(repositoryBytes)
+
+    await transactions.remove(transferId, manifestDigest)
+    await expect(transactions.status(transferId, manifestDigest))
+      .resolves.toEqual({ state: "unknown", transferId })
+  })
+
+  it("prunes abandoned packages by durable last activity", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-retention-"))
+    scratchDirectories.push(scratch)
+    let now = 1_000
+    const transactions = new FileTransferTransactions(join(scratch, "transactions"), {
+      retentionMs: 100,
+      now: () => now,
+    })
+    const first = manifestFor(Buffer.from("first-state"), Buffer.from("first-repository"))
+    const firstDigest = sessionTransferManifestDigest(first)
+    await transactions.prepare(first, firstDigest)
+    now = 1_050
+    const second = manifestFor(
+      Buffer.from("second-state"),
+      Buffer.from("second-repository"),
+      secondTransferId,
+    )
+    const secondDigest = sessionTransferManifestDigest(second)
+    await transactions.prepare(second, secondDigest)
+
+    now = 1_110
+    await expect(transactions.pruneExpired()).resolves.toEqual([transferId])
+    await expect(transactions.status(transferId, firstDigest))
+      .resolves.toEqual({ state: "unknown", transferId })
+    await expect(transactions.status(secondTransferId, secondDigest))
+      .resolves.toMatchObject({ state: "receiving", transferId: secondTransferId })
+  })
+
+  it("does not let a missing activity marker evade the retention bound", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-retention-fallback-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "transactions")
+    const transactions = new FileTransferTransactions(root, {
+      retentionMs: 100,
+      now: () => Date.now() + 1_000,
+    })
+    const manifest = manifestFor(Buffer.from("state"), Buffer.from("repository"))
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    await rm(join(root, transferId, "activity.json"))
+
+    await expect(transactions.pruneExpired()).resolves.toEqual([transferId])
+    await expect(transactions.status(transferId, manifestDigest))
+      .resolves.toEqual({ state: "unknown", transferId })
   })
 })
