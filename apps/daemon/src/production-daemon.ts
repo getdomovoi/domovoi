@@ -65,7 +65,7 @@ export type ProductionDaemonRuntime = {
 
 export type ProductionDaemonDependencies = {
   parseEnvironment: typeof parseDaemonEnvironment
-  loadOrCreateToken(path: string): Promise<string>
+  loadOrCreateToken(path: string, deadline: OperationDeadline): Promise<string>
   loadOrCreateIdentity(
     path: string,
     defaults: { label: string },
@@ -115,10 +115,10 @@ export async function createProductionDaemonWithDependencies(
     const [authToken, machineIdentity] = await beforeDeadline(Promise.all([
       config.authToken
         ? Promise.resolve(config.authToken)
-        : dependencies.loadOrCreateToken(config.credentialPath),
+        : dependencies.loadOrCreateToken(config.credentialPath, deadline),
       dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
     ]), deadline)
-    const secret = await beforeDeadline(createLocalOwnerSecret(homeDirectory, authToken), deadline)
+    const secret = await beforeDeadline(createLocalOwnerSecret(homeDirectory, authToken, deadline), deadline)
     deadline.throwIfExpired()
     const identity = { instanceId: randomUUID(), machineId: machineIdentity.id, protocolVersion }
     const credential: ProductionDaemonCredential = config.authToken

@@ -15,6 +15,8 @@ const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs
 const directories: string[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.mocked(open).mockReset().mockImplementation(actual.open)
+  vi.mocked(link).mockReset().mockImplementation(actual.link)
   await removeScratchDirectories(directories.splice(0))
 })
 async function setup() {
