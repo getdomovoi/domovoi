@@ -13,6 +13,7 @@ import {
   staleHeartbeatMs,
   offlineHeartbeatMs,
 } from "./fleet.js"
+import { rpcMethods } from "./rpc.js"
 
 const machine = {
   id: `machine-${"a".repeat(32)}`,
@@ -300,6 +301,22 @@ describe("fleet machine WSL facts", () => {
   it("keeps the facts through observed facts and the described machine", () => {
     expect(fleetMachineFactsSchema.parse({ ...descriptor, connection: "local", wsl })).toMatchObject({ wsl })
     expect(fleetMachineSchema.parse({ ...machine, wsl })).toMatchObject({ wsl })
+  })
+
+  it("refuses WSL facts from any platform but linux, wherever a descriptor is read", () => {
+    for (const platform of ["win32", "darwin"]) {
+      expect(fleetMachineDescriptorSchema.safeParse({ ...descriptor, platform, wsl }).success).toBe(false)
+      expect(rpcMethods["fleet.heartbeat"].result.safeParse({ ...descriptor, platform, wsl }).success).toBe(false)
+      expect(fleetMachineFactsSchema.safeParse({ ...descriptor, platform, connection: "local", wsl }).success).toBe(false)
+      expect(fleetMachineSchema.safeParse({ ...machine, platform, wsl }).success).toBe(false)
+      expect(fleetSnapshotSchema.safeParse({ entries: [described({ ...machine, platform, wsl })] }).success).toBe(false)
+    }
+  })
+
+  it("names the field it refuses so a heartbeat log says what was wrong", () => {
+    const refused = fleetMachineDescriptorSchema.safeParse({ ...descriptor, platform: "win32", wsl })
+    expect(refused.success).toBe(false)
+    if (!refused.success) expect(refused.error.issues.map((issue) => issue.path)).toContainEqual(["wsl"])
   })
 })
 

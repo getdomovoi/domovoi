@@ -35,8 +35,12 @@ export const machineHeartbeatSchema = z.object({
   lastSeenAt: z.string().datetime({ offset: true }),
 }).strict()
 
-function refineCapabilities(
-  machine: { capabilities: MachineCapability[] },
+// The facts a machine reports about itself are read in three places: its
+// heartbeat, its enrollment descriptor, and the fleet entry built from either.
+// One refinement serves all three, so a descriptor no place would keep is
+// refused everywhere.
+function refineDescriptor(
+  machine: { platform: string; capabilities: MachineCapability[]; wsl?: MachineWslFacts | undefined },
   context: z.RefinementCtx,
 ): void {
   if (new Set(machine.capabilities).size !== machine.capabilities.length) {
@@ -44,6 +48,15 @@ function refineCapabilities(
       code: "custom",
       path: ["capabilities"],
       message: "Machine capabilities must be unique",
+    })
+  }
+  // Only a linux daemon runs inside a distribution. Any other platform
+  // claiming one would be labelled as a WSL machine it is not.
+  if (machine.wsl !== undefined && machine.platform !== "linux") {
+    context.addIssue({
+      code: "custom",
+      path: ["wsl"],
+      message: "WSL facts describe a linux daemon inside a distribution",
     })
   }
 }
@@ -86,7 +99,7 @@ const fleetMachineDescriptorObject = z.object({
 
 // Only target-authored facts cross the heartbeat RPC. Health, route provenance,
 // connection kind and timestamps are observations made by the receiving daemon.
-export const fleetMachineDescriptorSchema = fleetMachineDescriptorObject.superRefine(refineCapabilities)
+export const fleetMachineDescriptorSchema = fleetMachineDescriptorObject.superRefine(refineDescriptor)
 
 const fleetMachineFactsObject = fleetMachineDescriptorObject.extend({
   connection: fleetConnectionKindSchema,
@@ -94,7 +107,7 @@ const fleetMachineFactsObject = fleetMachineDescriptorObject.extend({
 }).strict()
 
 function refineObservedFacts(machine: z.infer<typeof fleetMachineFactsObject>, context: z.RefinementCtx): void {
-  refineCapabilities(machine, context)
+  refineDescriptor(machine, context)
   if (machine.connection === "direct" && machine.verifiedRoute === undefined) {
     context.addIssue({ code: "custom", path: ["verifiedRoute"], message: "A direct connection requires a source-verified route" })
   }
