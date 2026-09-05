@@ -6,6 +6,7 @@ import { arch, homedir, hostname, platform, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  buildVersion,
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
@@ -1003,7 +1004,7 @@ export class DomovoiDaemon {
       name: machineName,
       platform: machinePlatform,
       arch: machineArch,
-      version: "0.0.1",
+      version: buildVersion,
       connection: "local",
       reachable: true,
       providers: [],

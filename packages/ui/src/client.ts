@@ -1,4 +1,5 @@
 import {
+  buildVersion,
   daemonAuthenticationErrorCode,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
@@ -160,7 +161,7 @@ function requestAbortError(signal: AbortSignal): Error {
 
 // Every greeting this package sends carries the same build, so pairing and the
 // workspace connection cannot drift apart.
-export const clientVersion = "0.0.1"
+export const clientVersion = buildVersion
 
 export class DomovoiClient extends EventTarget {
   #url: string

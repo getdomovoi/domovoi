@@ -2,7 +2,8 @@ import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { WebSocket } from "ws"
 
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceService } from "./workspace.js"
@@ -36,6 +37,7 @@ const workspaceService = {
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
+  vi.restoreAllMocks()
 })
 
 async function startDaemon(): Promise<DomovoiDaemon> {
@@ -53,7 +55,10 @@ async function startDaemon(): Promise<DomovoiDaemon> {
 async function runCli(daemon: DomovoiDaemon, args: readonly string[]) {
   const address = daemon.address!
   return new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
+    const child = spawn(process.execPath, [
+      "--import", new URL("../test-fixtures/release-version.mjs", import.meta.url).href,
+      cliPath, ...args,
+    ], {
       env: {
         ...process.env,
         // Node 22 reports node:sqlite as experimental on CI. Keep stderr as a
@@ -89,17 +94,23 @@ async function runCli(daemon: DomovoiDaemon, args: readonly string[]) {
 
 describe("domovoid CLI connection identity", () => {
   it("pairs through a real daemon socket", async () => {
+    const received = vi.spyOn(WebSocket.prototype, "emit")
     const result = await runCli(await startDaemon(), ["pair"])
 
     expect(result).toMatchObject({ exitCode: 0, stderr: "" })
     expect(result.stdout).toContain("Pairing code:")
     expect(result.stdout).toContain("Enter it on the machine you are pairing from.")
+    expect(received.mock.calls.some(([event, bytes]) => event === "message"
+      && JSON.parse(String(bytes)).params?.clientVersion === "9.8.7-test")).toBe(true)
   })
 
   it("opens a project through a real daemon socket", async () => {
+    const received = vi.spyOn(WebSocket.prototype, "emit")
     const result = await runCli(await startDaemon(), ["open", "/code/project"])
 
     expect(result).toMatchObject({ exitCode: 0, stderr: "" })
     expect(result.stdout).toBe("Opened /code/project\n")
+    expect(received.mock.calls.some(([event, bytes]) => event === "message"
+      && JSON.parse(String(bytes)).params?.clientVersion === "9.8.7-test")).toBe(true)
   })
 })

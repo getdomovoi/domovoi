@@ -1,6 +1,7 @@
 import { WebSocket } from "ws"
 
 import {
+  buildVersion,
   daemonAuthenticationErrorCode,
   credentialSchema,
   devicePairResultSchema,
@@ -224,7 +225,7 @@ function handshakeIdentity(result: unknown): string {
 async function greet(channel: MachineChannel, credential: string, deadline: OperationDeadline): Promise<string> {
   channel.rememberSecret(credential)
   const result = await channel.call("system.hello", {
-    client: "machine", clientVersion: "0.0.1", protocolVersion, authToken: credential,
+    client: "machine", clientVersion: buildVersion, protocolVersion, authToken: credential,
   }, undefined, deadline)
   return handshakeIdentity(result)
 }

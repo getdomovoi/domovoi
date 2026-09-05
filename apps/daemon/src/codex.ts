@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
-import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/protocol"
+import { buildVersion, type ApprovalDecision, type ProviderModel, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import { redactDurableText } from "./secret-redaction.js"
@@ -369,7 +369,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     })
     try {
       await this.#request("initialize", {
-        clientInfo: { name: "domovoi", title: "Domovoi", version: "0.0.1" },
+      clientInfo: { name: "domovoi", title: "Domovoi", version: buildVersion },
       })
       if (this.#transport !== transport) {
         throw new Error("Codex transport disconnected during initialization")
