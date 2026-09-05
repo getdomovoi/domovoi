@@ -10,6 +10,13 @@ const daemon = await createProductionDaemonWithDependencies({
   createDaemon: (options) => productionDaemonDependencies.createDaemon({ ...options, port: 0 }),
 })
 const watchdog = setTimeout(() => process.exit(1), 60_000)
-process.once("SIGTERM", () => { void daemon.stop().finally(() => { clearTimeout(watchdog) }) })
+process.once("SIGTERM", () => {
+  // A failed stop keeps the watchdog: whatever it left open must not outlive
+  // the harness budget, and the exit status must say the stop failed.
+  daemon.stop().then(() => { clearTimeout(watchdog) }, (error) => {
+    process.stderr.write(`keyring fixture stop failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
+    process.exitCode = 1
+  })
+})
 const address = await daemon.start()
 process.stdout.write(`${JSON.stringify({ url: address.url })}\n`)
