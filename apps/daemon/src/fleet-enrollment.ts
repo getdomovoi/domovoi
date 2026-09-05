@@ -364,14 +364,17 @@ export class FleetEnrollmentService {
       if (!held || machineCredentialDigest(id, held) !== entry.credentialDigest) throw new MachinePairingRequiredError()
       deadline.throwIfExpired()
       this.#input.registry!.refreshAuthenticated({
-        ...descriptor, connection: "direct",
+        ...descriptor,
         // SSH belongs to this source's configuration. Remembering it here
         // would keep dialing it after the operator removed that configuration.
         // Refresh peer facts/contact without claiming the old direct route
         // authenticated now, and never put a local forward in advertisements.
-        ...(connection.routeSource === "ssh"
-          ? { verifiedRoute: entry.facts.verifiedRoute! }
-          : { verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() } }),
+        // A row that never stored a direct route stays an SSH observation.
+        ...(connection.routeSource !== "ssh"
+          ? { connection: "direct", verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() } }
+          : entry.facts.verifiedRoute
+            ? { connection: "direct", verifiedRoute: entry.facts.verifiedRoute }
+            : { connection: "ssh" }),
       }, entry.credentialDigest, receivedAt)
     } catch (error) {
       if (this.#heartbeats.get(id) === controller && !this.#stopped) {

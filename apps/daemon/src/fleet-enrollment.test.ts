@@ -100,6 +100,32 @@ describe("fleet enrollment coordinator", () => {
     expect(f.call).toHaveBeenCalledWith("device.revokeCurrent", {}, undefined, expect.anything())
   })
 
+  it("refreshes an enrolled machine over SSH when no direct route was ever stored", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    await f.service.stop()
+    // A row written before this daemon stored verified routes keeps its
+    // credential but has no source-verified direct endpoint to preserve.
+    f.database.prepare("UPDATE fleet_machines SET verified_route = NULL, connection = 'lan' WHERE id = ?").run(targetId)
+    expect(f.registry.enrolled()[0]?.facts.verifiedRoute).toBeUndefined()
+    const forward = "ws://127.0.0.1:47900/rpc"
+    const configured = f.create([{ machineId: targetId, endpoint: forward }])
+    const refresh = vi.spyOn(f.registry, "refreshAuthenticated")
+    f.open.mockImplementation(async (input) => {
+      if (input.endpoint !== forward) throw new Error("direct endpoint is down")
+      return { call: f.call, close: f.close }
+    })
+    f.time(20_000)
+    await configured.refresh()
+    expect(refresh).toHaveReturnedWith(true)
+    const [entry] = configured.snapshot().entries
+    expect(entry).toMatchObject({ machine: {
+      health: "healthy", connection: "ssh", heartbeat: { lastSeenAt: new Date(20_000).toISOString() },
+    } })
+    expect(entry?.kind === "machine" && "verifiedRoute" in entry.machine).toBe(false)
+    expect(JSON.stringify(configured.snapshot())).not.toContain(forward)
+  })
+
   it("renders a snapshot without reading the keychain again after a successful mutation", async () => {
     const f = fixture()
     expect(await f.service.enroll(params)).toMatchObject({ outcome: "enrolled" })
