@@ -327,7 +327,10 @@ export function installService(target: ServiceTarget, effects: Pick<ServiceEffec
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
 type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt">
-type ServiceRemovalResult = ServiceRemovalPlan & { profileRecovery: "recorded" | "operator-confirmation-required" | "not-needed" }
+type ServiceRemovalResult = ServiceRemovalPlan & {
+  profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
+  profileRecoveryDetail?: string
+}
 
 async function removeWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
@@ -369,7 +372,11 @@ async function removeWithDeadline(
     }
     deadline.throwIfExpired()
     if (recovery.kind === "receipt") effects.writeRemovalReceipt(home, lease, serviceRemovalReceipt(recovery, target.platform), deadline)
-    return { ...plan, profileRecovery: recovery.kind === "receipt" ? "recorded" : recovery.kind }
+    return {
+      ...plan,
+      profileRecovery: recovery.kind === "receipt" ? "recorded" : recovery.kind,
+      ...(recovery.kind === "proof-unavailable" ? { profileRecoveryDetail: recovery.reason } : {}),
+    }
   } finally {
     // A late config deletion must not outlive the lease and erase a successor's
     // launch settings. On expiry the CLI retains it until process exit.
@@ -519,6 +526,9 @@ export async function runServiceCommand(
       )
       if (plan.profileRecovery === "operator-confirmation-required") {
         dependencies.stdout("The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run domovoid profile recover --confirm-no-supervisor.\n")
+      }
+      if (plan.profileRecovery === "proof-unavailable") {
+        dependencies.stdout(`${plan.profileRecoveryDetail}. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run domovoid profile recover --confirm-no-supervisor.\n`)
       }
       return 0
     }
