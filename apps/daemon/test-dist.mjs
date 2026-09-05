@@ -34,6 +34,7 @@ try {
 }
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+assert.equal(manifest.engines.node, ">=22.13.0", "The daemon requires unflagged node:sqlite")
 
 function runCli(...args) {
   return spawnSync(process.execPath, ["./dist/index.js", ...args], {
