@@ -57,8 +57,7 @@ export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarg
   }
 }
 
-const loopbackHosts = ["127.0.0.1", "localhost"] as const
-const websocketSchemes = ["ws:", "wss:"] as const
+const loopbackSources = "ws://127.0.0.1:* wss://127.0.0.1:* ws://localhost:* wss://localhost:*"
 
 function endpointSource(endpointUrl: string | undefined): string | undefined {
   if (!endpointUrl) return undefined
@@ -73,15 +72,10 @@ function endpointSource(endpointUrl: string | undefined): string | undefined {
 }
 
 export function rendererContentSecurityPolicy(endpointUrl: string | undefined): string {
-  const sources = new Set(["'self'"])
-  for (const host of loopbackHosts) {
-    for (const scheme of websocketSchemes) sources.add(`${scheme}//${host}:*`)
-  }
   const endpoint = endpointSource(endpointUrl)
-  if (endpoint) sources.add(endpoint)
   return [
     "default-src 'self'",
-    `connect-src ${[...sources].join(" ")}`,
+    `connect-src 'self' ${loopbackSources}${endpoint ? ` ${endpoint}` : ""}`,
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self' data:",
     "img-src 'self' data:",

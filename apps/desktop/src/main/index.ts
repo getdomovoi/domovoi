@@ -89,11 +89,8 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
-// Desktop attaches to whichever daemon already owns this profile, the
-// installed service or another owner, and starts its own only when the
-// profile is free. Either way the daemon is assembled from the same
-// environment the CLI and the service use, so a paired device keeps meeting
-// the same identity and credential no matter who started it.
+// Desktop attaches to whichever daemon owns this profile and starts its own
+// only when the profile is free, from the environment the CLI and service use.
 const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
   environment: process.env,
   homeDirectory: homedir(),
@@ -207,14 +204,12 @@ function createWindow(): void {
     if (target.kind === "url") void window.loadURL(target.url)
     else void window.loadFile(target.path)
   }
-  // The document's policy names the acquired endpoint, so the load waits for
-  // the acquisition to settle. The smoke never acquires and loads at once.
+  // The document's policy names the acquired endpoint, so the load waits.
   if (launchSmoke) load()
   else void desktopDaemon.acquire().then(load, () => {})
 }
 
-// The renderer's policy is served with its document rather than pinned in the
-// markup, so connect-src can name the endpoint that was actually acquired.
+// Served with the document so connect-src can name the acquired endpoint.
 function serveRendererPolicy(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const target = mainRendererTarget

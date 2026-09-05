@@ -94,8 +94,7 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
     daemonRequest(event)
     return deps.rpcEndpoint()
   })
-  // A reconnect rereads the owner record for the current endpoint instead of
-  // trusting the URL the renderer cached before the owner restarted.
+  // A reconnect rereads the owner record instead of a cached URL.
   ipcMain.handle("domovoi:rpc-endpoint-reconnect", (event) => {
     daemonRequest(event)
     return deps.reconnectRpcEndpoint()

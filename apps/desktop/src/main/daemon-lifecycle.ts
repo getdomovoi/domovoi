@@ -36,23 +36,8 @@ export class DesktopDaemonLifecycle {
   }
 
   async #stop(): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const deadline = setTimeout(resolve, this.releaseTimeoutMs)
-      deadline.unref()
-      let releasing: Promise<void>
-      try {
-        releasing = this.release()
-      } catch (error) {
-        releasing = Promise.reject(error)
-      }
-      void releasing.then(() => {
-        clearTimeout(deadline)
-        resolve()
-      }, (error: unknown) => {
-        clearTimeout(deadline)
-        reject(error)
-      })
-    })
+    const deadline = new Promise<void>((resolve) => { setTimeout(resolve, this.releaseTimeoutMs).unref() })
+    await Promise.race([this.release(), deadline])
   }
 }
 
