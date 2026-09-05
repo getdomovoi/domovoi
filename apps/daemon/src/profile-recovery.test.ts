@@ -48,7 +48,7 @@ function environment(home: string) {
     ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1",
     DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0", DOMOVOI_AUTH_TOKEN: undefined,
     DOMOVOI_CREDENTIAL_PATH: join(home, ".domovoi", "daemon.token"),
-    DOMOVOI_MACHINE_IDENTITY_PATH: join(home, ".domovoi", "machine-identity.json"),
+    DOMOVOI_MACHINE_IDENTITY_PATH: join(home, ".domovoi", "machine.json"),
     DOMOVOI_TLS_CERT_PATH: undefined, DOMOVOI_TLS_KEY_PATH: undefined,
     DOMOVOI_ADVERTISE_HOST: undefined, DOMOVOI_ALLOWED_ORIGINS: undefined,
     DOMOVOI_ALLOW_REMOTE_TRANSPORT: "0",

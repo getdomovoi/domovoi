@@ -12,6 +12,7 @@ import {
   readLocalOwnerCredential, readLocalOwnerRecord, readLocalOwnerSecret, readLocalProfileFile, type ReadyLocalOwner,
 } from "./local-owner-record.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "./profile-lease.js"
+import { retireRemovedLocalOwner } from "./local-owner-removal.js"
 import {
   createProductionDaemonWithDependencies, productionDaemonDependencies,
   type ProductionDaemonHandle, type ProductionDaemonOptions,
@@ -148,8 +149,9 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     }
     // Lease freedom alone is not a shutdown record. A crashed service keeps
     // its record, and an installed but restarting service keeps its config.
-    if (options.mode !== "start-or-attach" || (record && record.state !== "none")
+    if (options.mode !== "start-or-attach"
       || existsSync(serviceConfigurationPath(homeDirectory, process.platform))) return refused("owner-unreachable")
+    if (record && record.state !== "none" && !retireRemovedLocalOwner(homeDirectory, lease, record)) return refused("owner-unreachable")
     deadline.throwIfExpired()
     const ownedLease = lease
     lease = undefined

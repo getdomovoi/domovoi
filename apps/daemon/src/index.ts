@@ -5,6 +5,7 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { runOpenCommand } from "./open-command.js"
@@ -245,6 +246,14 @@ async function main() {
     // The user must stop the daemon before removing an indexed credential.
     process.exitCode = runFleetKeychainCommand(args, {
       credentials: new MachineCredentialStore(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "profile") {
+    process.exitCode = runProfileCommand(args, {
+      homeDirectory: homedir(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

@@ -14,6 +14,7 @@ const ownerFields = {
   ...localOwnerIdentitySchema.shape,
   version: z.literal(1),
   owner: z.enum(["daemon", "desktop"]),
+  serviceRegistrationId: z.uuid().optional(),
   credential: z.discriminatedUnion("source", [
     z.object({ source: z.literal("environment") }).strict(),
     z.object({ source: z.literal("file"), path: absolutePath }).strict(),
