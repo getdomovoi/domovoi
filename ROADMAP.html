@@ -693,6 +693,12 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
+<li>[ ] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
+<ul>
+<li>Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not grant the initiating desktop a remote client credential. Until a separate client-admission slice exists, remote Use and Terminal stay disabled with a reason naming that missing credential. Direct phone-to-daemon client pairing is unchanged.
+</li>
+</ul>
+</li>
 <li>[ ] Implement one transport abstraction with this order:
 <ol>
 <li>loopback or OS-private IPC;

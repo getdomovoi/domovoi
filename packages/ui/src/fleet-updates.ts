@@ -1,4 +1,6 @@
-import type { FleetMachine } from "@getdomovoi/protocol"
+import type { FleetEntry, FleetMachine } from "@getdomovoi/protocol"
+
+import { fleetMachines } from "./fleet-entries.js"
 
 const versionPattern = /^(\d+)\.(\d+)\.(\d+)$/
 
@@ -20,9 +22,9 @@ function isBehind(left: [number, number, number], right: [number, number, number
  * Domovoi cannot read is ignored rather than treated as oldest or newest: an
  * unreadable version is an unknown, and a badge is a claim.
  */
-export function newestFleetVersion(machines: readonly FleetMachine[]): string | undefined {
+export function newestFleetVersion(entries: readonly FleetEntry[]): string | undefined {
   let newest: { version: string; parts: [number, number, number] } | undefined
-  for (const machine of machines) {
+  for (const machine of fleetMachines(entries)) {
     const parts = readVersion(machine.version)
     if (!parts) continue
     if (!newest || isBehind(newest.parts, parts)) newest = { version: machine.version, parts }
@@ -38,11 +40,11 @@ export function newestFleetVersion(machines: readonly FleetMachine[]): string | 
  */
 export function fleetUpdateAvailable(
   machine: FleetMachine,
-  machines: readonly FleetMachine[],
+  entries: readonly FleetEntry[],
 ): string | undefined {
   const current = readVersion(machine.version)
   if (!current) return undefined
-  const newest = newestFleetVersion(machines)
+  const newest = newestFleetVersion(entries)
   const newestParts = newest ? readVersion(newest) : undefined
   if (!newest || !newestParts) return undefined
   return isBehind(current, newestParts) ? newest : undefined

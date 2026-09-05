@@ -171,11 +171,6 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     const label = validateLabel(input.label)
     if (input.binding.kind === "machine") machineIdSchema.parse(input.binding.machineId)
     else clientKindSchema.parse(input.binding.client)
-    const active = this.#database
-      .prepare("SELECT COUNT(*) AS total FROM paired_devices WHERE revoked_at IS NULL")
-      .get() as { total: number }
-    if (active.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
-
     const token = randomBytes(32).toString("base64url")
     const device: PairedDevice = {
       id: `device-${randomBytes(16).toString("hex")}`,
@@ -183,7 +178,22 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       pairedAt: new Date().toISOString(),
       binding: input.binding,
     }
-    this.#database
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      // A newly granted code replaces this source machine's old authority.
+      // Labels are presentation only; no other machine or client is affected.
+      // Revoke and insert are atomic, including a failed insert at capacity.
+      if (input.binding.kind === "machine") {
+        this.#database.prepare(`
+          UPDATE paired_devices SET revoked_at = ?
+          WHERE credential_role = 'machine' AND machine_id = ? AND revoked_at IS NULL
+        `).run(device.pairedAt, input.binding.machineId)
+      }
+      const active = this.#database
+        .prepare("SELECT COUNT(*) AS total FROM paired_devices WHERE revoked_at IS NULL")
+        .get() as { total: number }
+      if (active.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
+      this.#database
       .prepare(`
         INSERT INTO paired_devices (
           id, label, token_hash, paired_at, credential_role, client_kind, machine_id
@@ -198,7 +208,12 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         input.binding.kind === "client" ? input.binding.client : null,
         input.binding.kind === "machine" ? input.binding.machineId : null,
       )
-    return { device, token }
+      this.#database.exec("COMMIT")
+      return { device, token }
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
   }
 
   verify(token: string): VerifiedDeviceCredential | undefined {

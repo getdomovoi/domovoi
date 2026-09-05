@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { resolve } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
@@ -186,7 +187,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       event: { type: "content_block_delta", delta: { type: "text_delta", text: "Tests pass." } },
     })
     calls[0]!.query.emit({ type: "result", subtype: "success", session_id: threadId, is_error: false })
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
       type: "text-delta",
       threadId,
       turnId,
@@ -236,7 +237,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       usage: { input_tokens: 120_000, output_tokens: 8_000 },
     })
 
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
       type: "usage",
       threadId,
       turnId,
@@ -333,7 +334,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     })
 
     calls[0]!.query.closeStream()
-    await vi.waitFor(() => expect(events).toContainEqual({
+    await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: {
         threadId,
@@ -420,7 +421,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       is_error: true,
       errors: [text],
     })
-    await vi.waitFor(() => expect(events).toContainEqual({
+    await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: {
         threadId,
@@ -500,7 +501,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       result: stderr,
     })
 
-    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed",
     })))
     const completed = events.find(
@@ -546,7 +547,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     calls[0]!.options.stderr?.("super-secret-bearer-token\n429 rate limit exceeded\n")
     calls[0]!.query.closeStream()
 
-    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed",
     })))
     const completed = events.find(
@@ -624,7 +625,7 @@ describe("ClaudeAgentSdkAdapter", () => {
         title: "Run project tests",
       },
     )
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
       type: "approval-requested",
       requestId: 1,
       threadId: "22222222-2222-4222-8222-222222222222",
@@ -664,7 +665,7 @@ describe("ClaudeAgentSdkAdapter", () => {
         title: "Edit a settings file",
       },
     )
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
       type: "approval-requested",
       requestId: 1,
       threadId: "22222222-2222-4222-8222-222222222222",
@@ -691,7 +692,7 @@ describe("ClaudeAgentSdkAdapter", () => {
         title: "Write a generated file",
       },
     )
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
       type: "approval-requested",
       requestId: 2,
       threadId: "22222222-2222-4222-8222-222222222222",
@@ -808,7 +809,7 @@ describe("ClaudeAgentSdkAdapter", () => {
         ],
       },
     })
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
       type: "item",
       phase: "started",
       params: expect.objectContaining({
@@ -835,7 +836,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       },
       tool_use_result: { filePath: "preview.html" },
     })
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
       type: "item",
       phase: "completed",
       params: expect.objectContaining({
@@ -897,7 +898,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       },
     })
 
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
       type: "plan-updated",
       threadId,
       turnId,

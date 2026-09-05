@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import WebSocket from "ws"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -254,7 +255,7 @@ describe("terminal RPC", () => {
       prompt: "start slowly",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledOnce())
     const stopped = await rpc("system.emergencyStop", { client: "desktop" })
     expect(stopped).toMatchObject({
       result: {
@@ -271,7 +272,7 @@ describe("terminal RPC", () => {
     await expect(sending).resolves.toMatchObject({
       error: { code: -32603, message: "Operation cancelled by emergency stop" },
     })
-    await vi.waitFor(() => expect(agent.interruptTurn).toHaveBeenCalledWith(
+    await waitForDaemon(() => expect(agent.interruptTurn).toHaveBeenCalledWith(
       "thread-late-start",
       "turn-started-late",
     ))
@@ -347,7 +348,7 @@ describe("terminal RPC", () => {
       prompt: "wait for connection",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.connect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.connect).toHaveBeenCalledOnce())
     const stopped = await rpc("system.emergencyStop", { client: "desktop" })
     expect(stopped).toMatchObject({
       result: { outcomes: { providersReset: 1, mutationsCancelled: 1 } },
@@ -779,7 +780,7 @@ describe("terminal RPC", () => {
       label: "queued checkpoint",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(workspaceService.checkpoint).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(workspaceService.checkpoint).toHaveBeenCalledOnce())
 
     const stopped = await rpc("system.emergencyStop", { client: "desktop" })
     await expect(emergencyNotification).resolves.toMatchObject({
@@ -1455,7 +1456,7 @@ describe("terminal RPC", () => {
       clientId: "desktop-owner",
     })).resolves.toMatchObject({ result: { accepted: true } })
     expect(terminal.resize).toHaveBeenCalledWith(120, 40)
-    await vi.waitFor(() => expect(ownership).toContainEqual(expect.objectContaining({
+    await waitForDaemon(() => expect(ownership).toContainEqual(expect.objectContaining({
       method: "terminal.ownership",
       params: { terminalId: "terminal-reconnect", owner: { client: "desktop", clientId: "desktop-owner" } },
     })))
@@ -1592,7 +1593,7 @@ describe("terminal RPC", () => {
       sessionId: "session-billing",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.interruptTurn).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.interruptTurn).toHaveBeenCalledOnce())
     const terminalInput = rpc("terminal.input", {
       terminalId: "terminal-1",
       data: "responsive\r",
@@ -1618,7 +1619,7 @@ describe("terminal RPC", () => {
       sessionId: "session-billing",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.interruptTurn).toHaveBeenCalledTimes(2))
+    await waitForDaemon(() => expect(agent.interruptTurn).toHaveBeenCalledTimes(2))
     const secondCreated = rpc("terminal.create", {
       terminalId: "terminal-2",
       sessionId: "session-billing",

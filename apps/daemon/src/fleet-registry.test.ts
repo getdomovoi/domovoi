@@ -7,6 +7,7 @@ import {
   offlineHeartbeatMs,
   protocolVersion,
   staleHeartbeatMs,
+  type FleetSnapshot,
   type MachineCapability,
 } from "@getdomovoi/protocol"
 
@@ -33,14 +34,44 @@ function registry(database = new DatabaseSync(":memory:")): {
   return { registry: new SqliteFleetRegistry(database), database }
 }
 
+function machines(snapshot: FleetSnapshot) {
+  return snapshot.entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : [])
+}
+
 describe("SqliteFleetRegistry", () => {
+  it("uses the same health and heartbeat facts for single-machine lookups and display", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
+      for (const now of [1_000, 1_000 + staleHeartbeatMs + 1, 1_000 + offlineHeartbeatMs + 1]) {
+        expect(fleet.lookupMachine(localMachine.id, localMachine.id, now))
+          .toEqual(machines(fleet.snapshot(localMachine.id, now))[0])
+      }
+      expect(fleet.lookupMachine(`machine-${"c".repeat(32)}`, localMachine.id, 1_000)).toBeUndefined()
+    } finally { database.close() }
+  })
+
+  it.each(["enroll", "forget"] as const)("masks retained facts during a pending %s in single-machine lookups", (kind) => {
+    const { registry: fleet, database } = registry()
+    try {
+      const facts = { ...localMachine, capabilities: [...localMachine.capabilities] }
+      fleet.record(facts, 1_000)
+      if (kind === "forget") fleet.stageForget(localMachine.id, null, 1_000)
+      else fleet.stageEnrollment({ ...facts, connection: "direct", verifiedRoute: {
+        endpoint: "ws://127.0.0.1:47831/rpc", lastAuthenticatedAt: new Date(1_000).toISOString(),
+      } }, "sha256:" + "a".repeat(64), 1_000)
+      expect(fleet.lookupMachine(localMachine.id, localMachine.id, 1_000)).toBeUndefined()
+      expect(fleet.snapshot(localMachine.id, 1_000).entries[0]?.kind).toBe("pending")
+    } finally { database.close() }
+  })
+
   it("reports the recording daemon as itself", () => {
     const { registry: fleet } = registry()
     fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
 
     const snapshot = fleet.snapshot(localMachine.id, 1_000)
 
-    expect(snapshot.machines).toEqual([{
+    expect(machines(snapshot)).toEqual([{
       ...localMachine,
       transports: [...localMachine.transports],
       capabilities: [...localMachine.capabilities],
@@ -63,16 +94,16 @@ describe("SqliteFleetRegistry", () => {
 
     const snapshot = fleet.snapshot(localMachine.id, 1_000)
 
-    expect(snapshot.machines.map((machine) => machine.self)).toEqual([true, false])
+    expect(machines(snapshot).map((machine) => machine.self)).toEqual([true, false])
   })
 
   it("ages a machine through stale and offline as contact stops", () => {
     const { registry: fleet } = registry()
     fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
 
-    expect(fleet.snapshot(localMachine.id, 1_000 + staleHeartbeatMs + 1).machines[0]?.heartbeat.state)
+    expect(machines(fleet.snapshot(localMachine.id, 1_000 + staleHeartbeatMs + 1))[0]?.heartbeat.state)
       .toBe("stale")
-    expect(fleet.snapshot(localMachine.id, 1_000 + offlineHeartbeatMs + 1).machines[0]?.heartbeat.state)
+    expect(machines(fleet.snapshot(localMachine.id, 1_000 + offlineHeartbeatMs + 1))[0]?.heartbeat.state)
       .toBe("offline")
   })
 
@@ -87,14 +118,14 @@ describe("SqliteFleetRegistry", () => {
       capabilities: ["sessions"],
     }, 90_000)
 
-    const machine = fleet.snapshot(localMachine.id, 90_000).machines[0]
+    const machine = machines(fleet.snapshot(localMachine.id, 90_000))[0]
     expect(machine).toMatchObject({
       label: "workshop-renamed",
       version: "0.0.2",
       capabilities: ["sessions"],
       heartbeat: { state: "online", lastSeenAt: new Date(90_000).toISOString() },
     })
-    expect(fleet.snapshot(localMachine.id, 90_000).machines).toHaveLength(1)
+    expect(machines(fleet.snapshot(localMachine.id, 90_000))).toHaveLength(1)
   })
 
   it("keeps recorded machines across daemon restarts", () => {
@@ -106,7 +137,7 @@ describe("SqliteFleetRegistry", () => {
 
     const restarted = new SqliteFleetRegistry(database)
 
-    expect(restarted.snapshot(localMachine.id, 1_000).machines).toHaveLength(1)
+    expect(machines(restarted.snapshot(localMachine.id, 1_000))).toHaveLength(1)
   })
 
   it("bounds the registry", () => {
@@ -124,6 +155,21 @@ describe("SqliteFleetRegistry", () => {
       id: `machine-${"f".repeat(32)}`,
       capabilities: ["sessions"],
     }, 1_000)).toThrow(FleetLimitReachedError)
+  })
+
+  it("can expose and forget an orphan even when all machine slots are full", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      for (let index = 0; index < maximumFleetMachines; index += 1) {
+        fleet.record({ ...localMachine, id: `machine-${index.toString(16).padStart(32, "0")}`, capabilities: ["sessions"] }, 1_000)
+      }
+      const orphan = `machine-${"f".repeat(32)}`
+      expect(fleet.snapshot(localMachine.id, 1_000, [orphan]).entries).toContainEqual({ kind: "unenrolled", machineId: orphan })
+      const operation = fleet.stageForget(orphan, null, 1_000)
+      expect(fleet.snapshot(localMachine.id, 1_000, [orphan]).entries).toHaveLength(maximumFleetMachines + 1)
+      expect(fleet.completeForget(operation.id)).toBe(true)
+      expect(fleet.snapshot(localMachine.id, 1_000).entries).toHaveLength(maximumFleetMachines)
+    } finally { database.close() }
   })
 
   it("rejects a machine whose facts are not describable", () => {
@@ -144,7 +190,7 @@ describe("SqliteFleetRegistry", () => {
     const { registry: fleet } = registry()
     fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
 
-    const aged = fleet.snapshot(localMachine.id, 1_000 + offlineHeartbeatMs + 1).machines[0]
+    const aged = machines(fleet.snapshot(localMachine.id, 1_000 + offlineHeartbeatMs + 1))[0]
 
     expect(aged?.health).toBe("unreachable")
   })
@@ -157,7 +203,7 @@ describe("SqliteFleetRegistry", () => {
       protocolVersion: "0.0.1",
     }, 1_000)
 
-    expect(fleet.snapshot(localMachine.id, 1_000).machines[0]?.health).toBe("upgrade-required")
+    expect(machines(fleet.snapshot(localMachine.id, 1_000))[0]?.health).toBe("upgrade-required")
   })
 
   it("reports a machine on a newer protocol as a version mismatch", () => {
@@ -168,7 +214,7 @@ describe("SqliteFleetRegistry", () => {
       protocolVersion: "9.0.0",
     }, 1_000)
 
-    expect(fleet.snapshot(localMachine.id, 1_000).machines[0]?.health).toBe("version-mismatch")
+    expect(machines(fleet.snapshot(localMachine.id, 1_000))[0]?.health).toBe("version-mismatch")
   })
 
   it("returns a snapshot the protocol accepts", () => {
