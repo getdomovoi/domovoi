@@ -297,7 +297,9 @@ drifts out of lockstep or the built protocol export advertises another release.
 Daemon machine facts, every daemon and client greeting, and provider initialization use that
 value. Production startup replaces the persisted local machine version with the running build's
 version while preserving machine identity. A peer's version still comes from that peer, never
-from this local build. Expo also derives the native app version from the mobile package manifest.
+from this local build. Expo derives the native app version's numeric major.minor.patch from the
+mobile manifest, as required by [Apple's native version format](https://developer.apple.com/help/glossary/version-number/).
+Greetings retain the complete release version, including any prerelease or build metadata.
 The wire `protocolVersion` remains a separate compatibility contract;
 an application release does not itself change it.
 
