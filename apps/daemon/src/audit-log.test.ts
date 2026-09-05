@@ -188,8 +188,11 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
-  it("retains pre-auth refusals separately without spending activity retention", () => {
-    const database = new DatabaseSync(":memory:")
+  it("retains pre-auth refusals separately across a database restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-audit-retention-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    let database = new DatabaseSync(path)
     const audit = new SqliteAuditLog(database, {
       maximumEntries: 3,
       maximumPreAuthEntries: 2,
@@ -220,6 +223,8 @@ describe("SqliteAuditLog", () => {
         .toEqual(expectedIds)
       expect(audit.query({ before: "refusal-4-2" }).entries.map(({ id }) => id))
         .toEqual(expectedIds.slice(2))
+      database.close()
+      database = new DatabaseSync(path)
       const reopened = new SqliteAuditLog(database, { maximumEntries: 3, maximumPreAuthEntries: 2 })
       reopened.append({
         id: "refusal-after-reopen",
