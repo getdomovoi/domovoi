@@ -349,14 +349,25 @@ describe("serviceStatus", () => {
 })
 
 describe("runServiceCommand", () => {
-  it.each([linux, darwin])("keeps the $platform fixture independent of a Windows runner cwd", async (target) => {
-    const cwd = vi.spyOn(process, "cwd").mockReturnValue("D:\\a\\domovoi\\domovoi\\apps\\daemon")
+  it.each([
+    { ...linux, cwd: "/srv/runner", credentialPath: "/srv/runner/relative/daemon.token" },
+    { ...darwin, cwd: "/Volumes/runner", credentialPath: "/Volumes/runner/relative/daemon.token" },
+    {
+      ...windowsScript,
+      cwd: "D:\\a\\domovoi\\domovoi\\apps\\daemon",
+      credentialPath: "D:\\a\\domovoi\\domovoi\\apps\\daemon\\relative\\daemon.token",
+    },
+  ])("resolves relative settings against the process cwd on $platform when none is given", async ({ cwd: runnerCwd, credentialPath, ...target }) => {
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(runnerCwd)
     try {
-      const dependencies = command({ ...target })
-      const status = await runServiceCommand(["service", "install"], dependencies)
+      const { workingDirectory: _fixtureCwd, ...dependencies } = command({
+        ...target,
+        environment: { DOMOVOI_CREDENTIAL_PATH: "relative/daemon.token" },
+      })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
       expect(dependencies.stderr).not.toHaveBeenCalled()
-      expect(status).toBe(0)
-      expect(dependencies.write).toHaveBeenCalled()
+      const configuration = vi.mocked(dependencies.write).mock.calls.find(([path]) => path.endsWith("service.json"))
+      expect(JSON.parse(configuration![1])).toMatchObject({ credentialPath })
     } finally {
       cwd.mockRestore()
     }
