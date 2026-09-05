@@ -186,6 +186,7 @@ import {
 } from "./rpc-outbound.js"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
+import { PairingClaimAdmission } from "./pairing-admission.js"
 import {
   appendDurableOutput,
   DurableOutputRedactor,
@@ -217,6 +218,7 @@ const defaultSessionTransferTimeoutMs = 600_000
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
+type PreAuthAuditKind = "authentication" | "invalid-request" | "pairing" | "pairing-rate-limit"
 export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
 export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // One failed write is a transient disk or lock problem worth retrying. This many
@@ -849,7 +851,9 @@ export class DomovoiDaemon {
   }>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
   #connectionIds = new WeakMap<WebSocket, string>()
-  #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
+  #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
+  #pairingClaimAdmission = new PairingClaimAdmission()
+  #socketSources = new WeakMap<WebSocket, string>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
   #authTimeoutMs: number
@@ -1176,6 +1180,9 @@ export class DomovoiDaemon {
       maxPayload: maximumWebSocketPayloadBytes,
     })
     this.#websocket.on("connection", (socket, request) => {
+      // Use the socket peer, never caller-authored forwarding headers. NAT or
+      // proxy peers share a budget; neither a reconnect nor hello resets it.
+      if (request.socket.remoteAddress) this.#socketSources.set(socket, request.socket.remoteAddress)
       socket.once("close", () => {
         this.#rpcOutbound.forget(socket)
         this.#releaseTerminalOwnership(socket)
@@ -1349,14 +1356,16 @@ export class DomovoiDaemon {
     }
   }
 
-  #appendPreAuthAudit(kind: "authentication" | "invalid-request"): void {
-    const now = Date.now()
+  #appendPreAuthAudit(kind: PreAuthAuditKind, detail?: string): void {
+    const now = performance.now()
     if ((this.#preAuthAuditDeadlines.get(kind) ?? 0) > now) return
     this.#preAuthAuditDeadlines.set(kind, now + preAuthAuditWindowMs)
     this.#appendAudit({
+      retention: "pre-auth",
       actor: { kind: "daemon", component: kind === "authentication" ? kind : "rpc" },
-      action: `security.${kind}`,
-      outcome: kind === "authentication" ? "denied" : "failed",
+      action: kind === "pairing" ? "device.claim" : `security.${kind}`,
+      outcome: kind === "invalid-request" ? "failed" : "denied",
+      ...(detail === undefined ? {} : { detail }),
     })
   }
 
@@ -3086,6 +3095,15 @@ export class DomovoiDaemon {
     }
 
     const method = request.method as RpcMethod
+    if (method === "device.claim" && !this.#pairingClaimAdmission.admit(this.#socketSources.get(socket))) {
+      // Admission precedes shape, version and code checks. Incompatible claims
+      // cost admission, not code guesses; exhausted sources get this uniform
+      // refusal even for an incompatible version or a valid unspent code.
+      this.#appendPreAuthAudit("pairing-rate-limit", "Pairing claim admission limit reached")
+      this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
+      socket.close(1008, "pairing rate limit")
+      return
+    }
     if (!this.#deviceCredentialActive(socket)) {
       this.#authenticatedClients.delete(socket)
       this.#appendPreAuthAudit("authentication")
@@ -3219,12 +3237,7 @@ export class DomovoiDaemon {
         })
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
-          this.#appendAudit({
-            actor: { kind: "daemon", component: "rpc" },
-            action: "device.claim",
-            outcome: "denied",
-            detail: error.message,
-          })
+          this.#appendPreAuthAudit("pairing", error.message)
           this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
           return
         }
@@ -3232,12 +3245,7 @@ export class DomovoiDaemon {
         // The reason is recorded for an operator but never returned: an
         // unauthenticated caller must not learn whether a code exists, has
         // expired, or was simply wrong.
-        this.#appendAudit({
-          actor: { kind: "daemon", component: "rpc" },
-          action: "device.claim",
-          outcome: "denied",
-          detail: error.message,
-        })
+        this.#appendPreAuthAudit("pairing", error.message)
         this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
       }
       return

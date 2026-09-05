@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises"
 import { arch, platform, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import {
   createEmptyWorkspace, daemonAuthenticationErrorCode, demoWorkspace, devicePairResultSchema,
@@ -11,6 +11,8 @@ import {
 } from "@getdomovoi/protocol"
 
 import { DomovoiDaemon } from "./server.js"
+import { PairingCodeService } from "./pairing-codes.js"
+import { PairingClaimAdmission, pairingClaimWindowMs } from "./pairing-admission.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
@@ -21,6 +23,7 @@ const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
 let nextId = 0
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const socket of sockets.splice(0)) socket.terminate()
   for (const daemon of daemons.splice(0)) await daemon.stop()
   await removeScratchDirectories(roots.splice(0))
@@ -88,19 +91,31 @@ describe("live machine admission", () => {
     } finally { await store.close() }
   })
 
-  it("rejects incompatible claims before consuming a code or a guessing attempt", async () => {
+  it("rejects admitted incompatible claims before consuming a code or a guessing attempt", async () => {
+    const claim = vi.spyOn(PairingCodeService.prototype, "claim")
+    let now = 0
+    const admit = PairingClaimAdmission.prototype.admit
+    vi.spyOn(PairingClaimAdmission.prototype, "admit").mockImplementation(function (this: PairingClaimAdmission, source) {
+      return admit.call(this, source, now)
+    })
     const { daemon, store, url } = await target()
     const socket = await open(url)
     const code = daemon.issuePairingCode().code
     for (let index = 0; index < 6; index += 1) {
+      // Refill only admission. Real time and the code's expiry do not move.
+      // Six incompatible attempts exceed the code's five-guess allowance,
+      // but must never reach that separate budget in the pairing service.
+      now += pairingClaimWindowMs
       const response = await call(socket, "device.claim", {
         code, label: "source", machineId: peerId, protocolVersion: "0.3.0",
       })
       expect(response.error?.code).toBe(protocolVersionMismatchErrorCode)
     }
+    expect(claim).not.toHaveBeenCalled()
     expect(store.devices.list()).toEqual([])
     const accepted = await call(socket, "device.claim", { code, label: "source", machineId: peerId, protocolVersion })
     expect(devicePairResultSchema.parse(accepted.result).device.binding).toEqual({ kind: "machine", machineId: peerId })
+    expect(claim).toHaveBeenCalledTimes(1)
   })
 
   it("returns fresh target-authored facts only to an authenticated machine", async () => {
