@@ -15,6 +15,7 @@ import {
   composeProviderPrompt,
   elasticPromptDropOrder,
   providerPromptPrecedence,
+  validateProviderPromptBudget,
 } from "./prompt-composer.js"
 import type { SkillCatalog } from "./skills.js"
 
@@ -29,16 +30,18 @@ function baseSnapshot(): WorkspaceSnapshot {
   return snapshot
 }
 
-function skillFixture(): {
+function skillFixture(overrides: { id?: string; name?: string; content?: string } = {}): {
   catalog: SkillCatalog
+  document: SkillDocument
   review: SkillEnablementReview
   summary: SkillSummary
 } {
+  const name = overrides.name ?? "large-skill"
   const summary: SkillSummary = {
-    id: "skill-aaaaaaaaaaaa",
-    name: "large-skill",
+    id: overrides.id ?? "skill-aaaaaaaaaaaa",
+    name,
     description: "Large reviewed instructions",
-    path: "/skills/large-skill/SKILL.md",
+    path: `/skills/${name}/SKILL.md`,
     scope: "user",
     source: "agents",
     manifest: { version: 1, capabilities: ["filesystem.read"] },
@@ -46,9 +49,13 @@ function skillFixture(): {
     signature: { state: "unsigned" },
     trust: { state: "untrusted", reason: "unsigned" },
   }
-  const document: SkillDocument = { skill: summary, content: "s".repeat(12_000) }
+  const document: SkillDocument = {
+    skill: summary,
+    content: overrides.content ?? "s".repeat(12_000),
+  }
   return {
     summary,
+    document,
     review: {
       projectId: demoWorkspace.project!.id,
       skillId: summary.id,
@@ -101,7 +108,13 @@ describe("composeProviderPrompt budget", () => {
       "provider-handoff",
       "user-request",
     ])
-    expect(elasticPromptDropOrder).toEqual(["skills", "annotations"])
+    expect(elasticPromptDropOrder).toEqual([
+      "skills",
+      "annotations",
+      "handoff-history",
+      "handoff-annotations",
+      "handoff-artifacts",
+    ])
   })
 
   it("drops project-default skills before annotations", async () => {
@@ -220,6 +233,215 @@ describe("composeProviderPrompt budget", () => {
       workingPlan: plan,
     })).rejects.toThrow(
       "Cannot send this turn: required user request and working plan exceed the 262144 UTF-16 code units Domovoi payload limit. Shorten the request, edit the working plan and try again.",
+    )
+  })
+})
+
+describe("composeProviderPrompt budget option", () => {
+  it("keeps a prompt under the configured budget untouched", async () => {
+    const snapshot = baseSnapshot()
+    const fixture = skillFixture()
+    snapshot.annotations = [annotation(1)]
+    snapshot.skillEnablements = [fixture.review]
+    const request = { ...input(snapshot, "Ship it"), skillCatalog: fixture.catalog }
+
+    const unbounded = await composeProviderPrompt(request)
+    const bounded = await composeProviderPrompt({
+      ...request,
+      budgetCodeUnits: unbounded.prompt.length,
+    })
+
+    expect(bounded.prompt).toBe(unbounded.prompt)
+    expect(bounded.providerPromptDelivery).toEqual({
+      ...unbounded.providerPromptDelivery,
+      budget: {
+        unit: "utf16-code-units",
+        limit: unbounded.prompt.length,
+        used: unbounded.prompt.length,
+      },
+    })
+    expect(bounded.providerPromptDelivery.skills.omitted.budget).toEqual([])
+    expect(bounded.providerPromptDelivery.annotations.omitted.budget).toBe(0)
+  })
+
+  it("refuses a budget smaller than the user request instead of trimming it", async () => {
+    await expect(composeProviderPrompt({
+      ...input(baseSnapshot(), "u".repeat(200)),
+      budgetCodeUnits: 100,
+    })).rejects.toThrow(
+      "Cannot send this turn: required user request exceed the 100 UTF-16 code units Domovoi payload limit. Shorten the request and try again.",
+    )
+  })
+
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    maximumProviderPromptCodeUnits + 1,
+  ])("rejects an invalid budget: %s", async (budgetCodeUnits) => {
+    expect(() => validateProviderPromptBudget(budgetCodeUnits)).toThrow(RangeError)
+    await expect(composeProviderPrompt({
+      ...input(baseSnapshot(), "Ship it"),
+      budgetCodeUnits,
+    })).rejects.toThrow(RangeError)
+  })
+})
+
+describe("composeProviderPrompt drop order", () => {
+  it("drops one item at a time in the documented order and stops once the prompt fits", async () => {
+    const snapshot = baseSnapshot()
+    const sessionId = snapshot.sessions[0]!.id
+    const alpha = skillFixture({
+      id: "skill-aaaaaaaaaaaa",
+      name: "alpha-skill",
+      content: "a".repeat(3_000),
+    })
+    const beta = skillFixture({
+      id: "skill-bbbbbbbbbbbb",
+      name: "beta-skill",
+      content: "b".repeat(3_000),
+    })
+    snapshot.skillEnablements = [alpha.review, beta.review]
+    snapshot.annotations = [annotation(0), annotation(1)]
+    snapshot.artifacts = [{
+      id: "artifact-diff",
+      sessionId,
+      title: "Billing diff",
+      type: "diff",
+      revision: 1,
+      content: "d".repeat(1_000),
+    }]
+    snapshot.thread = [
+      ...Array.from({ length: 3 }, (_, index) => ({
+        id: `history-${index}`,
+        sessionId,
+        kind: "assistant" as const,
+        body: `History ${index} ${"h".repeat(600)}`,
+        createdAt: `2026-09-03T12:0${index}:00.000Z`,
+      })),
+      {
+        id: "handoff-1",
+        sessionId,
+        kind: "system" as const,
+        body: "Handed off codex to claude-code.",
+        createdAt: "2026-09-03T13:00:00.000Z",
+      },
+    ]
+    const request = {
+      ...input(snapshot, "Continue"),
+      skillCatalog: {
+        list: vi.fn(async () => [alpha.summary, beta.summary]),
+        read: vi.fn(async (skillId: string) =>
+          skillId === alpha.summary.id ? alpha.document : beta.document,
+        ),
+      } satisfies SkillCatalog,
+    }
+
+    let result = await composeProviderPrompt(request)
+    expect(result.providerPromptDelivery).toMatchObject({
+      skills: {
+        delivered: [
+          expect.objectContaining({ id: alpha.summary.id }),
+          expect.objectContaining({ id: beta.summary.id }),
+        ],
+        omitted: { budget: [] },
+      },
+      annotations: { deliveredIds: ["annotation-1", "annotation-0"], omitted: { budget: 0 } },
+      handoff: { status: "delivered", omitted: { threadItems: 0, annotations: 0, artifacts: 0 } },
+    })
+
+    const untouched = { threadItems: 0, annotations: 0, artifacts: 0 }
+    const stages = [
+      {
+        skills: [beta.summary.id],
+        annotations: ["annotation-1", "annotation-0"],
+        handoff: untouched,
+        absent: ["beta-skill"],
+        present: ["alpha-skill"],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: ["annotation-1", "annotation-0"],
+        handoff: untouched,
+        absent: ["alpha-skill"],
+        present: [],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: ["annotation-1"],
+        handoff: untouched,
+        absent: [],
+        present: [],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: untouched,
+        absent: ["domovoi_review_context"],
+        present: [],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: { threadItems: 1, annotations: 0, artifacts: 0 },
+        absent: ["History 0"],
+        present: ["History 1", "History 2"],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: { threadItems: 2, annotations: 0, artifacts: 0 },
+        absent: ["History 1"],
+        present: ["History 2"],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: { threadItems: 3, annotations: 0, artifacts: 0 },
+        absent: ["History 2"],
+        present: ["annotation-0", "annotation-1", "artifact-diff"],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: { threadItems: 3, annotations: 1, artifacts: 0 },
+        absent: ["annotation-1"],
+        present: ["annotation-0", "artifact-diff"],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: { threadItems: 3, annotations: 2, artifacts: 0 },
+        absent: ["annotation-0"],
+        present: ["artifact-diff"],
+      },
+      {
+        skills: [alpha.summary.id, beta.summary.id],
+        annotations: [],
+        handoff: { threadItems: 3, annotations: 2, artifacts: 1 },
+        absent: ["artifact-diff"],
+        present: ["Handed off codex to claude-code.", "<user_request>\nContinue\n</user_request>"],
+      },
+    ]
+    for (const stage of stages) {
+      const budgetCodeUnits = result.prompt.length - 1
+      result = await composeProviderPrompt({ ...request, budgetCodeUnits })
+      expect(result.prompt.length).toBeLessThanOrEqual(budgetCodeUnits)
+      expect(result.providerPromptDelivery).toMatchObject({
+        budget: { limit: budgetCodeUnits, used: result.prompt.length },
+        skills: { omitted: { budget: stage.skills } },
+        annotations: { deliveredIds: stage.annotations },
+        handoff: { status: "delivered", omitted: stage.handoff },
+      })
+      for (const text of stage.absent) expect(result.prompt).not.toContain(text)
+      for (const text of stage.present) expect(result.prompt).toContain(text)
+    }
+
+    const budgetCodeUnits = result.prompt.length - 1
+    await expect(composeProviderPrompt({ ...request, budgetCodeUnits })).rejects.toThrow(
+      `Cannot send this turn: required user request and provider handoff exceed the ${budgetCodeUnits} UTF-16 code units Domovoi payload limit. Shorten the request, start a fresh session and try again.`,
     )
   })
 })

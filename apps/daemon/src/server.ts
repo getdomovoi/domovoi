@@ -32,6 +32,7 @@ import {
   terminalOutputBatchDelayMilliseconds,
   turnSkillSelectionErrorCode,
   maximumEmergencyStopFailureMessageLength,
+  maximumProviderPromptCodeUnits,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
@@ -144,6 +145,7 @@ import {
 import {
   composeProviderPrompt,
   PromptCompositionLimitError,
+  validateProviderPromptBudget,
 } from "./prompt-composer.js"
 import { TurnSkillSelectionError } from "./skill-context.js"
 import {
@@ -754,6 +756,7 @@ export type DaemonServerOptions = {
   worktreeRoot?: string
   agentTimeoutMs?: number
   auditReadTimeoutMs?: number
+  providerPromptBudgetCodeUnits?: number
   modelCacheTtlMs?: number
   authToken?: string
   allowRemoteTransport?: boolean
@@ -859,6 +862,7 @@ export class DomovoiDaemon {
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
+  #providerPromptBudgetCodeUnits: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #authToken: string
@@ -927,6 +931,9 @@ export class DomovoiDaemon {
     // budget, validated before any workspace state or providers are opened.
     this.#auditReadTimeoutMs = options.auditReadTimeoutMs ?? 30_000
     validateOperationDeadlineBudget(this.#auditReadTimeoutMs)
+    this.#providerPromptBudgetCodeUnits = options.providerPromptBudgetCodeUnits
+      ?? maximumProviderPromptCodeUnits
+    validateProviderPromptBudget(this.#providerPromptBudgetCodeUnits)
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
@@ -6072,6 +6079,7 @@ export class DomovoiDaemon {
             snapshot: this.#snapshot,
             sessionId: session.id,
             userPrompt: params.prompt,
+            budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,
