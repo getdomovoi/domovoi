@@ -95,7 +95,7 @@ describe("fleet enrollment coordinator", () => {
     expect(await restored.forget({ machineId: targetId, client: "cli" })).toMatchObject({
       outcome: "forgotten", remoteRevocation: "confirmed",
     })
-    expect(f.call).toHaveBeenCalledWith("device.revokeCurrent", {}, expect.any(AbortSignal), expect.anything())
+    expect(f.call).toHaveBeenCalledWith("device.revokeCurrent", {}, undefined, expect.anything())
   })
 
   it("requires a known expected identity to re-pair at capacity without spending an ambiguous claim", async () => {
