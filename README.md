@@ -37,7 +37,7 @@ design/
 
 ## Develop
 
-Requirements: Node.js 22 or newer and pnpm 11.
+Requirements: Node.js 22.13.0 or newer and pnpm 11.
 
 ```bash
 pnpm install
@@ -66,6 +66,10 @@ artifact revision, purpose, annotation bridge channel, and parent origin.
 For supervised operation, `domovoid service install` saves validated non-secret daemon settings and
 uses them on every service start. Environment-only bearer tokens are not copied into service files.
 See [daemon service configuration](docs/daemon-services.md) for credential setup and lifecycle limits.
+For a stranded legacy or custom-supervised profile, `domovoid profile recover --confirm-no-supervisor`
+records an explicit assertion that no supervisor will restart it. Stop those supervisors first.
+The command requires a free profile lease; deleting `service.json` is not proof of shutdown.
+See [local owner recovery](docs/local-daemon-ownership.md#service-installation-and-recovery) before using it.
 
 ## Verify
 

@@ -230,3 +230,69 @@ describe("SqliteFleetRegistry", () => {
     expect(() => fleet.snapshot(localMachine.id, 1_000)).not.toThrow()
   })
 })
+
+describe("SqliteFleetRegistry WSL facts", () => {
+  const wsl = { distribution: "Ubuntu-24.04", version: 2 as const }
+  const facts = () => ({ ...localMachine, capabilities: [...localMachine.capabilities] })
+
+  it("keeps the WSL facts a machine reports, and drops them when it stops reporting them", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      fleet.record({ ...facts(), wsl }, 1_000)
+      expect(machines(fleet.snapshot(localMachine.id, 1_000))[0]).toMatchObject({ wsl })
+
+      fleet.record(facts(), 2_000)
+      expect(machines(fleet.snapshot(localMachine.id, 2_000))[0]).not.toHaveProperty("wsl")
+    } finally { database.close() }
+  })
+
+  it("carries the WSL facts through a journaled enrollment", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      const pending = fleet.stageEnrollment({
+        ...facts(), wsl, connection: "direct",
+        verifiedRoute: { endpoint: "ws://127.0.0.1:47831/rpc", lastAuthenticatedAt: "2026-09-05T12:00:00.000Z" },
+      }, `sha256:${"a".repeat(64)}`, 1_000)
+      expect(fleet.completeEnrollment(pending.id, `sha256:${"a".repeat(64)}`)).toBe(true)
+      expect(fleet.enrolled().map((entry) => entry.facts.wsl)).toEqual([wsl])
+    } finally { database.close() }
+  })
+
+  it("adds the WSL column to a registry created before it existed", () => {
+    const database = new DatabaseSync(":memory:")
+    database.exec(`
+      CREATE TABLE fleet_machines (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        arch TEXT NOT NULL,
+        version TEXT NOT NULL,
+        connection TEXT NOT NULL,
+        capabilities TEXT NOT NULL,
+        protocol_version TEXT NOT NULL,
+        transports TEXT NOT NULL,
+        last_seen_ms INTEGER NOT NULL
+      );
+      INSERT INTO fleet_machines VALUES (
+        '${localMachine.id}', 'workshop', 'linux', 'x64', '0.0.1', 'local', '["sessions"]', '${protocolVersion}',
+        '[{"kind":"local","endpoint":"ws://127.0.0.1:47831/rpc","authenticated":true}]', 500
+      );
+    `)
+    const fleet = new SqliteFleetRegistry(database)
+    try {
+      expect(machines(fleet.snapshot(localMachine.id, 1_000))[0]).not.toHaveProperty("wsl")
+      fleet.record({ ...facts(), wsl }, 1_000)
+      expect(machines(fleet.snapshot(localMachine.id, 1_000))[0]).toMatchObject({ wsl })
+    } finally { database.close() }
+  })
+
+  it("redacts a distribution name that carries a secret before storing it", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      fleet.record({ ...facts(), wsl: { ...wsl, distribution: "token=sk-live-1234567890abcdefghijklmnop" } }, 1_000)
+      const stored = machines(fleet.snapshot(localMachine.id, 1_000))[0]?.wsl?.distribution
+      expect(stored).toBeDefined()
+      expect(stored).not.toContain("sk-live-1234567890abcdefghijklmnop")
+    } finally { database.close() }
+  })
+})

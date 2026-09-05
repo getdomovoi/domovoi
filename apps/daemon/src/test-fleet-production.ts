@@ -15,6 +15,7 @@ import { WebSocket } from "ws"
 
 import type { AgentAdapter } from "./agents.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies, type ProductionDaemonHandle } from "./production-daemon.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -130,7 +131,7 @@ export function fleetProductionHarness() {
       const handle = await createProductionDaemonWithDependencies({ environment: {}, homeDirectory, machineLabel: label }, {
         ...productionDaemonDependencies,
         createProviderProbe: () => ({ inspect: async () => [] }),
-        createMachineCredentials: () => credentials,
+        createMachineCredentials: () => asyncTestCredentials(credentials),
         // The production dependency builds the daemon; only its tuning changes.
         createDaemon: (options) => productionDaemonDependencies.createDaemon({
           ...options, port, fleetHeartbeatIntervalMs: 50, fleetOperationTimeoutMs: 2_000,
