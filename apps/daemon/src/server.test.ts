@@ -3614,14 +3614,14 @@ describe("DomovoiDaemon", () => {
 
     await expect(response).resolves.toMatchObject({
       result: {
-        machines: [{
+        entries: [{ kind: "machine", machine: {
           id: `machine-${"7".repeat(32)}`,
           label: "workshop",
           connection: "local",
           self: true,
           heartbeat: { state: "online" },
           capabilities: expect.arrayContaining(["sessions", "terminals"]),
-        }],
+        } }],
       },
     })
     socket.close()
@@ -3878,7 +3878,7 @@ describe("DomovoiDaemon", () => {
     return { socket, call }
   }
 
-  it("keeps a credential for a machine it was given", async () => {
+  it("refuses the removed credential-save bypass even to the root client", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const credentials = new Map<string, string>()
     const daemon = new DomovoiDaemon({
@@ -3913,8 +3913,8 @@ describe("DomovoiDaemon", () => {
       params: { machineId: `machine-${"b".repeat(32)}`, credential: "n".repeat(43) },
     }))
 
-    await expect(response).resolves.toMatchObject({ result: { saved: true } })
-    expect(credentials.get(`machine-${"b".repeat(32)}`)).toBe("n".repeat(43))
+    await expect(response).resolves.toMatchObject({ error: { code: -32601, message: "Unknown method: device.saveCredential" } })
+    expect(credentials.get(`machine-${"b".repeat(32)}`)).toBeUndefined()
     expect(JSON.stringify(store.auditLog.query({ limit: 20 }).entries)).not.toContain("n".repeat(43))
     socket.close()
   })
@@ -3943,13 +3943,13 @@ describe("DomovoiDaemon", () => {
     })
 
     await expect(response).resolves.toMatchObject({
-      error: { message: "Managing paired devices requires the daemon credential" },
+      error: { code: -32601, message: "Unknown method: device.saveCredential" },
     })
     expect(credentials.size).toBe(0)
     socket.close()
   })
 
-  it("returns a kept machine credential to a daemon client", async () => {
+  it("never returns a kept machine credential through the removed root RPC", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const credentials = new Map<string, string>([[`machine-${"b".repeat(32)}`, "n".repeat(43)]])
     const daemon = new DomovoiDaemon({
@@ -3984,7 +3984,9 @@ describe("DomovoiDaemon", () => {
       params: { machineId: `machine-${"b".repeat(32)}` },
     }))
 
-    await expect(response).resolves.toMatchObject({ result: { credential: "n".repeat(43) } })
+    const refused = await response
+    expect(refused).toMatchObject({ error: { code: -32601, message: "Unknown method: device.machineCredential" } })
+    expect(JSON.stringify(refused)).not.toContain("n".repeat(43))
     expect(JSON.stringify(store.auditLog.query({ limit: 20 }).entries)).not.toContain("n".repeat(43))
     socket.close()
   })
@@ -4011,7 +4013,7 @@ describe("DomovoiDaemon", () => {
       machineId: `machine-${"b".repeat(32)}`,
     })
     expect(refusal).toMatchObject({
-      error: { message: "Managing paired devices requires the daemon credential" },
+      error: { code: -32601, message: "Unknown method: device.machineCredential" },
     })
     expect(JSON.stringify(refusal)).not.toContain("n".repeat(43))
     socket.close()
@@ -4052,7 +4054,7 @@ describe("DomovoiDaemon", () => {
     }))
 
     await expect(response).resolves.toMatchObject({
-      error: { message: "No credential is kept for that machine" },
+      error: { code: -32601, message: "Unknown method: device.machineCredential" },
     })
     socket.close()
   })
@@ -4167,6 +4169,7 @@ describe("DomovoiDaemon", () => {
       code: issued.code,
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     const token = (claimed.result as { token: string }).token
@@ -4205,6 +4208,7 @@ describe("DomovoiDaemon", () => {
       code: "hearth-quiet-ember-42",
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     }))
       .resolves.toMatchObject({ error: { message: "Pairing was refused" } })
     expect(store.devices.list()).toHaveLength(0)
@@ -4222,12 +4226,14 @@ describe("DomovoiDaemon", () => {
       code: "hearth-quiet-ember-42",
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
     daemon.issuePairingCode()
     const withWrongCode = await call(2, "device.claim", {
       code: "willow-harbor-cedar-11",
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     const refusal = (response: Record<string, unknown>) =>
@@ -4252,6 +4258,7 @@ describe("DomovoiDaemon", () => {
       code: issued.code,
       label: "one-too-many",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     expect(claimed).toMatchObject({
@@ -4323,6 +4330,7 @@ describe("DomovoiDaemon", () => {
       code: issued.code,
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     const token = (claimed.result as { token: string }).token

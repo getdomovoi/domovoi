@@ -1,5 +1,5 @@
 import { ScrollView, View } from "react-native"
-import type { FleetMachine } from "@getdomovoi/protocol"
+import type { FleetEntry } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
 import { Badge } from "../components/ui/badge"
@@ -24,7 +24,7 @@ export function FleetScreen({
   connected,
   onRefresh,
 }: {
-  fleet: FleetMachine[] | undefined
+  fleet: FleetEntry[] | undefined
   loading: boolean
   problem: string
   notice: ConnectionNotice | undefined
@@ -69,6 +69,7 @@ export function FleetScreen({
           <View className="flex-1 gap-1">
             <Text variant="title">{row.label}</Text>
             <Text variant="machine">{row.platform}</Text>
+            {row.note ? <Text variant="meta">{row.note}</Text> : null}
           </View>
           {row.badge
             ? <Badge label={row.badge} tone={row.health === "gone" ? "destructive" : "neutral"} />

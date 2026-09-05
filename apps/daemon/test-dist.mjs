@@ -35,8 +35,8 @@ try {
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
 
-function runCli(argument) {
-  return spawnSync(process.execPath, ["./dist/index.js", argument], {
+function runCli(...args) {
+  return spawnSync(process.execPath, ["./dist/index.js", ...args], {
     encoding: "utf8",
     timeout: 2_000,
   })
@@ -57,3 +57,13 @@ assert.match(runCli("-h").stdout, /^Usage: domovoid/m)
 const unknown = runCli("--unknown")
 assert.equal(unknown.status, 1, unknown.error?.message || unknown.stderr)
 assert.match(unknown.stderr, /Unknown argument: --unknown/)
+
+// Drive the distributed entry point, without touching the real OS keychain.
+// A component-only command test would miss an unwired dispatch branch.
+const recoveryHelp = runCli("fleet-keychain", "--help")
+assert.equal(recoveryHelp.status, 0, recoveryHelp.error?.message || recoveryHelp.stderr)
+assert.match(recoveryHelp.stdout, /--confirm-daemon-stopped/)
+const invalidRecovery = runCli("fleet-keychain", "forget", "token=must-not-be-echoed", "--confirm-daemon-stopped")
+assert.equal(invalidRecovery.status, 1)
+assert.match(invalidRecovery.stderr, /Invalid machine identity/)
+assert.doesNotMatch(invalidRecovery.stderr, /must-not-be-echoed/)
