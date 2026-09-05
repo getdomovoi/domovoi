@@ -6228,6 +6228,12 @@ describe("DomovoiDaemon", () => {
         message: `This daemon speaks protocol ${protocolVersion}; the client speaks 0.1.0`,
       },
     })
+    expect((refusal.error as { data: unknown }).data).toEqual({
+      kind: "protocol-mismatch",
+      daemonProtocolVersion: protocolVersion,
+      clientProtocolVersion: "0.1.0",
+      compatibility: "machine-ahead",
+    })
     socket.close()
   })
 
@@ -6270,6 +6276,12 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect((refusal.error as { message: string }).message).toContain("9.9.9")
+    expect((refusal.error as { data: unknown }).data).toEqual({
+      kind: "protocol-mismatch",
+      daemonProtocolVersion: protocolVersion,
+      clientProtocolVersion: "9.9.9",
+      compatibility: "machine-behind",
+    })
     socket.close()
   })
 
