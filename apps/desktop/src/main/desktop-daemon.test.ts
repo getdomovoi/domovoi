@@ -276,6 +276,23 @@ describe("DesktopDaemon", () => {
     })
   })
 
+  it("hands the renderer a loopback IPv6 endpoint by its localhost name and leaves other hosts alone", async () => {
+    const { seam } = scriptedSeam([
+      attached("daemon", { url: "wss://[::1]:50123/rpc", token: "file-token" }),
+      attached("daemon", { url: "wss://[fe80::1]:50123/rpc", token: "file-token" }),
+    ])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await expect(daemon.acquire()).resolves.toEqual({
+      kind: "attached",
+      owner: "daemon",
+      url: "wss://localhost:50123/rpc",
+      token: "file-token",
+    })
+    expect(daemon.current()).toMatchObject({ url: "wss://localhost:50123/rpc" })
+    await expect(daemon.reacquire()).resolves.toMatchObject({ url: "wss://[fe80::1]:50123/rpc" })
+  })
+
   it("reports the acquisition it currently holds without touching the seam", async () => {
     const { seam } = scriptedSeam([attached("daemon"), refused("owner-unreachable")])
     const daemon = new DesktopDaemon(seam, () => factoryOptions)

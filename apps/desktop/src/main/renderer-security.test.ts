@@ -7,8 +7,32 @@ import {
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
   rendererContentSecurityPolicy,
+  rendererEndpointUrl,
   resolveRendererTarget,
 } from "./renderer-security.js"
+
+describe("rendererEndpointUrl", () => {
+  it.each([
+    ["wss://[::1]:50123/rpc", "wss://localhost:50123/rpc"],
+    ["ws://[0:0:0:0:0:0:0:1]:47831/rpc", "ws://localhost:47831/rpc"],
+    ["wss://[::ffff:127.0.0.1]:50123/rpc", "wss://localhost:50123/rpc"],
+    ["wss://[::ffff:127.255.0.9]:50123/rpc", "wss://localhost:50123/rpc"],
+  ])("names a loopback IPv6 endpoint by localhost so the policy can allow it: %s", (endpoint, rewritten) => {
+    expect(rendererEndpointUrl(endpoint)).toBe(rewritten)
+  })
+
+  it.each([
+    "wss://[fe80::1]:50123/rpc",
+    "wss://[2001:db8::1]:50123/rpc",
+    "wss://[::ffff:10.0.0.2]:50123/rpc",
+    "ws://127.0.0.1:47831/rpc",
+    "wss://build-box.tail.net:47831/rpc",
+    "wss://localhost:50123/rpc",
+    "not a url",
+  ])("leaves every other endpoint untouched: %s", (endpoint) => {
+    expect(rendererEndpointUrl(endpoint)).toBe(endpoint)
+  })
+})
 
 function connectSources(policy: string): string[] {
   const directive = policy.split(";").map((part) => part.trim()).find((part) => part.startsWith("connect-src "))
@@ -75,11 +99,20 @@ describe("rendererContentSecurityPolicy", () => {
     expect(allowsConnection(policy, "ws://192.168.1.10:47831/rpc")).toBe(false)
   })
 
+  it("allows a loopback IPv6 endpoint through the localhost name the renderer is handed", () => {
+    const policy = rendererContentSecurityPolicy("wss://[::1]:50123/rpc")
+
+    expect(connectSources(policy)).toContain("wss://localhost:50123")
+    expect(allowsConnection(policy, rendererEndpointUrl("wss://[::1]:50123/rpc"))).toBe(true)
+    expect(rendererContentSecurityPolicy("wss://[::ffff:127.0.0.1]:50123/rpc")).toBe(policy)
+  })
+
   it("ignores an endpoint that is not a websocket URL or that CSP cannot name", () => {
     const baseline = rendererContentSecurityPolicy(undefined)
 
     expect(rendererContentSecurityPolicy("http://build-box.tail.net:47831/rpc")).toBe(baseline)
-    expect(rendererContentSecurityPolicy("wss://[::1]:50123/rpc")).toBe(baseline)
+    expect(rendererContentSecurityPolicy("wss://[fe80::1]:50123/rpc")).toBe(baseline)
+    expect(allowsConnection(baseline, "wss://[fe80::1]:50123/rpc")).toBe(false)
     expect(rendererContentSecurityPolicy("not a url")).toBe(baseline)
   })
 
