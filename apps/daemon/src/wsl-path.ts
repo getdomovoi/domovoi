@@ -47,7 +47,13 @@ export async function distributionPath(input: DistributionPathInput): Promise<st
     throw new Error(`${distribution} could not place ${input.path} in its filesystem`)
   }
 
-  const readBack = (await ask("-w", placed)).trim()
+  let readBack: string
+  try {
+    readBack = (await ask("-w", placed)).trim()
+  } catch (error) {
+    if (error instanceof Error && /in time/.test(error.message)) throw error
+    throw new Error(`${distribution} could not say which Windows path ${placed} is`, { cause: error })
+  }
   if (ownShare(distribution, readBack)) return placed
   if (/^[A-Za-z]:/.test(readBack)) {
     throw new Error(

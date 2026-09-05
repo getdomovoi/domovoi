@@ -103,6 +103,12 @@ describe("distributionPath", () => {
       .rejects.toThrow(/Ubuntu-24\.04.*nowhere/s)
   })
 
+  it("reports a read-back the distribution's wslpath refused, naming the placed path", async () => {
+    const run = wslpath({ "-u \\\\wsl$\\Ubuntu-24.04\\odd": "/odd" })
+    await expect(distributionPath({ distribution, path: "\\\\wsl$\\Ubuntu-24.04\\odd", run }))
+      .rejects.toThrow(/Ubuntu-24\.04 could not say which Windows path \/odd is/)
+  })
+
   it("refuses an answer that is not a path inside the distribution", async () => {
     for (const answer of ["", "C:\\repo", "relative/path"]) {
       const run = wslpath({ "-u \\\\wsl$\\Ubuntu-24.04\\x": answer })
