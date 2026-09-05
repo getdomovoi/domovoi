@@ -495,9 +495,16 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
   a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
-  - The downloader verifies the caller SHA-256 and the release `SHA256SUMS` and stores a bounded
-    archive. It does not extract, install dependencies, expose a binary, configure state, or
-    install supervision. Call it a verified downloader until a clean-machine lifecycle passes.
+  - Bootstrap streams and verifies the archive, stages it privately, materialises its embedded
+    integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`, and
+    verifies the installed graph before publishing a runnable receipt. Same-release protocol
+    bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
+    installation, native build, verification, publication, and cleanup share five minutes.
+  - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
+    external toolchain remain reproducibility limits. The protocol library keeps all three
+    package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
+    a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not
+    performed by bootstrap. See `docs/distribution.md`.
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is

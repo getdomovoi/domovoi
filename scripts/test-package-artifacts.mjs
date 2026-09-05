@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -12,7 +14,20 @@ async function packedPackage(selector) {
   const destination = mkdtempSync(join(tmpdir(), "domovoi pack-"))
 
   try {
-    return await inspectArchive(await packPackage(selector, destination))
+    const archive = await packPackage(selector, destination)
+    const result = await inspectArchive(archive)
+    if (selector === "@getdomovoi/daemon") {
+      const entry = (path) => execFileSync("tar", ["-xOf", archive, `package/${path}`], {
+        timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024,
+      })
+      const lock = JSON.parse(entry("runtime/lock.json"))
+      assert.deepEqual(lock.packages[""], JSON.parse(entry("runtime/package.json")))
+      assert.equal(lock.version, result.manifest.version)
+      assert.equal(lock.packages["node_modules/@getdomovoi/protocol"].version, result.manifest.version)
+      assert.equal(lock.packages["node_modules/@getdomovoi/protocol"].integrity,
+        `sha512-${createHash("sha512").update(entry("runtime/protocol.tgz")).digest("base64")}`)
+    }
+    return result
   } finally {
     rmSync(destination, { force: true, recursive: true })
   }
@@ -59,6 +74,9 @@ const contracts = [
       "dist/public.d.ts",
       "dist/server.js",
       "dist/server.d.ts",
+      "runtime/lock.json",
+      "runtime/package.json",
+      "runtime/protocol.tgz",
     ],
     exports: [".", "./internal"],
   },
