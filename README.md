@@ -25,6 +25,7 @@ This repository is early. The current vertical slice includes:
 apps/
   daemon/    domovoid execution service and JSON-RPC endpoint
   desktop/   Electron client
+  mobile/    Expo phone app, see apps/mobile/README.md
   web/       browser client and installable PWA
 packages/
   protocol/  publishable wire schemas and shared types
