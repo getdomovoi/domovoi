@@ -8,11 +8,11 @@ export type WslDistribution = {
 }
 
 // A corrupt listing has no usable rows, even if some could be read. Keeping
-// only the line number makes it impossible to mistake partial discovery for
-// a complete list, or repeat untrusted row contents in an operator message.
+// only the cause and line number keeps partial discovery and untrusted row
+// contents out of a result the caller might otherwise mistake for a list.
 export type WslDistributionListing =
   | { kind: "listed"; distributions: WslDistribution[] }
-  | { kind: "corrupt"; line: number }
+  | { kind: "corrupt"; reason: "encoding" | "header" | "row"; line: number }
 
 const states = new Set<WslDistributionState>(["Running", "Stopped"])
 const byteOrderMark = "﻿"
@@ -51,17 +51,19 @@ function readDistribution(line: string): WslDistribution | undefined {
 }
 
 export function parseWslDistributions(output: string | Buffer): WslDistributionListing {
+  const [first, ...lines] = decode(output).split(/\r?\n/)
   // Buffer's UTF-16 decoder silently drops a trailing half character. That
   // could erase the only evidence of a row after an otherwise empty header.
-  if (typeof output !== "string" && output.length % 2 !== 0) return { kind: "corrupt", line: 1 }
-  const [first, ...lines] = decode(output).split(/\r?\n/)
-  if (!header.test(first ?? "")) return { kind: "corrupt", line: 1 }
+  if (typeof output !== "string" && output.length % 2 !== 0) {
+    return { kind: "corrupt", reason: "encoding", line: lines.length + 1 }
+  }
+  if (!header.test(first ?? "")) return { kind: "corrupt", reason: "header", line: 1 }
 
   const distributions: WslDistribution[] = []
   for (const [index, line] of lines.entries()) {
     if (line.trim() === "") continue
     const distribution = readDistribution(line)
-    if (!distribution) return { kind: "corrupt", line: index + 2 }
+    if (!distribution) return { kind: "corrupt", reason: "row", line: index + 2 }
     distributions.push(distribution)
   }
   return { kind: "listed", distributions }

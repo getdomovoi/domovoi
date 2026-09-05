@@ -125,6 +125,21 @@ describe("listWslDistributions when wsl.exe cannot answer", () => {
     await expect(listWslDistributions({ run, platform: "win32" })).rejects.toMatchObject({ kind: "corrupt" })
   })
 
+  it("does not let absence text in a torn listing override the encoding failure", async () => {
+    const run = vi.fn<Runner>(async () => Buffer.concat([
+      wslOutput("  NAME  STATE  VERSION\r\n  no installed distributions Running 2\r\n"),
+      Buffer.from([0x55]),
+    ]))
+    await expect(listWslDistributions({ run, platform: "win32" })).rejects.toMatchObject({ kind: "corrupt" })
+  })
+
+  it.each(["no installed distributions", "WSL_E_DEFAULT_DISTRO_NOT_FOUND"])(
+    "does not treat absence text in a row as an explicit absence answer: %s", async (name) => {
+      const run = vi.fn<Runner>(async () => wslOutput(`  NAME  BROKEN  VERSION\r\n  ${name} Running 2\r\n`))
+      await expect(listWslDistributions({ run, platform: "win32" })).rejects.toMatchObject({ kind: "corrupt" })
+    },
+  )
+
   it.each([
     "  Ubuntu Running broken\r\n",
     "  Ubuntu Running\r\n",

@@ -23,7 +23,9 @@ const listingCommand = "\"wsl.exe --list --verbose\""
 // wsl.exe answers a machine with no distribution by saying so, with an exit
 // status that would otherwise read as a failure. Newer builds add an error
 // code that survives translation. A header with no rows is the same answer.
-const noDistributions = /no installed distributions|WSL_E_DEFAULT_DISTRO_NOT_FOUND/i
+// Match a complete report line, not those words embedded in a distribution
+// name or malformed row whose header could also be damaged.
+const noDistributions = /^\s*(?:Windows Subsystem for Linux has no installed distributions\.?|(?:Error code:\s*)?(?:Wsl\/(?:\w+\/)*)?WSL_E_DEFAULT_DISTRO_NOT_FOUND)\s*$/im
 
 function saidNoDistributions(error: unknown): boolean {
   const failure = error as { stdout?: unknown; stderr?: unknown }
@@ -82,7 +84,7 @@ export async function listWslDistributions(input: WslListInput = {}): Promise<Ws
   // An explicit no-distributions answer has no table header. Once a header
   // exists, every nonblank row must parse, even one containing an error code
   // or an absence phrase that would otherwise hide the corruption.
-  if (result.line === 1 && noDistributions.test(wslText(listing))) return []
+  if (result.reason === "header" && noDistributions.test(wslText(listing))) return []
   throw new WslError(
     "corrupt",
     `wsl.exe answered ${listingCommand} with a corrupt distribution listing at line ${result.line}, so the distributions on this machine are unknown. Run ${listingCommand} yourself to inspect its output and check "wsl.exe --status" before trying again.`,

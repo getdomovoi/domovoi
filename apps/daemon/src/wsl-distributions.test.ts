@@ -52,7 +52,7 @@ describe("parseWslDistributions", () => {
   it.each(["", "not a header", "prefix NAME STATE VERSION", "NAME STATE VERSION suffix"])(
     "reports an unreadable header as corrupt: %j", (header) => {
       expect(parseWslDistributions(utf16(`${header}\r\n  Ubuntu Running 2\r\n`)))
-        .toEqual({ kind: "corrupt", line: 1 })
+        .toEqual({ kind: "corrupt", reason: "header", line: 1 })
     },
   )
 
@@ -62,13 +62,13 @@ describe("parseWslDistributions", () => {
   ])(
     "reports an unreadable row as corrupt: %j", (row) => {
       expect(parseWslDistributions(utf16(`  NAME  STATE  VERSION\r\n  ${row}\r\n`)))
-        .toEqual({ kind: "corrupt", line: 2 })
+        .toEqual({ kind: "corrupt", reason: "row", line: 2 })
     },
   )
 
   it("rejects a torn UTF-16 character instead of dropping its last byte", () => {
     const torn = Buffer.concat([utf16("  NAME  STATE  VERSION\r\n"), Buffer.from([0x55])])
-    expect(parseWslDistributions(torn)).toEqual({ kind: "corrupt", line: 1 })
+    expect(parseWslDistributions(torn)).toEqual({ kind: "corrupt", reason: "encoding", line: 2 })
   })
 
   it("reports a broken listing without returning partial rows or their contents", () => {
@@ -78,6 +78,6 @@ describe("parseWslDistributions", () => {
       "Windows Subsystem for Linux has no installed distributions.",
       "  Trailing",
     ].join("\r\n")
-    expect(parseWslDistributions(utf16(broken))).toEqual({ kind: "corrupt", line: 3 })
+    expect(parseWslDistributions(utf16(broken))).toEqual({ kind: "corrupt", reason: "row", line: 3 })
   })
 })
