@@ -161,6 +161,30 @@ The package retains `@getdomovoi/daemon/internal` as an inert artifact-compatibi
 It does not expose the raw server constructor or a supported runtime API. Daemon tests import the
 source server module directly.
 
+## Bundle restore claims
+
+Only one bundle restore may mutate a session worktree at a time. A process-local reservation is
+taken before asynchronous work, and an exclusive file at
+`<worktree-root>/.restore-claims/<session-id>` also excludes other daemon processes. Contention
+fails immediately, without waiting or retrying. Restoring a different session remains independent;
+a later incremental restore is still allowed after the earlier operation settles.
+
+Each claim records a fresh ownership token before repository work starts. Once acquired, token
+initialization finishes under its own I/O deadline even if the restore is cancelled, so cleanup
+can still identify and remove the claim. Success, failure and
+cancellation all attempt to close the handle and remove the matching claim independently, and
+always release the process-local reservation. Cleanup rereads the pathname and preserves any
+replacement whose token differs, reporting that the claim now belongs to another owner. An
+unwritten or unreadable token also prevents removal. Cleanup failures name the claim path and retain
+any restore failure as the primary cause. If the restore completed before cleanup failed, the
+error says so explicitly: do not retry that completed restore. A killed process or a failed
+unlink can leave its claim file behind.
+Domovoi never deletes a claim because it looks old. If the error names a stale claim, stop every
+Domovoi process using that worktree root and its supervisor, confirm no restore is active, then
+remove only the named claim file. Keep the session worktree, repository and Git refs intact. The
+token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
+make live manual claim deletion safe.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed

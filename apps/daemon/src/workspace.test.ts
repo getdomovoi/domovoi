@@ -1,18 +1,38 @@
 import { execFile } from "node:child_process"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } from "./workspace.js"
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, open: vi.fn(actual.open), unlink: vi.fn(actual.unlink) }
+})
 
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
 
+async function failNextRestoreClaimClose(error: Error) {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+  vi.mocked(open).mockImplementationOnce(async (...args) => {
+    const handle = await actual.open(...args)
+    const close = handle.close.bind(handle)
+    vi.spyOn(handle, "close").mockImplementationOnce(async () => {
+      await close()
+      throw error
+    })
+    return handle
+  })
+}
+
 afterEach(async () => {
+  vi.mocked(open).mockReset()
+  vi.mocked(unlink).mockReset()
   await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
@@ -869,6 +889,15 @@ describe("GitWorkspaceService transfer resources", () => {
 })
 
 describe("GitWorkspaceService bundle restore", () => {
+  function restoreGate() {
+    let release = () => {}
+    const promise = new Promise<void>((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error("Restore test gate deadline expired")), 2_000)
+      release = () => { clearTimeout(timer); resolvePromise() }
+    })
+    return { promise, release }
+  }
+
   async function sourceWithBundle(prefix: string) {
     const scratch = await mkdtemp(join(tmpdir(), prefix))
     scratchDirectories.push(scratch)
@@ -1041,8 +1070,278 @@ describe("GitWorkspaceService bundle restore", () => {
     expect(contents.replace(/\r\n/g, "\n")).toBe("moved\n")
   })
 
+  it("rejects an overlapping restore even when its HEAD lookup follows the winner", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-late-head-")
+    const root = join(scratch, "target-worktrees")
+    const target = new GitWorkspaceService(root)
+    const competing = new GitWorkspaceService(root)
+    const reachedHead = restoreGate()
+    const releaseFirst = restoreGate()
+    const firstHead = target.sessionHeadCommit.bind(target)
+    const firstLookup = vi.spyOn(target, "sessionHeadCommit").mockImplementation(async (...args) => {
+      reachedHead.release()
+      await releaseFirst.promise
+      return firstHead(...args)
+    })
+    const first = target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+    const firstSettled = Promise.allSettled([first])
+    const secondHead = competing.sessionHeadCommit.bind(competing)
+    const secondLookup = vi.spyOn(competing, "sessionHeadCommit").mockImplementation(async (...args) => {
+      // Force the reported CI interleaving without relying on Git timing:
+      // the competing call sees the clean worktree the winner just created.
+      if (args[0] === "session-1") await first
+      return secondHead(...args)
+    })
+    const competingInspect = vi.spyOn(competing, "inspect")
+    let second: ReturnType<GitWorkspaceService["restoreSessionFromBundle"]> | undefined
+    try {
+      await reachedHead.promise
+      second = competing.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+      const settled = Promise.allSettled([first, second])
+      await expect(competing.restoreSessionFromBundle(bundle.path, "session-2", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-2" })
+      releaseFirst.release()
+      const results = await settled
+      expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"])
+      expect(results[1]).toMatchObject({ reason: { message: expect.stringContaining("Session worktree already exists") } })
+      // Only the independent session may reach repository work.
+      expect(competingInspect).toHaveBeenCalledOnce()
+      expect(secondLookup).toHaveBeenCalledOnce()
+      expect(secondLookup).toHaveBeenCalledWith("session-2", undefined)
+      await expect(readFile(join(root, "session-1", "README.md"), "utf8")).resolves.toMatch(/^moved\r?\n$/u)
+    } finally {
+      reachedHead.release()
+      releaseFirst.release()
+      await firstSettled
+      await second?.catch(() => undefined)
+      firstLookup.mockRestore()
+      secondLookup.mockRestore()
+      competingInspect.mockRestore()
+    }
+  })
+
+  it("does not remove another process's restore claim or touch its repository", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-other-claim-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    await mkdir(join(root, ".restore-claims"), { recursive: true })
+    await writeFile(claimPath, "another process owns this claim\n")
+    const target = new GitWorkspaceService(root)
+    const inspect = vi.spyOn(target, "inspect")
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+          .rejects.toThrow("Session worktree already exists")
+      }
+      expect(inspect).not.toHaveBeenCalled()
+      await expect(readFile(claimPath, "utf8")).resolves.toBe("another process owns this claim\n")
+      await rm(claimPath)
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-1" })
+      await expect(lstat(claimPath)).rejects.toMatchObject({ code: "ENOENT" })
+    } finally {
+      inspect.mockRestore()
+    }
+  })
+
+  it("reports a completed restore when unlink fails and clears its process reservation", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-unlink-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const cleanupError = Object.assign(new Error("claim unlink denied"), { code: "EACCES" })
+    vi.mocked(unlink).mockRejectedValueOnce(cleanupError)
+
+    const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+      .then(() => undefined, (error: unknown) => error)
+    expect(failure).toMatchObject({
+      name: "SessionRestoreClaimCleanupError", restoreCompleted: true, claimPath,
+      message: expect.stringContaining("Session restore completed"), errors: [cleanupError],
+    })
+    expect((failure as Error).message).toContain(claimPath)
+    expect((failure as Error).message).toContain("Do not retry")
+    expect(unlink).toHaveBeenCalledWith(claimPath)
+    await expect(readFile(join(root, "session-1", "README.md"), "utf8")).resolves.toMatch(/^moved\r?\n$/u)
+
+    // A filesystem collision includes its path; an uncleared process-local
+    // reservation would refuse earlier without identifying that file.
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .rejects.toThrow(claimPath)
+    await rm(claimPath)
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .resolves.toMatchObject({ branch: "domovoi/session-1" })
+  })
+
+  it.each(["completed", "failed"])("retains a replacement claim after a %s restore", async (outcome) => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-replaced-claim-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const replacementToken = "11111111-1111-4111-8111-111111111111"
+    const restoreError = Object.freeze(new Error("restore stopped after claim replacement"))
+    const head = target.sessionHeadCommit.bind(target)
+    let originalToken: string | undefined
+    const lookup = vi.spyOn(target, "sessionHeadCommit").mockImplementationOnce(async (...args) => {
+      originalToken = await readFile(claimPath, "utf8")
+      // Model an operator removing a live claim and another process claiming
+      // the same path before this owner finishes. No timing race is required.
+      await unlink(claimPath)
+      await writeFile(claimPath, replacementToken, { flag: "wx", mode: 0o600 })
+      if (outcome === "failed") throw restoreError
+      return head(...args)
+    })
+    try {
+      const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+        .then(() => undefined, (error: unknown) => error)
+      await expect(readFile(claimPath, "utf8")).resolves.toBe(replacementToken)
+      expect(failure).toMatchObject({
+        name: "SessionRestoreClaimCleanupError",
+        restoreCompleted: outcome === "completed",
+        claimPath,
+        message: expect.stringContaining("claim now belongs to another owner"),
+      })
+      expect((failure as Error).message).toContain(claimPath)
+      expect(originalToken).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u)
+      expect(originalToken).not.toBe(replacementToken)
+      if (outcome === "completed") {
+        expect((failure as Error).message).toContain("Session restore completed")
+        expect((failure as Error).message).toContain("Do not retry")
+        await expect(readFile(join(root, "session-1", "README.md"), "utf8")).resolves.toMatch(/^moved\r?\n$/u)
+      } else {
+        expect((failure as Error).cause).toBe(restoreError)
+        expect((failure as AggregateError).errors[0]).toBe(restoreError)
+        expect((failure as Error).message.startsWith(restoreError.message)).toBe(true)
+      }
+      // The process reservation is released, but the replacement file keeps
+      // another restore out and must not be removed by that loser either.
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .rejects.toThrow(claimPath)
+      await expect(readFile(claimPath, "utf8")).resolves.toBe(replacementToken)
+    } finally { lookup.mockRestore() }
+  })
+
+  it("attempts unlink even if closing the restore claim fails", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-close-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const cleanupError = new Error("claim close failed")
+    await failNextRestoreClaimClose(cleanupError)
+
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .rejects.toMatchObject({ restoreCompleted: true, claimPath, errors: [cleanupError] })
+    expect(unlink).toHaveBeenCalledWith(claimPath)
+    await expect(lstat(claimPath)).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .resolves.toMatchObject({ branch: "domovoi/session-1" })
+  })
+
+  it("does not delete an unverified claim when writing its owner token fails", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-token-write-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const writeError = Object.freeze(new Error("claim token write failed"))
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await actual.open(...args)
+      vi.spyOn(handle, "writeFile").mockRejectedValueOnce(writeError)
+      return handle
+    })
+    const inspect = vi.spyOn(target, "inspect")
+    try {
+      const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+        .then(() => undefined, (error: unknown) => error)
+      expect(failure).toMatchObject({
+        name: "SessionRestoreClaimCleanupError", restoreCompleted: false, claimPath, cause: writeError,
+        message: expect.stringContaining("owner could not be established"),
+      })
+      expect((failure as AggregateError).errors[0]).toBe(writeError)
+      expect(inspect).not.toHaveBeenCalled()
+      expect(unlink).not.toHaveBeenCalled()
+      await expect(readFile(claimPath, "utf8")).resolves.toBe("")
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .rejects.toThrow(claimPath)
+    } finally { inspect.mockRestore() }
+  })
+
+  it.each(["Error", "undefined"])("keeps a thrown %s primary when claim cleanup also fails", async (kind) => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-both-errors-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const restoreError = kind === "Error" ? Object.freeze(new Error("repository access refused")) : undefined
+    const closeError = new Error("claim close failed")
+    const cleanupError = new Error("claim unlink denied")
+    const inspect = vi.spyOn(target, "inspect").mockRejectedValueOnce(restoreError)
+    await failNextRestoreClaimClose(closeError)
+    vi.mocked(unlink).mockRejectedValueOnce(cleanupError)
+    try {
+      const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+        .then(() => undefined, (error: unknown) => error)
+      expect(failure).toMatchObject({ restoreCompleted: false, claimPath,
+        cause: restoreError, errors: [restoreError, closeError, cleanupError],
+      })
+      expect((failure as Error).message.startsWith(restoreError?.message ?? "Session restore failed")).toBe(true)
+      expect((failure as Error).message).toContain(claimPath)
+      expect((failure as Error).cause).toBe(restoreError)
+      await expect(lstat(join(root, "session-1"))).rejects.toMatchObject({ code: "ENOENT" })
+      await rm(claimPath)
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-1" })
+    } finally { inspect.mockRestore() }
+  })
+
+  it("releases a restore claim after cancellation without leaving incoming refs", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-cancelled-")
+    const root = join(scratch, "target-worktrees")
+    const target = new GitWorkspaceService(root)
+    const cancellation = new AbortController()
+    const reason = new Error("Restore cancelled by test")
+    const lookup = vi.spyOn(target, "sessionHeadCommit").mockImplementationOnce(async () => {
+      cancellation.abort(reason)
+      return undefined
+    })
+    try {
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }, cancellation.signal))
+        .rejects.toBe(reason)
+      await expect(lstat(join(root, ".restore-claims", "session-1"))).rejects.toMatchObject({ code: "ENOENT" })
+      const incoming = await execute("git", ["-C", targetRepositoryPath, "for-each-ref", "--format=%(refname)", "refs/domovoi/incoming"])
+      expect(incoming.stdout.trim()).toBe("")
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-1" })
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  it("releases its claim when cancelled immediately after exclusive open", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-cancel-open-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const cancellation = new AbortController()
+    const reason = new Error("cancelled immediately after claim acquisition")
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await actual.open(...args)
+      cancellation.abort(reason)
+      return handle
+    })
+    const inspect = vi.spyOn(target, "inspect")
+    try {
+      const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }, cancellation.signal)
+        .then(() => undefined, (error: unknown) => error)
+      await expect(lstat(claimPath)).rejects.toMatchObject({ code: "ENOENT" })
+      expect(failure).toBe(reason)
+      expect(inspect).not.toHaveBeenCalled()
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-1" })
+    } finally { inspect.mockRestore() }
+  })
+
   it("refuses a bundle it cannot verify", async () => {
-    const { scratch, targetRepositoryPath } = await sourceWithBundle("domovoi-restore-bad-")
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-bad-")
     const damaged = join(scratch, "damaged.bundle")
     await writeFile(damaged, "not a bundle\n")
     const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
@@ -1053,6 +1352,8 @@ describe("GitWorkspaceService bundle restore", () => {
       { repositoryPath: targetRepositoryPath },
     ))
       .rejects.toThrow("Bundle could not be verified")
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .resolves.toMatchObject({ branch: "domovoi/session-1" })
   })
 
   it("refuses a session id that could escape the worktree root", async () => {

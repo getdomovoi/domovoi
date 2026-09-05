@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { chmod, lstat, mkdir, open, readFile, readlink, realpath, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, open, readFile, readlink, realpath, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -11,6 +11,10 @@ const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 const safeRemoteName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 const commitSha = /^[a-f0-9]{40}$/u
+// Reserve synchronously before the first await, across service instances.
+// Otherwise a delayed claim opener could acquire after the winner completes
+// and turn a concurrent request into an apparently sequential update.
+const activeBundleRestores = new Set<string>()
 
 function checkpointRef(commit: string): string {
   return `refs/domovoi/checkpoints/${commit}`
@@ -77,11 +81,45 @@ export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
+const restoreClaimIoTimeoutMs = 10_000
 
 export class SessionWorktreeExistsError extends Error {
-  constructor() {
-    super("Session worktree already exists")
+  constructor(restoreClaimPath?: string) {
+    super(restoreClaimPath === undefined
+      ? "Session worktree already exists"
+      : `Session worktree already exists or its restore claim is held at ${restoreClaimPath}. Stop Domovoi and its supervisor before removing a confirmed stale claim.`)
     this.name = "SessionWorktreeExistsError"
+  }
+}
+
+class RestoreClaimOwnerVerificationError extends Error {
+  constructor(tokenWritten: boolean) {
+    super(tokenWritten
+      ? "Restore claim now belongs to another owner"
+      : "Restore claim owner could not be established")
+    this.name = "RestoreClaimOwnerVerificationError"
+  }
+}
+
+export class SessionRestoreClaimCleanupError extends AggregateError {
+  readonly restoreCompleted: boolean
+
+  constructor(
+    readonly claimPath: string,
+    cleanupErrors: readonly unknown[],
+    restoreFailure?: { error: unknown },
+  ) {
+    const ownershipError = cleanupErrors.find((error) => error instanceof RestoreClaimOwnerVerificationError)
+    const diagnostic = `Restore claim cleanup failed at ${claimPath}${ownershipError ? `. ${ownershipError.message}` : ""}`
+    super(
+      restoreFailure ? [restoreFailure.error, ...cleanupErrors] : cleanupErrors,
+      restoreFailure
+        ? `${restoreFailure.error instanceof Error ? restoreFailure.error.message : "Session restore failed"}. ${diagnostic}`
+        : `Session restore completed. ${diagnostic}. Do not retry the completed restore; inspect the named claim file.`,
+      { cause: restoreFailure ? restoreFailure.error : cleanupErrors[0] },
+    )
+    this.name = "SessionRestoreClaimCleanupError"
+    this.restoreCompleted = restoreFailure === undefined
   }
 }
 
@@ -1208,12 +1246,78 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!safeSessionId.test(sessionId)) {
       throw new Error("Session id is not safe for a worktree")
     }
+    signal?.throwIfAborted()
+    const claimDirectory = join(this.worktreeRoot, ".restore-claims")
+    const claimPath = join(claimDirectory, sessionId)
+    const claimToken = randomUUID()
+    if (activeBundleRestores.has(claimPath)) throw new SessionWorktreeExistsError()
+    activeBundleRestores.add(claimPath)
+    let claim: Awaited<ReturnType<typeof open>> | undefined
+    let claimTokenWritten = false
+    let outcome: { completed: true; workspace: SessionWorkspace } | { completed: false; error: unknown }
+    const cleanupErrors: unknown[] = []
+    try {
+      await mkdir(claimDirectory, { recursive: true })
+      signal?.throwIfAborted()
+      try {
+        // The filesystem claim also excludes independent daemon processes.
+        // Never wait, steal a timed-out claim, or remove another owner's file.
+        claim = await open(claimPath, "wx", 0o600)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new SessionWorktreeExistsError(claimPath)
+        throw error
+      }
+      // Once the file exists, finish its identity even if the restore was
+      // cancelled. Otherwise cancellation itself leaves an unverified claim
+      // that cleanup cannot safely remove. No repository work starts below
+      // until the caller's cancellation has been checked again.
+      const writeSignal = AbortSignal.timeout(restoreClaimIoTimeoutMs)
+      await claim.writeFile(claimToken, { encoding: "utf8", signal: writeSignal })
+      claimTokenWritten = true
+      writeSignal.throwIfAborted()
+      signal?.throwIfAborted()
+      outcome = { completed: true, workspace: await this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal) }
+    } catch (error) {
+      outcome = { completed: false, error }
+    } finally {
+      try {
+        if (claim) {
+          // A close failure must not skip unlink. Neither cleanup failure may
+          // hide the restore outcome or keep the process reservation occupied.
+          try { await claim.close() } catch (error) { cleanupErrors.push(error) }
+          try {
+            // The ownership read has its own deadline after cancellation too.
+            // Check the pathname, not the original handle, which may now refer
+            // to an unlinked file. Manual deletion still requires stopped
+            // daemons: token verification and unlink are not one atomic action.
+            const readSignal = AbortSignal.timeout(restoreClaimIoTimeoutMs)
+            const currentToken = await readFile(claimPath, { encoding: "utf8", signal: readSignal })
+            readSignal.throwIfAborted()
+            if (currentToken !== claimToken) cleanupErrors.push(new RestoreClaimOwnerVerificationError(claimTokenWritten))
+            else await unlink(claimPath)
+          } catch (error) { cleanupErrors.push(error) }
+        }
+      } finally {
+        activeBundleRestores.delete(claimPath)
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      // Preserve even frozen or non-Error failures without mutating them.
+      throw new SessionRestoreClaimCleanupError(claimPath, cleanupErrors, outcome.completed ? undefined : outcome)
+    }
+    if (!outcome.completed) throw outcome.error
+    return outcome.workspace
+  }
 
+  async #restoreClaimedSessionFromBundle(
+    bundlePath: string,
+    sessionId: string,
+    options: SessionBundleRestoreOptions,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
     const repository = await this.inspect(options.repositoryPath, signal)
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
-    await mkdir(this.worktreeRoot, { recursive: true })
-
     // Each restore owns its temporary ref, so concurrent attempts cannot
     // delete or retarget one another's fetched commit.
     const incomingPrefix = `refs/domovoi/incoming/${sessionId}/${randomUUID()}`
