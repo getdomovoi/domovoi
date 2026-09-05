@@ -128,13 +128,17 @@ export async function installBootstrapDaemon(options) {
     const bytes = await deadline.run(() => readFile(join(directory, "runtime/lock.json"), { signal: deadline.signal }))
     await deadline.run(() => writeFile(join(directory, "package-lock.json"), bytes, { mode: 0o600, flag: "wx", signal: deadline.signal }))
     await deadline.run(() => writeFile(join(directory, "package.json"), `${JSON.stringify(manifest)}\n`, { mode: 0o600, signal: deadline.signal }))
-    const commandOptions = { cwd: directory, deadline, env: { ...process.env, npm_config_cache: join(staging, ".npm-cache") } }
-    await deadline.run(() => run(process.execPath, [npm.entry, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], commandOptions))
+    const cache = join(staging, ".npm-cache")
+    const commandOptions = { cwd: directory, deadline, env: { ...process.env, npm_config_cache: cache } }
+    // cwd alone does not override an inherited npm prefix or global setting.
+    // CLI options also avoid case-sensitive environment collisions on Windows.
+    const location = ["--global=false", "--prefix", directory, "--cache", cache]
+    await deadline.run(() => run(process.execPath, [npm.entry, "ci", ...location, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], commandOptions))
     await verifyInstalledRuntime(directory, lock, deadline)
     // The reviewed runtime's only build hook is node-pty. Do not grant every
     // downloaded package lifecycle execution because one native module needs it.
     if (lock.packages["node_modules/node-pty"]) {
-      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", "--foreground-scripts", "--ignore-scripts=false"], commandOptions))
+      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", ...location, "--foreground-scripts", "--ignore-scripts=false"], commandOptions))
       await verifyInstalledRuntime(directory, lock, deadline)
     }
     const materializedHash = await hashRuntimeFile(join(directory, "package-lock.json"), "sha256", deadline)

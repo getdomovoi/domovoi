@@ -142,12 +142,15 @@ test("identical archives install the reviewed transitive bytes after the registr
   })
   const cli = await execute(process.execPath, [fileURLToPath(new URL("./bootstrap-daemon.mjs", import.meta.url)),
     "1.0.0", `https://127.0.0.1:${releaseServer.address().port}`, join(root, "cli"), sha256], {
-    timeout: 45_000, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate, npm_config_registry: registry },
+    timeout: 45_000, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate,
+      npm_config_registry: registry, npm_config_global: "true", npm_config_prefix: join(root, "ambient-prefix"),
+      NPM_CONFIG_CACHE: join(root, "ambient-cache") },
   })
   const cliResult = JSON.parse(cli.stdout)
   assert.equal(cliResult.sha256, sha256)
   assert.equal(typeof cliResult.runtimePath, "string", "the shipped command must install, not merely download")
   assert.equal(await readFile(join(cliResult.runtimePath, "node_modules/node-pty/built.txt"), "utf8"), "reviewed build ran")
+  await assert.rejects(readFile(join(root, "ambient-prefix/package-lock.json")), { code: "ENOENT" })
 
   // Change the registry bytes under the same URL. A new install must reject on
   // SRI rather than publish a graph whose manifests happen to have the right versions.

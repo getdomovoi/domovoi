@@ -63,6 +63,9 @@ async function fixture(t) {
       return await execute(command, args, { cwd: options.cwd, signal: options.deadline.signal, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 })
     }
     if (failInstall) throw failInstall
+    assert.ok(args.includes("--global=false"))
+    assert.equal(args[args.indexOf("--prefix") + 1], options.cwd)
+    assert.equal(args[args.indexOf("--cache") + 1], join(options.cwd, "../.npm-cache"))
     assert.ok(args.includes("--ignore-scripts"), "npm ci must not execute dependencies before graph verification")
     assert.deepEqual(JSON.parse(await fs.readFile(join(options.cwd, "package-lock.json"), "utf8")), lock)
     for (const [name, installedVersion] of [["@getdomovoi/protocol", version], ["leaf", installVersion]]) {
