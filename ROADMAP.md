@@ -459,6 +459,12 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     provider readiness. Close with a production-boundary restart over one real profile that
     asserts those refreshed facts.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+  - Audit item F5: machine claims now grant only a five-minute confirmation capability. The
+    source journals and reads back its keychain token before confirmation activates it; a lost
+    confirmation reply is replayable after restart. Pending tokens cannot authenticate or retire
+    previous machine authority, and expired claims never activate. Protocol 0.5 requires updated
+    peers but leaves existing active pairings intact. Production-socket tests cover failed local
+    storage, target restart, expiry, and source recovery after a committed but unanswered confirm.
   - Audit item F3. `domovoid pair` and `domovoid open` spend one 15-second deadline across
     connect, `system.hello`, and the call, so a listener that accepts the socket and then says
     nothing is refused with the address waited on and a remedy rather than holding the terminal.
@@ -474,8 +480,8 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - `packages/ui/src/client.ts` calls `device.revoke` and `device.rotate`, and the Fleet surface
     drives both. This duplicates the checked entry below it under paired-device management.
 - [x] Add a fleet registry and machine selector to the shared protocol and UI
-  - Closed by #244. `fleet.enroll` owns the claim, handshake, and first descriptor on one socket
-    and records the target's own facts; the heartbeat refreshes the row; and the two-daemon
+  - Closed by #244. `fleet.enroll` owns the claim and target facts, then confirms and authenticates
+    on a new socket only after durable local storage; the heartbeat refreshes the row; and the two-daemon
     production test takes enrollment through restart without registry seeding. Each enrollment
     and forget is journaled by credential digest and promoted or rolled back on restart, because
     SQLite and the OS keychain cannot be atomic.
