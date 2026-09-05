@@ -6,6 +6,7 @@ import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
+import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { runOpenCommand } from "./open-command.js"
@@ -255,10 +256,9 @@ async function main() {
       const cleanup = OperationDeadline.start(5_000)
       try { await credentials.close(cleanup) }
       catch {
-        process.stderr.write("Native keyring worker exit could not be confirmed. Stopping this CLI process.\n")
         // A native call can ignore Worker.terminate until it returns to JS.
         // This short-lived CLI must not leave the terminal waiting forever.
-        process.exit(1)
+        await exitAfterStderr("Native keyring worker exit could not be confirmed. Stopping this CLI process.\n", 1, 1_000)
       } finally { cleanup.clear() }
     }
     return

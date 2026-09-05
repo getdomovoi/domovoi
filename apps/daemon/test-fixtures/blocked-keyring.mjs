@@ -15,6 +15,16 @@ if (process.env.DOMOVOI_TEST_KEYRING_UNSTOPPABLE === "1") {
   // parent test has a kill deadline; the synthetic native hold is also finite.
   Worker.prototype.terminate = () => new Promise(() => {})
 }
+const backlog = Number(process.env.DOMOVOI_TEST_KEYRING_STDERR_BACKLOG ?? "0")
+if (backlog > 0) {
+  // Model a piped stderr whose reader has not drained earlier output. Every
+  // diagnostic queues behind a backlog, and a forced exit discards a queue.
+  const write = process.stderr.write.bind(process.stderr)
+  process.stderr.write = (chunk, ...rest) => {
+    write("\n".repeat(backlog))
+    return write(chunk, ...rest)
+  }
+}
 
 class Entry {
   constructor(service, account) {

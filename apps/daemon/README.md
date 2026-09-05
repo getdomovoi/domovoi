@@ -85,7 +85,8 @@ worker failed. Shutdown waits up to five seconds for worker exit and reports fai
 cannot be confirmed.
 
 The local recovery CLI also bounds shutdown. If native work will not acknowledge termination,
-it prints the shutdown failure and exits nonzero instead of leaving the terminal waiting.
+it prints the shutdown failure, waits up to one second for a piped stderr to take it, and exits
+nonzero instead of leaving the terminal waiting.
 
 This does not change the installed native library's missing-value semantics. Its
 [1.3.0 synchronous getter](https://github.com/Brooooooklyn/keyring-node/blob/v1.3.0/src/entry.rs)
