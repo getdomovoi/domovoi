@@ -22,13 +22,25 @@ export const machineCapabilitySchema = z.enum([
 
 export const heartbeatStateSchema = z.enum(["online", "stale", "offline"])
 
+// A daemon inside a WSL distribution reports linux as its platform, which is
+// true and not enough: the fleet needs to say which distribution, and whether
+// WSL 2 gives it a network stack of its own.
+export const machineWslFactsSchema = z.object({
+  distribution: z.string().trim().min(1).max(128),
+  version: z.union([z.literal(1), z.literal(2)]),
+}).strict()
+
 export const machineHeartbeatSchema = z.object({
   state: heartbeatStateSchema,
   lastSeenAt: z.string().datetime({ offset: true }),
 }).strict()
 
-function refineCapabilities(
-  machine: { capabilities: MachineCapability[] },
+// The facts a machine reports about itself are read in three places: its
+// heartbeat, its enrollment descriptor, and the fleet entry built from either.
+// One refinement serves all three, so a descriptor no place would keep is
+// refused everywhere.
+function refineDescriptor(
+  machine: { platform: string; capabilities: MachineCapability[]; wsl?: MachineWslFacts | undefined },
   context: z.RefinementCtx,
 ): void {
   if (new Set(machine.capabilities).size !== machine.capabilities.length) {
@@ -36,6 +48,15 @@ function refineCapabilities(
       code: "custom",
       path: ["capabilities"],
       message: "Machine capabilities must be unique",
+    })
+  }
+  // Only a linux daemon runs inside a distribution. Any other platform
+  // claiming one would be labelled as a WSL machine it is not.
+  if (machine.wsl !== undefined && machine.platform !== "linux") {
+    context.addIssue({
+      code: "custom",
+      path: ["wsl"],
+      message: "WSL facts describe a linux daemon inside a distribution",
     })
   }
 }
@@ -73,11 +94,12 @@ const fleetMachineDescriptorObject = z.object({
   // Only endpoints the dialer would accept: the schema refuses an
   // unauthenticated candidate, so a machine cannot advertise one.
   transports: z.array(transportCandidateSchema).max(8),
+  wsl: machineWslFactsSchema.optional(),
 }).strict()
 
 // Only target-authored facts cross the heartbeat RPC. Health, route provenance,
 // connection kind and timestamps are observations made by the receiving daemon.
-export const fleetMachineDescriptorSchema = fleetMachineDescriptorObject.superRefine(refineCapabilities)
+export const fleetMachineDescriptorSchema = fleetMachineDescriptorObject.superRefine(refineDescriptor)
 
 const fleetMachineFactsObject = fleetMachineDescriptorObject.extend({
   connection: fleetConnectionKindSchema,
@@ -85,7 +107,7 @@ const fleetMachineFactsObject = fleetMachineDescriptorObject.extend({
 }).strict()
 
 function refineObservedFacts(machine: z.infer<typeof fleetMachineFactsObject>, context: z.RefinementCtx): void {
-  refineCapabilities(machine, context)
+  refineDescriptor(machine, context)
   if (machine.connection === "direct" && machine.verifiedRoute === undefined) {
     context.addIssue({ code: "custom", path: ["verifiedRoute"], message: "A direct connection requires a source-verified route" })
   }
@@ -169,6 +191,15 @@ export type FleetSnapshotOverflow = z.infer<typeof fleetSnapshotOverflowSchema>
 // must reconnect rather than silently coalescing or losing lifecycle changes.
 export const fleetChangedNotificationSchema = fleetSnapshotSchema
 
+// What a fleet surface calls the platform: the distribution for a daemon under
+// WSL, since "linux" would not tell two of them apart, and the platform itself
+// everywhere else.
+export function machinePlatformLabel(
+  machine: { platform: string; wsl?: MachineWslFacts | undefined },
+): string {
+  return machine.wsl ? `${machine.wsl.distribution} (WSL)` : machine.platform
+}
+
 export function machineHeartbeatState(
   lastSeenMs: number,
   nowMs: number,
@@ -180,6 +211,7 @@ export function machineHeartbeatState(
 }
 
 export type MachineCapability = z.infer<typeof machineCapabilitySchema>
+export type MachineWslFacts = z.infer<typeof machineWslFactsSchema>
 export type FleetMachineFacts = z.infer<typeof fleetMachineFactsSchema>
 export type FleetMachineDescriptor = z.infer<typeof fleetMachineDescriptorSchema>
 export type FleetVerifiedRoute = z.infer<typeof fleetVerifiedRouteSchema>

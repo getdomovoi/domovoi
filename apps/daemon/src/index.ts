@@ -17,6 +17,9 @@ import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
+import { distributionPath } from "./wsl-path.js"
+import { discoverWslMachines } from "./wsl-discovery.js"
+import { runWslCommand } from "./wsl-command.js"
 import { protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
@@ -196,6 +199,7 @@ const help = `Usage: domovoid [options]
        domovoid fleet-keychain list
        domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
        domovoid open [path]
+       domovoid wsl list
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
@@ -302,7 +306,19 @@ async function main() {
     process.exitCode = await runOpenCommand(args, {
       cwd: () => process.cwd(),
       distributions: () => listWslDistributions(),
+      translate: (distribution, path) => distributionPath({ distribution, path }),
       open: (target) => openWorkspace(target),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "wsl") {
+    // Discovery asks wsl.exe and each running distribution, never the share,
+    // and reports endpoints without the credential the endpoint file carries.
+    process.exitCode = await runWslCommand(args, {
+      platform: process.platform,
+      discover: () => discoverWslMachines(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

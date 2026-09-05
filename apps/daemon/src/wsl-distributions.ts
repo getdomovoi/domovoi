@@ -7,11 +7,6 @@ export type WslDistribution = {
   default: boolean
 }
 
-export type WslDaemonTarget = {
-  name: string
-  default: boolean
-}
-
 const states = new Set<WslDistributionState>(["Running", "Stopped"])
 const byteOrderMark = "﻿"
 
@@ -53,14 +48,4 @@ export function parseWslDistributions(output: string | Buffer): WslDistribution[
     if (distribution) distributions.push(distribution)
   }
   return distributions
-}
-
-// Only a running WSL2 distribution can hold a daemon of its own: WSL1 shares the
-// Windows network stack, and a stopped distribution is left stopped rather than
-// started on the strength of a listing.
-export function wslDaemonTargets(distributions: readonly WslDistribution[]): WslDaemonTarget[] {
-  return distributions
-    .filter((distribution) => distribution.state === "Running" && distribution.version === 2)
-    .map((distribution) => ({ name: distribution.name, default: distribution.default }))
-    .sort((left, right) => Number(right.default) - Number(left.default))
 }

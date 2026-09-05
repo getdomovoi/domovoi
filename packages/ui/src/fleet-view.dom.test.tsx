@@ -172,6 +172,24 @@ it("describes each machine in the fleet", () => {
   expect(machine.textContent).toContain("sessions")
 })
 
+it("names the distribution for a daemon inside WSL", () => {
+  const ubuntu: FleetMachine = {
+    ...studio,
+    id: `machine-${"d".repeat(32)}`,
+    label: "ubuntu-daemon",
+    platform: "linux",
+    arch: "x64",
+    wsl: { distribution: "Ubuntu-24.04", version: 2 },
+    health: "healthy",
+  }
+  renderFleet({ entries: entries(local, ubuntu) })
+
+  const machine = screen.getByRole("group", { name: "ubuntu-daemon" })
+  expect(machine.textContent).toContain("Ubuntu-24.04 (WSL)")
+  expect(machine.textContent).toContain("x64")
+  expect(screen.getByRole("group", { name: "workshop" }).textContent).not.toContain("(WSL)")
+})
+
 it("counts sessions only for this machine", () => {
   renderFleet()
 

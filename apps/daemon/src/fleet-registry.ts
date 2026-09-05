@@ -74,6 +74,7 @@ type StoredFleetMachine = {
   verified_route: string | null
   credential_digest: string | null
   health_override: string | null
+  wsl: string | null
 }
 
 export interface FleetRegistry {
@@ -119,7 +120,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
       );
     `)
     const columns = this.#database.prepare("PRAGMA table_info(fleet_machines)").all() as Array<{ name: string }>
-    for (const name of ["verified_route", "credential_digest", "health_override"]) {
+    for (const name of ["verified_route", "credential_digest", "health_override", "wsl"]) {
       if (!columns.some((column) => column.name === name)) {
         this.#database.exec(`ALTER TABLE fleet_machines ADD COLUMN ${name} TEXT`)
       }
@@ -142,8 +143,8 @@ export class SqliteFleetRegistry implements FleetRegistry {
       .prepare(`
         INSERT INTO fleet_machines (
           id, label, platform, arch, version, connection, capabilities, protocol_version,
-          transports, last_seen_ms, verified_route, credential_digest, health_override
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+          transports, last_seen_ms, verified_route, credential_digest, health_override, wsl
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
         ON CONFLICT(id) DO UPDATE SET
           label = excluded.label,
           platform = excluded.platform,
@@ -156,7 +157,8 @@ export class SqliteFleetRegistry implements FleetRegistry {
           last_seen_ms = excluded.last_seen_ms,
           verified_route = excluded.verified_route,
           credential_digest = excluded.credential_digest,
-          health_override = NULL
+          health_override = NULL,
+          wsl = excluded.wsl
       `)
       .run(
         machine.id,
@@ -171,6 +173,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
         nowMs,
         machine.verifiedRoute === undefined ? null : JSON.stringify(machine.verifiedRoute),
         credentialDigest,
+        machine.wsl === undefined ? null : JSON.stringify(machine.wsl),
       )
   }
 
@@ -385,6 +388,7 @@ function readFacts(row: StoredFleetMachine): FleetMachineFacts {
     connection: row.connection, capabilities: JSON.parse(row.capabilities), protocolVersion: row.protocol_version,
     transports: JSON.parse(row.transports),
     ...(row.verified_route === null ? {} : { verifiedRoute: JSON.parse(row.verified_route) }),
+    ...(row.wsl === null ? {} : { wsl: JSON.parse(row.wsl) }),
   })
 }
 
@@ -401,5 +405,8 @@ function durableFacts(facts: FleetMachineFacts): FleetMachineFacts {
     platform: redactDurableText(parsed.platform).value.slice(0, 64),
     arch: redactDurableText(parsed.arch).value.slice(0, 64),
     version: redactDurableText(parsed.version).value.slice(0, 64),
+    ...(parsed.wsl === undefined ? {} : {
+      wsl: { ...parsed.wsl, distribution: redactDurableText(parsed.wsl.distribution).value.slice(0, 128) },
+    }),
   })
 }

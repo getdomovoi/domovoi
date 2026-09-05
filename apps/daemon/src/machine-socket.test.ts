@@ -12,6 +12,7 @@ import {
   protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
 
+import type { MachineConnection } from "./machine-dial.js"
 import {
   defaultMachineCallTimeoutMs,
   defaultMachineHandshakeTimeoutMs,
@@ -19,6 +20,7 @@ import {
   MachineProtocolMismatchError,
   openMachineSocket as openMachineSocketWithoutDefaults,
   protocolMismatchRefusal,
+  readMachineDescriptor,
 } from "./machine-socket.js"
 import { OperationDeadline } from "./operation-deadline.js"
 
@@ -397,5 +399,33 @@ describe("openMachineSocket", () => {
     for (const callback of fired) callback()
 
     await expect(opening).rejects.toThrow("That machine did not answer")
+  })
+})
+
+describe("readMachineDescriptor", () => {
+  const descriptor = {
+    id: machineId,
+    label: "workshop",
+    platform: "linux",
+    arch: "x64",
+    version: "0.0.1",
+    capabilities: ["sessions"],
+    protocolVersion,
+    transports: [{ kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true }],
+  }
+  const wsl = { distribution: "Ubuntu-24.04", version: 2 }
+
+  function heartbeat(result: unknown) {
+    const connection: MachineConnection = { call: async () => result, close: () => {} }
+    const deadline = OperationDeadline.start(1_000)
+    return readMachineDescriptor(connection, machineId, "n".repeat(43), deadline).finally(() => deadline.clear())
+  }
+
+  it("keeps the WSL facts a linux daemon reports from inside a distribution", async () => {
+    await expect(heartbeat({ ...descriptor, wsl })).resolves.toMatchObject({ platform: "linux", wsl })
+  })
+
+  it("refuses a heartbeat that pairs WSL facts with a platform no distribution runs", async () => {
+    await expect(heartbeat({ ...descriptor, platform: "win32", wsl })).rejects.toThrow("invalid descriptor")
   })
 })
