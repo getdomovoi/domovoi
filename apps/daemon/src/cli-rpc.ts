@@ -1,6 +1,6 @@
 import { WebSocket } from "ws"
 
-import { protocolVersion } from "@getdomovoi/protocol"
+import { buildVersion, protocolVersion } from "@getdomovoi/protocol"
 
 import { OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 
@@ -158,7 +158,7 @@ export async function callDaemonOnce(input: {
   try {
     await awaitOpen(socket, input.deadline, address)
     await exchange(socket, input.deadline, address, helloRequestId, "system.hello", {
-      client: "cli", clientVersion: "0.0.1", protocolVersion,
+      client: "cli", clientVersion: buildVersion, protocolVersion,
     })
     const result = await exchange(socket, input.deadline, address, callRequestId, input.method, input.params)
     socket.close()

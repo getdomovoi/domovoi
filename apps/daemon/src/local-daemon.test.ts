@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { WebSocket } from "ws"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, writeLocalOwnerRecord } from "./local-owner-record.js"
@@ -10,6 +11,11 @@ import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemon, type ProductionDaemonHandle } from "./production-daemon.js"
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
+
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
 
 vi.mock("./local-owner-record.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./local-owner-record.js")>()
@@ -40,6 +46,7 @@ async function acquire(homeDirectory: string, mode = defaults.mode as "start-or-
 }
 
 it("owns a free profile but gives a second Desktop attachment no stop capability", async () => {
+  const sent = vi.spyOn(WebSocket.prototype, "send")
   const homeDirectory = await home()
   const first = await acquire(homeDirectory)
   expect(first.kind).toBe("owned")
@@ -48,6 +55,12 @@ it("owns a free profile but gives a second Desktop attachment no stop capability
   expect(second).not.toHaveProperty("stop")
   if (second.kind !== "attached" || first.kind !== "owned") throw new Error("Missing attachment")
   expect(second.endpoint).toEqual(first.endpoint)
+  // Assert only public build identity, so a failing assertion never prints the bearer.
+  expect(sent.mock.calls.flatMap(([payload]) => {
+    if (typeof payload !== "string") return []
+    const message = JSON.parse(payload) as { method?: string; params?: { clientVersion?: string } }
+    return message.method === "system.hello" ? [message.params?.clientVersion] : []
+  })).toContain("9.8.7-test")
   second.detach()
   expect((await acquire(homeDirectory, "attach-only")).kind).toBe("attached")
 })
