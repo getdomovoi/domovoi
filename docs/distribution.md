@@ -287,11 +287,24 @@ attaches all three kinds of file to the GitHub release of each published package
 ## Versioning and release metadata
 
 Every package in this workspace carries the same version and is released as one compatibility
-unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `packages/ui`, `apps/web`, and
-`apps/desktop` ship a matched daemon and client pair, so a version that moves for one of them
-moves for all of them. Changesets enforces that at version time through the `@getdomovoi/*` fixed
+unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `packages/ui`, `apps/web`,
+`apps/desktop`, and `apps/mobile` ship together, so a version that moves for one moves for all.
+Changesets enforces that at version time through the `@getdomovoi/*` fixed
 group in `.changeset/config.json`, and `pnpm release:invariants` fails the build if a manifest
-drifts out of lockstep.
+drifts out of lockstep or the built protocol export advertises another release.
+
+`@getdomovoi/protocol` exports `buildVersion`, compiled directly from its package manifest.
+Daemon machine facts, every daemon and client greeting, and provider initialization use that
+value. Production startup replaces the persisted local machine version with the running build's
+version while preserving machine identity. A peer's version still comes from that peer, never
+from this local build. Expo also derives the native app version from the mobile package manifest.
+The wire `protocolVersion` remains a separate compatibility contract;
+an application release does not itself change it.
+
+After versioning, rebuild before running release invariants. The check loads the actual protocol
+artifact in a fresh process with a ten-second deadline and refuses a missing or stale build.
+Release-bump tests substitute a different build version at the metadata boundary, including the
+compiled CLI over a real socket, so today's matching literals cannot stand in for this property.
 
 Release metadata travels with the change that needs it:
 

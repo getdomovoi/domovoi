@@ -369,7 +369,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     })
     try {
       await this.#request("initialize", {
-      clientInfo: { name: "domovoi", title: "Domovoi", version: buildVersion },
+        clientInfo: { name: "domovoi", title: "Domovoi", version: buildVersion },
       })
       if (this.#transport !== transport) {
         throw new Error("Codex transport disconnected during initialization")

@@ -82,7 +82,7 @@ export class StdioAcpPeer implements AcpPeer {
       const initialized = await this.#connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {},
-      clientInfo: { name: "Domovoi", version: buildVersion },
+        clientInfo: { name: "Domovoi", version: buildVersion },
       })
       if (initialized.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error(`ACP protocol version ${initialized.protocolVersion} is unsupported`)
