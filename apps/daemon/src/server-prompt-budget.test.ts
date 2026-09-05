@@ -23,7 +23,7 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
 })
 
-async function sendFor(options: { providerPromptBudgetCodeUnits: number; prompt: string }) {
+async function fixture(providerPromptBudgetCodeUnits: number) {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions[0]!
   session.state = "idle"
@@ -81,7 +81,7 @@ async function sendFor(options: { providerPromptBudgetCodeUnits: number; prompt:
     agents: { [session.runtime.provider]: agent },
     auditLog,
     artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
-    providerPromptBudgetCodeUnits: options.providerPromptBudgetCodeUnits,
+    providerPromptBudgetCodeUnits,
   })
   running.push(daemon)
   const address = await daemon.start()
@@ -111,12 +111,16 @@ async function sendFor(options: { providerPromptBudgetCodeUnits: number; prompt:
     clientVersion: "0.0.1",
     protocolVersion,
   })
-  const sent = await rpc("session.send", {
-    sessionId: session.id,
-    prompt: options.prompt,
-    client: "desktop",
-  })
-  return { durable, initial, prompts, sent }
+  return {
+    initial,
+    prompts,
+    durable: () => durable,
+    send: (prompt: string) => rpc("session.send", {
+      sessionId: session.id,
+      prompt,
+      client: "desktop",
+    }),
+  }
 }
 
 describe("provider prompt budget option", () => {
@@ -137,33 +141,43 @@ describe("provider prompt budget option", () => {
   })
 
   it("records the configured budget on the sent turn", async () => {
-    const { durable, prompts, sent } = await sendFor({
-      providerPromptBudgetCodeUnits: 20_000,
-      prompt: "Ship it",
-    })
+    const context = await fixture(20_000)
+
+    const sent = await context.send("Ship it")
 
     expect(sent).not.toHaveProperty("error")
-    expect(prompts).toHaveLength(1)
-    expect(durable.thread.findLast((item) => item.kind === "user")).toMatchObject({
+    await waitForDaemon(() => expect(context.prompts).toHaveLength(1))
+    await waitForDaemon(() => expect(
+      context.durable().thread.findLast((item) => item.kind === "user"),
+    ).toMatchObject({
       providerPromptDelivery: {
-        budget: { unit: "utf16-code-units", limit: 20_000, used: prompts[0]!.length },
+        budget: { unit: "utf16-code-units", limit: 20_000, used: context.prompts[0]!.length },
       },
-    })
+    }))
   })
 
-  it("refuses a request the configured budget cannot carry", async () => {
-    const { durable, initial, prompts, sent } = await sendFor({
-      providerPromptBudgetCodeUnits: 20_000,
-      prompt: "u".repeat(20_001),
-    })
+  it("refuses a request the configured budget cannot carry and records nothing for it", async () => {
+    const context = await fixture(20_000)
 
-    expect(sent).toMatchObject({
+    const refused = await context.send("u".repeat(20_001))
+    expect(refused).toMatchObject({
       error: {
         code: -32602,
         message: expect.stringMatching(/user request exceed the 20000 UTF-16 code units/),
       },
     })
-    expect(prompts).toEqual([])
-    expect(durable.thread).toEqual(initial.thread)
+
+    // Persistence is serialized, so once the accepted turn's write is visible
+    // any write the refused turn could have started has landed before it.
+    const accepted = await context.send("Ship it")
+    expect(accepted).not.toHaveProperty("error")
+    await waitForDaemon(() => expect(
+      context.durable().thread.findLast((item) => item.kind === "user"),
+    ).toMatchObject({ body: "Ship it" }))
+    expect(context.durable().thread).toEqual([
+      ...context.initial.thread,
+      expect.objectContaining({ kind: "user", body: "Ship it" }),
+    ])
+    expect(context.prompts).toEqual(["Ship it"])
   })
 })
