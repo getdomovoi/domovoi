@@ -29,6 +29,12 @@ It reads the graph from `pnpm licenses list --prod`, so it reports the licenses 
 for the current lockfile rather than the ranges written in manifests. CI runs it on Linux, macOS,
 and Windows.
 
+The release SBOM's inventory is broader: it comes from the packed all-platform runtime lock,
+including optional binaries absent from this host and the embedded protocol. Local license
+observations annotate exact versions only. Missing observations stay empty rather than removing
+a component or borrowing a related package's license. See [distribution.md](distribution.md#release-artifacts)
+for the scope and the offline schema validation boundary.
+
 ## Current exceptions
 
 `@anthropic-ai/claude-agent-sdk` and its per-platform binaries, covered by

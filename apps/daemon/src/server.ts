@@ -181,6 +181,7 @@ import {
   DeviceLimitReachedError,
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
+import type { ConfiguredSshTunnel } from "./transport-config.js"
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
@@ -789,6 +790,8 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
+  tailnetHost?: string
+  sshTunnels?: readonly ConfiguredSshTunnel[]
   // The distribution this daemon runs in, when it runs inside WSL. It is a
   // fact about the executable's host, so it is supplied at construction like
   // the platform rather than read back from stored state.
@@ -918,6 +921,7 @@ export class DomovoiDaemon {
   #tls: TlsMaterial | undefined
   #localOwner: DaemonServerOptions["localOwner"]
   #advertiseHost: string | undefined
+  #tailnetHost: string | undefined
   #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
@@ -960,6 +964,7 @@ export class DomovoiDaemon {
     this.#tls = options.tls
     this.#localOwner = options.localOwner
     this.#advertiseHost = options.advertiseHost
+    this.#tailnetHost = options.tailnetHost
     this.#wsl = options.wsl
     this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
     if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
@@ -982,6 +987,7 @@ export class DomovoiDaemon {
         return target
       },
       credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
       dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
       open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
         endpoint,
@@ -1062,6 +1068,7 @@ export class DomovoiDaemon {
     this.#localMachine = structuredClone(this.#snapshot.machine)
     this.#fleetEnrollment = new FleetEnrollmentService({
       selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
       operationTimeoutMs: options.fleetOperationTimeoutMs ?? defaultFleetOperationTimeoutMs,
       heartbeatIntervalMs: options.fleetHeartbeatIntervalMs ?? defaultFleetHeartbeatIntervalMs,
       recordLocal: () => this.#recordThisMachine(),
@@ -1133,6 +1140,7 @@ export class DomovoiDaemon {
         host: this.host, port: this.address?.port ?? this.requestedPort,
         ...(this.#tls ? { tls: true } : {}),
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
+        ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
       }),
       ...(this.#wsl ? { wsl: this.#wsl } : {}),
     })
