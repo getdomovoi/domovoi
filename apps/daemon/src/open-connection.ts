@@ -24,7 +24,11 @@ export async function connectionForTarget(
   if (target.kind === "windows") return await dependencies.local()
 
   const endpoint = await dependencies.endpoint(target.distribution)
-  if (!endpoint) throw new Error(`no daemon is running in ${target.distribution}`)
+  if (!endpoint) {
+    throw new Error(
+      `no daemon is running in ${target.distribution}. Start one with "wsl.exe -d ${target.distribution} -- domovoid" and try again.`,
+    )
+  }
   // A distro daemon is reached over loopback, which readDistroEndpoint has
   // already insisted on, so there is no tls listener to carry here.
   return { host: endpoint.host, port: endpoint.port, token: endpoint.token }
