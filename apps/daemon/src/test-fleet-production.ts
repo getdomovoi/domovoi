@@ -27,6 +27,8 @@ export const git = (cwd: string, args: string[]) => exec("git", args, { cwd, tim
 export type FleetDaemonStart = {
   port?: number
   advertisedHost?: string
+  // Stands in for another daemon release; see DaemonServerOptions.
+  protocolVersion?: string
 }
 
 // A provider boundary that can create a session without any real agent.
@@ -125,7 +127,7 @@ export function fleetProductionHarness() {
     const credentials = new MachineCredentialStore({
       get: (id) => values.get(id), set: (id, value) => { values.set(id, value) }, delete: (id) => values.delete(id),
     })
-    const start = async ({ port = 0, advertisedHost }: FleetDaemonStart = {}) => {
+    const start = async ({ port = 0, advertisedHost, protocolVersion: advertisedProtocolVersion }: FleetDaemonStart = {}) => {
       const handle = await createProductionDaemonWithDependencies({ environment: {}, homeDirectory, machineLabel: label }, {
         ...productionDaemonDependencies,
         createProviderProbe: () => ({ inspect: async () => [] }),
@@ -133,6 +135,7 @@ export function fleetProductionHarness() {
         createDaemon: (options) => new DomovoiDaemon({
           ...options, port, fleetHeartbeatIntervalMs: 50, fleetOperationTimeoutMs: 2_000,
           ...(advertisedHost ? { advertiseHost: advertisedHost } : {}),
+          ...(advertisedProtocolVersion ? { advertisedProtocolVersion } : {}),
           ...(agent ? { agents: { "claude-code": agent } } : {}),
         }),
       })
@@ -140,7 +143,7 @@ export function fleetProductionHarness() {
       const address = await handle.start()
       const root = await connect(address.url)
       const workspace = workspaceSnapshotSchema.parse(await root.ok("system.hello", {
-        client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: handle.authToken,
+        client: "cli", clientVersion: "0.0.1", protocolVersion: advertisedProtocolVersion ?? protocolVersion, authToken: handle.authToken,
       }))
       return { handle, root, address, id: workspace.machine.id }
     }
