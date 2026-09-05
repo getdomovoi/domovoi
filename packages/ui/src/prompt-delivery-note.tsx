@@ -16,6 +16,17 @@ function skillLabel(skillId: string, skillNames: Record<string, string>): string
   return skillNames[skillId] ?? skillId
 }
 
+type DeliveredTrust = ProviderPromptDelivery["skills"]["delivered"][number]["trust"]
+
+// A record without a trust state predates trust tracking, so it gets no word
+// rather than a guess.
+function trustSuffix(trust: DeliveredTrust): string {
+  if (!trust) return ""
+  if (trust.state === "trusted") return " (trusted)"
+  if (trust.state === "blocked") return " (blocked)"
+  return trust.reason === "unsigned" ? " (unsigned)" : " (untrusted key)"
+}
+
 export function PromptDeliveryNote({
   delivery,
   skillNames,
@@ -27,7 +38,9 @@ export function PromptDeliveryNote({
   // the same fact as a turn that carried no skills.
   if (!delivery) return null
 
-  const sent = delivery.skills.delivered.map((skill) => skillLabel(skill.id, skillNames))
+  const sent = delivery.skills.delivered.map((skill) =>
+    `${skillLabel(skill.id, skillNames)}${trustSuffix(skill.trust)}`,
+  )
   const omissions = (Object.keys(omissionCopy) as OmissionReason[]).flatMap((reason) => (
     delivery.skills.omitted[reason].map((skillId) => ({
       label: skillLabel(skillId, skillNames),
