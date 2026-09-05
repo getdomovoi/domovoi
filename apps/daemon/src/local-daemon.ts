@@ -113,13 +113,15 @@ async function attach(
         // Only return the endpoint that still belongs to this exact instance.
         const current = readLocalOwnerRecord(homeDirectory)
         if (current?.state !== "ready" || current.instanceId !== record.instanceId || current.url !== record.url) return fail("owner-busy")
-        deadline.throwIfExpired()
-        settled = true
-        cleanup()
-        settle({ kind: "attached", owner: record.owner, endpoint: { url: record.url, token }, closed, detach: () => socket.terminate() })
       } catch {
-        fail("owner-unverified")
+        return fail("owner-unverified")
       }
+      // Verification succeeded. A deadline that expired during it is a late
+      // result, not a proof failure, so it settles as unreachable.
+      if (deadline.remainingMs() === 0) return abort()
+      settled = true
+      cleanup()
+      settle({ kind: "attached", owner: record.owner, endpoint: { url: record.url, token }, closed, detach: () => socket.terminate() })
     }
     socket.on("upgrade", upgrade)
     socket.on("open", open)
