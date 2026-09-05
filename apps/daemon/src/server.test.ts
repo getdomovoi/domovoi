@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, realpath, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
@@ -25,6 +25,7 @@ import {
   projectSwitchConfirmationSchema,
   protocolVersion,
   protocolVersionMismatchErrorCode,
+  skillInstallErrorCode,
   workspaceSnapshotSchema,
   type ProviderModel,
   type RpcMethod,
@@ -5735,6 +5736,193 @@ describe("DomovoiDaemon", () => {
       action: "skill.review",
       detail: `decision=revoke digest=${discovered.contentDigest}`,
     }))
+    socket.close()
+  })
+
+  it("previews and installs a skill from a local folder and refuses a stale digest", async () => {
+    const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-skill-install-rpc-")))
+    scratchDirectories.push(scratch)
+    const source = join(scratch, "work", "pr-triage")
+    await mkdir(source, { recursive: true })
+    await writeFile(join(source, "SKILL.md"), [
+      "---",
+      "name: pr-triage",
+      "description: Triage pull requests.",
+      "domovoi:",
+      "  manifest:",
+      "    version: 1",
+      "    capabilities:",
+      "      - filesystem.read",
+      "---",
+      "",
+      "# Instructions",
+      "",
+    ].join("\n"))
+    const userRoot = join(scratch, "home", ".domovoi", "skills")
+    const skillCatalog = new FileSkillCatalog([
+      { path: userRoot, scope: "user", source: "domovoi" },
+      { path: join(scratch, "project", ".domovoi", "skills"), scope: "project", source: "domovoi" },
+    ], undefined, { trustPath: join(scratch, "home", ".domovoi", "skill-trusted-keys.json") })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => structuredClone(demoWorkspace),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      auditLog,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-installer",
+      clientVersion: "0.0.1",
+      protocolVersion,
+    })
+
+    const preview = (await rpc(2, "skill.installPreview", {
+      source: { kind: "path", path: source },
+    })).result as RpcResult<"skill.installPreview">
+    expect(preview).toMatchObject({
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+      files: [{ path: "SKILL.md", bytes: expect.any(Number) }],
+      targets: [
+        { scope: "project", path: join(scratch, "project", ".domovoi", "skills", "pr-triage"), state: "available" },
+        { scope: "user", path: join(userRoot, "pr-triage"), state: "available" },
+      ],
+      refusals: [],
+    })
+    const staleDigest = `sha256:${"b".repeat(64)}`
+    await expect(rpc(3, "skill.install", {
+      source: { kind: "path", path: source },
+      scope: "user",
+      sourceDigest: staleDigest,
+    })).resolves.toMatchObject({
+      error: {
+        code: skillInstallErrorCode,
+        message: "Skill source changed since it was reviewed; review it again",
+        data: { kind: "skill-install-refused", reason: "source-changed" },
+      },
+    })
+    const installed = (await rpc(4, "skill.install", {
+      source: { kind: "path", path: source },
+      scope: "user",
+      sourceDigest: preview.sourceDigest,
+    })).result as RpcResult<"skill.install">
+    expect(installed).toMatchObject({
+      name: "pr-triage",
+      scope: "user",
+      source: "domovoi",
+      path: join(userRoot, "pr-triage", "SKILL.md"),
+      contentDigest: preview.contentDigest,
+      trust: { state: "untrusted", reason: "unsigned" },
+    })
+    expect((await rpc(5, "skill.list", {})).result).toEqual([installed])
+    await expect(rpc(6, "skill.installPreview", {
+      source: { kind: "path", path: join(scratch, "nowhere") },
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: `Skill source is not a readable directory: ${join(scratch, "nowhere")}` },
+    })
+
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "desktop-installer",
+        connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      },
+      action: "skill.install",
+      outcome: "failed",
+      detail: `scope=user sourceDigest=${staleDigest} source=${source}`,
+    }))
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "skill.install",
+      outcome: "succeeded",
+      target: installed.id,
+      detail: `scope=user sourceDigest=${preview.sourceDigest} source=${source} digest=${installed.contentDigest} path=${installed.path}`,
+    }))
+    expect(auditLog.append).not.toHaveBeenCalledWith(expect.objectContaining({ action: "skill.installPreview" }))
+    socket.close()
+  })
+
+  it("rejects a project-scoped skill install without an open project", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-skill-install-noproject-")))
+    scratchDirectories.push(scratch)
+    const source = join(scratch, "pr-triage")
+    await mkdir(source, { recursive: true })
+    await writeFile(join(source, "SKILL.md"), "---\nname: pr-triage\ndescription: Triage.\n---\n")
+    const skillCatalog = new FileSkillCatalog([
+      { path: join(scratch, "home", ".domovoi", "skills"), scope: "user", source: "domovoi" },
+    ])
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => createEmptyWorkspace({ ...structuredClone(demoWorkspace.machine), id: "machine-skill-install" }),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-installer",
+      clientVersion: "0.0.1",
+      protocolVersion,
+    })
+
+    const preview = (await rpc(2, "skill.installPreview", {
+      source: { kind: "path", path: source },
+    })).result as RpcResult<"skill.installPreview">
+    expect(preview.targets).toEqual([{
+      scope: "user",
+      path: join(scratch, "home", ".domovoi", "skills", "pr-triage"),
+      state: "available",
+    }])
+    await expect(rpc(3, "skill.install", {
+      source: { kind: "path", path: source },
+      scope: "project",
+      sourceDigest: preview.sourceDigest,
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Open a project before installing a project skill" },
+    })
+    await expect(stat(join(scratch, "home"))).rejects.toMatchObject({ code: "ENOENT" })
     socket.close()
   })
 

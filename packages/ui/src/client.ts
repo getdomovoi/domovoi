@@ -44,6 +44,7 @@ import {
   type SessionTransferParams,
   type SessionTransferResult,
   type SkillDocument,
+  type SkillInstallPreview,
   type SkillInventory,
   type SkillSummary,
   type SystemEmergencyStopResult,
@@ -756,6 +757,16 @@ export class DomovoiClient extends EventTarget {
 
   reviewSkill(params: RpcParams<"skill.review">): Promise<SkillSummary> {
     return this.request("skill.review", params)
+  }
+
+  previewSkillInstall(
+    params: RpcParams<"skill.installPreview">,
+  ): Promise<SkillInstallPreview> {
+    return this.request("skill.installPreview", params)
+  }
+
+  installSkill(params: RpcParams<"skill.install">): Promise<SkillSummary> {
+    return this.request("skill.install", params)
   }
 
   queryAudit(

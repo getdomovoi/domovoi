@@ -3350,6 +3350,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     rotateDevice,
     renameDevice,
     reviewSkill,
+    previewSkillInstall,
+    installSkill,
     sendMessage,
     sessionUsage,
     usageWindow,
@@ -3963,6 +3965,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               const reviewed = await reviewSkill(input)
               setSkillsRefresh((current) => current + 1)
               return reviewed
+            }}
+            onPreviewSkillInstall={(source) => previewSkillInstall({ source })}
+            onInstallSkill={async (input) => {
+              const installed = await installSkill(input)
+              setSkillsRefresh((current) => current + 1)
+              return installed
             }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
