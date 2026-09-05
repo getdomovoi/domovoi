@@ -10,7 +10,7 @@ const internal = await import("./dist/server.js")
 
 // Published entry points cannot bypass production assembly. The internal path
 // remains as a package-artifact compatibility surface, not a construction API.
-assert.deepEqual(Object.keys(publicApi).sort(), ["createProductionDaemon"])
+assert.deepEqual(Object.keys(publicApi).sort(), ["acquireLocalDaemon", "createProductionDaemon"])
 assert.equal("DomovoiDaemon" in internal, false)
 
 const publicTypes = readFileSync(new URL("./dist/public.d.ts", import.meta.url), "utf8")
@@ -34,6 +34,7 @@ try {
 }
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+assert.equal(manifest.engines.node, ">=22.13.0", "The daemon requires unflagged node:sqlite")
 
 function runCli(...args) {
   return spawnSync(process.execPath, ["./dist/index.js", ...args], {

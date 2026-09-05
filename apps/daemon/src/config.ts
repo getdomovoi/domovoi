@@ -90,12 +90,13 @@ function parseHost(value: string | undefined): string {
 
 function parsePort(value: string | undefined): number {
   if (value === undefined) return 47831
+  if (value === "0") return 0
   if (!/^[1-9]\d{0,4}$/u.test(value)) {
-    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 1 through 65535")
+    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 0 through 65535")
   }
   const port = Number(value)
   if (port > 65_535) {
-    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 1 through 65535")
+    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 0 through 65535")
   }
   return port
 }

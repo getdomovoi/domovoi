@@ -77,6 +77,7 @@ import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
 import { validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
@@ -740,6 +741,7 @@ export const localMachineCapabilities = [
 ] as const satisfies readonly MachineCapability[]
 
 export type DaemonServerOptions = {
+  localOwner?: { secret: LocalOwnerSecret; identity: LocalOwnerIdentity }
   host?: string
   port?: number
   allowedOrigins?: string[]
@@ -895,6 +897,7 @@ export class DomovoiDaemon {
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
+  #localOwner: DaemonServerOptions["localOwner"]
   #advertiseHost: string | undefined
   #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
@@ -933,6 +936,7 @@ export class DomovoiDaemon {
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
+    this.#localOwner = options.localOwner
     this.#advertiseHost = options.advertiseHost
     this.#wsl = options.wsl
     this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
@@ -1159,7 +1163,8 @@ export class DomovoiDaemon {
     return this.#authToken
   }
 
-  async start(): Promise<{ host: string; port: number }> {
+  async start(signal?: AbortSignal): Promise<{ host: string; port: number }> {
+    signal?.throwIfAborted()
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
 
@@ -1167,7 +1172,9 @@ export class DomovoiDaemon {
       this.#transferTransactions.pruneExpired(),
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
+    signal?.throwIfAborted()
     await this.#recoverSessionArchives()
+    signal?.throwIfAborted()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
 
@@ -1206,6 +1213,17 @@ export class DomovoiDaemon {
       path: "/rpc",
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
+    })
+    this.#websocket.on("headers", (headers, request) => {
+      const nonce = request.headers["x-domovoi-owner-nonce"]
+      const peer = request.socket.remoteAddress
+      const local = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
+        || (peer !== undefined && peer === request.socket.localAddress)
+      // Discovery proves this instance, not client authority. It uses a
+      // separate private key; the same socket must still complete hello.
+      if (this.#localOwner && local && typeof nonce === "string" && credentialSchema.safeParse(nonce).success) {
+        headers.push(`X-Domovoi-Owner-Proof: ${localOwnerProof(this.#localOwner.secret, this.#localOwner.identity, nonce)}`)
+      }
     })
     this.#websocket.on("connection", (socket, request) => {
       // Use the socket peer, never caller-authored forwarding headers. NAT or
@@ -1287,6 +1305,7 @@ export class DomovoiDaemon {
       this.#http!.once("error", reject)
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
+    signal?.throwIfAborted()
 
     // A dead target must not hold daemon startup hostage. Each frozen source
     // remains read-only while its own resource queue reconciles in background.

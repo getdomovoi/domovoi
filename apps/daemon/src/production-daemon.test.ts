@@ -88,7 +88,7 @@ async function openRpc(handle: ProductionDaemonHandle) {
 
 describe("createProductionDaemon", () => {
   it("assembles every mandatory production dependency", async () => {
-    const homeDirectory = join("", "home", "tester")
+    const homeDirectory = await temporaryHome()
     const authToken = testToken("production-factory")
     const machineIdentity = { id: `machine-${"a".repeat(32)}`, label: "studio" }
     const providerProbe = { inspect: async () => [] }
@@ -121,6 +121,7 @@ describe("createProductionDaemon", () => {
       },
     })
 
+    running.push(handle)
     expect(daemonOptions).toMatchObject({
       host: "127.0.0.1",
       port: 47_831,

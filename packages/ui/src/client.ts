@@ -131,6 +131,8 @@ export type DomovoiReconnectScheduler = {
   clearTimeout: (timer: DomovoiReconnectTimer) => void
 }
 
+export type DomovoiEndpoint = { url: string; token: string }
+
 export type DomovoiClientOptions = {
   budgets: DomovoiClientBudgets
   reconnectDelayMs?: number
@@ -140,6 +142,7 @@ export type DomovoiClientOptions = {
   scheduler?: DomovoiReconnectScheduler
   authToken?: string
   clientId?: string
+  resolveEndpoint?: () => Promise<DomovoiEndpoint>
 }
 
 const defaultReconnectDelayMs = 1_000
@@ -160,7 +163,7 @@ function requestAbortError(signal: AbortSignal): Error {
 export const clientVersion = "0.0.1"
 
 export class DomovoiClient extends EventTarget {
-  readonly url: string
+  #url: string
   readonly kind: ClientKind
   readonly clientId: string
   #socket: WebSocket | undefined
@@ -179,12 +182,13 @@ export class DomovoiClient extends EventTarget {
   #authenticationTerminal = false
   #shouldReconnect = false
   #authToken: string | undefined
+  #resolveEndpoint: (() => Promise<DomovoiEndpoint>) | undefined
   #budgets: DomovoiClientBudgets
   #socketListeners: AbortController | undefined
 
   constructor(url: string, kind: ClientKind, options: DomovoiClientOptions) {
     super()
-    this.url = url
+    this.#url = url
     this.kind = kind
     this.#budgets = {
       connectMs: deadlineBudget(options.budgets.connectMs, "Connect budget"),
@@ -213,6 +217,13 @@ export class DomovoiClient extends EventTarget {
     this.#random = options.random ?? Math.random
     this.#scheduler = options.scheduler ?? defaultReconnectScheduler
     this.#authToken = options.authToken
+    this.#resolveEndpoint = options.resolveEndpoint
+  }
+
+  // The address this client last dialed. With a resolver it follows the owner
+  // across restarts instead of the address given at construction.
+  get url(): string {
+    return this.#url
   }
 
   // A caller that is trying several routes for one connection passes the
@@ -240,7 +251,7 @@ export class DomovoiClient extends EventTarget {
       : Deadline.start(this.#budgets.connectMs)
     if (deadline.expired) {
       return Promise.reject(
-        new DomovoiConnectTimeoutError("open", describeTarget(this.url), deadline.budgetMs),
+        new DomovoiConnectTimeoutError("open", describeTarget(this.#url), deadline.budgetMs),
       )
     }
 
@@ -248,84 +259,120 @@ export class DomovoiClient extends EventTarget {
     const listeners = new AbortController()
     this.#socketListeners = listeners
     const opening = new Promise<WorkspaceSnapshot>((resolve, reject) => {
-      const socket = new WebSocket(this.url)
-      this.#socket = socket
-      let opening = true
-      let stage: DomovoiConnectStage = "open"
-      const rejectOpening = (error: Error) => {
-        if (!opening) return
-        opening = false
+      const dial = () => {
+        const socket = new WebSocket(this.#url)
+        this.#socket = socket
+        let opening = true
+        let stage: DomovoiConnectStage = "open"
+        const rejectOpening = (error: Error) => {
+          if (!opening) return
+          opening = false
+          reject(error)
+        }
+        this.#cancelOpening = rejectOpening
+        const current = () => socket === this.#socket && generation === this.#connectionGeneration
+        deadline.signal.addEventListener("abort", () => {
+          if (!current()) return
+          // Everything this attempt owns goes before the next one starts: the
+          // socket is detached so its late events find nothing, its listeners
+          // are removed, and the hello it may have sent is no longer awaited.
+          const error = new DomovoiConnectTimeoutError(stage, describeTarget(this.#url), deadline.budgetMs)
+          this.#socket = undefined
+          listeners.abort()
+          rejectOpening(error)
+          this.#rejectPending(error)
+          socket.close()
+          this.dispatchEvent(new Event("disconnected"))
+          this.#scheduleReconnect()
+        }, { once: true, signal: listeners.signal })
+        socket.addEventListener("error", () => {
+          if (!current()) return
+          rejectOpening(new Error(`Cannot reach ${this.#url}`))
+          socket.close()
+        }, { once: true, signal: listeners.signal })
+        socket.addEventListener(
+          "open",
+          () => {
+            if (!current() || !this.#shouldReconnect) return
+            stage = "hello"
+            this.request("system.hello", {
+              client: this.kind,
+              clientId: this.clientId,
+              clientVersion,
+              protocolVersion,
+              ...(this.#authToken ? { authToken: this.#authToken } : {}),
+            }, { deadline }).then(
+              (snapshot) => {
+                if (socket !== this.#socket || generation !== this.#connectionGeneration) return
+                opening = false
+                this.#reconnectAttempt = 0
+                this.#authenticationTerminal = false
+                this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
+                this.dispatchEvent(new Event("connected"))
+                resolve(snapshot)
+              },
+              (cause: unknown) => {
+                const error = cause instanceof Error ? cause : new Error("Daemon handshake failed")
+                rejectOpening(error)
+                socket.close()
+              },
+            )
+          },
+          { once: true, signal: listeners.signal },
+        )
+        socket.addEventListener("message", (event) => {
+          if (current()) this.#receive(String(event.data))
+        }, { signal: listeners.signal })
+        socket.addEventListener("close", (event) => {
+          if (!current()) return
+          this.#socket = undefined
+          const error = new Error("Daemon connection closed")
+          rejectOpening(error)
+          this.#rejectPending(error)
+          // A policy close is terminal whatever it says: a revoked device is
+          // refused for the same reason a bad credential is, and retrying only
+          // presents a credential the machine will keep refusing.
+          if (event.code === 1008) {
+            this.#markAuthenticationRequired(event.reason || "Daemon authentication required")
+          }
+          this.dispatchEvent(new Event("disconnected"))
+          this.#scheduleReconnect()
+        }, { signal: listeners.signal })
+      }
+      const resolveEndpoint = this.#resolveEndpoint
+      if (!resolveEndpoint) {
+        dial()
+        return
+      }
+      // Resolution shares the connect budget and runs before every attempt,
+      // so the owner's current endpoint is what gets dialed rather than the
+      // address this client started with. A resolver that refuses is the
+      // failure of this attempt, and the backoff loop asks it again.
+      let resolving = true
+      const failResolution = (error: Error) => {
+        if (!resolving) return
+        resolving = false
         reject(error)
       }
-      this.#cancelOpening = rejectOpening
-      const current = () => socket === this.#socket && generation === this.#connectionGeneration
-      deadline.signal.addEventListener("abort", () => {
-        if (!current()) return
-        // Everything this attempt owns goes before the next one starts: the
-        // socket is detached so its late events find nothing, its listeners
-        // are removed, and the hello it may have sent is no longer awaited.
-        const error = new DomovoiConnectTimeoutError(stage, describeTarget(this.url), deadline.budgetMs)
-        this.#socket = undefined
-        listeners.abort()
-        rejectOpening(error)
-        this.#rejectPending(error)
-        socket.close()
+      this.#cancelOpening = failResolution
+      const abandon = (error: Error) => {
+        if (!resolving || generation !== this.#connectionGeneration) return
+        failResolution(error)
         this.dispatchEvent(new Event("disconnected"))
         this.#scheduleReconnect()
-      }, { once: true, signal: listeners.signal })
-      socket.addEventListener("error", () => {
-        if (!current()) return
-        rejectOpening(new Error(`Cannot reach ${this.url}`))
-        socket.close()
-      }, { once: true, signal: listeners.signal })
-      socket.addEventListener(
-        "open",
-        () => {
-          if (!current() || !this.#shouldReconnect) return
-          stage = "hello"
-          this.request("system.hello", {
-            client: this.kind,
-            clientId: this.clientId,
-            clientVersion,
-            protocolVersion,
-            ...(this.#authToken ? { authToken: this.#authToken } : {}),
-          }, { deadline }).then(
-            (snapshot) => {
-              if (socket !== this.#socket || generation !== this.#connectionGeneration) return
-              opening = false
-              this.#reconnectAttempt = 0
-              this.#authenticationTerminal = false
-              this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
-              this.dispatchEvent(new Event("connected"))
-              resolve(snapshot)
-            },
-            (cause: unknown) => {
-              const error = cause instanceof Error ? cause : new Error("Daemon handshake failed")
-              rejectOpening(error)
-              socket.close()
-            },
-          )
-        },
-        { once: true, signal: listeners.signal },
-      )
-      socket.addEventListener("message", (event) => {
-        if (current()) this.#receive(String(event.data))
-      }, { signal: listeners.signal })
-      socket.addEventListener("close", (event) => {
-        if (!current()) return
-        this.#socket = undefined
-        const error = new Error("Daemon connection closed")
-        rejectOpening(error)
-        this.#rejectPending(error)
-        // A policy close is terminal whatever it says: a revoked device is
-        // refused for the same reason a bad credential is, and retrying only
-        // presents a credential the machine will keep refusing.
-        if (event.code === 1008) {
-          this.#markAuthenticationRequired(event.reason || "Daemon authentication required")
-        }
-        this.dispatchEvent(new Event("disconnected"))
-        this.#scheduleReconnect()
-      }, { signal: listeners.signal })
+      }
+      const expire = () => abandon(new DomovoiConnectTimeoutError("open", describeTarget(this.#url), deadline.budgetMs))
+      deadline.signal.addEventListener("abort", expire, { once: true, signal: listeners.signal })
+      resolveEndpoint().then((endpoint) => {
+        if (!resolving || generation !== this.#connectionGeneration) return
+        resolving = false
+        deadline.signal.removeEventListener("abort", expire)
+        this.#url = endpoint.url
+        this.#authToken = endpoint.token
+        dial()
+      }, (cause: unknown) => {
+        abandon(cause instanceof Error ? cause : new Error("Daemon endpoint could not be resolved"))
+      })
     })
     this.#opening = opening
     const settled = () => {
@@ -375,7 +422,7 @@ export class DomovoiClient extends EventTarget {
     const parse = typeof parseOrOptions === "function" ? parseOrOptions : undefined
     const options = typeof parseOrOptions === "function" ? requestOptions : (parseOrOptions ?? {})
     const resultParser = parse ?? ((value: unknown) => rpcMethods[method].result.parse(value) as T)
-    const target = describeTarget(this.url)
+    const target = describeTarget(this.#url)
     return new Promise((resolve, reject) => {
       if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Daemon connection is not open"))

@@ -4,9 +4,11 @@ import { dirname, posix } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
+import { claimProfile, type ProfileLease } from "../profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { launchdPlist, systemdUnit } from "./units.js"
+import { removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
 
 const serviceName = "domovoid"
 const unitFile = `${serviceName}.service`
@@ -24,6 +26,8 @@ export type ServicePlan = ServiceRegistrationPlan & {
   configuration: { path: string; contents: string }
 }
 
+type ServiceRemovalPlan = Extract<ServiceRegistrationPlan, { kind: "file" }> | WindowsTaskRemovalPlan
+
 export type ServiceTarget = {
   platform: string
   execPath: string
@@ -40,6 +44,7 @@ export type ServiceTarget = {
 export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
+  claimProfile: (homeDirectory: string) => ProfileLease
   write: (path: string, contents: string, deadline: OperationDeadline) => Promise<void>
   run: (command: string, args: string[], deadline: OperationDeadline) => Promise<void>
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
@@ -222,7 +227,7 @@ export function serviceRemovalPlan({
   platform,
   home,
   uid,
-}: Pick<ServiceTarget, "platform" | "home" | "uid">): ServiceRegistrationPlan {
+}: Pick<ServiceTarget, "platform" | "home" | "uid">): ServiceRemovalPlan {
   if (platform === "linux") {
     return {
       kind: "file",
@@ -245,10 +250,7 @@ export function serviceRemovalPlan({
   }
 
   if (platform === "win32") {
-    return {
-      kind: "task",
-      commands: [{ command: "schtasks", args: ["/delete", "/tn", displayName, "/f"] }],
-    }
+    return windowsTaskRemovalPlan(displayName)
   }
 
   throw new Error(`${platform} has no service manager this knows how to remove from`)
@@ -291,17 +293,27 @@ async function serviceOperation<T>(operation: (deadline: OperationDeadline) => P
 // with a unit or configuration that is not there.
 async function installWithDeadline(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run">,
+  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile">,
   deadline: OperationDeadline,
 ): Promise<ServicePlan> {
   const plan = servicePlan(target)
-  await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
-  if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+  deadline.throwIfExpired()
+  const lease = effects.claimProfile(target.configuration.homeDirectory)
+  try {
+    await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
+    if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+    deadline.throwIfExpired()
+  } finally {
+    // Timed-out filesystem work may still settle. Retain the lease until this
+    // CLI process exits in that case. Otherwise the saved service config now
+    // prevents Desktop fallback, so release before asking the manager to start.
+    if (!deadline.signal.aborted) lease.release()
+  }
   for (const { command, args } of plan.commands) await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
   return plan
 }
 
-export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run">): Promise<ServicePlan> {
+export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile">): Promise<ServicePlan> {
   return serviceOperation((deadline) => installWithDeadline(target, effects, deadline))
 }
 
@@ -309,11 +321,14 @@ export function installService(target: ServiceTarget, effects: Pick<ServiceEffec
 // the caller asked for is the one they get either way.
 async function removeWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "run" | "remove" | "exists">,
+  effects: Pick<ServiceEffects, "run" | "capture" | "remove" | "exists">,
   deadline: OperationDeadline,
-): Promise<ServiceRegistrationPlan> {
+): Promise<ServiceRemovalPlan> {
   const plan = serviceRemovalPlan(target)
-  for (const { command, args } of plan.commands) {
+  if (plan.kind === "task") {
+    await removeWindowsTask(plan, effects, deadline)
+  }
+  for (const { command, args } of plan.kind === "file" ? plan.commands : []) {
     try {
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
     } catch (error) {
@@ -338,9 +353,16 @@ async function removeWithDeadline(
 
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "run" | "remove" | "exists">,
-): Promise<ServiceRegistrationPlan> {
-  return serviceOperation((deadline) => removeWithDeadline(target, effects, deadline))
+  effects: Pick<ServiceEffects, "run" | "capture" | "remove" | "exists">,
+): Promise<ServiceRemovalPlan> {
+  return serviceOperation((deadline) => removeWithDeadline(target, effects, deadline)).catch((cause: unknown) => {
+    // The outer deadline can expire before the manager adapter settles. It
+    // needs the same actionable task-specific error, not a bare timer failure.
+    if (target.platform === "win32" && !(cause instanceof WindowsTaskRemovalError)) {
+      throw new WindowsTaskRemovalError(displayName, cause)
+    }
+    throw cause
+  })
 }
 
 async function statusWithDeadline(
@@ -485,6 +507,7 @@ export async function runServiceCommand(
 
 export function nodeServiceEffects(): ServiceEffects {
   return {
+    claimProfile,
     write: writeUnit,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")
