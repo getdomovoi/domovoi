@@ -95,7 +95,7 @@ test("writes each archive chunk before requesting the next one", { timeout: 10_0
   }
 })
 
-test("retains only bounded chunk buffers across a large streamed archive", { timeout: 30_000 }, async () => {
+test("retains only bounded chunk buffers across a large streamed archive", { timeout: 30_000 }, async (t) => {
   const into = await destination()
   try {
     const script = fileURLToPath(new URL("./test-fixtures/bootstrap-memory.mjs", import.meta.url))
@@ -109,6 +109,7 @@ test("retains only bounded chunk buffers across a large streamed archive", { tim
     })
     assert.equal(result.archiveBytes, 64 * 1024 * 1024)
     assert.ok(result.maxBufferGrowthBytes < 8 * 1024 * 1024, JSON.stringify(result))
+    t.diagnostic(JSON.stringify(result))
   } finally {
     await rm(into, { force: true, recursive: true })
   }
@@ -187,7 +188,7 @@ test("expires a silent fetch and never stages its late result", { timeout: 10_00
   }
 })
 
-test("cancels a stalled archive body at the original deadline", { timeout: 10_000 }, async (t) => {
+test("cancels trickling archive bytes at the original deadline", { timeout: 10_000 }, async (t) => {
   const into = await destination()
   let now = 0
   let cancelled = false
@@ -215,6 +216,15 @@ test("cancels a stalled archive body at the original deadline", { timeout: 10_00
     await rm(into, { force: true, recursive: true })
   }
 })
+
+for (const timeoutMs of [0, -1, Infinity, NaN, 0.5, 2_147_483_648]) {
+  test(`refuses an invalid total budget before downloading: ${timeoutMs}`, async (t) => {
+    const fetch = t.mock.method(globalThis, "fetch", async () => assert.fail("must validate before fetching"))
+    await assert.rejects(bootstrapDaemon({ version, baseUrl, destination: "/unused", expectedSha256: digest, timeoutMs }),
+      /timeout must be a positive integer/)
+    assert.equal(fetch.mock.callCount(), 0)
+  })
+}
 
 test("keeps the release in a directory named for its version", async () => {
   const into = await destination()

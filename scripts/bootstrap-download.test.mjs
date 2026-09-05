@@ -124,3 +124,67 @@ for (const url of ["http://releases.test/archive.tgz", "file:///tmp/archive.tgz"
     assert.deepEqual(requested, [])
   })
 }
+
+test("redirects spend the original deadline and cancel a late response without reading it", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  let cancelled = 0
+  let read = 0
+  const requested = []
+  t.mock.method(performance, "now", () => now)
+  const deadline = bootstrapDeadline(1_000, "Original download budget expired")
+  try {
+    const fetchImpl = async (url, options) => {
+      assert.equal(options.signal, deadline.signal)
+      requested.push(url)
+      now += 500
+      return new Response(new ReadableStream({
+        pull(controller) { read += 1; controller.enqueue(new Uint8Array(1)) },
+        cancel() { cancelled += 1 },
+      }, { highWaterMark: 0 }), { status: 302, headers: { location: "https://objects.test/archive" } })
+    }
+    await assert.rejects(async () => {
+      for await (const unused of downloadChunksOverHttps(start, { maximumBytes: 1, fetch: fetchImpl, deadline })) {
+        assert.fail(`An expired redirect yielded ${unused.byteLength} bytes`)
+      }
+    }, /Original download budget expired/)
+    assert.deepEqual(requested, [start, "https://objects.test/archive"])
+    assert.equal(cancelled, 2)
+    assert.equal(read, 0)
+  } finally { deadline.clear() }
+})
+
+test("body cancellation cannot hang past the download budget", { timeout: 5_000 }, async () => {
+  const deadline = bootstrapDeadline(100, "Body cancellation expired")
+  let cancelled = false
+  let requested = 0
+  try {
+    const fetchImpl = async () => {
+      requested += 1
+      return new Response(new ReadableStream({
+        cancel() { cancelled = true; return new Promise(() => {}) },
+      }), { status: 302, headers: { location: "https://objects.test/archive" } })
+    }
+    await assert.rejects(async () => {
+      for await (const unused of downloadChunksOverHttps(start, { maximumBytes: 1, fetch: fetchImpl, deadline })) {
+        assert.fail(`A stalled redirect yielded ${unused.byteLength} bytes`)
+      }
+    }, /Body cancellation expired/)
+    assert.equal(cancelled, true)
+    assert.equal(requested, 1)
+  } finally { deadline.clear() }
+})
+
+test("a child phase cannot outlive its parent or run a late continuation", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const parent = bootstrapDeadline(1_000, "Original bootstrap budget expired")
+  now = 900
+  const child = bootstrapDeadline(30_000, "Publication phase expired", parent)
+  try {
+    await assert.rejects(child.run(() => { now = 1_000; return "late publication" }), /Original bootstrap budget expired/)
+    assert.equal(child.signal.aborted, true)
+    let ran = false
+    await assert.rejects(child.run(() => { ran = true }), /Original bootstrap budget expired/)
+    assert.equal(ran, false)
+  } finally { child.clear(); parent.clear() }
+})
