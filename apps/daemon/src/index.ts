@@ -19,6 +19,7 @@ import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+import { runSkillCommand } from "./skill-command.js"
 
 async function greetCli(socket: import("ws").WebSocket): Promise<void> {
   const requestId = 1
@@ -198,6 +199,9 @@ const help = `Usage: domovoid [options]
        domovoid service install
        domovoid service status
        domovoid service remove
+       domovoid skill keygen <private-key-path>
+       domovoid skill sign <skill-path> --key <private-key-path>
+       domovoid skill trust <public-key> [--trust-file <path>]
 
 Options:
   -h, --help       Show this help
@@ -272,6 +276,16 @@ async function main() {
       cwd: () => process.cwd(),
       distributions: () => listWslDistributions(),
       open: (target) => openWorkspace(target),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "skill") {
+    // Signing and trust are local file operations; no daemon is contacted and
+    // the private key never leaves the file the person named.
+    process.exitCode = await runSkillCommand(args, {
+      home: homedir(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

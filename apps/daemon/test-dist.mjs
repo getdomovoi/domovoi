@@ -52,6 +52,7 @@ assert.equal(help.status, 0, help.error?.message || help.stderr)
 assert.match(help.stdout, /^Usage: domovoid/m)
 assert.match(help.stdout, /DOMOVOI_AUTH_TOKEN/)
 assert.match(help.stdout, /DOMOVOI_CREDENTIAL_PATH/)
+assert.match(help.stdout, /domovoid skill sign <skill-path> --key <private-key-path>/)
 assert.match(runCli("-h").stdout, /^Usage: domovoid/m)
 
 const unknown = runCli("--unknown")
