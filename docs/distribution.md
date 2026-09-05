@@ -43,22 +43,35 @@ an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256
 caller must agree with the downloaded bytes. This remains a downloader, not an installer: it does
 not unpack the archive, resolve dependencies, configure PATH, or install a service.
 
-Each invocation writes and flushes its verified bytes in a unique private `.bootstrap-*` directory
-beside the destination archive, then publishes with a hard link that cannot replace an existing
-path. POSIX staging directories and files are owner-only; Windows inherits the destination's
-access controls, so choose a destination writable only by the installing user. Concurrent
+Each invocation streams the archive into a unique private `.bootstrap-*` directory beside the
+destination, hashing and enforcing the byte ceiling as chunks arrive. Staging contains unverified
+bytes until both checksums pass. It is fsynced and closed before publication, then published with a
+hard link that cannot replace an existing path. POSIX staging directories and files are owner-only;
+Windows inherits the destination's access controls, so choose a destination writable only by the
+installing user. Concurrent
 invocations with the same digest may both succeed. Different digests refuse
 without replacing the first archive. An existing archive is accepted only after a bounded,
 streamed read verifies its length and digest; a symlink or other non-file destination is refused.
 The filesystem must support hard links. Unsupported publication fails rather than falling back to
 a replacing rename or a copy that another process could read while incomplete.
 
-Publication has one 30-second budget, including filesystem setup, writing, verification, and
-cleanup. Embedded calls can supply `publicationTimeoutMs`, a positive integer; phases never renew
-it. A timed-out filesystem request may still complete at the OS, but its late result cannot begin
-another publication step. The error therefore says to inspect the archive before retrying, not
-that no file was written. The preceding network download still lacks a shared deadline across
-connection setup, redirects, and body reads; publication's budget does not cover those waits.
+The archive ceiling remains 256 MiB by default. `SHA256SUMS` has its own 256 KiB byte ceiling and
+is the only accumulated download. Archive memory follows individual network chunks and the file
+writer, not the total archive size; final verification reads in 64 KiB chunks. This is not a fixed
+RSS limit on Node or its transport buffers. The regression measures retained download buffers in
+an isolated process, including the staging-to-publication boundary, and separately checks that
+each chunk reaches disk before the next read.
+
+One five-minute deadline starts before fetching the manifest and covers connection setup,
+redirects, body reads, staging, fsync, publication, verification, and cleanup. After staging,
+publication gets at most 30 seconds and only the remainder of that original budget. Embedded calls
+can set initial budgets with positive integer `timeoutMs` and `publicationTimeoutMs`;
+redirects, trickling bodies, and phase changes never renew the total. Fetch receives the same abort
+signal, abandoned bodies are cancelled, and late results cannot begin another step. Cancellation
+notifications do not wait beyond expiry for an uncooperative transport to finish closing.
+A timed-out filesystem request may still complete at the OS. The error therefore says to inspect
+the archive before retrying, not that no file was written. No additional cleanup budget is granted
+after expiry; the current private staging directory may remain and is named when known.
 File flush is not a guarantee of directory-entry durability across a power loss.
 
 Cleanup removes only the current invocation's staging file and directory, never the published
