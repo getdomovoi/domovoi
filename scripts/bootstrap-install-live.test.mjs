@@ -68,6 +68,7 @@ test("identical archives install the reviewed transitive bytes after the registr
   const native = await pack({ name: "node-pty", version: "1.0.0", scripts: { install: "node build.cjs" } }, {
     "build.cjs": 'require("node:fs").writeFileSync("built.txt", "reviewed build ran")\n',
     "index.js": 'require("node:fs").readFileSync(require("node:path").join(__dirname, "built.txt"))\n',
+    "lib/utils.js": 'exports.loadNativeModule = () => ({ module: require("../index.js") })\n',
   })
   const manifest = { name: "@getdomovoi/daemon", version: "1.0.0", type: "module",
     dependencies: { "@getdomovoi/protocol": "workspace:*", "domovoi-lock-parent": "^1.0.0", "node-pty": "1.0.0" } }

@@ -107,7 +107,11 @@ async function verifyNativeRuntime(directory, lock, deadline, run) {
   // child process spending the original bootstrap deadline, before publication
   // and on reuse. Never start a daemon or create a profile during installation.
   try {
-    await deadline.run(() => run(process.execPath, ["--input-type=commonjs", "--eval", "require(process.argv[1])",
+    // The pinned node-pty loads ConPTY lazily on Windows. Importing its public
+    // entry alone would not exercise the binding on that platform. Use its own
+    // loader for the selected native addon without spawning a terminal.
+    const probe = 'const root = process.argv[1]; require(root); require(require("node:path").join(root, "lib/utils.js")).loadNativeModule(process.platform === "win32" ? "conpty" : "pty")'
+    await deadline.run(() => run(process.execPath, ["--input-type=commonjs", "--eval", probe,
       join(directory, "node_modules/node-pty")], { cwd: directory, deadline }))
   } catch (error) {
     deadline.check()
