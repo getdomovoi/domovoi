@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
 
 function resolveWindowsPnpm() {
-  const [executable] = execFileSync("where.exe", ["pnpm.exe"], { encoding: "utf8" })
+  const [executable] = execFileSync("where.exe", ["pnpm.exe"], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL" })
     .trim()
     .split(/\r?\n/)
 

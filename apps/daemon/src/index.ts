@@ -232,6 +232,8 @@ Environment:
   DOMOVOI_TLS_CERT_PATH           TLS certificate chain, required off loopback
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
+  DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
+  DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
 `
 
 async function main() {
@@ -322,6 +324,7 @@ async function main() {
     // the private key never leaves the file the person named.
     process.exitCode = await runSkillCommand(args, {
       home: homedir(),
+      cwd: () => process.cwd(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

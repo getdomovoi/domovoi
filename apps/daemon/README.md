@@ -38,6 +38,8 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_TLS_CERT_PATH` | TLS certificate chain, required for a non-loopback listener |
 | `DOMOVOI_TLS_KEY_PATH` | TLS private key, required for a non-loopback listener |
 | `DOMOVOI_ADVERTISE_HOST` | Name an encrypted listener is advertised as reachable by |
+| `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
+| `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
@@ -161,6 +163,59 @@ optional. Ordinary `fleet.list`, enrollment and forget results, and `fleet.chang
 previous shape. Inspection clients must request diagnostics again after a change notification.
 Quarantine is never described as a machine that was never enrolled.
 
+## Configured fleet routes
+
+`DOMOVOI_TAILNET_HOST=studio.example.ts.net` explicitly classifies a listener endpoint as
+`tailnet`. It requires a non-loopback listener, remote opt-in and loaded TLS material. It accepts
+one host or IP address, not a URL, port, wildcard or loopback address. The advertised endpoint uses
+the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` still supplies an independent LAN route;
+when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
+The factory's returned URL uses the LAN name when configured, otherwise the tailnet name, otherwise
+the bound address, so a tailnet-only setup does not hand clients a wildcard address.
+Names and address ranges are never treated as proof of tailnet membership or transport protection.
+Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
+
+For an already enrolled peer, configure an existing SSH local forward on the source daemon:
+
+```bash
+DOMOVOI_SSH_TUNNELS='[{"machineId":"machine-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","endpoint":"ws://127.0.0.1:47900/rpc"}]' domovoid
+```
+
+Replace the example ID with the enrolled target's machine ID. Domovoi does not launch SSH,
+establish host-key trust, manage SSH credentials or verify which program created the forward.
+The operator must keep a loopback-only forward running to that peer's daemon. `ws://` is suitable
+only when the SSH channel terminates at the target's plaintext loopback listener; for a TLS target
+use `wss://` with a trusted certificate valid for the configured endpoint. Certificate verification
+is not disabled. Anyone able to replace the local forward is inside this trust boundary.
+
+SSH configuration is bounded to 32 KiB of JSON, 128 unique machine IDs, and one endpoint per ID.
+Endpoints use `localhost`, `127.0.0.1` or `::1` after URL normalization, at most 2,048 characters,
+with no credentials, query or fragment. It is source-local configuration, not fleet fact: it never
+appears in a peer descriptor. A target cannot enable SSH by advertising `configured: true`.
+Remote loopback advertisements are ignored even with TLS; only a source-verified direct route
+or source-local SSH configuration can authorize a remote peer's loopback endpoint here.
+Enrollment still requires a code and a successful authenticated descriptor exchange. Adding a
+route never enrolls a peer, supplies a missing credential or unmasks a pending forget.
+
+Dialing tries the source-verified direct endpoint first, target-advertised direct candidates in
+protocol order next, then the configured SSH forward. Duplicate endpoint strings are tried once.
+All candidates share the original monotonic deadline. A silent candidate can spend the remaining
+budget, in which case no later candidate starts. Credential, identity or protocol rejection stops
+fallback. This does not promise reachability across disjoint tailnets.
+
+Heartbeat and transfer use the same route configuration. Successful SSH heartbeats refresh peer
+facts and last contact but do not replace or refresh the timestamp of the remembered direct route.
+Otherwise a removed setting would quietly survive as a preferred route. Remove the SSH entry and
+restart with the updated configuration to remove this fallback. A separately enrolled direct route
+is independent and remains until re-enrollment or Forget. Service installation saves both settings
+in its non-secret `service.json`, and a supervised daemon started with `--service-config` reads
+that file instead of the supervisor's environment. Removing `DOMOVOI_SSH_TUNNELS` from the
+supervisor and restarting leaves the saved fallback active. Rerun `domovoid service install` with
+the intended environment, or edit `service.json`, before restarting the service.
+
+These producers do not add WSL transport discovery, remote client admission for Use or Terminal,
+or a relay. WSL facts and its open shim remain separate from a WSL transport producer.
+
 ## Skill signatures and trust
 
 A skill is a `SKILL.md` file with YAML frontmatter. Its content digest is `sha256:` followed by
@@ -221,6 +276,49 @@ the skill directory or its `SKILL.md`, refuses a private key others can read, an
 `SKILL.md.sig`; run it again after every edit, since a stale signature blocks the skill. `trust` adds
 the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
 the change up on its next catalog read.
+
+## Adding a skill
+
+A skill is added from a folder on the execution machine in two steps: a review, then an install
+pinned to what was reviewed. `skill.installPreview` takes `{ source: { kind: "path", path } }`,
+where `path` is absolute, and returns the parsed name and description, the declared capability
+manifest, the `SKILL.md` content digest, a `sourceDigest` over every regular file in the folder
+(relative path and SHA-256 of each file, `SKILL.md.sig` included), the signature and trust state
+computed exactly as the catalog computes them, the file list with sizes, one target per install
+scope, and any refusals. It reads the folder and writes nothing.
+
+`skill.install` takes the same `source`, a `scope`, and the previewed `sourceDigest`, and answers
+with the installed catalog entry. The scopes and their roots are the Domovoi-owned catalog roots:
+`user` is `~/.domovoi/skills` and `project` is `<project>/.domovoi/skills`, so a project install
+needs an open project and a user install does not. `system` (`/etc/domovoi/skills`) is not an
+install target. The install is refused with error code `-32018` and a
+`{ kind: "skill-install-refused", reason }` payload when:
+
+| `reason` | Condition |
+| --- | --- |
+| `source-changed` | The folder's `sourceDigest` no longer matches the previewed one, checked again over the bytes actually copied |
+| `blocked` | The trust state is `blocked`, so the signature is invalid |
+| `name-conflict` | `<root>/<name>` already exists with different files; identical files return the existing entry |
+| `symlink-escapes-source` | A link inside the folder resolves outside it; `path` names the link |
+| `source-too-large` | More than 256 files, 8 MiB, or eight directory levels |
+
+The copy never follows a link out of the source, writes only under the chosen root, and is
+atomic: files land in a `.domovoi-install-<random>` staging directory inside the root, which the
+catalog walk ignores, and one rename moves the finished directory to `<root>/<name>`. A failed
+copy removes its staging directory. Each `skill.install` is audited like every other mutation,
+with the scope, both digests, the source path, and on success the installed skill id and path.
+Installing grants nothing: the skill still needs a project enablement review before a turn carries
+it, and Build auto still requires a trusted state.
+
+```bash
+domovoid skill add path/to/skill --scope user
+domovoid skill add path/to/skill --scope project --yes
+```
+
+`add` prints the same review facts and installs only with `--yes`; without it nothing is written
+and the exit code is `0`. The project scope is the working directory. A refusal prints as
+`refused: <reason>` with exit code `1`. Like the other skill commands it contacts no daemon, so it
+writes no audit entry; the daemon lists the new entry on its next catalog read.
 
 ## Pairing admission and audit retention
 
@@ -344,8 +442,12 @@ domovoid open .
 its endpoint file. It prints one line per distribution: the name, `WSL 1` or `WSL 2`, `running`
 or `stopped`, and `daemon at ws://127.0.0.1:<port>/rpc`, `no daemon`, or `could not be asked`.
 The credential in the endpoint file is never printed. A stopped distribution is not asked, since
-asking would start it. The command runs only on Windows, and prints an empty list when `wsl.exe`
-is missing or does not answer in time.
+asking would start it. The command runs only on Windows. A machine without WSL is told so and the
+command exits 0. A `wsl.exe` that this session may not run, that does not answer within the
+deadline, that fails, or that answers with something other than a listing is reported as that,
+with the remedy, and the command exits 1. A running distribution that could not be asked is listed
+as `could not be asked` with the reason: `timed out`, `denied`, `wsl.exe failed`, or `endpoint
+file unreadable`. None of these is ever reported as a missing distribution or a missing daemon.
 
 `open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
 separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
@@ -353,12 +455,25 @@ path that is, and then sends `project.open` to the daemon inside the distributio
 distribution's credential. This machine's credential never travels into a distribution. The
 command refuses, naming the distribution and the remedy, when the distribution is not installed,
 is stopped, runs under WSL 1, has no daemon endpoint, or when the path reads back as a Windows
-drive the distribution mounts, wherever it mounts it. A plain Windows path opens through this
-machine's daemon as before, without asking `wsl.exe` anything.
+drive the distribution mounts, wherever it mounts it. When `wsl.exe` itself cannot answer, the
+refusal says whether WSL is not installed, the call was denied, it timed out, or the service
+failed, rather than that the distribution does not exist. An endpoint file that is not one a daemon
+published is refused as unreadable rather than reported as no daemon, and nothing read from it is
+repeated. A plain Windows path opens through this machine's daemon as before, without asking
+`wsl.exe` anything.
 
 Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
 work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
-inside the distribution.
+inside the distribution. The runner that starts `git` inside a distribution asks the same
+`wslpath` question before running anything, so a repository on a Windows drive is refused
+wherever the distribution mounts it, not only under `/mnt`.
+
+What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
+the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
+the listing answers or refuses within its deadline and that a distribution that does not exist is
+refused; the path round trip and the drive refusal need a running distribution and skip there.
+Discovery, open, authentication, repository ownership, Git, and restart against a running
+distribution are not verified by CI.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
@@ -437,6 +552,15 @@ remove only the named claim file. Keep the session worktree, repository and Git 
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
 
+## Loaded fixture checks
+
+The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
+keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
+short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
+delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
+child stays under its parent's kill deadline. Normal runs inject no delay.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed
@@ -446,6 +570,13 @@ darwin prebuild shipped `spawn-helper` without the execute bit, so `posix_spawnp
 pnpm. The fix landed in `1.2.0-beta.2` (#858) and `1.2.0-beta.4` (#866). The pin is exact so a
 prerelease bump is a reviewed change. Move to the next stable release that contains the fix once
 it exists, and verify it on the three CI runners.
+
+Its Linux prebuild selector does not distinguish glibc from musl. The verified bootstrap forces
+the reviewed node-pty source build on musl or unknown Linux libc, then checks that the installed
+module loads before publishing a runnable receipt. Provide Python, make, a C++ compiler, and
+platform headers for that build. Manual package-manager installs do not apply this policy.
+`pnpm test:musl` exercises the real packed daemon and a PTY in a pinned Node 22 Alpine container;
+it is not a promise about every musl version or architecture.
 
 ## License
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
@@ -440,16 +440,20 @@ export function useWorkspace(
     return next
   }, [updateSnapshotFrom])
 
-  const listSkills = useCallback(async (): Promise<SkillSummary[]> => {
+  const listSkills = useCallback(async (
+    options?: DomovoiRequestOptions,
+  ): Promise<SkillSummary[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.listSkills()
+    return client.listSkills(options)
   }, [])
 
-  const getSkillInventory = useCallback(async (): Promise<SkillInventory> => {
+  const getSkillInventory = useCallback(async (
+    options?: DomovoiRequestOptions,
+  ): Promise<SkillInventory> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.getSkillInventory()
+    return client.getSkillInventory(options)
   }, [])
 
   const listProviderSecrets = useCallback(async () => {
@@ -492,6 +496,22 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.reviewSkill(params)
+  }, [])
+
+  const previewSkillInstall = useCallback(async (
+    params: RpcParams<"skill.installPreview">,
+  ): Promise<SkillInstallPreview> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.previewSkillInstall(params)
+  }, [])
+
+  const installSkill = useCallback(async (
+    params: RpcParams<"skill.install">,
+  ): Promise<SkillSummary> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.installSkill(params)
   }, [])
 
   const queryAudit = useCallback(async (
@@ -799,6 +819,8 @@ export function useWorkspace(
     usageWindow,
     setSkillEnabled,
     reviewSkill,
+    previewSkillInstall,
+    installSkill,
     setAnnotationStatus,
     setRuntime,
     snapshot,
