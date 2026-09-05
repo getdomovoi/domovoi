@@ -8,7 +8,7 @@ import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
-import { MachinePairingRequiredError, MachineProtocolMismatchError, type openMachineSocket } from "./machine-socket.js"
+import { MachinePairingRequiredError, MachineProtocolMismatchError, type openMachineSocket, type confirmMachineSocket } from "./machine-socket.js"
 
 function release(minorOffset: number) {
   const [major, minor] = protocolVersion.split(".").map(Number)
@@ -46,22 +46,60 @@ function fixture() {
   const call = vi.fn(async (method: string): Promise<unknown> => method === "device.revokeCurrent" ? { revoked: true } : descriptor)
   const close = vi.fn()
   const open = vi.fn<typeof openMachineSocket>(async () => ({ call, close }))
-  const claim = vi.fn(async () => ({ connection: { call, close }, credential: token, descriptor, endpoint }))
+  const pending = { state: "pending" as const, deviceId: `device-${"c".repeat(32)}`, machineId: sourceId, expiresAt: new Date(300_000).toISOString() }
+  const claim = vi.fn(async () => ({ claim: pending, credential: token, descriptor, endpoint }))
+  const confirm = vi.fn<typeof confirmMachineSocket>(async () => ({ call, close }))
   const changed = vi.fn()
   let now = 1_000
   const create = (sshTunnels: Array<{ machineId: string; endpoint: string }> = []) => {
     const routes = { sshTunnels }
     const service = new FleetEnrollmentService({
-      selfId: sourceId, registry, credentials: asyncCredentials, claim, open, changed, ...routes,
+      selfId: sourceId, registry, credentials: asyncCredentials, claim, confirm, open, changed, ...routes,
       now: () => now, operationTimeoutMs: 1_000, heartbeatIntervalMs: 15_000,
     })
     services.push(service)
     return service
   }
-  return { service: create(), create, registry, database, credentials, asyncCredentials, values, keyring, claim, open, call, close, changed, time: (value: number) => { now = value } }
+  return { service: create(), create, registry, database, credentials, asyncCredentials, values, keyring, claim, confirm, open, call, close, changed, time: (value: number) => { now = value } }
 }
 
 describe("fleet enrollment coordinator", () => {
+  it("never confirms before the credential and its index survive durable readback", async () => {
+    const f = fixture()
+    f.confirm.mockImplementation(async (input) => {
+      expect(f.credentials.forMachine(targetId)).toBe(input.credential)
+      expect(f.credentials.machines()).toContain(targetId)
+      expect(f.registry.pendingOperations()).toMatchObject([{ kind: "enroll", claim: { deviceId: input.claim.deviceId } }])
+      expect(f.registry.enrolled()).toEqual([])
+      return { call: f.call, close: f.close }
+    })
+    expect(await f.service.enroll(params)).toMatchObject({ outcome: "enrolled" })
+    expect(f.confirm).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a lost confirmation reply pending and retries from stored bytes on restart", async () => {
+    const f = fixture()
+    f.confirm.mockRejectedValueOnce(new Error("reply lost after target commit"))
+    expect(await f.service.enroll(params)).toMatchObject({ outcome: "pending" })
+    expect(f.credentials.forMachine(targetId)).toBe(token)
+    expect(f.registry.enrolled()).toEqual([])
+    await f.service.stop()
+    const restarted = f.create()
+    await restarted.reconcile()
+    expect(restarted.snapshot().entries).toMatchObject([{ kind: "machine" }])
+    expect(f.confirm).toHaveBeenCalledTimes(2)
+    expect(f.claim).toHaveBeenCalledOnce()
+  })
+
+  it("removes only the matching stored token after an authoritative confirmation refusal", async () => {
+    const f = fixture()
+    f.confirm.mockRejectedValue(new MachinePairingRequiredError())
+    expect(await f.service.enroll(params)).toEqual({ outcome: "refused", reason: "pairing-refused" })
+    expect(f.credentials.forMachine(targetId)).toBeUndefined()
+    expect(f.registry.pendingOperations()).toEqual([])
+    expect(f.registry.enrolled()).toEqual([])
+  })
+
   it("can forget quarantine without guessing a route or claiming remote revocation", async () => {
     const f = fixture()
     await f.service.enroll(params)
@@ -250,6 +288,7 @@ describe("fleet enrollment coordinator", () => {
     const write = f.keyring.set.getMockImplementation()!
     f.keyring.set.mockImplementation((id, value) => { if (id !== targetId) throw new Error("index locked"); write(id, value) })
     expect(await f.service.enroll(params)).toMatchObject({ outcome: "pending", operation: { operation: "enroll", machineId: targetId } })
+    expect(f.confirm).not.toHaveBeenCalled()
     expect(f.registry.enrolled()).toEqual([])
     await f.service.stop()
     f.time(90_000)
@@ -369,7 +408,8 @@ describe("fleet enrollment coordinator", () => {
 
   it("refuses overlapping enrollment claims without blocking other daemon work", async () => {
     const f = fixture()
-    const response = { connection: { call: f.call, close: f.close }, credential: token, descriptor, endpoint }
+    const response = await f.claim()
+    f.claim.mockClear()
     let deliver: ((value: typeof response) => void) | undefined
     f.claim.mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve }))
     const first = f.service.enroll(params)

@@ -4,6 +4,7 @@ import {
   fleetRemoteRevocationSchema,
   fleetVerifiedRouteSchema,
   machineIdSchema,
+  pendingDeviceClaimSchema,
   sha256DigestSchema,
   type FleetPendingOperation,
 } from "@getdomovoi/protocol"
@@ -20,6 +21,9 @@ export const fleetEnrollmentOperationSchema = operation.extend({
   kind: z.literal("enroll"),
   facts: fleetMachineFactsSchema.safeExtend({ verifiedRoute: fleetVerifiedRouteSchema }),
   credentialDigest: sha256DigestSchema,
+  // Absent only on journals written before the pending-claim protocol. Those
+  // keys were already active and still require authenticated readback.
+  claim: pendingDeviceClaimSchema.optional(),
 }).strict().superRefine((entry, context) => {
   if (entry.facts.id !== entry.machineId) {
     context.addIssue({ code: "custom", message: "A staged enrollment requires matching authenticated facts and route" })

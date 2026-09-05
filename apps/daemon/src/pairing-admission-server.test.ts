@@ -152,7 +152,7 @@ describe("pairing admission over the daemon socket", () => {
       protocolVersion,
     })
     expect(paired).not.toHaveProperty("error")
-    expect(paired).toHaveProperty("result.device.label", "paired-after-cooldown")
+    expect(paired).toHaveProperty("result.claim.state", "pending")
     expect(claim).toHaveBeenCalledTimes(4)
   })
 
