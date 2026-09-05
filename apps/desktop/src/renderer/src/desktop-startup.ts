@@ -38,3 +38,18 @@ export async function resolveDesktopStartup(window: DesktopStartupWindow): Promi
   if (window.domovoiLaunchSmoke) return { kind: "launch-smoke" }
   return startupFromAcquisition(await window.domovoiDesktop.acquireDaemon())
 }
+
+// A daemon this app owns cannot move, so its endpoint is answered from what
+// startup acquired. An attached owner can restart on another endpoint, so
+// every dial asks the main process to attach again and read the current one.
+export function desktopRpcEndpointResolver(
+  startup: Pick<Extract<DesktopStartup, { kind: "workspace" }>, "rpcUrl" | "rpcToken" | "daemon">,
+  bridge: Pick<DesktopDaemonBridge, "reacquireDaemon">,
+): () => Promise<{ url: string; token: string }> {
+  if (startup.daemon.kind === "owned") return async () => ({ url: startup.rpcUrl, token: startup.rpcToken })
+  return async () => {
+    const acquisition = await bridge.reacquireDaemon()
+    if (acquisition.kind === "refused") throw new Error(acquisition.message)
+    return { url: acquisition.url, token: acquisition.token }
+  }
+}

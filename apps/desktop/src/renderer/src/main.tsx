@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react"
+import { StrictMode, useEffect, useMemo, useState } from "react"
 import { createRoot } from "react-dom/client"
 
 import {
@@ -9,8 +9,9 @@ import {
 } from "@getdomovoi/ui"
 import "@getdomovoi/ui/styles.css"
 
+import { daemonConnectionCopy } from "./desktop-daemon-copy.js"
 import { DesktopDaemonRefused } from "./desktop-daemon-refused.js"
-import { resolveDesktopStartup, type DesktopStartup } from "./desktop-startup.js"
+import { desktopRpcEndpointResolver, resolveDesktopStartup, type DesktopStartup } from "./desktop-startup.js"
 
 applyStoredAppearanceTheme()
 
@@ -49,6 +50,11 @@ function DesktopApp() {
       .then(setState, (error: unknown) => setState(startupFailure(error)))
       .finally(() => setRetrying(false))
   }
+  const workspace = state.kind === "workspace" ? state : undefined
+  const resolveRpcEndpoint = useMemo(
+    () => workspace ? desktopRpcEndpointResolver(workspace, window.domovoiDesktop) : undefined,
+    [workspace],
+  )
 
   if (state.kind === "resolving") return null
   if (state.kind === "launch-smoke") return <DesktopLaunchSmoke />
@@ -63,6 +69,8 @@ function DesktopApp() {
           clientKind="desktop"
           rpcUrl={state.rpcUrl}
           rpcToken={state.rpcToken}
+          {...(resolveRpcEndpoint ? { resolveRpcEndpoint } : {})}
+          localDaemon={daemonConnectionCopy(state.daemon)}
           windowBridge={window.domovoiDesktop}
         />
       </WorkspaceErrorBoundary>
