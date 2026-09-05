@@ -57,8 +57,9 @@ Publication has one 30-second budget, including filesystem setup, writing, verif
 cleanup. Embedded calls can supply `publicationTimeoutMs`, a positive integer; phases never renew
 it. A timed-out filesystem request may still complete at the OS, but its late result cannot begin
 another publication step. The error therefore says to inspect the archive before retrying, not
-that no file was written. This does not yet bound the preceding network download, tracked as audit
-item F1. File flush is not a guarantee of directory-entry durability across a power loss.
+that no file was written. The preceding network download still lacks a shared deadline across
+connection setup, redirects, and body reads; publication's budget does not cover those waits.
+File flush is not a guarantee of directory-entry durability across a power loss.
 
 Cleanup removes only the current invocation's staging file and directory, never the published
 archive or an older shared `.partial` file. If cleanup fails after verification, the error names

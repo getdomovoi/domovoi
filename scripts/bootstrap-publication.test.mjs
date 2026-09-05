@@ -314,3 +314,42 @@ test("refuses a non-file destination instead of replacing it", { timeout: testTi
   assert.ok((await fs.lstat(path)).isDirectory())
   assert.deepEqual(await fs.readdir(release), [archive])
 })
+
+for (const code of ["EACCES", "ENOSPC"]) {
+  test(`reports ${code} without claiming hard links are unavailable`, { timeout: testTimeoutMs }, async (context) => {
+    const destination = await fixture(context)
+    const failure = Object.assign(new Error(`${code}: cannot publish`), { code })
+    context.mock.method(fs, "link", async () => { throw failure })
+    syncBuiltinESMExports()
+    context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports() })
+    await assert.rejects(bootstrapDaemon(input(destination, Buffer.from("release"))), (error) => {
+      assert.equal(error.cause, failure)
+      assert.match(error.message, new RegExp(code))
+      assert.doesNotMatch(error.message, /must support hard links/)
+      return true
+    })
+  })
+}
+
+test("a late link reports timeout with an uncertain outcome, not missing hard-link support",
+  { timeout: testTimeoutMs }, async (context) => {
+    const destination = await fixture(context)
+    const bytes = Buffer.from("release")
+    let now = 0
+    context.mock.method(performance, "now", () => now)
+    const link = fs.link
+    context.mock.method(fs, "link", async (...args) => {
+      await link(...args)
+      now = 30_000
+    })
+    syncBuiltinESMExports()
+    context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports() })
+    await assert.rejects(bootstrapDaemon(input(destination, bytes)), (error) => {
+      assert.match(error.message, /exceeded 30000 ms/)
+      assert.match(error.message, /publication may have completed/)
+      assert.doesNotMatch(error.message, /must support hard links/)
+      assert.equal(error.errors[0].cause, undefined, "preserve the original timeout as primary")
+      return true
+    })
+    assert.deepEqual(await fs.readFile(join(destination, `v${version}`, archive)), bytes)
+  })

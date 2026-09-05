@@ -81,8 +81,9 @@ export async function publishBootstrapArchive({ release, path, bytes, sha256, ti
       // Never fall back to rename/copy: either would restore the overwrite race.
       await deadline.run(() => link(staging, path))
     } catch (error) {
+      if (deadline.signal.aborted) throw error
       if (error.code !== "EEXIST") {
-        throw new Error(`Could not publish ${path} without replacement. The destination must support hard links. ${error.message}`, { cause: error })
+        throw new Error(`Could not publish ${path} without replacement. ${error.message}`, { cause: error })
       }
     }
     await verifyPublishedArchive(path, bytes, sha256, deadline)
