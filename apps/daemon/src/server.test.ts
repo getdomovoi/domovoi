@@ -10472,6 +10472,7 @@ describe("DomovoiDaemon", () => {
       projectId: snapshot.project!.id,
       limit: 10,
     })
+    expect(queried.error).toBeUndefined()
     expect(queried.result).toMatchObject({
       hasMore: false,
       entries: [
@@ -10492,16 +10493,19 @@ describe("DomovoiDaemon", () => {
       ],
     })
     const cancelled = await rpc("audit.query", { action: "checkpoint.create", limit: 10 })
+    expect(cancelled.error).toBeUndefined()
     expect(cancelled.result.entries).toEqual([
       expect.objectContaining({ outcome: "cancelled", sessionId: session.id }),
     ])
     const denied = await rpc("audit.query", { action: "security.authentication", limit: 10 })
+    expect(denied.error).toBeUndefined()
     expect(denied.result.entries).toEqual([
       expect.objectContaining({ outcome: "denied", actor: { kind: "daemon", component: "authentication" } }),
     ])
     await expect(rpc("audit.query", { before: "audit-does-not-exist", limit: 10 }))
       .resolves.toMatchObject({ error: { code: -32602, message: "Audit cursor does not exist" } })
     const providerTools = await rpc("audit.query", { action: "provider.tool.completed", limit: 10 })
+    expect(providerTools.error).toBeUndefined()
     expect(providerTools.result.entries).toEqual([
       expect.objectContaining({
         actor: { kind: "provider", provider: "claude-code", providerThreadId: "audit-thread" },
@@ -10511,6 +10515,7 @@ describe("DomovoiDaemon", () => {
       }),
     ])
     const exported = await rpc("audit.export", { limit: 100 })
+    expect(exported.error).toBeUndefined()
     expect(exported.result.content).not.toContain("must-never-persist")
     expect(exported.result.content).not.toContain("must-never-persist-either")
     expect(exported.result.content).not.toContain("provider-command-secret")
@@ -10539,7 +10544,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       statePath: ":memory:",
       auditLog,
-      agentTimeoutMs: 5,
+      auditReadTimeoutMs: 5,
     })
     running.push(daemon)
     const address = await daemon.start()

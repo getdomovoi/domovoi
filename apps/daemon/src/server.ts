@@ -73,6 +73,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
+import { validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
@@ -745,6 +746,7 @@ export type DaemonServerOptions = {
   workspaceService?: WorkspaceService
   worktreeRoot?: string
   agentTimeoutMs?: number
+  auditReadTimeoutMs?: number
   modelCacheTtlMs?: number
   authToken?: string
   allowRemoteTransport?: boolean
@@ -841,6 +843,7 @@ export class DomovoiDaemon {
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
+  #auditReadTimeoutMs: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #authToken: string
@@ -902,6 +905,10 @@ export class DomovoiDaemon {
   #ownershipChecks = new Set<string>()
 
   constructor(options: DaemonServerOptions = {}) {
+    // Audit reads are store work, not agent work. Keep a finite independent
+    // budget, validated before any workspace state or providers are opened.
+    this.#auditReadTimeoutMs = options.auditReadTimeoutMs ?? 30_000
+    validateOperationDeadlineBudget(this.#auditReadTimeoutMs)
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
@@ -3358,7 +3365,7 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"audit.query">
         const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.query(params, signal),
-          this.#agentTimeoutMs,
+          this.#auditReadTimeoutMs,
           "Audit query timed out",
         )
         this.#send(socket, {
@@ -3397,7 +3404,7 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"audit.export">
         const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.export(params, signal),
-          this.#agentTimeoutMs,
+          this.#auditReadTimeoutMs,
           "Audit export timed out",
         )
         this.#send(socket, {
