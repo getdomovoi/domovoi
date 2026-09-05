@@ -1,4 +1,4 @@
-import { fleetDirectEndpointSchema, orderedTransports, type FleetMachineFacts } from "@getdomovoi/protocol"
+import { fleetDirectEndpointSchema, usableTransports, type FleetMachineFacts } from "@getdomovoi/protocol"
 
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
@@ -75,7 +75,7 @@ export function createMachineDialer(input: {
         addRoute(machine.verifiedRoute.endpoint, "verified")
       }
       let refusedPlaintext = false
-      for (const transport of orderedTransports(machine.transports)) {
+      for (const transport of usableTransports(machine.transports)) {
         // No relay can carry this plaintext RPC codec. A future encrypted relay
         // is a separate capability, not a caller-controlled availability flag.
         // A peer cannot assert that its loopback SSH forward is configured here.

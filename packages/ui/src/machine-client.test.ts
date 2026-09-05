@@ -4,6 +4,7 @@ import type { TransportCandidate } from "@getdomovoi/protocol"
 
 import { Deadline } from "./deadline.js"
 import { connectMachineClient } from "./machine-client.js"
+import { TransportDialError } from "./transport-dial.js"
 
 const loopback: TransportCandidate = {
   kind: "local",
@@ -140,6 +141,35 @@ describe("connectMachineClient", () => {
       deadline: Deadline.start(10_000),
       createClient: createClient as never,
     })).rejects.toThrow("Refusing to authenticate over an unencrypted lan transport")
+    expect(created).toHaveLength(0)
+  })
+
+  it("passes through a typed contract refusal without creating a client", async () => {
+    const { created, createClient } = fakeClients()
+
+    await expect(connectMachineClient({
+      candidates: [{ ...lan, kind: "local" }],
+      credential,
+      kind: "desktop",
+      budgets,
+      deadline: Deadline.start(10_000),
+      createClient: createClient as never,
+    })).rejects.toThrow(TransportDialError)
+    expect(created).toHaveLength(0)
+  })
+
+  it("never builds a client for a reserved relay even when asked", async () => {
+    const { created, createClient } = fakeClients()
+
+    await expect(connectMachineClient({
+      candidates: [{ kind: "relay", endpoint: "wss://relay.domovoi.sh/rpc", authenticated: true }],
+      credential,
+      kind: "desktop",
+      budgets,
+      deadline: Deadline.start(10_000),
+      relayAvailable: true,
+      createClient: createClient as never,
+    })).rejects.toThrow("No transport reached that machine")
     expect(created).toHaveLength(0)
   })
 

@@ -5,6 +5,16 @@ import { transportCandidateSchema } from "@getdomovoi/protocol"
 import { advertisedTransports } from "./advertised-transports.js"
 
 describe("advertisedTransports", () => {
+  it("classifies a loopback advertise host as local even on a wildcard listener", () => {
+    const candidates = advertisedTransports({ host: "0.0.0.0", port: 47831, tls: true, advertiseHost: "localhost" })
+    expect(candidates).toEqual([{ kind: "local", endpoint: "wss://localhost:47831/rpc", authenticated: true }])
+    for (const candidate of candidates) expect(transportCandidateSchema.parse(candidate)).toEqual(candidate)
+  })
+
+  it.each(["studio.example/rpc?token=secret", "user:secret@studio.example"])("does not emit URL components as an advertised host: %s", (advertiseHost) => {
+    expect(() => advertisedTransports({ host: "0.0.0.0", port: 47831, tls: true, advertiseHost })).toThrow()
+  })
+
   it("produces an explicitly configured tailnet route after LAN, using the bound port", () => {
     const input = { host: "0.0.0.0", port: 49123, tls: true,
       advertiseHost: "studio.lan", tailnetHost: "studio.tailnet.example" }
