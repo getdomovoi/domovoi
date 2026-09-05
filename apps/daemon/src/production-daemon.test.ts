@@ -287,7 +287,7 @@ describe("createProductionDaemon", () => {
 
 describe("createProductionDaemon under WSL", () => {
   it("describes the distribution the daemon runs in from its environment", async () => {
-    const homeDirectory = join("", "home", "tester")
+    const homeDirectory = await temporaryHome()
     const environment = { WSL_DISTRO_NAME: "Ubuntu-24.04", WSL_INTEROP: "/run/WSL/8_interop" }
     const wsl = { distribution: "Ubuntu-24.04", version: 2 as const }
     const wslFacts = vi.fn(() => wsl)
@@ -310,7 +310,7 @@ describe("createProductionDaemon under WSL", () => {
 
   it("passes no WSL facts to a daemon outside WSL", async () => {
     let daemonOptions: DaemonServerOptions | undefined
-    await createProductionDaemonWithDependencies({ environment: {}, homeDirectory: join("", "home", "tester"), machineLabel: "studio" }, {
+    await createProductionDaemonWithDependencies({ environment: {}, homeDirectory: await temporaryHome(), machineLabel: "studio" }, {
       ...productionDaemonDependencies,
       loadOrCreateToken: async () => testToken("plain-factory"),
       loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
