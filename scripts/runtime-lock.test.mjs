@@ -82,7 +82,10 @@ test("handles cyclic graphs and optional dependencies also reached by a required
   input.lock.snapshots["leaf@1.0.0"].dependencies = { a: "1.0.0" }
   input.lock.snapshots["b@1.0.0"].dependencies["native-win"] = "1.0.0"
   const result = await generate(input)
-  assert.equal(Object.keys(result.packages).length, 9)
+  assert.deepEqual(Object.keys(result.packages).sort(), [
+    "", "node_modules/@getdomovoi/protocol", "node_modules/a", "node_modules/b",
+    "node_modules/b/node_modules/leaf", "node_modules/leaf", "node_modules/native-win", "node_modules/zod",
+  ])
   assert.notEqual(result.packages["node_modules/native-win"].optional, true)
 })
 

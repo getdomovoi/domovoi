@@ -10,4 +10,5 @@ coverage/
 .env.*
 !.env.example
 release/
+apps/daemon/runtime/
 /domovoi*Handoff.zip
