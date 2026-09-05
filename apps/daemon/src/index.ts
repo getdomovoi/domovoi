@@ -200,6 +200,11 @@ const help = `Usage: domovoid [options]
        domovoid service install
        domovoid service status
        domovoid service remove
+       domovoid profile recover --confirm-no-supervisor
+
+Profile recovery:
+  --confirm-no-supervisor asserts that no supervisor will restart this profile.
+  Stop and remove those supervisors before making this confirmation.
 
 Options:
   -h, --help       Show this help

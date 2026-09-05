@@ -105,8 +105,8 @@ The owner-only receipt is bounded to 4 KiB. It names the machine, exact owner in
 time and authorization: either manager plus registration UUID, or an explicit operator confirmation
 plus the local OS username. Completion time is audit information, never a liveness threshold.
 Publication flushes the private staging file before atomic rename; POSIX also flushes the parent
-directory. Node does not provide the equivalent directory flush on Windows. Reads validate owner,
-mode and regular-file size under the existing profile policy. Receipt publication and cleanup errors
+directory. Node does not provide the equivalent directory flush on Windows. All reads enforce
+regular-file size; POSIX also checks owner and mode under the existing profile policy. Receipt publication and cleanup errors
 name the file and preserve both failure causes.
 
 Only `start-or-attach`, holding the free lease, consumes a matching receipt to publish `none` and
