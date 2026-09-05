@@ -63,6 +63,11 @@ describe("listWslDistributions", () => {
     expect(await listWslDistributions({ run, platform: "win32" })).toEqual([])
   })
 
+  it("accepts the explicit no-distribution answer with a successful exit too", async () => {
+    const run = vi.fn<Runner>(async () => wslOutput(noDistributions))
+    expect(await listWslDistributions({ run, platform: "win32" })).toEqual([])
+  })
+
   it("reports no distribution for a listing with a header and no rows", async () => {
     const run = vi.fn(async () => wslOutput("  NAME            STATE           VERSION\r\n"))
     expect(await listWslDistributions({ run, platform: "win32" })).toEqual([])
@@ -111,6 +116,13 @@ describe("listWslDistributions when wsl.exe cannot answer", () => {
       const run = vi.fn<Runner>(async () => answer)
       await expect(listWslDistributions({ run, platform: "win32" })).rejects.toMatchObject({ kind: "corrupt" })
     }
+  })
+
+  it("does not turn a truncated UTF-16 row into an empty listing", async () => {
+    const run = vi.fn<Runner>(async () => Buffer.concat([
+      wslOutput("  NAME  STATE  VERSION\r\n"), Buffer.from([0x55]),
+    ]))
+    await expect(listWslDistributions({ run, platform: "win32" })).rejects.toMatchObject({ kind: "corrupt" })
   })
 
   it.each([

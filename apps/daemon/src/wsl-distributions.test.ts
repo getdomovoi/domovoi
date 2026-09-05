@@ -56,12 +56,20 @@ describe("parseWslDistributions", () => {
     },
   )
 
-  it.each(["Ubuntu Running broken", "Ubuntu Running", "Ubuntu Unknown 2", "Running 2"])(
+  it.each([
+    "Ubuntu Running broken", "Ubuntu Running", "Ubuntu Unknown 2", "Running 2",
+    "Ubuntu Running 0", "Ubuntu Running 99999999999999999999",
+  ])(
     "reports an unreadable row as corrupt: %j", (row) => {
       expect(parseWslDistributions(utf16(`  NAME  STATE  VERSION\r\n  ${row}\r\n`)))
         .toEqual({ kind: "corrupt", line: 2 })
     },
   )
+
+  it("rejects a torn UTF-16 character instead of dropping its last byte", () => {
+    const torn = Buffer.concat([utf16("  NAME  STATE  VERSION\r\n"), Buffer.from([0x55])])
+    expect(parseWslDistributions(torn)).toEqual({ kind: "corrupt", line: 1 })
+  })
 
   it("reports a broken listing without returning partial rows or their contents", () => {
     const broken = [

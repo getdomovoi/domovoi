@@ -39,16 +39,21 @@ function readDistribution(line: string): WslDistribution | undefined {
   const name = groups["name"] ?? ""
   const state = groups["state"] ?? ""
   if (name === "" || !states.has(state as WslDistributionState)) return undefined
+  const version = Number(groups["version"])
+  if (!Number.isSafeInteger(version) || version < 1) return undefined
 
   return {
     name,
     state: state as WslDistributionState,
-    version: Number(groups["version"]),
+    version,
     default: isDefault,
   }
 }
 
 export function parseWslDistributions(output: string | Buffer): WslDistributionListing {
+  // Buffer's UTF-16 decoder silently drops a trailing half character. That
+  // could erase the only evidence of a row after an otherwise empty header.
+  if (typeof output !== "string" && output.length % 2 !== 0) return { kind: "corrupt", line: 1 }
   const [first, ...lines] = decode(output).split(/\r?\n/)
   if (!header.test(first ?? "")) return { kind: "corrupt", line: 1 }
 
