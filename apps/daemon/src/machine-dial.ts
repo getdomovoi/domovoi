@@ -31,7 +31,7 @@ function leavesThisMachine(endpoint: string): boolean {
 // fleet says about it, the credential pairing left here, and the transport
 // order the protocol defines.
 export function createMachineDialer(input: {
-  machines: () => readonly Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute">[]
+  machine: (machineId: string) => Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute"> | undefined
   credentials: MachineCredentials | undefined
   dialTimeoutMs: number
   open: (input: {
@@ -49,7 +49,7 @@ export function createMachineDialer(input: {
     try {
       deadline.throwIfExpired()
       if (signal?.aborted) throw new Error("The transfer was cancelled")
-      const machine = input.machines().find((candidate) => candidate.id === machineId)
+      const machine = input.machine(machineId)
       if (!machine) throw new Error("That machine cannot be reached")
 
       const credential = input.credentials?.forMachine(machineId)

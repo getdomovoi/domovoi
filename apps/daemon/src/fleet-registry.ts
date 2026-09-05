@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 
 import {
   fleetMachineFactsSchema,
+  fleetMachineSchema,
   fleetHealthSchema,
   fleetMachineHealth,
   fleetSnapshotSchema,
@@ -15,6 +16,7 @@ import {
   sha256DigestSchema,
   type FleetEntry,
   type FleetMachineFacts,
+  type FleetMachine,
   type FleetSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -77,6 +79,7 @@ type StoredFleetMachine = {
 export interface FleetRegistry {
   record(facts: FleetMachineFacts, nowMs: number): void
   snapshot(selfId: string, nowMs: number, credentialMachineIds?: readonly string[]): FleetSnapshot
+  lookupMachine(machineId: string, selfId: string, nowMs: number): FleetMachine | undefined
   enrolled(): EnrolledFleetMachine[]
   pendingOperations(): FleetOperation[]
   stageEnrollment(facts: FleetMachineFacts, credentialDigest: string, nowMs: number): FleetEnrollmentOperation
@@ -177,21 +180,7 @@ export class SqliteFleetRegistry implements FleetRegistry {
       .all() as StoredFleetMachine[]
     const entries = new Map<string, FleetEntry>()
     for (const row of rows) {
-      const heartbeat = machineHeartbeatState(row.last_seen_ms, nowMs)
-      entries.set(row.id, { kind: "machine", machine: {
-        ...readFacts(row),
-        heartbeat: {
-          state: heartbeat,
-          lastSeenAt: new Date(row.last_seen_ms).toISOString(),
-        },
-        health: row.health_override === null ? fleetMachineHealth({
-          heartbeat,
-          connection: heartbeat === "offline" ? "disconnected" : "connected",
-          protocolVersion: row.protocol_version,
-          clientProtocolVersion: protocolVersion,
-        }) : fleetConnectionFailureSchema.parse(row.health_override),
-        self: row.id === selfId,
-      } })
+      entries.set(row.id, { kind: "machine", machine: readMachine(row, selfId, nowMs) })
     }
     for (const pending of this.pendingOperations()) {
       entries.set(pending.machineId, fleetOperationSummary(pending))
@@ -206,6 +195,16 @@ export class SqliteFleetRegistry implements FleetRegistry {
     return fleetSnapshotSchema.parse({ entries: [...entries]
       .sort(([left], [right]) => left === selfId ? -1 : right === selfId ? 1 : left.localeCompare(right))
       .map(([, entry]) => entry) })
+  }
+
+  lookupMachine(machineId: string, selfId: string, nowMs: number): FleetMachine | undefined {
+    // Display limits do not limit access to a known peer. The same journal
+    // masking still applies: retained facts must never revive a forgetting peer.
+    const row = this.#database.prepare(`
+      SELECT * FROM fleet_machines m WHERE id = ?
+      AND NOT EXISTS (SELECT 1 FROM fleet_operations o WHERE o.machine_id = m.id)
+    `).get(machineId) as StoredFleetMachine | undefined
+    return row ? readMachine(row, selfId, nowMs) : undefined
   }
 
   enrolled(): EnrolledFleetMachine[] {
@@ -363,6 +362,21 @@ export class SqliteFleetRegistry implements FleetRegistry {
       throw error
     }
   }
+}
+
+function readMachine(row: StoredFleetMachine, selfId: string, nowMs: number): FleetMachine {
+  const heartbeat = machineHeartbeatState(row.last_seen_ms, nowMs)
+  return fleetMachineSchema.parse({
+    ...readFacts(row),
+    heartbeat: { state: heartbeat, lastSeenAt: new Date(row.last_seen_ms).toISOString() },
+    health: row.health_override === null ? fleetMachineHealth({
+      heartbeat,
+      connection: heartbeat === "offline" ? "disconnected" : "connected",
+      protocolVersion: row.protocol_version,
+      clientProtocolVersion: protocolVersion,
+    }) : fleetConnectionFailureSchema.parse(row.health_override),
+    self: row.id === selfId,
+  })
 }
 
 function readFacts(row: StoredFleetMachine): FleetMachineFacts {

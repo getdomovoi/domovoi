@@ -39,6 +39,32 @@ function machines(snapshot: FleetSnapshot) {
 }
 
 describe("SqliteFleetRegistry", () => {
+  it("uses the same health and heartbeat facts for single-machine lookups and display", () => {
+    const { registry: fleet, database } = registry()
+    try {
+      fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
+      for (const now of [1_000, 1_000 + staleHeartbeatMs + 1, 1_000 + offlineHeartbeatMs + 1]) {
+        expect(fleet.lookupMachine(localMachine.id, localMachine.id, now))
+          .toEqual(machines(fleet.snapshot(localMachine.id, now))[0])
+      }
+      expect(fleet.lookupMachine(`machine-${"c".repeat(32)}`, localMachine.id, 1_000)).toBeUndefined()
+    } finally { database.close() }
+  })
+
+  it.each(["enroll", "forget"] as const)("masks retained facts during a pending %s in single-machine lookups", (kind) => {
+    const { registry: fleet, database } = registry()
+    try {
+      const facts = { ...localMachine, capabilities: [...localMachine.capabilities] }
+      fleet.record(facts, 1_000)
+      if (kind === "forget") fleet.stageForget(localMachine.id, null, 1_000)
+      else fleet.stageEnrollment({ ...facts, connection: "direct", verifiedRoute: {
+        endpoint: "ws://127.0.0.1:47831/rpc", lastAuthenticatedAt: new Date(1_000).toISOString(),
+      } }, "sha256:" + "a".repeat(64), 1_000)
+      expect(fleet.lookupMachine(localMachine.id, localMachine.id, 1_000)).toBeUndefined()
+      expect(fleet.snapshot(localMachine.id, 1_000).entries[0]?.kind).toBe("pending")
+    } finally { database.close() }
+  })
+
   it("reports the recording daemon as itself", () => {
     const { registry: fleet } = registry()
     fleet.record({ ...localMachine, capabilities: [...localMachine.capabilities] }, 1_000)
