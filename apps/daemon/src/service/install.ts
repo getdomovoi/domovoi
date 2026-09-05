@@ -343,10 +343,16 @@ export function installService(target: ServiceTarget, effects: Pick<ServiceEffec
 type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation">
 type ServiceRemovalResult = ServiceRemovalPlan & { profileRecovery: "recorded" | "operator-confirmation-required" | "not-needed" }
 
+// Only a failure raised while the Task Scheduler adapter holds the deadline is
+// a task removal failure. Refusals before it (exclusion, SystemRoot) and after
+// it (profile ownership) never touched the task and keep their own message.
+type RemovalProgress = { managerHoldsDeadline: boolean }
+
 async function removeWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
   deadline: OperationDeadline,
+  progress: RemovalProgress,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
   const home = assertHome(target.home)
@@ -354,7 +360,9 @@ async function removeWithDeadline(
   const before = effects.removalSnapshot(home, target.platform)
   let managerStopped = true
   if (plan.kind === "task") {
+    progress.managerHoldsDeadline = true
     managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
+    progress.managerHoldsDeadline = false
   }
   for (const { command, args } of plan.kind === "file" ? plan.commands : []) {
     try {
@@ -395,10 +403,11 @@ export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
 ): Promise<ServiceRemovalResult> {
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline)).catch((cause: unknown) => {
+  const progress: RemovalProgress = { managerHoldsDeadline: false }
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
-    if (target.platform === "win32" && !(cause instanceof WindowsTaskRemovalError)) {
+    if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
       throw new WindowsTaskRemovalError(displayName, cause)
     }
     throw cause

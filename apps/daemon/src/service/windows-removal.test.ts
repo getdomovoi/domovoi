@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
+import { ServiceOperationBusyError } from "./operation-lease.js"
 import { windowsTaskRemovalPlan } from "./windows-task.js"
 
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
@@ -190,6 +192,43 @@ describe("Windows service removal", () => {
     vi.mocked(effects.capture).mockRejectedValue(new Error("spawn powershell.exe ENOENT"))
     await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow("powershell.exe ENOENT")
     expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.remove).not.toHaveBeenCalled()
+  })
+})
+
+describe("refusals that never reach Task Scheduler", () => {
+  const refusal = (effects: ServiceEffects): Promise<Error> => removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)
+    .then(() => { throw new Error("the removal was expected to be refused") }, (error: unknown) => error as Error)
+
+  it("reports service operation exclusion in its own words", async () => {
+    const { effects } = taskManager()
+    const busy = new ServiceOperationBusyError("C:\\Users\\dl\\.domovoi\\service-operation-lease.sqlite")
+    vi.mocked(effects.claimServiceOperation).mockImplementation(() => { throw busy })
+    const error = await refusal(effects)
+    expect(error).toBe(busy)
+    expect(error.message).toBe(busy.message)
+    expect(error.message).not.toMatch(/Task Scheduler/)
+    expect(effects.capture).not.toHaveBeenCalled()
+  })
+
+  it("reports a missing OS directory in its own words", async () => {
+    vi.stubEnv("SystemRoot", "")
+    const { effects } = taskManager()
+    const error = await refusal(effects)
+    expect(error.message).toBe("SystemRoot must name the absolute local Windows directory before removing a service")
+    expect(error.message).not.toMatch(/Task Scheduler/)
+    expect(effects.capture).not.toHaveBeenCalled()
+  })
+
+  it("reports profile ownership in its own words once the task is gone", async () => {
+    const { task, effects } = taskManager()
+    const owned = new ProfileAlreadyOwnedError("C:\\Users\\dl\\.domovoi")
+    vi.mocked(effects.claimProfile).mockImplementation(() => { throw owned })
+    const error = await refusal(effects)
+    expect(error).toBe(owned)
+    expect(error.message).toBe(owned.message)
+    expect(error.message).not.toMatch(/Task Scheduler/)
+    expect(task.registered).toBe(false)
     expect(effects.remove).not.toHaveBeenCalled()
   })
 })
