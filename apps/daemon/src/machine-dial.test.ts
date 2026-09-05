@@ -53,7 +53,7 @@ function dialer(overrides: {
   return {
     opened,
     dial: createMachineDialer({
-      machines: () => overrides.machines ?? [machine()],
+      machine: (id) => (overrides.machines ?? [machine()]).find((candidate) => candidate.id === id),
       credentials: {
         save: () => {},
         forMachine: overrides.forMachine ?? (() => credential),
@@ -111,12 +111,12 @@ describe("createMachineDialer", () => {
     const seen: Array<{ endpoint: string; remaining: number; deadline: OperationDeadline }> = []
     const connection = { call: async () => ({}), close: () => {} }
     const dial = createMachineDialer({
-      machines: () => [machine({ verifiedRoute: { endpoint: "wss://studio.old/rpc", lastAuthenticatedAt: new Date(0).toISOString() },
+      machine: () => machine({ verifiedRoute: { endpoint: "wss://studio.old/rpc", lastAuthenticatedAt: new Date(0).toISOString() },
         transports: [
           { kind: "tailnet", endpoint: "wss://studio.tailnet/rpc", authenticated: true },
           { kind: "lan", endpoint: "wss://studio.old/rpc", authenticated: true },
         ],
-      })],
+      }),
       credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
       dialTimeoutMs: 1_000,
       open: async (input) => {
@@ -141,10 +141,10 @@ describe("createMachineDialer", () => {
     const deadline = OperationDeadline.start(100, { now: () => now })
     const open = vi.fn(async () => { now = 101; throw new Error("gone") })
     const dial = createMachineDialer({
-      machines: () => [machine({ transports: [
+      machine: () => machine({ transports: [
         { kind: "lan", endpoint: "wss://studio.lan/rpc", authenticated: true },
         { kind: "tailnet", endpoint: "wss://studio.tailnet/rpc", authenticated: true },
-      ] })],
+      ] }),
       credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
       dialTimeoutMs: 1_000, open,
     })
@@ -160,7 +160,7 @@ describe("createMachineDialer", () => {
     const close = vi.fn()
     let complete: (connection: { call: () => Promise<unknown>; close: () => void }) => void = () => {}
     const dial = createMachineDialer({
-      machines: () => [machine()],
+      machine: () => machine(),
       credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
       dialTimeoutMs: 1_000,
       open: () => new Promise((resolve) => { complete = resolve }),

@@ -919,7 +919,11 @@ export class DomovoiDaemon {
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
     this.#connectToMachine = options.connectToMachine ?? createMachineDialer({
-      machines: () => this.#fleetEnrollment.snapshot().entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : []),
+      machine: (id) => {
+        const target = this.#store.fleet?.lookupMachine(id, this.#snapshot.machine.id, Date.now())
+        if (!target || !transferPreflight({ source: { ...target, id: this.#snapshot.machine.id }, target }).allowed) return undefined
+        return target
+      },
       credentials: this.#machineCredentials,
       dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
       open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
@@ -1582,9 +1586,7 @@ export class DomovoiDaemon {
     const sourceCapability = this.#sourceTransferCapabilityRefusal(params.method)
     if (sourceCapability) return this.#refusedTransferPreview(params, sourceCapability)
 
-    const fleet = this.#fleetEnrollment.snapshot()
-    const target = fleet?.entries.flatMap((entry) => entry.kind === "machine" ? [entry.machine] : [])
-      .find((machine) => machine.id === params.targetMachineId)
+    const target = this.#store.fleet?.lookupMachine(params.targetMachineId, this.#snapshot.machine.id, Date.now())
     if (!target) return this.#refusedTransferPreview(params, "target-unreachable")
     const reachable = transferPreflight({
       source: { ...target, id: this.#snapshot.machine.id },

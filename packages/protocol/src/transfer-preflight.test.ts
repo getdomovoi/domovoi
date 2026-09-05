@@ -62,6 +62,14 @@ describe("transferPreflight", () => {
       .toBe("That machine must be paired again before a session can move to it")
   })
 
+  it.each([
+    ["pairing-required", "target-pairing-required"],
+    ["credential-store-unavailable", "target-unreachable"],
+  ] as const)("refuses a target with %s health", (health, reason) => {
+    expect(transferPreflight({ source, target: { ...target, health } }))
+      .toEqual({ allowed: false, reason })
+  })
+
   it("refuses a target that cannot run sessions", () => {
     expect(transferPreflight({ source, target: { ...target, capabilities: ["terminals"] } }))
       .toEqual({ allowed: false, reason: "target-cannot-run-sessions" })

@@ -355,7 +355,7 @@ export class FleetEnrollmentService {
 
   #dial(machines: FleetMachineFacts[], machineId: string, deadline: OperationDeadline, signal?: AbortSignal): Promise<MachineRouteConnection> {
     return createMachineDialer({
-      machines: () => machines, credentials: this.#input.credentials, dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
+      machine: (id) => machines.find((machine) => machine.id === id), credentials: this.#input.credentials, dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
       open: (input) => (this.#input.open ?? openMachineSocket)({ ...input, callTimeoutMs: defaultMachineCallTimeoutMs }),
     })(machineId, signal, deadline)
   }

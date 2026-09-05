@@ -3,18 +3,20 @@ import { once } from "node:events"
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 import { promisify } from "node:util"
 
 import {
   daemonAuthenticationErrorCode, devicePairResultSchema, fleetEnrollResultSchema,
-  fleetSnapshotSchema, fleetSnapshotOverflowSchema, fleetSnapshotOverflowErrorCode, protocolVersion, rpcMethods, workspaceSnapshotSchema,
+  fleetSnapshotSchema, fleetSnapshotOverflowSchema, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, rpcMethods, workspaceSnapshotSchema,
   type FleetSnapshot, type RpcMethod, type RpcParams,
 } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
 import type { AgentAdapter } from "./agents.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
+import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
+import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies, type ProductionDaemonHandle } from "./production-daemon.js"
 import { DomovoiDaemon } from "./server.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -115,6 +117,12 @@ function remote(fleet: FleetSnapshot, id: string) {
   return row.machine
 }
 
+function persistedRegistry<T>(homeDirectory: string, use: (registry: SqliteFleetRegistry) => T): T {
+  const database = new DatabaseSync(join(homeDirectory, ".domovoi", "state.sqlite"))
+  try { return use(new SqliteFleetRegistry(database)) }
+  finally { database.close() }
+}
+
 describe("production fleet assembly", () => {
   it("explicitly refuses all rows on legacy index overflow, including the omitted count and a local recovery command", async () => {
     const source = await machine("source studio")
@@ -192,7 +200,7 @@ describe("production fleet assembly", () => {
     expect(unauthed.notifications.filter((notice) => notice.method === "fleet.changed")).toEqual([])
   })
 
-  it("moves a real Git worktree and canonical history through the enrolled production route", async () => {
+  it.each(["normal", "overflow", "forgetting"] as const)("checks real transfer eligibility independently of fleet display: %s", async (scenario) => {
     const agent: AgentAdapter = {
       permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
       connect: async () => {}, close: async () => {},
@@ -228,8 +236,28 @@ describe("production fleet assembly", () => {
     })
     const plan = workspaceSnapshotSchema.parse(await source.root.ok("workspace.get", {}))
     await enroll(source, target)
+    if (scenario !== "normal") {
+      for (let index = 0; index < maximumFleetEntries; index += 1) {
+        source.credentials.save(`machine-${index.toString(16).padStart(32, "0")}`, "n".repeat(43))
+      }
+      expect((await source.root.call("fleet.list", {})).error?.code).toBe(fleetSnapshotOverflowErrorCode)
+    }
+    if (scenario === "forgetting") {
+      // Retain both the known row and usable key while the lifecycle operation
+      // is pending. A raw facts lookup would wrongly dial this peer again.
+      vi.spyOn(source.credentials, "forget").mockImplementation(() => { throw new Error("keychain removal blocked") })
+      const credential = source.credentials.forMachine(target.id)
+      if (credential === undefined) throw new Error("Enrollment retained no credential")
+      persistedRegistry(source.homeDirectory, (registry) => registry.stageForget(target.id, machineCredentialDigest(target.id, credential), Date.now()))
+    }
     const request = { sessionId: session.id, targetMachineId: target.id, method: "git-bundle" as const, initiatedByClient: "cli" as const }
     const preview = rpcMethods["session.transferPreview"].result.parse(await source.root.ok("session.transferPreview", request))
+    if (scenario === "forgetting") {
+      expect(preview).toMatchObject({ allowed: false, reason: "target-unreachable" })
+      expect(persistedRegistry(source.homeDirectory, (registry) => registry.pendingOperations()))
+        .toContainEqual(expect.objectContaining({ machineId: target.id, kind: "forget" }))
+      return
+    }
     expect(preview.allowed).toBe(true)
     if (!preview.allowed) throw new Error(`Transfer preview refused: ${preview.reason}`)
     const moved = rpcMethods["session.transfer"].result.parse(await source.root.ok("session.transfer", {
