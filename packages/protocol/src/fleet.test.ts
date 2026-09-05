@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest"
 
 import {
   fleetDirectEndpointSchema,
+  fleetMachineDescriptorSchema,
   fleetMachineFactsSchema,
   fleetMachineSchema,
   fleetSnapshotSchema,
   fleetSnapshotOverflowSchema,
   machineHeartbeatState,
+  machinePlatformLabel,
   maximumFleetMachines,
   staleHeartbeatMs,
   offlineHeartbeatMs,
@@ -256,5 +258,58 @@ describe("machineHeartbeatState", () => {
 
   it("treats a timestamp from the future as online", () => {
     expect(machineHeartbeatState(5_000, 1_000)).toBe("online")
+  })
+})
+
+describe("fleet machine WSL facts", () => {
+  const { connection: _connection, heartbeat: _heartbeat, health: _health, self: _self, ...descriptor } = machine
+  const wsl = { distribution: "Ubuntu-24.04", version: 2 as const }
+
+  it("carries the distribution a daemon runs in under WSL", () => {
+    expect(fleetMachineDescriptorSchema.parse({ ...descriptor, wsl })).toEqual({ ...descriptor, wsl })
+  })
+
+  it("leaves a machine outside WSL undescribed rather than guessing", () => {
+    expect(fleetMachineDescriptorSchema.parse(descriptor)).not.toHaveProperty("wsl")
+  })
+
+  it("accepts a WSL 1 distribution", () => {
+    expect(fleetMachineDescriptorSchema.safeParse({ ...descriptor, wsl: { ...wsl, version: 1 } }).success).toBe(true)
+  })
+
+  it("refuses a WSL version that does not exist", () => {
+    for (const version of [0, 3, "2", 2.5]) {
+      expect(fleetMachineDescriptorSchema.safeParse({ ...descriptor, wsl: { ...wsl, version } }).success).toBe(false)
+    }
+  })
+
+  it("refuses a WSL fact that names no distribution", () => {
+    for (const distribution of ["", "   ", undefined]) {
+      expect(fleetMachineDescriptorSchema.safeParse({ ...descriptor, wsl: { ...wsl, distribution } }).success).toBe(false)
+    }
+  })
+
+  it("bounds the distribution name like a label", () => {
+    expect(fleetMachineDescriptorSchema.safeParse({ ...descriptor, wsl: { ...wsl, distribution: "u".repeat(129) } }).success).toBe(false)
+  })
+
+  it("rejects unknown WSL fields so facts stay described", () => {
+    expect(fleetMachineDescriptorSchema.safeParse({ ...descriptor, wsl: { ...wsl, share: "\\\\wsl$" } }).success).toBe(false)
+  })
+
+  it("keeps the facts through observed facts and the described machine", () => {
+    expect(fleetMachineFactsSchema.parse({ ...descriptor, connection: "local", wsl })).toMatchObject({ wsl })
+    expect(fleetMachineSchema.parse({ ...machine, wsl })).toMatchObject({ wsl })
+  })
+})
+
+describe("machinePlatformLabel", () => {
+  it("names the distribution for a daemon under WSL", () => {
+    expect(machinePlatformLabel({ platform: "linux", wsl: { distribution: "Ubuntu-24.04", version: 2 } })).toBe("Ubuntu-24.04 (WSL)")
+  })
+
+  it("names the platform everywhere else", () => {
+    expect(machinePlatformLabel({ platform: "darwin" })).toBe("darwin")
+    expect(machinePlatformLabel({ platform: "linux", wsl: undefined })).toBe("linux")
   })
 })

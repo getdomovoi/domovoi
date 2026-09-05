@@ -22,6 +22,14 @@ export const machineCapabilitySchema = z.enum([
 
 export const heartbeatStateSchema = z.enum(["online", "stale", "offline"])
 
+// A daemon inside a WSL distribution reports linux as its platform, which is
+// true and not enough: the fleet needs to say which distribution, and whether
+// WSL 2 gives it a network stack of its own.
+export const machineWslFactsSchema = z.object({
+  distribution: z.string().trim().min(1).max(128),
+  version: z.union([z.literal(1), z.literal(2)]),
+}).strict()
+
 export const machineHeartbeatSchema = z.object({
   state: heartbeatStateSchema,
   lastSeenAt: z.string().datetime({ offset: true }),
@@ -73,6 +81,7 @@ const fleetMachineDescriptorObject = z.object({
   // Only endpoints the dialer would accept: the schema refuses an
   // unauthenticated candidate, so a machine cannot advertise one.
   transports: z.array(transportCandidateSchema).max(8),
+  wsl: machineWslFactsSchema.optional(),
 }).strict()
 
 // Only target-authored facts cross the heartbeat RPC. Health, route provenance,
@@ -169,6 +178,15 @@ export type FleetSnapshotOverflow = z.infer<typeof fleetSnapshotOverflowSchema>
 // must reconnect rather than silently coalescing or losing lifecycle changes.
 export const fleetChangedNotificationSchema = fleetSnapshotSchema
 
+// What a fleet surface calls the platform: the distribution for a daemon under
+// WSL, since "linux" would not tell two of them apart, and the platform itself
+// everywhere else.
+export function machinePlatformLabel(
+  machine: { platform: string; wsl?: MachineWslFacts | undefined },
+): string {
+  return machine.wsl ? `${machine.wsl.distribution} (WSL)` : machine.platform
+}
+
 export function machineHeartbeatState(
   lastSeenMs: number,
   nowMs: number,
@@ -180,6 +198,7 @@ export function machineHeartbeatState(
 }
 
 export type MachineCapability = z.infer<typeof machineCapabilitySchema>
+export type MachineWslFacts = z.infer<typeof machineWslFactsSchema>
 export type FleetMachineFacts = z.infer<typeof fleetMachineFactsSchema>
 export type FleetMachineDescriptor = z.infer<typeof fleetMachineDescriptorSchema>
 export type FleetVerifiedRoute = z.infer<typeof fleetVerifiedRouteSchema>
