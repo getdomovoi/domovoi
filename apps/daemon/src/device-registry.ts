@@ -3,11 +3,13 @@ import type { DatabaseSync } from "node:sqlite"
 
 import {
   clientKindSchema,
+  deviceLabelMismatchSchema,
   deviceRenameLabelSchema,
   machineIdSchema,
   pairedDeviceSchema,
   type ClientKind,
   type DeviceCredentialBinding as PublicDeviceCredentialBinding,
+  type DeviceLabelMismatch,
   type PairedDeviceSummary,
 } from "@getdomovoi/protocol"
 
@@ -37,7 +39,7 @@ export interface DeviceRegistry {
   isActive(token: string): boolean
   rotate(deviceId: string): DevicePairing
   revoke(deviceId: string): PairedDevice
-  rename(deviceId: string, label: string): PairedDevice
+  rename(deviceId: string, label: string, expectedLabel?: string): PairedDevice
   list(): PairedDevice[]
 }
 
@@ -45,6 +47,16 @@ export class DeviceNotFoundError extends Error {
   constructor(deviceId: string) {
     super(`Paired device not found: ${deviceId}`)
     this.name = "DeviceNotFoundError"
+  }
+}
+
+export class DeviceLabelMismatchError extends Error {
+  readonly mismatch: DeviceLabelMismatch
+
+  constructor(device: PairedDevice) {
+    super(`Paired device ${device.id} is called ${device.label}, not the label this rename expected`)
+    this.name = "DeviceLabelMismatchError"
+    this.mismatch = deviceLabelMismatchSchema.parse({ kind: "device-label-mismatch", device })
   }
 }
 
@@ -278,18 +290,25 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
 
   // Only the label column moves. The row keeps its id, credential hash,
   // binding, and every timestamp, revoked or not, so the record a person
-  // renamed is still the record the audit log points at.
-  rename(deviceId: string, label: string): PairedDevice {
+  // renamed is still the record the audit log points at. With an expected
+  // label the update is its own check: a rename that landed since the caller
+  // last read the row leaves this one matching nothing, and is refused with
+  // the row as it stands rather than overwritten.
+  rename(deviceId: string, label: string, expectedLabel?: string): PairedDevice {
     const renamed = validateRenameLabel(label)
+    const update = expectedLabel === undefined
+      ? this.#database
+        .prepare("UPDATE paired_devices SET label = ? WHERE id = ?")
+        .run(renamed, deviceId)
+      : this.#database
+        .prepare("UPDATE paired_devices SET label = ? WHERE id = ? AND label = ?")
+        .run(renamed, deviceId, expectedLabel)
     const row = this.#database
       .prepare("SELECT * FROM paired_devices WHERE id = ?")
       .get(deviceId) as StoredDevice | undefined
     if (!row) throw new DeviceNotFoundError(deviceId)
-
-    this.#database
-      .prepare("UPDATE paired_devices SET label = ? WHERE id = ?")
-      .run(renamed, deviceId)
-    return toPairedDevice({ ...row, label: renamed })
+    if (Number(update.changes) === 0) throw new DeviceLabelMismatchError(toPairedDevice(row))
+    return toPairedDevice(row)
   }
 
   list(): PairedDevice[] {
