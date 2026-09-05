@@ -2,7 +2,7 @@ import { z } from "zod"
 
 import { fleetHealthSchema } from "./fleet-health.js"
 import { machineIdSchema } from "./identifiers.js"
-import { transportCandidateSchema } from "./transport.js"
+import { directTransportEndpointSchema, transportCandidateSchema } from "./transport.js"
 import { connectionKindSchema } from "./schema.js"
 
 export const maximumFleetMachines = 128
@@ -64,16 +64,7 @@ function refineDescriptor(
 // A successful authenticated exchange proves a route works; it need not be in
 // the target's advertisements (for example MagicDNS or an external port forward).
 // No credential-bearing URL is retained. Only loopback permits plaintext.
-export const fleetDirectEndpointSchema = z.string().max(2048).url().refine((endpoint) => {
-  try {
-    const url = new URL(endpoint)
-    if (url.username || url.password || url.search || url.hash) return false
-    return url.protocol === "wss:" || (url.protocol === "ws:"
-      && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname))
-  } catch {
-    return false
-  }
-}, "A direct endpoint requires TLS outside loopback and cannot contain credentials, query or fragment")
+export const fleetDirectEndpointSchema = directTransportEndpointSchema
 
 export const fleetVerifiedRouteSchema = z.object({
   endpoint: fleetDirectEndpointSchema,
