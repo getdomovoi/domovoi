@@ -70,8 +70,6 @@ async function fixture(t) {
       await fs.mkdir(directory, { recursive: true })
       await fs.writeFile(join(directory, "package.json"), JSON.stringify({ name, version: installedVersion }))
     }
-    await fs.mkdir(join(options.cwd, "node_modules/.package-lock-holder"), { recursive: true })
-    await fs.rmdir(join(options.cwd, "node_modules/.package-lock-holder"))
     await fs.writeFile(join(options.cwd, "node_modules/.package-lock.json"), JSON.stringify(lock))
     await afterInstall?.(options)
     return { stdout: "", stderr: "" }
@@ -143,3 +141,49 @@ test("binds protocol archive bytes before npm receives them", { timeout: testTim
   }), /protocol.*integrity/i)
   assert.equal(calls.filter(({ args }) => args.includes("ci")).length, 0)
 })
+
+test("reuses a verified installation without rerunning npm and releases its deadline", { timeout: testTimeout }, async (t) => {
+  const { options, calls } = await fixture(t)
+  const first = await installer(options)
+  const timers = new Set()
+  const schedule = globalThis.setTimeout
+  const clear = globalThis.clearTimeout
+  t.mock.method(globalThis, "setTimeout", (...args) => { const timer = schedule(...args); timers.add(timer); return timer })
+  t.mock.method(globalThis, "clearTimeout", (timer) => { timers.delete(timer); return clear(timer) })
+  const second = await installer(options)
+  assert.deepEqual(second, first)
+  assert.equal(calls.filter(({ args }) => args.includes("ci")).length, 1)
+  assert.equal(timers.size, 0, "reuse must not leave the five-minute timer alive")
+})
+
+test("concurrent matching installs publish one verified tree without replacement", { timeout: testTimeout }, async (t) => {
+  const { options } = await fixture(t)
+  const results = await Promise.all([installer(options), installer(options)])
+  assert.deepEqual(results[0], results[1])
+  const entries = await fs.readdir(join(options.destination, `v${version}`))
+  assert.equal(entries.filter((name) => name.startsWith(".runtime-")).length, 1)
+})
+
+for (const mutation of ["version", "integrity", "extra", "missing", "lifecycle"]) {
+  test(`refuses an existing runtime with ${mutation} drift instead of replacing it`, { timeout: testTimeout }, async (t) => {
+    const { options } = await fixture(t)
+    const result = await installer(options)
+    const root = result.runtimePath
+    const receipt = await fs.readFile(join(options.destination, `v${version}`, "runtime.json"))
+    if (mutation === "version") await fs.writeFile(join(root, "node_modules/leaf/package.json"), JSON.stringify({ name: "leaf", version: "1.1.0" }))
+    if (mutation === "integrity") {
+      const path = join(root, "node_modules/.package-lock.json")
+      const value = JSON.parse(await fs.readFile(path, "utf8"))
+      value.packages["node_modules/leaf"].integrity = integrity("other")
+      await fs.writeFile(path, JSON.stringify(value))
+    }
+    if (mutation === "extra") {
+      await fs.mkdir(join(root, "node_modules/extra"))
+      await fs.writeFile(join(root, "node_modules/extra/package.json"), JSON.stringify({ name: "extra", version: "1.0.0" }))
+    }
+    if (mutation === "missing") await fs.rm(join(root, "node_modules/leaf"), { recursive: true })
+    if (mutation === "lifecycle") await fs.writeFile(join(root, "node_modules/leaf/package.json"), JSON.stringify({ name: "leaf", version: "1.0.0", scripts: { install: "fetch more code" } }))
+    await assert.rejects(installer(options), /drift|integrity|Unrecorded|Missing required|lifecycle/)
+    assert.deepEqual(await fs.readFile(join(options.destination, `v${version}`, "runtime.json")), receipt)
+  })
+}

@@ -147,6 +147,7 @@ export async function bootstrapDaemon({
   maximumBytes = defaultMaximumBytes,
   publicationTimeoutMs = defaultPublicationTimeoutMs,
   timeoutMs = defaultBootstrapTimeoutMs,
+  deadline: sharedDeadline,
 }) {
   const plan = bootstrapPlan({ version, baseUrl })
   const pinned = pinnedSha256(expectedSha256)
@@ -154,7 +155,7 @@ export async function bootstrapDaemon({
   validateBootstrapTimeout(publicationTimeoutMs)
   const release = join(destination, `v${plan.version}`)
   const path = join(release, plan.archive)
-  const deadline = bootstrapDeadline(timeoutMs,
+  const deadline = sharedDeadline ?? bootstrapDeadline(timeoutMs,
     `Bootstrap exceeded ${timeoutMs} ms for ${plan.archiveUrl}; inspect ${path} before retrying because publication may have completed`)
   const fetchChunks = download ?? downloadOverHttps
   try {
@@ -187,7 +188,7 @@ export async function bootstrapDaemon({
       release, path, source: archiveChunks(), verify, deadline, timeoutMs: publicationTimeoutMs,
     })
     return { version: plan.version, path, sha256 }
-  } finally { deadline.clear() }
+  } finally { if (!sharedDeadline) deadline.clear() }
 }
 
 const usage = "Usage: node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>\n"
@@ -198,7 +199,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.stderr.write(usage)
     process.exitCode = 1
   } else {
-    const result = await bootstrapDaemon({ version, baseUrl, destination, expectedSha256 })
+    const { installBootstrapDaemon } = await import("./bootstrap-install.mjs")
+    const result = await installBootstrapDaemon({ version, baseUrl, destination, expectedSha256 })
     console.log(JSON.stringify(result, null, 2))
   }
 }
