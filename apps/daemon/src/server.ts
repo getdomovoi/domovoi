@@ -31,6 +31,7 @@ import {
   maximumTerminalOutputChunkCharacters,
   terminalOutputBatchDelayMilliseconds,
   turnSkillSelectionErrorCode,
+  skillInstallErrorCode,
   maximumEmergencyStopFailureMessageLength,
   maximumProviderPromptCodeUnits,
   maximumWorkspaceDeltaChunkLength,
@@ -67,6 +68,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
@@ -155,6 +157,7 @@ import {
   type TerminalService,
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
+import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
@@ -271,12 +274,20 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+function skillInstallAuditDetail(values: Record<string, unknown>): string {
+  const source = values.source && typeof values.source === "object"
+    ? (values.source as Record<string, unknown>).path
+    : undefined
+  return `scope=${String(values.scope ?? "")} sourceDigest=${String(values.sourceDigest ?? "")} source=${String(source ?? "")}`
+}
+
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
   "runtime.models",
   "skill.list",
   "skill.inventory",
   "skill.read",
+  "skill.installPreview",
   "session.history",
   "session.evidence",
   "audit.query",
@@ -1469,6 +1480,9 @@ export class DomovoiDaemon {
       ...(method === "skill.review"
         ? { detail: `decision=${String(values.decision ?? "")} digest=${String(values.contentDigest ?? "")}` }
         : {}),
+      ...(method === "skill.install"
+        ? { detail: skillInstallAuditDetail(values) }
+        : {}),
     })
     this.#pendingAudits.set(socket, pending)
     return true
@@ -1598,7 +1612,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -2887,6 +2901,7 @@ export class DomovoiDaemon {
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "skill.read"
+        || request.method === "skill.installPreview"
         || request.method === "audit.query"
         || request.method === "audit.export"
         || request.method === "fleet.heartbeat"
@@ -4799,6 +4814,67 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse((await catalog.read(params.id)).skill),
+        })
+        return
+      }
+
+      if (method === "skill.installPreview") {
+        const params = paramsResult.data as RpcParams<"skill.installPreview">
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        if (!(catalog instanceof FileSkillCatalog)) {
+          this.#error(socket, request.id, invalidParams, "Skill install is unavailable")
+          return
+        }
+        try {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await catalog.installPreview(params.source)),
+          })
+        } catch (error) {
+          if (!(error instanceof SkillSourceError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+        }
+        return
+      }
+
+      if (method === "skill.install") {
+        const params = paramsResult.data as RpcParams<"skill.install">
+        const actor = this.#authenticatedActors.get(socket)
+        if (!actor || actor.kind !== "client") {
+          this.#error(socket, request.id, invalidParams, "Skill install requires an identified client")
+          return
+        }
+        const project = this.#snapshot.project
+        if (params.scope === "project" && !project) {
+          this.#error(socket, request.id, invalidParams, "Open a project before installing a project skill")
+          return
+        }
+        const catalog = this.#skillCatalogFor(project?.path)
+        if (!(catalog instanceof FileSkillCatalog)) {
+          this.#error(socket, request.id, invalidParams, "Skill install is unavailable")
+          return
+        }
+        let installed
+        try {
+          installed = await catalog.install(params)
+        } catch (error) {
+          if (error instanceof SkillInstallError) {
+            this.#error(socket, request.id, skillInstallErrorCode, error.message, error.refusal)
+            return
+          }
+          if (!(error instanceof SkillSourceError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        this.#amendPendingAudit(socket, request.id, {
+          target: installed.id,
+          detail: `${skillInstallAuditDetail(params)} digest=${installed.contentDigest} path=${installed.path}`,
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(installed),
         })
         return
       }
