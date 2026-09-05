@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
@@ -303,7 +304,7 @@ describe("OpenCodeSdkAdapter", () => {
         metadata: { command: "pnpm test" },
       },
     })
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({
       type: "approval-requested",
       requestId: 1,
       threadId,
@@ -311,7 +312,7 @@ describe("OpenCodeSdkAdapter", () => {
       command: "pnpm test",
     })))
     adapter.resolveApproval(1, "always-project")
-    await vi.waitFor(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
       expect.objectContaining({
         path: { id: threadId, permissionID: "permission-1" },
         body: { response: "once" },
@@ -345,7 +346,7 @@ describe("OpenCodeSdkAdapter", () => {
       },
     })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await vi.waitFor(() => expect(event).toHaveBeenCalledWith({
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
       type: "turn-completed",
       params: {
         threadId,
@@ -392,7 +393,7 @@ describe("OpenCodeSdkAdapter", () => {
     })
 
     stream.close()
-    await vi.waitFor(() => expect(events).toContainEqual({
+    await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: {
         threadId,
@@ -415,7 +416,7 @@ describe("OpenCodeSdkAdapter", () => {
       runtime: runtime("build"),
     })).resolves.toBe("turn-2")
     reopened.emit({ type: "session.idle", properties: { sessionID: threadId } })
-    await vi.waitFor(() => expect(events).toContainEqual({
+    await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: { threadId, turnId: "turn-2", turn: { id: "turn-2", status: "completed" } },
     }))
@@ -455,7 +456,7 @@ describe("OpenCodeSdkAdapter", () => {
       cwd: "/worktree",
       runtime: runtime("build"),
     })
-    await vi.waitFor(() => expect(client.session.get).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(client.session.get).toHaveBeenCalledOnce())
 
     await adapter.stopThread("open-session")
     resolveSession!({ data: { id: "open-session" } })
@@ -525,7 +526,7 @@ describe("KiloSdkAdapter", () => {
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Run tests", runtime: kiloRuntime })
 
     stream.close()
-    await vi.waitFor(() => expect(events).toContainEqual({
+    await waitForDaemon(() => expect(events).toContainEqual({
       type: "provider-disconnected",
       reason: "Kilo event stream connection closed",
     }))

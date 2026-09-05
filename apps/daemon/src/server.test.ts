@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { access, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
@@ -540,12 +541,12 @@ describe("DomovoiDaemon", () => {
     for (const listener of listeners) {
       listener({ type: "text-delta", threadId: "thread-streaming", turnId, delta: "hello from A" })
     }
-    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.delta" }),
     ])))
     releasePersist()
     await pendingOther
-    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
     ])))
 
@@ -645,7 +646,7 @@ describe("DomovoiDaemon", () => {
       mimeType: "text/markdown",
       content: "# Review plan",
     })
-    await vi.waitFor(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: session.id, path: "design-studio/variant-a.html", type: "preview", revision: 1, variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 } }),
       expect.objectContaining({ sessionId: session.id, path: "plans/review-plan.md", type: "plan", content: "# Review plan", revision: 1 }),
     ])))
@@ -657,7 +658,7 @@ describe("DomovoiDaemon", () => {
       mimeType: "text/html",
       variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 },
     })
-    await vi.waitFor(() => expect(store.snapshot.artifacts.find(
+    await waitForDaemon(() => expect(store.snapshot.artifacts.find(
       (artifact) => artifact.path === "design-studio/variant-a.html",
     )?.revision).toBe(2))
     await new Promise<void>((resolve) => setImmediate(resolve))
@@ -1048,7 +1049,7 @@ describe("DomovoiDaemon", () => {
       delta: "still delivered",
     })
 
-    await vi.waitFor(() => expect(store.snapshot.thread).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(store.snapshot.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "assistant", body: "still delivered" }),
     ])))
     expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
@@ -1319,7 +1320,7 @@ describe("DomovoiDaemon", () => {
       method: "session.evidence",
       params: { sessionId: session.id },
     }))
-    await vi.waitFor(() => expect(evidence).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(evidence).toHaveBeenCalledOnce())
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
@@ -2128,7 +2129,7 @@ describe("DomovoiDaemon", () => {
       prompt: "Begin the work",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledOnce())
     for (const listener of listeners) {
       listener({ type: "provider-disconnected", reason: "transport lost during turn/start" })
     }
@@ -2218,7 +2219,7 @@ describe("DomovoiDaemon", () => {
     }
 
     const models = rpc("runtime.models", { provider: "codex", client: "desktop" })
-    await vi.waitFor(() => expect(agent.connect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.connect).toHaveBeenCalledOnce())
     for (const listener of listeners) {
       listener({ type: "provider-disconnected", reason: "lost during initialization" })
     }
@@ -2405,7 +2406,7 @@ describe("DomovoiDaemon", () => {
       },
     })
 
-    await vi.waitFor(() => expect(changes).toHaveLength(1))
+    await waitForDaemon(() => expect(changes).toHaveLength(1))
     expect(changes[0]).toMatchObject({
       thread: expect.arrayContaining([
         expect.objectContaining({
@@ -3853,7 +3854,8 @@ describe("DomovoiDaemon", () => {
       result: { machine: { id: expect.any(String) } },
     })
     socket.close()
-  })
+    // Real key generation and listener startup need their own Windows budget.
+  }, 90_000)
 
   async function unauthenticatedSocket(daemon: DomovoiDaemon) {
     const address = daemon.address!
@@ -4601,7 +4603,7 @@ describe("DomovoiDaemon", () => {
       method: "project.open",
       params: { path: "/blocked", client: "desktop" },
     }))
-    await vi.waitFor(() => expect(workspaceService.inspect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(workspaceService.inspect).toHaveBeenCalledOnce())
 
     const unauthenticated = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
@@ -4969,7 +4971,7 @@ describe("DomovoiDaemon", () => {
       prompt: "Block this session",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "thread-first",
     })))
     const queuedSameSession = rpc("session.send", {
@@ -5391,7 +5393,7 @@ describe("DomovoiDaemon", () => {
       enabled: false,
     })
     expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
-    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         method: "workspace.changed",
         params: expect.objectContaining({
@@ -5579,7 +5581,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
@@ -5627,7 +5629,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
@@ -5953,7 +5955,7 @@ describe("DomovoiDaemon", () => {
       command: "pnpm   test",
       cwd: workspacePath,
     })
-    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(41, "allow-once"))
+    await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(41, "allow-once"))
     await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
     listener!({
       type: "approval-requested",
@@ -6889,7 +6891,7 @@ describe("DomovoiDaemon", () => {
     })
 
     const timedOut = rpc(1)
-    await vi.waitFor(() => expect(agent.resetConnection).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.resetConnection).toHaveBeenCalledOnce())
     expect(agent.close).not.toHaveBeenCalled()
     await expect(timedOut).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
     expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
@@ -7383,7 +7385,7 @@ describe("DomovoiDaemon", () => {
         reason: "Build the project",
       })
     }
-    await vi.waitFor(async () => {
+    await waitForDaemon(async () => {
       const current = await rpc("workspace.get", {})
       expect((current.result as { approvals: unknown[] }).approvals).toHaveLength(1)
     })
@@ -7582,7 +7584,7 @@ describe("DomovoiDaemon", () => {
         reason: "Build the project",
       })
     }
-    await vi.waitFor(async () => {
+    await waitForDaemon(async () => {
       const current = await rpc("workspace.get", {})
       expect((current.result as { approvals: unknown[] }).approvals).toHaveLength(1)
     })
@@ -7771,7 +7773,7 @@ describe("DomovoiDaemon", () => {
     ])
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledOnce()
     resolveTimedOutThread!("provider-thread-after-timeout")
-    await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith(
+    await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledWith(
       "provider-thread-after-timeout",
     ))
 
@@ -7861,10 +7863,10 @@ describe("DomovoiDaemon", () => {
         delta: "\n3. Verify the next turn.",
       })
     }
-    await vi.waitFor(() => expect(notifications.filter(
+    await waitForDaemon(() => expect(notifications.filter(
       (notification) => notification.method === "workspace.delta",
     )).toHaveLength(4))
-    await vi.waitFor(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
+    await waitForDaemon(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
     expect(notifications).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
     ]))
@@ -8046,7 +8048,7 @@ describe("DomovoiDaemon", () => {
       prompt: "Continue after project switch",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledTimes(2))
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledTimes(2))
     const reopening = rpc("project.open", { path: "/code/domovoi/.", client: "desktop" })
     expect(agent.stopThread).not.toHaveBeenCalledWith("provider-thread-1")
     resolveLateTurn!("late-turn")
@@ -8315,7 +8317,7 @@ describe("DomovoiDaemon", () => {
       error: { code: -32603, message: "Provider restart timed out" },
     })
     resolveLateRestart!("late-restart-thread")
-    await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith("late-restart-thread"))
+    await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledWith("late-restart-thread"))
     expect((await rpc("workspace.get", {}) as { result: { sessions: Array<{ id: string; providerThreadId?: string }> } })
       .result.sessions.find(({ id }) => id === steeringSessionId)).not.toHaveProperty("providerThreadId")
     socket.close()
@@ -10300,7 +10302,7 @@ describe("DomovoiDaemon", () => {
     }))
 
     try {
-      await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith("thread-billing"))
+      await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledWith("thread-billing"))
       expect(changes).toEqual(expect.arrayContaining([
         expect.objectContaining({
           method: "workspace.changed",
@@ -12105,7 +12107,7 @@ describe("DomovoiDaemon persistence refusal", () => {
     // Denied rather than allowed, and denied rather than left as a card that
     // approval.resolve would itself refuse. Agent events are queued, so the
     // decision lands on a later tick.
-    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
+    await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(91, "allow-once")
     expect(auditAppend).toHaveBeenCalledWith(expect.objectContaining({
       action: "provider.approval-requested",
