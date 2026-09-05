@@ -16,6 +16,10 @@ function malformedCredential(path: string): Error {
 }
 
 async function readDaemonToken(path: string, deadline: OperationDeadline): Promise<string> {
+  deadline.throwIfExpired()
+  // Tighten legacy file permissions even when its bytes will be refused.
+  // A partially written secret still belongs only to its owner.
+  if (process.platform !== "win32") await chmod(path, 0o600)
   for (let attempt = 0; attempt < credentialReadAttempts; attempt += 1) {
     deadline.throwIfExpired()
     const token = (await readFile(path, { encoding: "utf8", signal: deadline.signal })).trim()
@@ -78,8 +82,6 @@ export async function loadOrCreateDaemonToken(path: string, parent?: OperationDe
         }
         token = await readDaemonToken(path, deadline)
       }
-      deadline.throwIfExpired()
-      if (process.platform !== "win32") await chmod(path, 0o600)
       deadline.throwIfExpired()
     } catch (error) { failure = error; failed = true }
     finally {

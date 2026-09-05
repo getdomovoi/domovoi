@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { link, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -88,12 +88,13 @@ it("refuses unsupported complete-file publication rather than copying to the fin
 for (const contents of ["", "invalid-private-credential\n"]) {
   it(`names an offline quarantine path without replacing ${contents ? "malformed" : "empty"} legacy bytes`, async () => {
     const { path } = await setup()
-    await writeFile(path, contents, { mode: 0o600 })
+    await writeFile(path, contents, { mode: 0o644 })
     await expect(loadOrCreateDaemonToken(path)).rejects.toMatchObject({
       message: expect.stringContaining(path),
     })
     await expect(loadOrCreateDaemonToken(path)).rejects.toThrow(/quarantine/i)
     await expect(readFile(path, "utf8")).resolves.toBe(contents)
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600)
   })
 }
 
