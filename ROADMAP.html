@@ -544,9 +544,11 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Define the skill inventory contract and comparison model without distributing executables
 </li>
-<li>[x] Fetch inventories from every reachable fleet member and compare them
+<li>[ ] Fetch inventories from every reachable fleet member and compare them
 <ul>
-<li>The skills surface dials each paired machine that reports the skills capability and asks for its inventory. Metadata only: no skill file crosses a machine boundary.
+<li>The fan-out exists and is unit tested. <code>collectFleetInventories</code> in <code>packages/ui/src/fleet-inventories.ts</code> selects the paired machines that report the skills capability, dials each one, and reports <code>unreachable</code> or <code>unknown</code> rather than dropping a machine that does not answer. Metadata only stays the contract: no skill file crosses a machine boundary.
+</li>
+<li>Production never calls it. <code>packages/ui/src/workspace-shell.tsx</code> sets a single local source, because asking a fleet member for its inventory is a client dial with a client credential that no remote machine grants until client admission lands, so the comparison covers this machine rather than guessing at the others. Close with client admission, then a comparison across two real daemons.
 </li>
 </ul>
 </li>
@@ -698,7 +700,7 @@ td { color: var(--ink2); }
 <ul>
 <li>[ ] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
 <ul>
-<li>The schemas, <code>machine.json</code> identity, and local facts exist, and since #244 the daemon keeps one authenticated socket per remote row with a fifteen-second heartbeat. Desktop uses a different fallback identity and an existing <code>state.sqlite</code> can override <code>machine.json</code> and current facts. Close with one production daemon factory plus startup reconciliation and restart tests.
+<li>The schemas, <code>machine.json</code> identity, and local facts exist, and since #244 the daemon keeps one authenticated socket per remote row with a fifteen-second heartbeat. One production factory now serves both entry points: Desktop reaches a daemon only through <code>acquireLocalDaemon</code>, which builds the same runtime from the same <code>machine.json</code>, so no separate Desktop fallback identity remains. Startup reconciliation refuses to start when the stored workspace names a different machine, and on a match it replaces the stored name, platform, architecture, and version with this executable's current facts while keeping provider readiness. Close with a production-boundary restart over one real profile that asserts those refreshed facts.
 </li>
 </ul>
 </li>
@@ -784,13 +786,15 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a launchd agent, and a Windows logon task
 <ul>
-<li>Unit and task generators plus <code>service install</code>, <code>status</code>, and <code>remove</code> exist, and nothing is written to a system-wide location. Nondefault listener and TLS configuration is lost, Desktop contends for the same port instead of consuming the service, Windows lacks crash restart, and CI never invokes a real manager.
+<li>Unit and task generators plus <code>service install</code>, <code>status</code>, and <code>remove</code> exist, and nothing is written to a system-wide location. Since #256 installation records the validated non-secret settings in <code>~/.domovoi/service.json</code> and replays them as the supervised environment: host, port, credential and identity paths, TLS material, advertised and tailnet hosts, SSH forwards, allowed origins, and the remote-transport opt-in. It refuses to retain <code>DOMOVOI_AUTH_TOKEN</code> rather than silently changing authority. Since #261 Desktop no longer contends for the port: it attaches to the verified local owner, and it refuses to start a fallback daemon at all when a service configuration is present.
+</li>
+<li>The Windows logon task still has no crash restart, where the systemd unit has <code>Restart=on-failure</code> and the launchd agent has <code>KeepAlive</code>. CI reaches a real manager only on the Windows runner, where <code>apps/daemon/src/service/windows-task.native.test.ts</code> registers, stops, and removes a real scheduled task under a throwaway name. No test invokes a real systemd or launchd.
 </li>
 </ul>
 </li>
 <li>[ ] Implement WSL discovery and a <code>domovoi open .</code> Windows interop shim
 <ul>
-<li>Discovery, endpoint, and <code>domovoid open</code> helpers exist and unit tests stub <code>wsl.exe</code>. No real Windows-to-WSL test exists, no <code>domovoi</code> alias exists, and WSL is not a fleet candidate.
+<li>Since #262 <code>domovoid wsl list</code> discovers each distribution and whether a daemon answers there, the daemon reports its own WSL facts on its machine descriptor, and <code>domovoid open</code> places a Windows path inside the distro through its own <code>wslpath</code>. A real Windows-to-WSL test now exists: <code>apps/daemon/src/wsl-windows.test.ts</code> drives the installed <code>wsl.exe</code> for listing, discovery, an absent distribution, and a path round trip, and it skips by name off Windows or on a Windows machine without <code>wsl.exe</code>, so it proves the boundary only where WSL is installed. No <code>domovoi</code> alias exists, and WSL is still neither a transport nor a fleet candidate: nothing but the CLI and <code>domovoid open</code> consumes the discovery.
 </li>
 </ul>
 </li>
