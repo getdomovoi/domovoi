@@ -272,16 +272,23 @@ describe("serviceRemovalPlan", () => {
   })
 
   it("boots the launch agent out by label", () => {
-    expect(serviceRemovalPlan({ platform: "darwin", home: "/Users/dl", uid: 501 }).commands).toEqual([
+    expect(serviceRemovalPlan({ platform: "darwin", home: "/Users/dl", uid: 501 })).toMatchObject({ commands: [
       { command: "launchctl", args: ["bootout", "gui/501/sh.domovoi.domovoid"] },
-    ])
+    ] })
   })
 
-  it("deletes the Windows logon task", () => {
-    expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
-      kind: "task",
-      commands: [{ command: "schtasks", args: ["/delete", "/tn", "Domovoi daemon", "/f"] }],
-    })
+  it("requires a Windows task stop and observation before removal", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows")
+    try {
+      const command = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
+        kind: "task",
+        name: "Domovoi daemon",
+        stop: { command, args: expect.any(Array) },
+        inspect: { command, args: expect.any(Array) },
+        remove: { command, args: expect.any(Array) },
+      })
+    } finally { vi.unstubAllEnvs() }
   })
 })
 
