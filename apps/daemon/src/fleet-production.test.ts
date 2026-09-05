@@ -1,127 +1,17 @@
-import { execFile } from "node:child_process"
-import { once } from "node:events"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { DatabaseSync } from "node:sqlite"
-import { promisify } from "node:util"
 
 import {
-  daemonAuthenticationErrorCode, devicePairResultSchema, fleetEnrollResultSchema,
+  daemonAuthenticationErrorCode, devicePairResultSchema,
   fleetSnapshotSchema, fleetSnapshotOverflowSchema, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, rpcMethods, workspaceSnapshotSchema,
-  type FleetSnapshot, type RpcMethod, type RpcParams,
 } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { WebSocket } from "ws"
 
-import type { AgentAdapter } from "./agents.js"
-import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
-import { SqliteFleetRegistry } from "./fleet-registry.js"
-import { createProductionDaemonWithDependencies, productionDaemonDependencies, type ProductionDaemonHandle } from "./production-daemon.js"
-import { DomovoiDaemon } from "./server.js"
-import { removeScratchDirectories } from "./test-scratch.js"
+import { machineCredentialDigest } from "./machine-credentials.js"
+import { fleetProductionHarness, git, persistedRegistry, remote, sessionAgent } from "./test-fleet-production.js"
 
-const exec = promisify(execFile)
-const roots: string[] = []
-const daemons: ProductionDaemonHandle[] = []
-const sockets: WebSocket[] = []
-afterEach(async () => {
-  for (const socket of sockets.splice(0)) socket.terminate()
-  for (const daemon of daemons.splice(0)) await daemon.stop()
-  await removeScratchDirectories(roots.splice(0))
-})
-
-async function scratch() {
-  const path = await mkdtemp(join(tmpdir(), "domovoi-fleet-production-"))
-  roots.push(path)
-  return path
-}
-
-// Only external platform/provider dependencies are substituted. Identity,
-// SQLite, Git, enrollment, timers, routing and every RPC use production code.
-async function machine(label: string, agent?: AgentAdapter) {
-  const homeDirectory = await scratch()
-  const values = new Map<string, string>()
-  const credentials = new MachineCredentialStore({
-    get: (id) => values.get(id), set: (id, value) => { values.set(id, value) }, delete: (id) => values.delete(id),
-  })
-  const start = async (port = 0, advertisedHost?: string) => {
-    const handle = await createProductionDaemonWithDependencies({ environment: {}, homeDirectory, machineLabel: label }, {
-      ...productionDaemonDependencies,
-      createProviderProbe: () => ({ inspect: async () => [] }),
-      createMachineCredentials: () => credentials,
-      createDaemon: (options) => new DomovoiDaemon({
-        ...options, port, fleetHeartbeatIntervalMs: 50, fleetOperationTimeoutMs: 2_000,
-        ...(advertisedHost ? { advertiseHost: advertisedHost } : {}),
-        ...(agent ? { agents: { "claude-code": agent } } : {}),
-      }),
-    })
-    daemons.push(handle)
-    const address = await handle.start()
-    const root = await connect(address.url)
-    const workspace = workspaceSnapshotSchema.parse(await root.ok("system.hello", {
-      client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: handle.authToken,
-    }))
-    return { handle, root, address, id: workspace.machine.id }
-  }
-  return { start, homeDirectory, credentials, ...await start() }
-}
-
-async function connect(url: string) {
-  const socket = new WebSocket(url, { handshakeTimeout: 2_000 })
-  sockets.push(socket)
-  await once(socket, "open")
-  const notifications: Array<{ method: string; params: unknown }> = []
-  socket.on("message", (bytes) => {
-    const message = JSON.parse(bytes.toString()) as { id?: number; method: string; params: unknown }
-    if (message.id === undefined) notifications.push(message)
-  })
-  let nextId = 0
-  async function call<M extends RpcMethod>(method: M, params: RpcParams<M>) {
-    const id = ++nextId
-    return new Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }>((resolve, reject) => {
-      const cleanup = () => { clearTimeout(timer); socket.off("message", receive); socket.off("close", closed) }
-      const closed = () => { cleanup(); reject(new Error(`Socket closed during ${method}`)) }
-      const timer = setTimeout(() => { cleanup(); reject(new Error(`RPC test deadline: ${method}`)) }, 10_000)
-      const receive = (bytes: WebSocket.RawData) => {
-        const response = JSON.parse(bytes.toString()) as { id?: number; result?: unknown; error?: { code: number; message: string } }
-        if (response.id === id) { cleanup(); resolve(response) }
-      }
-      socket.on("message", receive)
-      socket.once("close", closed)
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
-    })
-  }
-  return {
-    socket, call, notifications,
-    async ok<M extends RpcMethod>(method: M, params: RpcParams<M>) {
-      const response = await call(method, params)
-      expect(response.error, `RPC ${method}`).toBeUndefined()
-      return rpcMethods[method].result.parse(response.result)
-    },
-  }
-}
-
-async function enroll(source: Awaited<ReturnType<typeof machine>>, target: Awaited<ReturnType<typeof machine>>) {
-  const issued = await target.root.ok("device.issueCode", {}) as { code: string }
-  const result = fleetEnrollResultSchema.parse(await source.root.ok("fleet.enroll", {
-    endpoint: target.address.url, code: issued.code, sourceDeviceLabel: "source studio", expectedMachineId: target.id, client: "cli",
-  }))
-  expect(result.outcome).toBe("enrolled")
-  return result
-}
-
-function remote(fleet: FleetSnapshot, id: string) {
-  const row = fleet.entries.find((entry) => entry.kind === "machine" && entry.machine.id === id)
-  if (row?.kind !== "machine") throw new Error("The enrolled machine has no row")
-  return row.machine
-}
-
-function persistedRegistry<T>(homeDirectory: string, use: (registry: SqliteFleetRegistry) => T): T {
-  const database = new DatabaseSync(join(homeDirectory, ".domovoi", "state.sqlite"))
-  try { return use(new SqliteFleetRegistry(database)) }
-  finally { database.close() }
-}
+const { cleanup, scratch, repository, connect, machine, enroll } = fleetProductionHarness()
+afterEach(cleanup)
 
 describe("production fleet assembly", () => {
   it("explicitly refuses all rows on legacy index overflow, including the omitted count and a local recovery command", async () => {
@@ -193,7 +83,7 @@ describe("production fleet assembly", () => {
     const identityPath = join(target.homeDirectory, ".domovoi", "machine.json")
     const identity = JSON.parse(await readFile(identityPath, "utf8")) as { id: string; label: string }
     await writeFile(identityPath, JSON.stringify({ ...identity, label: "target renamed" }))
-    const restarted = await target.start(target.address.port)
+    const restarted = await target.start({ port: target.address.port })
     const selfFacts = remote(fleetSnapshotSchema.parse(await restarted.root.ok("fleet.list", {})), target.id)
     await vi.waitFor(async () => {
       const refreshed = remote(fleetSnapshotSchema.parse(await source.root.ok("fleet.list", {})), target.id)
@@ -210,31 +100,14 @@ describe("production fleet assembly", () => {
   })
 
   it.each(["normal", "overflow", "forgetting"] as const)("checks real transfer eligibility independently of fleet display: %s", async (scenario) => {
-    const agent: AgentAdapter = {
-      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
-      connect: async () => {}, close: async () => {},
-      listModels: async () => [{ provider: "claude-code", id: "claude-opus-5", displayName: "Opus 5", description: "Test provider boundary", isDefault: true,
-        supportedReasoningEfforts: ["high"], defaultReasoningEffort: "high" }],
-      startThread: async () => "provider-thread", stopThread: async () => {}, resumeThread: async () => {},
-      startTurn: async () => "turn", steerTurn: async () => {}, interruptTurn: async () => {}, resolveApproval: () => {}, onEvent: () => () => {},
-    }
-    const source = await machine("source studio", agent)
+    const source = await machine("source studio", sessionAgent)
     const target = await machine("target studio")
-    const repository = join(await scratch(), "source")
-    await mkdir(repository)
-    const git = (cwd: string, args: string[]) => exec("git", args, { cwd, timeout: 10_000 })
-    await git(repository, ["init", "-b", "main"])
-    await git(repository, ["config", "user.name", "Domovoi Test"])
-    await git(repository, ["config", "user.email", "test@example.invalid"])
-    await git(repository, ["config", "core.autocrlf", "false"])
-    await writeFile(join(repository, "README.md"), "initial\n")
-    await git(repository, ["add", "README.md"])
-    await git(repository, ["commit", "-m", "initial"])
+    const sourceRepository = await repository("source")
     const targetRepository = join(await scratch(), "target")
-    await git(repository, ["clone", "--no-local", repository, targetRepository])
+    await git(sourceRepository, ["clone", "--no-local", sourceRepository, targetRepository])
     await git(targetRepository, ["config", "core.autocrlf", "false"])
     await target.root.ok("project.open", { path: targetRepository, client: "cli" })
-    await source.root.ok("project.open", { path: repository, client: "cli" })
+    await source.root.ok("project.open", { path: sourceRepository, client: "cli" })
     const created = workspaceSnapshotSchema.parse(await source.root.ok("session.create", {
       title: "Fleet assembly session", client: "cli", runtime: { provider: "claude-code", model: "claude-opus-5", reasoning: "high", permissionMode: "build", auto: true },
     }))
