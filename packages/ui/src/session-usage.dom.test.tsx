@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it } from "vitest"
 
-import type { SessionUsage } from "@getdomovoi/protocol"
+import type { SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 
 import { AppBar, SessionUsageFooter, SessionUsageSummary } from "./workspace-shell.js"
 
@@ -95,6 +95,48 @@ it("leaves the app bar readout out until a session reports usage", () => {
   render(<AppBar {...appBarProps()} usage={null} />)
 
   expect(screen.queryByRole("button", { name: /tokens/u })).toBeNull()
+})
+
+function usageToday(overrides: Partial<UsageWindow> = {}): UsageWindow {
+  return {
+    sessions: 2,
+    turns: 3,
+    inputTokens: 900,
+    cachedInputTokens: 100,
+    outputTokens: 300,
+    reasoningTokens: 0,
+    totalTokens: 1200,
+    costMicros: 4_180_000,
+    currency: "USD",
+    reportedCostTurns: 3,
+    unavailableCostTurns: 0,
+    ...overrides,
+  }
+}
+
+it("reads the day's cost across sessions out in the app bar", () => {
+  render(<AppBar {...appBarProps()} usageToday={usageToday()} />)
+
+  const readout = screen.getByRole("status", { name: "Usage today" })
+  expect(readout.textContent).toBe("$4.18 today")
+  expect(readout.getAttribute("title")).toBe("1.2k tokens across 3 turns in 2 sessions today.")
+})
+
+it("falls back to tokens when no provider reported a cost today", () => {
+  render(<AppBar {...appBarProps()} usageToday={usageToday({ reportedCostTurns: 0, unavailableCostTurns: 3, costMicros: 0, currency: undefined })} />)
+
+  const readout = screen.getByRole("status", { name: "Usage today" })
+  expect(readout.textContent).toBe("1.2k tokens today")
+  expect(readout.textContent).not.toContain("$")
+})
+
+it("leaves the today readout out until a turn is recorded today", () => {
+  const { unmount } = render(<AppBar {...appBarProps()} usageToday={null} />)
+  expect(screen.queryByRole("status", { name: "Usage today" })).toBeNull()
+  unmount()
+
+  render(<AppBar {...appBarProps()} usageToday={usageToday({ sessions: 0, turns: 0, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costMicros: 0, currency: undefined, reportedCostTurns: 0 })} />)
+  expect(screen.queryByRole("status", { name: "Usage today" })).toBeNull()
 })
 
 it("puts cost and context in the inspector footer", () => {

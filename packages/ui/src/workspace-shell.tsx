@@ -55,6 +55,7 @@ import type {
   SessionTransferPreview,
   SessionTransferPreviewParams,
   SessionUsage,
+  UsageWindow,
   TurnSkillSelection,
   TurnSkillSelectionRefusal,
   SystemEmergencyStopResult,
@@ -174,6 +175,10 @@ import {
   sessionUsageCostNote,
   sessionUsageFetchKey,
   sessionUsageReportedCost,
+  usageTodayDetail,
+  usageTodayReadout,
+  usageTodayWindow,
+  usageWindowFetchKey,
 } from "./session-usage"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
@@ -455,6 +460,7 @@ export function AppBar({
   onOpenCommands,
   commandShortcut,
   usage,
+  usageToday,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -468,6 +474,7 @@ export function AppBar({
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
   usage?: SessionUsage | null | undefined
+  usageToday?: UsageWindow | null | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
@@ -528,9 +535,26 @@ export function AppBar({
             {emergencyStopMessage}
           </span>
         ) : null}
+        <UsageTodayReadout usage={usageToday ?? null} />
       </div>
       {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
+  )
+}
+
+export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
+  const readout = usage ? usageTodayReadout(usage) : undefined
+  if (!usage || !readout) return null
+  const detail = usageTodayDetail(usage)
+  return (
+    <span
+      role="status"
+      aria-label="Usage today"
+      className="font-machine text-[10.5px] text-faint"
+      {...(detail ? { title: detail } : {})}
+    >
+      {readout}
+    </span>
   )
 }
 
@@ -3281,6 +3305,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     reviewSkill,
     sendMessage,
     sessionUsage,
+    usageWindow,
     setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
@@ -3424,6 +3449,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
+  const [usageToday, setUsageToday] = useState<UsageWindow | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
   const openDockTab = (next: string) => {
     setDockTab(next)
@@ -3616,6 +3642,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   })
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
+  const usageWindowKey = usageWindowFetchKey(snapshot)
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
@@ -3645,6 +3672,20 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
     return () => { active = false }
   }, [connected, sessionUsage, usageFetchKey, usageSessionId])
+
+  useEffect(() => {
+    if (!connected || !usageWindowKey) {
+      setUsageToday(null)
+      return
+    }
+    let active = true
+    void usageWindow(usageTodayWindow(new Date())).then((next) => {
+      if (active) setUsageToday(next)
+    }, () => {
+      if (active) setUsageToday(null)
+    })
+    return () => { active = false }
+  }, [connected, usageWindow, usageWindowKey])
 
   useEffect(() => {
     if (!firstRunEnabled || !snapshot) return
@@ -3831,7 +3872,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
