@@ -32,6 +32,7 @@ import {
   terminalOutputBatchDelayMilliseconds,
   turnSkillSelectionErrorCode,
   maximumEmergencyStopFailureMessageLength,
+  maximumProviderPromptCodeUnits,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
@@ -39,6 +40,7 @@ import {
   sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
+  type ProtocolMismatch,
   rpcMethods,
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
@@ -144,6 +146,7 @@ import {
 import {
   composeProviderPrompt,
   PromptCompositionLimitError,
+  validateProviderPromptBudget,
 } from "./prompt-composer.js"
 import { TurnSkillSelectionError } from "./skill-context.js"
 import {
@@ -153,6 +156,7 @@ import {
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
 import type { SkillReviews } from "./skill-reviews.js"
+import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -754,6 +758,7 @@ export type DaemonServerOptions = {
   worktreeRoot?: string
   agentTimeoutMs?: number
   auditReadTimeoutMs?: number
+  providerPromptBudgetCodeUnits?: number
   modelCacheTtlMs?: number
   authToken?: string
   allowRemoteTransport?: boolean
@@ -765,6 +770,7 @@ export type DaemonServerOptions = {
   usageLedger?: DaemonUsageLedger
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
+  skillTrustPath?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
@@ -859,6 +865,7 @@ export class DomovoiDaemon {
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
+  #providerPromptBudgetCodeUnits: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #authToken: string
@@ -885,6 +892,7 @@ export class DomovoiDaemon {
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
+  #skillTrustPath: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
@@ -927,6 +935,9 @@ export class DomovoiDaemon {
     // budget, validated before any workspace state or providers are opened.
     this.#auditReadTimeoutMs = options.auditReadTimeoutMs ?? 30_000
     validateOperationDeadlineBudget(this.#auditReadTimeoutMs)
+    this.#providerPromptBudgetCodeUnits = options.providerPromptBudgetCodeUnits
+      ?? maximumProviderPromptCodeUnits
+    validateProviderPromptBudget(this.#providerPromptBudgetCodeUnits)
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
@@ -1076,6 +1087,7 @@ export class DomovoiDaemon {
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
+    this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath(homedir())
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -1586,7 +1598,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -2893,7 +2905,10 @@ export class DomovoiDaemon {
     if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
       this.#fileSkillCatalog = {
         projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews),
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews, {
+          trustPath: this.#skillTrustPath,
+          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+        }),
       }
     }
     return this.#fileSkillCatalog.catalog
@@ -3203,6 +3218,7 @@ export class DomovoiDaemon {
           request.id,
           protocolVersionMismatchErrorCode,
           protocolMismatchRefusal(this.#advertisedProtocolVersion, clientProtocol),
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: clientProtocol, compatibility },
         )
         return
       }
@@ -3261,11 +3277,13 @@ export class DomovoiDaemon {
       // The one method a machine may reach before it has a credential, because
       // presenting the pairing code is how it gets one. It grants nothing else.
       const params = paramsResult.data as RpcParams<"device.claim">
-      if (protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion) !== "compatible") {
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
         // The wire must be compatible before spending a short-lived code or a
         // guessing attempt. No credential exists until the claim succeeds.
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
-          "Update both daemons to the same protocol before pairing")
+          "Update both daemons to the same protocol before pairing",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
         return
       }
       if (!this.#pairing) {
@@ -6072,6 +6090,7 @@ export class DomovoiDaemon {
             snapshot: this.#snapshot,
             sessionId: session.id,
             userPrompt: params.prompt,
+            budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,

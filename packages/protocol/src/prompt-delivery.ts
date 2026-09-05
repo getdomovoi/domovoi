@@ -5,6 +5,7 @@ import {
   skillContentDigestSchema,
   skillIdSchema,
   skillSummarySchema,
+  skillTrustSchema,
 } from "./skills.js"
 
 /**
@@ -83,6 +84,7 @@ export const deliveredPromptSkillSchema = z.object({
   name: skillSummarySchema.shape.name,
   contentDigest: skillContentDigestSchema,
   contentTruncated: z.boolean(),
+  trust: skillTrustSchema.optional(),
 }).strict()
 
 const omittedPromptSkillIdsSchema = z.array(skillIdSchema)

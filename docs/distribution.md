@@ -116,7 +116,7 @@ each chunk reaches disk before the next read.
 
 One five-minute deadline starts before the npm version probe and covers connection setup,
 redirects, body reads, staging, fsync, extraction, npm installation, the native build, graph
-verification, receipt publication, and cleanup. Archive publication gets at most 30 seconds and
+verification, and receipt publication. Archive publication gets at most 30 seconds and
 only the remainder of that original budget. Embedded calls
 can set initial budgets with positive integer `timeoutMs` and `publicationTimeoutMs`;
 redirects, trickling bodies, and phase changes never renew the total. Fetch receives the same abort
@@ -125,8 +125,11 @@ notifications do not wait beyond expiry for an uncooperative transport to finish
 A timed-out filesystem request may still complete at the OS. The error therefore says to inspect
 the destination before retrying, not that no file was written. npm receives the abort signal and
 its process is killed on expiry; a toolchain child may outlive it, but cannot cause a later
-bootstrap step or receipt publication. No additional cleanup budget is granted after expiry;
-the current private staging directory may remain and is named when known.
+bootstrap step or receipt publication. Removing the current unpublished `.runtime-*` staging,
+including its `node_modules` and `.npm-cache`, runs after any failure or expiry under its own
+fresh 30-second budget, never the exhausted one, so retries do not accumulate staging trees.
+Embedded calls can set it with `cleanupTimeoutMs`. A removal that outlives that budget is not
+awaited further; the error names the retained directory.
 File flush is not a guarantee of directory-entry durability across a power loss.
 
 Cleanup removes only the current invocation's unpublished staging, never the published archive,
@@ -157,10 +160,14 @@ refuse publication rather than choosing substitute dependencies.
 
 ### Verified bootstrap download
 
-`node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` downloads
-an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256 supplied by the
-caller must agree with the downloaded bytes. This remains a downloader, not an installer: it does
-not unpack the archive, resolve dependencies, configure PATH, or install a service.
+The download phase of the CLI above is exported separately as `bootstrapDaemon` from
+`scripts/bootstrap-download.mjs`, re-exported by `scripts/bootstrap-daemon.mjs` for embedding
+callers. It takes the same `version`, `baseUrl`, `destination`, and `expectedSha256` inputs and
+downloads an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256
+supplied by the caller must agree with the downloaded bytes. On its own it is a downloader, not an
+installer: it does not unpack the archive, resolve dependencies, configure PATH, or install a
+service. The CLI continues from its result into the private `.runtime-*` installation described
+under Verified bootstrap installation.
 
 Each invocation streams the archive into a unique private `.bootstrap-*` directory beside the
 destination, hashing and enforcing the byte ceiling as chunks arrive. Staging contains unverified

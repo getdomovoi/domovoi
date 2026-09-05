@@ -53,6 +53,22 @@ export function protocolCompatibility(
   return machineMinor > clientMinor ? "machine-ahead" : "machine-behind"
 }
 
+// The data on a protocolVersionMismatchErrorCode refusal: both versions and
+// which side is behind, so a peer grades the refusal without reading the
+// sentence that carries the same facts for a person.
+export const protocolMismatchSchema = z.object({
+  kind: z.literal("protocol-mismatch"),
+  daemonProtocolVersion: z.string().regex(versionPattern),
+  clientProtocolVersion: z.string().regex(versionPattern),
+  compatibility: protocolCompatibilitySchema.exclude(["compatible"]),
+}).strict().refine(
+  (mismatch) => versionPattern.test(mismatch.daemonProtocolVersion) && versionPattern.test(mismatch.clientProtocolVersion)
+    && protocolCompatibility(mismatch.daemonProtocolVersion, mismatch.clientProtocolVersion) === mismatch.compatibility,
+  "Compatibility must follow from the two versions",
+)
+
+export type ProtocolMismatch = z.infer<typeof protocolMismatchSchema>
+
 export function fleetMachineHealth(input: {
   heartbeat: z.infer<typeof heartbeatStateSchema>
   connection: FleetConnectionState

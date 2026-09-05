@@ -4,7 +4,7 @@ import { dirname, join, posix, win32 } from "node:path"
 import { promisify } from "node:util"
 
 import { bootstrapDaemon, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
-import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
+import { bootstrapDeadline, defaultCleanupTimeoutMs } from "./bootstrap-deadline.mjs"
 import { pinnedSha256 } from "./bootstrap-plan.mjs"
 import { hashRuntimeFile, readRuntimeJson, validateRuntimeLock, verifyInstalledRuntime } from "./runtime-verification.mjs"
 
@@ -107,6 +107,8 @@ export async function installBootstrapDaemon(options) {
   const deadline = bootstrapDeadline(timeoutMs,
     `Bootstrap exceeded ${timeoutMs} ms, including installation and verification; inspect ${options.destination} before retrying`)
   const run = options.run ?? runBootstrapCommand
+  const remove = options.remove ?? rm
+  const cleanupTimeoutMs = options.cleanupTimeoutMs ?? defaultCleanupTimeoutMs
   let staging
   let keep = false
   let result
@@ -154,13 +156,15 @@ export async function installBootstrapDaemon(options) {
     } catch (error) { if (error.code !== "EEXIST") throw error }
     result = await existingRuntime(release, archive, deadline)
     if (!result) throw new Error("Verified runtime receipt disappeared before publication completed")
-  } catch (error) { failure = error }
-  try {
-    if (staging && !keep) await deadline.run(() => rm(staging, { recursive: true, force: true }))
-  } catch (cleanup) {
-    failure = new AggregateError(failure ? [failure, cleanup] : [cleanup],
-      `${failure?.message ?? cleanup.message}. Unpublished private staging may remain at ${staging}; no runnable receipt was confirmed`)
-  } finally { deadline.clear() }
+  } catch (error) { failure = error } finally { deadline.clear() }
+  if (staging && !keep) {
+    const cleanup = bootstrapDeadline(cleanupTimeoutMs, `Staging cleanup exceeded ${cleanupTimeoutMs} ms`)
+    try { await cleanup.run(() => remove(staging, { recursive: true, force: true })) }
+    catch (error) {
+      failure = new AggregateError(failure ? [failure, error] : [error],
+        `${failure?.message ?? error.message}. Unpublished private staging may remain at ${staging}; no runnable receipt was confirmed`)
+    } finally { cleanup.clear() }
+  }
   if (failure) throw failure
   return result
 }
