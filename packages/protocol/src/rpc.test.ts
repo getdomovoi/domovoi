@@ -1063,6 +1063,26 @@ describe("session.revertFile parameters", () => {
   })
 })
 
+describe("device rename RPC contract", () => {
+  it("renames a label with no client attribution and no credential in the result", () => {
+    const deviceId = `device-${"a".repeat(32)}`
+    expect(rpcMethods["device.rename"].params.parse({ deviceId, label: "kitchen-ipad" }))
+      .toEqual({ deviceId, label: "kitchen-ipad" })
+    expect(rpcMethods["device.rename"].params.safeParse({ deviceId, label: "kitchen-ipad", client: "web" }).success)
+      .toBe(false)
+    expect(rpcMethods["device.rename"].result.safeParse({
+      device: {
+        id: deviceId,
+        label: "kitchen-ipad",
+        pairedAt: "2026-08-31T12:00:00.000Z",
+        binding: { kind: "client", client: "phone" },
+      },
+      token: "n".repeat(43),
+    }).success).toBe(false)
+    expect(rpcMethodMutations["device.rename"]).toBe("mutating")
+  })
+})
+
 describe("RPC method persistence classification", () => {
   it("classifies every method exactly once as mutating or read-only", () => {
     expect(Object.keys(rpcMethodMutations).sort()).toEqual(Object.keys(rpcMethods).sort())

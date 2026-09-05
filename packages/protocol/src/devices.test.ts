@@ -4,9 +4,12 @@ import {
   deviceClaimParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
+  deviceRenameParamsSchema,
+  deviceRenameResultSchema,
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
+  maximumDeviceRenameLabelLength,
   pairedDeviceSchema,
 } from "./devices.js"
 
@@ -152,6 +155,42 @@ describe("deviceRevokeParamsSchema and deviceRotateParamsSchema", () => {
     expect(deviceRotateParamsSchema.parse(params)).toEqual(params)
     expect(deviceRevokeParamsSchema.safeParse({ deviceId: "ipad", client: "web" }).success)
       .toBe(false)
+  })
+})
+
+describe("deviceRenameParamsSchema", () => {
+  it("carries only the device identity and its new label", () => {
+    expect(deviceRenameParamsSchema.parse({ deviceId: device.id, label: "  kitchen-ipad  " }))
+      .toEqual({ deviceId: device.id, label: "kitchen-ipad" })
+    expect(deviceRenameParamsSchema.safeParse({
+      deviceId: device.id,
+      label: "kitchen-ipad",
+      client: "web",
+    }).success).toBe(false)
+    expect(deviceRenameParamsSchema.safeParse({
+      deviceId: device.id,
+      label: "kitchen-ipad",
+      binding: { kind: "client", client: "phone" },
+    }).success).toBe(false)
+    expect(deviceRenameParamsSchema.safeParse({ deviceId: "ipad", label: "kitchen-ipad" }).success)
+      .toBe(false)
+  })
+
+  it("bounds the label and refuses control characters", () => {
+    expect(deviceRenameParamsSchema.parse({
+      deviceId: device.id,
+      label: "n".repeat(maximumDeviceRenameLabelLength),
+    }).label).toBe("n".repeat(maximumDeviceRenameLabelLength))
+    for (const label of ["", "   ", "n".repeat(maximumDeviceRenameLabelLength + 1), "kitchen\u0000ipad", "line\nbreak"]) {
+      expect(deviceRenameParamsSchema.safeParse({ deviceId: device.id, label }).success).toBe(false)
+    }
+  })
+})
+
+describe("deviceRenameResultSchema", () => {
+  it("returns the renamed device without any credential", () => {
+    expect(deviceRenameResultSchema.parse({ device })).toEqual({ device })
+    expect(deviceRenameResultSchema.safeParse({ device, token: "secret" }).success).toBe(false)
   })
 })
 

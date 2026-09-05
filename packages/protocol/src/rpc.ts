@@ -57,6 +57,8 @@ import {
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
+  deviceRenameParamsSchema,
+  deviceRenameResultSchema,
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
@@ -1205,6 +1207,10 @@ export const rpcMethods = {
     params: deviceRotateParamsSchema,
     result: devicePairResultSchema,
   },
+  "device.rename": {
+    params: deviceRenameParamsSchema,
+    result: deviceRenameResultSchema,
+  },
   "system.pauseAll": {
     params: systemPauseAllParamsSchema,
     result: workspaceSnapshotSchema,
@@ -1350,6 +1356,7 @@ export const rpcMethodMutations = {
   "device.saveCredential": "mutating",
   "device.revoke": "mutating",
   "device.rotate": "mutating",
+  "device.rename": "mutating",
   "session.transfer": "mutating",
   "session.transferRecoverSource": "mutating",
   "session.transferResolveConflict": "mutating",

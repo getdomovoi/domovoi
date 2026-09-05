@@ -3,6 +3,7 @@ import { z } from "zod"
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 
 export const maximumPairedDeviceLabelLength = 128
+export const maximumDeviceRenameLabelLength = 64
 export const maximumListedDevices = 256
 
 export const deviceIdSchema = z.string().regex(/^device-[0-9a-f]{32}$/)
@@ -95,6 +96,24 @@ export const deviceRevokeParamsSchema = z.object({
 
 export const deviceRotateParamsSchema = deviceRevokeParamsSchema
 
+// A rename is a label change and nothing else: the request names the row and
+// the new word for it. Identity, binding, and credential material have no
+// field here, so a client cannot ask for them to move.
+export const deviceRenameLabelSchema = z.string()
+  .trim()
+  .min(1)
+  .max(maximumDeviceRenameLabelLength)
+  .regex(/^\P{Cc}*$/u, "A device label cannot contain control characters")
+
+export const deviceRenameParamsSchema = z.object({
+  deviceId: deviceIdSchema,
+  label: deviceRenameLabelSchema,
+}).strict()
+
+export const deviceRenameResultSchema = z.object({
+  device: pairedDeviceSchema,
+}).strict()
+
 export const pairingCodeSchema = z.string().regex(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/)
 
 export const deviceClaimParamsSchema = z.object({
@@ -136,6 +155,8 @@ export type PairedDeviceSummary = z.infer<typeof pairedDeviceSchema>
 export type DeviceCredentialBinding = z.infer<typeof deviceCredentialBindingSchema>
 export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>
+export type DeviceRenameParams = z.infer<typeof deviceRenameParamsSchema>
+export type DeviceRenameResult = z.infer<typeof deviceRenameResultSchema>
 export type DeviceSaveCredentialParams = z.infer<typeof deviceSaveCredentialParamsSchema>
 export type DeviceSaveCredentialResult = z.infer<typeof deviceSaveCredentialResultSchema>
 export type DeviceMachineCredentialParams = z.infer<typeof deviceMachineCredentialParamsSchema>
