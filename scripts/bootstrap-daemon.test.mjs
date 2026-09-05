@@ -129,7 +129,7 @@ test("refuses an unpinned version before it downloads anything", async () => {
   }
 })
 
-test("replaces a partial download left by an interrupted install", async () => {
+test("reuses a completed download with the same verified digest", async () => {
   const into = await destination()
   try {
     const { download } = downloader()
