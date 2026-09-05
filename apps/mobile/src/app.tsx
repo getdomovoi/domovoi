@@ -4,7 +4,6 @@ import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
   enabledSkillsMissingFromCatalog,
-  fleetSnapshotSchema,
   selectableTurnSkills,
   skillSummariesSchema,
   turnSkillRefusalFrom,
@@ -26,7 +25,7 @@ import { useDaemon } from "./lib/use-daemon"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { ArtifactScreen } from "./screens/artifact"
-import { fleetProblem as describeFleetProblem } from "./fleet-problem"
+import { fleetLoader } from "./fleet-load"
 import { FleetScreen } from "./screens/fleet"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
@@ -157,22 +156,13 @@ export function App() {
     }
   }, [call])
 
-  const loadFleet = useCallback(async () => {
-    setFleetLoading(true)
-    setFleetProblem("")
-    try {
-      // fleet.list takes no parameters; the daemon knows the client from hello.
-      const result = await call("fleet.list", {})
-      setFleet(fleetSnapshotSchema.parse(result).entries)
-    } catch (cause) {
-      // A withheld list is not an empty one, so what was read before is dropped
-      // rather than left up beside a notice that says the daemon returned nothing.
-      setFleet(undefined)
-      setFleetProblem(describeFleetProblem(cause))
-    } finally {
-      setFleetLoading(false)
-    }
-  }, [call])
+  const [fleetLoads] = useState(() => fleetLoader({
+    setFleet,
+    setLoading: setFleetLoading,
+    setProblem: setFleetProblem,
+  }))
+
+  const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
   // and never has to poll. What it cannot learn that way is the name of a skill
