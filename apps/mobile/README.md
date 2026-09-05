@@ -112,7 +112,8 @@ and says why (`apps/mobile/src/lib/connection-fault.ts`). Fix the token or updat
 then press Connect again. Every other failure is retried on its own, with delays from 1 second up
 to 30 seconds (`apps/mobile/src/lib/reconnect.ts`), and again as soon as the app returns to the
 foreground (`apps/mobile/src/lib/use-daemon.ts`). A request the daemon accepts but never answers
-fails after 30 seconds, or 15 seconds for the first workspace read (`apps/mobile/src/lib/request-timeout.ts`).
+fails after 30 seconds, or 15 seconds for the first workspace read
+(`apps/mobile/src/lib/request-timeout.ts`).
 
 ## What the phone stores
 
