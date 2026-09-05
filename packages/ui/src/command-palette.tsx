@@ -25,9 +25,10 @@ import {
   CommandList,
   CommandShortcut,
 } from "./components/ui/command"
-import type { FleetMachine, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { machineSelection } from "./machine-selection"
+import { fleetMachines } from "./fleet-entries"
+import { machineAttachment } from "./machine-selection"
 import type { WorkspaceSurface } from "./workspace-persistence"
 import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
 
@@ -112,7 +113,7 @@ export function buildWorkspaceCommands({
   reconnect,
   setSurface,
   sessions,
-  machines,
+  entries,
   skills,
   activateSession,
   selectMachine,
@@ -131,7 +132,7 @@ export function buildWorkspaceCommands({
   reconnect: () => void
   setSurface: (surface: WorkspaceSurface) => void
   sessions?: readonly WorkspaceSnapshot["sessions"][number][] | undefined
-  machines?: readonly FleetMachine[] | null | undefined
+  entries?: readonly FleetEntry[] | null | undefined
   skills?: readonly { id: string; name: string; scope: string }[] | undefined
   activateSession?: ((sessionId: string) => void) | undefined
   selectMachine?: ((machineId: string) => void) | undefined
@@ -162,8 +163,10 @@ export function buildWorkspaceCommands({
       detail: session.state,
       run: () => activateSession(session.id),
     })) : []),
-    ...(selectMachine ? (machines ?? []).map((machine) => {
-      const selection = machineSelection(machine)
+    // Only a machine entry can be selected. A pending or unenrolled entry has
+    // nothing to attach to, so the palette does not list it.
+    ...(selectMachine ? fleetMachines(entries ?? []).map((machine) => {
+      const selection = machineAttachment(machine)
       return {
         id: `machine-${machine.id}`,
         label: machine.label,
@@ -171,7 +174,7 @@ export function buildWorkspaceCommands({
         keywords: [machine.platform, machine.connection, machine.health],
         icon: CpuIcon,
         detail: machine.self ? "this machine" : machine.connection,
-        disabled: !machine.self && !selection.selectable,
+        disabled: !selection.selectable,
         run: () => selectMachine(machine.id),
       }
     }) : []),

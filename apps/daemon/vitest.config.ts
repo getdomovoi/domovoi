@@ -2,12 +2,20 @@ import { defineConfig } from "vitest/config"
 
 // Windows runners spawn Git and release file handles slowly enough that tests
 // which pass everywhere else exceed the 5 second default and fail as flakes.
-const windows = process.platform === "win32"
+export function daemonTestScheduling(platform: NodeJS.Platform) {
+  const windows = platform === "win32"
+  return {
+    // The 4-vCPU Windows runner also services Git, SQLite writers and sockets.
+    // Leave room for that work instead of starting all three heaviest files.
+    ...(windows ? { maxWorkers: 2 } : {}),
+    testTimeout: windows ? 30_000 : 5_000,
+    hookTimeout: windows ? 30_000 : 10_000,
+  }
+}
 
 export default defineConfig({
   test: {
-    testTimeout: windows ? 30_000 : 5_000,
-    hookTimeout: windows ? 30_000 : 10_000,
+    ...daemonTestScheduling(process.platform),
     coverage: {
       enabled: true,
       provider: "v8",

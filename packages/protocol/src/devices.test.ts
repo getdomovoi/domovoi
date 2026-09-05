@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { protocolVersion } from "./schema.js"
 
 import {
   deviceClaimParamsSchema,
@@ -141,10 +142,19 @@ describe("deviceClaimParamsSchema", () => {
       code: "hearth-quiet-ember-42",
       label: "studio-mac",
       machineId: `machine-${"a".repeat(32)}`,
+      protocolVersion,
     }
     expect(deviceClaimParamsSchema.parse(claim)).toEqual(claim)
     const { machineId: _machineId, ...unbound } = claim
     expect(deviceClaimParamsSchema.safeParse(unbound).success).toBe(false)
+  })
+
+  it("requires a protocol version before a claim can spend a pairing code", () => {
+    expect(deviceClaimParamsSchema.safeParse({
+      code: "hearth-quiet-ember-42",
+      label: "studio-mac",
+      machineId: `machine-${"a".repeat(32)}`,
+    }).success).toBe(false)
   })
 })
 

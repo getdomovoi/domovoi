@@ -4,13 +4,12 @@ import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
   enabledSkillsMissingFromCatalog,
-  fleetSnapshotSchema,
   selectableTurnSkills,
   skillSummariesSchema,
   turnSkillRefusalFrom,
   turnSkillSelectionFor,
   type ApprovalDecision,
-  type FleetMachine,
+  type FleetEntry,
   type SkillSummary,
 } from "@getdomovoi/protocol"
 
@@ -26,6 +25,7 @@ import { useDaemon } from "./lib/use-daemon"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { ArtifactScreen } from "./screens/artifact"
+import { fleetLoader } from "./fleet-load"
 import { FleetScreen } from "./screens/fleet"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
@@ -68,7 +68,7 @@ export function App() {
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillProblem, setSkillProblem] = useState("")
-  const [fleet, setFleet] = useState<FleetMachine[] | undefined>(undefined)
+  const [fleet, setFleet] = useState<FleetEntry[] | undefined>(undefined)
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
   const [confirmPause, setConfirmPause] = useState(false)
@@ -156,18 +156,13 @@ export function App() {
     }
   }, [call])
 
-  const loadFleet = useCallback(async () => {
-    setFleetLoading(true)
-    setFleetProblem("")
-    try {
-      const result = await call("fleet.list", { client: clientKind })
-      setFleet(fleetSnapshotSchema.parse(result).machines)
-    } catch (cause) {
-      setFleetProblem(cause instanceof Error ? cause.message : "The fleet could not be listed")
-    } finally {
-      setFleetLoading(false)
-    }
-  }, [call])
+  const [fleetLoads] = useState(() => fleetLoader({
+    setFleet,
+    setLoading: setFleetLoading,
+    setProblem: setFleetProblem,
+  }))
+
+  const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
   // and never has to poll. What it cannot learn that way is the name of a skill
@@ -213,10 +208,17 @@ export function App() {
 
   // A failure recorded against a connection that has since dropped says nothing
   // about the fleet, and leaving it up tells the person something that is no
-  // longer true.
+  // longer true. The same goes for a list still out on that connection: its
+  // answer is retired here, and a new daemon passes through connecting before
+  // it is open, so nothing read on the old one can land on the new one.
   useEffect(() => {
-    if (status !== "open") setFleetProblem("")
-  }, [status])
+    if (status === "open") return
+    fleetLoads.invalidate()
+    setFleetLoading(false)
+    setFleetProblem("")
+  }, [fleetLoads, status])
+
+  useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
   const decide = async (decision: ApprovalDecision) => {
     if (!openApproval) return
@@ -402,7 +404,7 @@ export function App() {
             snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
-                machineCount={fleet?.length}
+                machineCount={fleet?.filter((entry) => entry.kind === "machine").length}
                 notice={notice}
                 refreshing={refreshing}
                 now={now}

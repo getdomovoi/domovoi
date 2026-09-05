@@ -119,6 +119,8 @@ export const deviceClaimParamsSchema = z.object({
   code: pairingCodeSchema,
   label: deviceLabelSchema,
   machineId: machineIdSchema,
+  // Compatibility is checked before the one-time code is consumed.
+  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
 }).strict()
 
 export const deviceIssueCodeResultSchema = z.object({
@@ -127,21 +129,6 @@ export const deviceIssueCodeResultSchema = z.object({
 }).strict()
 
 export const machineCredentialSchema = credentialSchema
-
-export const deviceSaveCredentialParamsSchema = z.object({
-  machineId: machineIdSchema,
-  credential: machineCredentialSchema,
-}).strict()
-
-export const deviceMachineCredentialParamsSchema = z.object({
-  machineId: machineIdSchema,
-}).strict()
-
-export const deviceMachineCredentialResultSchema = z.object({
-  credential: machineCredentialSchema,
-}).strict()
-
-export const deviceSaveCredentialResultSchema = z.object({ saved: z.literal(true) }).strict()
 
 export const deviceListParamsSchema = z.object({}).strict()
 
@@ -156,7 +143,3 @@ export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>
 export type DeviceRenameParams = z.infer<typeof deviceRenameParamsSchema>
 export type DeviceRenameResult = z.infer<typeof deviceRenameResultSchema>
-export type DeviceSaveCredentialParams = z.infer<typeof deviceSaveCredentialParamsSchema>
-export type DeviceSaveCredentialResult = z.infer<typeof deviceSaveCredentialResultSchema>
-export type DeviceMachineCredentialParams = z.infer<typeof deviceMachineCredentialParamsSchema>
-export type DeviceMachineCredentialResult = z.infer<typeof deviceMachineCredentialResultSchema>

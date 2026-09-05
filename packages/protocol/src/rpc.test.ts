@@ -357,6 +357,8 @@ describe("empty-params RPC contracts", () => {
       "skill.inventory",
       "provider.secret.list",
       "fleet.list",
+      "fleet.heartbeat",
+      "device.revokeCurrent",
       "device.list",
       "device.issueCode",
     ] as const) {

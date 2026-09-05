@@ -19,6 +19,38 @@ function registry(database = new DatabaseSync(":memory:")): {
 }
 
 describe("SqliteDeviceRegistry", () => {
+  it("re-pairs one machine without leaving its previous bearer active", () => {
+    const { registry: devices } = registry()
+    const binding = { kind: "machine" as const, machineId: `machine-${"a".repeat(32)}` }
+    const old = devices.pair({ label: "studio", binding })
+    const phone = devices.pair({ label: "studio", binding: { kind: "client", client: "phone" } })
+    const other = devices.pair({ label: "studio", binding: { kind: "machine", machineId: `machine-${"b".repeat(32)}` } })
+    const replacement = devices.pair({ label: "renamed studio", binding })
+
+    expect(devices.verify(old.token)).toBeUndefined()
+    expect(devices.verify(replacement.token)?.binding).toEqual(binding)
+    expect(devices.isActive(phone.token)).toBe(true)
+    expect(devices.isActive(other.token)).toBe(true)
+    expect(devices.list()).toContainEqual({ ...old.device, revokedAt: expect.any(String) })
+  })
+
+  it("can replace a machine at capacity without revoking it when the replacement fails", () => {
+    const { registry: devices, database } = registry()
+    const binding = { kind: "machine" as const, machineId: `machine-${"a".repeat(32)}` }
+    const original = devices.pair({ label: "studio", binding })
+    for (let index = 1; index < maximumPairedDevices; index += 1) {
+      devices.pair({ label: `phone-${index}`, binding: { kind: "client", client: "phone" } })
+    }
+    database.exec("CREATE TRIGGER refuse_device BEFORE INSERT ON paired_devices BEGIN SELECT RAISE(ABORT, 'disk refusal'); END")
+    expect(() => devices.pair({ label: "studio", binding })).toThrow("disk refusal")
+    expect(devices.isActive(original.token)).toBe(true)
+    database.exec("DROP TRIGGER refuse_device")
+    const replacement = devices.pair({ label: "studio", binding })
+    expect(devices.isActive(original.token)).toBe(false)
+    expect(devices.isActive(replacement.token)).toBe(true)
+    expect(devices.list().filter(({ revokedAt }) => revokedAt === undefined)).toHaveLength(maximumPairedDevices)
+  })
+
   it("keeps client and machine credential authority distinct", () => {
     const { registry: devices } = registry()
     const machineId = `machine-${"a".repeat(32)}`

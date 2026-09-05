@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import type { Runtime } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
@@ -174,7 +175,7 @@ describe("AcpAgentAdapter", () => {
 
     expect(await adapter.startTurn({ threadId: "acp-session", cwd: "/repo", prompt: "Ship it", runtime }))
       .toBe("local-turn")
-    await vi.waitFor(() => expect(events).toContainEqual({
+    await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
       params: { threadId: "acp-session", turnId: "local-turn", status: "completed" },
     }))
