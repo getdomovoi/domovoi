@@ -35,7 +35,7 @@ export type DialedTransport<Connection> = {
 export async function dialTransport<Connection>(input: {
   candidates: TransportCandidate[]
   credential: string
-  connect: (attempt: { endpoint: string; credential: string }) => Promise<Connection>
+  connect: (attempt: { endpoint: string; credential: string; remainingCandidates: number }) => Promise<Connection>
   relayAvailable?: boolean
 }): Promise<DialedTransport<Connection>> {
   if (!input.credential) throw new TransportDialError("A transport credential is required")
@@ -50,11 +50,12 @@ export async function dialTransport<Connection>(input: {
   for (const candidate of usable) assertProtectedEndpoint(candidate)
 
   const refusedBy: string[] = []
-  for (const candidate of usable) {
+  for (const [index, candidate] of usable.entries()) {
     try {
       return { transport: candidate, connection: await input.connect({
         endpoint: candidate.endpoint,
         credential: input.credential,
+        remainingCandidates: usable.length - index,
       }) }
     } catch {
       // The failure text is deliberately not carried: a transport error can

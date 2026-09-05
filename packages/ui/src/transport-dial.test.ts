@@ -34,7 +34,7 @@ describe("dialTransport", () => {
 
     expect(dialed.transport).toEqual(loopback)
     expect(connect).toHaveBeenCalledTimes(1)
-    expect(connect).toHaveBeenCalledWith({ endpoint: loopback.endpoint, credential })
+    expect(connect).toHaveBeenCalledWith({ endpoint: loopback.endpoint, credential, remainingCandidates: 2 })
   })
 
   it("falls back to the next candidate when a closer one refuses", async () => {
@@ -47,6 +47,8 @@ describe("dialTransport", () => {
 
     expect(dialed.transport).toEqual(tailnet)
     expect(connect).toHaveBeenCalledTimes(2)
+    expect(connect).toHaveBeenNthCalledWith(1, { endpoint: lan.endpoint, credential, remainingCandidates: 2 })
+    expect(connect).toHaveBeenNthCalledWith(2, { endpoint: tailnet.endpoint, credential, remainingCandidates: 1 })
   })
 
   it("refuses to send a credential in the clear to a remote host", async () => {
@@ -66,7 +68,7 @@ describe("dialTransport", () => {
     const connect = vi.fn(async () => ({ closed: false }))
 
     await expect(dialTransport({ candidates: [loopback], credential, connect })).resolves.toBeTruthy()
-    expect(connect).toHaveBeenCalledWith({ endpoint: loopback.endpoint, credential })
+    expect(connect).toHaveBeenCalledWith({ endpoint: loopback.endpoint, credential, remainingCandidates: 1 })
   })
 
   it("refuses to dial without a credential", async () => {

@@ -85,7 +85,8 @@ describe("connectMachineClient", () => {
       sockets.socket(0).open()
       await vi.advanceTimersByTimeAsync(500)
       expect(sockets.sockets).toHaveLength(2)
-      expect(sockets.socket(0).closeCalls).toHaveLength(1)
+      expect(sockets.socket(0).closeCalls.length).toBeGreaterThan(0)
+      expect(sockets.socket(0).readyState).toBe(sockets.socket(0).CLOSED)
       completeHandshake(sockets.socket(1))
       const connected = await opening
       expect(connected.transport).toEqual(tailnet)

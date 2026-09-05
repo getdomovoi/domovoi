@@ -41,9 +41,13 @@ async function listener(phase: "upgrade" | "hello" | "ready") {
   let closed = 0
   const server = phase === "upgrade"
     ? createServer((socket) => {
-        connections += 1
         sockets.push(socket)
-        socket.on("close", () => { closed += 1 })
+        // Count the upgrade request, not an idle connection the native
+        // WebSocket implementation may preconnect through its HTTP pool.
+        socket.once("data", () => {
+          connections += 1
+          socket.on("close", () => { closed += 1 })
+        })
         socket.resume()
       })
     : new WebSocketServer({ host: "127.0.0.1", port: 0 })

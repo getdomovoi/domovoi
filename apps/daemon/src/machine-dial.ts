@@ -102,21 +102,25 @@ export function createMachineDialer(input: {
         ? "Refusing to authenticate over an unencrypted connection"
         : "That machine advertises no usable transport")
       let lastError: unknown
-      for (const { endpoint, routeSource } of routes) {
+      for (const [index, { endpoint, routeSource }] of routes.entries()) {
         deadline.throwIfExpired()
         if (signal?.aborted) throw new Error("The transfer was cancelled")
+        // Reserve a share for every remaining eligible route. A silent open
+        // or hello spends this attempt only, never the whole fallback budget.
+        // Recompute after fast failures so later routes can use the spare time.
+        const attempt = deadline.limit(Math.max(1, deadline.remainingMs() / (routes.length - index)))
         try {
           const connection = await boundedOpen(input.open({
-            endpoint, expectedMachineId: machine.id, credential, deadline,
+            endpoint, expectedMachineId: machine.id, credential, deadline: attempt,
             ...(signal ? { signal } : {}),
-          }), deadline, signal)
+          }), attempt, signal)
           return { ...connection, endpoint, routeSource }
         } catch (error) {
           // Failed identity/authority is not evidence to keep trying elsewhere.
           if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
             || error instanceof MachineProtocolMismatchError || error instanceof MachineDescriptorError) throw error
           lastError = error
-        }
+        } finally { attempt.clear() }
       }
       deadline.throwIfExpired()
       throw lastError
