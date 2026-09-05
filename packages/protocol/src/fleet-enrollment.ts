@@ -96,7 +96,8 @@ export const fleetForgetResultSchema = z.discriminatedUnion("outcome", [
     remoteRevocation: fleetRemoteRevocationSchema,
     fleet: fleetSnapshotSchema,
   }).strict().superRefine((result, context) => {
-    if (result.fleet.entries.some((entry) => fleetEntryMachineId(entry) === result.machineId)) {
+    if (result.fleet.entries.some((entry) => fleetEntryMachineId(entry) === result.machineId)
+      || result.fleet.registry?.quarantined.some((entry) => entry.machineId === result.machineId)) {
       context.addIssue({ code: "custom", path: ["fleet"], message: "A forgotten machine cannot remain in the fleet" })
     }
   }),

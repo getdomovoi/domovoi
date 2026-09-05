@@ -149,8 +149,25 @@ export function fleetEntryMachineId(entry: FleetEntry): string {
   return entry.kind === "machine" ? entry.machine.id : entry.machineId
 }
 
+// Kept outside the legacy entries union: those clients parse it strictly.
+// Only fleet.list({ includeQuarantined: true }) opts into this metadata.
+// Never quote damaged facts, parsing errors, endpoints or credential digests.
+export const fleetQuarantinedEntrySchema = z.object({
+  kind: z.literal("quarantined"),
+  id: z.string().uuid(),
+  machineId: machineIdSchema.optional(),
+  reason: z.enum(["invalid-json", "invalid-facts"]),
+  detectedAt: z.string().datetime({ offset: true }),
+  recoveryAction: z.enum(["forget-and-enroll", "repair-registry-offline"]),
+}).strict().refine((entry) => (entry.machineId !== undefined) === (entry.recoveryAction === "forget-and-enroll"),
+  "Only a valid machine identity can be forgotten and enrolled again")
+
 export const fleetSnapshotSchema = z.object({
   entries: z.array(fleetEntrySchema).max(maximumFleetEntries),
+  registry: z.object({
+    state: z.literal("degraded"),
+    quarantined: z.array(fleetQuarantinedEntrySchema).min(1).max(maximumFleetEntries),
+  }).strict().optional(),
 }).strict().superRefine((fleet, context) => {
   // Display validation is not admission: pending journals must remain visible
   // even when recovery discovers no room to promote them. The daemon reserves
@@ -158,7 +175,8 @@ export const fleetSnapshotSchema = z.object({
   if (fleet.entries.filter((entry) => entry.kind === "machine").length > maximumFleetMachines) {
     context.addIssue({ code: "custom", path: ["entries"], message: "The fleet machine admission limit is 128" })
   }
-  const ids = fleet.entries.map(fleetEntryMachineId)
+  const quarantine = fleet.registry?.quarantined ?? []
+  const ids = [...fleet.entries.map(fleetEntryMachineId), ...quarantine.flatMap((entry) => entry.machineId ? [entry.machineId] : [])]
   if (new Set(ids).size !== ids.length) {
     context.addIssue({
       code: "custom",
@@ -172,6 +190,10 @@ export const fleetSnapshotSchema = z.object({
       path: ["entries"],
       message: "Only one fleet machine can be this daemon",
     })
+  }
+  if (fleet.entries.length + quarantine.length > maximumFleetEntries
+    || new Set(quarantine.map((entry) => entry.id)).size !== quarantine.length) {
+    context.addIssue({ code: "custom", path: ["registry"], message: "Recovery rows must be unique and share the fleet display bound" })
   }
 })
 
@@ -218,6 +240,7 @@ export type FleetVerifiedRoute = z.infer<typeof fleetVerifiedRouteSchema>
 export type FleetConnectionKind = z.infer<typeof fleetConnectionKindSchema>
 export type FleetPendingOperation = z.infer<typeof fleetPendingOperationSchema>
 export type FleetEntry = z.infer<typeof fleetEntrySchema>
+export type FleetQuarantinedEntry = z.infer<typeof fleetQuarantinedEntrySchema>
 export type MachineHeartbeat = z.infer<typeof machineHeartbeatSchema>
 export type HeartbeatState = z.infer<typeof heartbeatStateSchema>
 export type FleetMachine = z.infer<typeof fleetMachineSchema>

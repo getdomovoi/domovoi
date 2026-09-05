@@ -829,7 +829,7 @@ export const systemPauseAllParamsSchema = z.object({
   client: clientKindSchema,
 })
 
-export const fleetListParamsSchema = z.object({}).strict()
+export const fleetListParamsSchema = z.object({ includeQuarantined: z.boolean().optional() }).strict()
 
 export const systemEmergencyStopParamsSchema = z.object({
   client: clientKindSchema,
@@ -1169,7 +1169,7 @@ export const rpcMethods = {
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
   "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
   "fleet.forget": { params: fleetForgetParamsSchema, result: fleetForgetResultSchema },
-  "fleet.heartbeat": { params: fleetListParamsSchema, result: fleetMachineDescriptorSchema },
+  "fleet.heartbeat": { params: z.object({}).strict(), result: fleetMachineDescriptorSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
   // Reachable before authentication: a machine being paired has no credential
   // yet. Check protocol compatibility before consuming its one-time code.
