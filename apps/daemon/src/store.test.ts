@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createEmptyWorkspace, demoWorkspace, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -15,6 +15,8 @@ import {
 } from "./store.js"
 
 const scratchDirectories: string[] = []
+const currentMachineId = `machine-${"c".repeat(32)}`
+const retiredMachineId = `machine-${"7".repeat(32)}`
 
 afterEach(async () => {
   await removeScratchDirectories(scratchDirectories.splice(0))
@@ -692,8 +694,8 @@ describe("SqliteWorkspaceStore", () => {
     const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
     seed.close()
     const legacy = structuredClone(demoWorkspace)
-    legacy.machine.id = "machine-current"
-    legacy.project!.machineId = "machine-retired"
+    legacy.machine.id = currentMachineId
+    legacy.project!.machineId = retiredMachineId
     legacy.sessions[0]!.title = "Preserve this session"
     const database = new DatabaseSync(databasePath)
     database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
@@ -701,7 +703,7 @@ describe("SqliteWorkspaceStore", () => {
 
     const first = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(legacy.machine))
     const repaired = first.load()
-    expect(repaired.project).toEqual({ ...legacy.project, machineId: "machine-current" })
+    expect(repaired.project).toEqual({ ...legacy.project, machineId: currentMachineId })
     expect(repaired.sessions).toEqual(legacy.sessions)
     expect(repaired.approvals).toEqual(legacy.approvals)
     expect(repaired.approvalRules).toEqual(legacy.approvalRules)
@@ -722,6 +724,42 @@ describe("SqliteWorkspaceStore", () => {
     second.close()
   })
 
+  it("migrates a legacy workspace machine id the fleet cannot record", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    const legacyMachine = legacy.machine as Record<string, unknown>
+    const legacyProject = legacy.project as Record<string, unknown>
+    legacyMachine.id = "machine-local"
+    legacyProject.machineId = "machine-local"
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
+    database.close()
+
+    const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+    const migrated = store.load()
+    expect(store.recovery).toBeUndefined()
+    expect(machineIdSchema.safeParse(migrated.machine.id).success).toBe(true)
+    expect(migrated.project?.machineId).toBe(migrated.machine.id)
+    expect(migrated.sessions).toEqual(demoWorkspace.sessions)
+    expect(migrated.thread.filter((item) =>
+      item.kind === "system" && item.body === "Stored machine identity migrated"
+    )).toEqual([
+      expect.objectContaining({ sessionId: demoWorkspace.activeSessionId }),
+    ])
+    store.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+    expect(reopened.load().machine.id).toBe(migrated.machine.id)
+    expect(reopened.load().thread.filter((item) =>
+      item.kind === "system" && item.body === "Stored machine identity migrated"
+    )).toHaveLength(1)
+    reopened.close()
+  })
+
   it("ties a machine-reference repair receipt to the first session without an active session", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
@@ -729,8 +767,8 @@ describe("SqliteWorkspaceStore", () => {
     const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
     seed.close()
     const legacy = structuredClone(demoWorkspace)
-    legacy.machine.id = "machine-current"
-    legacy.project!.machineId = "machine-retired"
+    legacy.machine.id = currentMachineId
+    legacy.project!.machineId = retiredMachineId
     legacy.activeSessionId = null
     const database = new DatabaseSync(databasePath)
     database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
@@ -751,8 +789,8 @@ describe("SqliteWorkspaceStore", () => {
     const databasePath = join(scratch, "state.sqlite")
     const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
     const legacy = structuredClone(demoWorkspace)
-    legacy.machine.id = "machine-current"
-    legacy.project!.machineId = "machine-retired"
+    legacy.machine.id = currentMachineId
+    legacy.project!.machineId = retiredMachineId
     const database = new DatabaseSync(databasePath)
     database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
     database.close()
@@ -761,8 +799,8 @@ describe("SqliteWorkspaceStore", () => {
     })
 
     expect(store.load()).toMatchObject({
-      machine: { id: "machine-current" },
-      project: { machineId: "machine-current" },
+      machine: { id: currentMachineId },
+      project: { machineId: currentMachineId },
     })
     expect(persist).toHaveBeenCalledOnce()
     persist.mockRestore()
