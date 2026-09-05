@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { once } from "node:events"
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
@@ -13,7 +13,9 @@ import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, type ReadyLocalOwner } from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { CliProviderProbe } from "./providers.js"
+import { claimProfile } from "./profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./service/configuration.js"
+import { installService, nodeServiceEffects, removeService } from "./service/install.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
 const cli = fileURLToPath(new URL("../dist/index.js", import.meta.url))
@@ -55,11 +57,11 @@ function environment(home: string) {
   }
 }
 
-async function startOwner(home: string, deadline: OperationDeadline) {
+async function startOwner(home: string, deadline: OperationDeadline, service = false) {
   deadline.throwIfExpired()
   // The test process is the fake supervisor. It starts the actual CLI with no
   // canonical service configuration, as any custom supervisor can do.
-  const child = spawn(process.execPath, [cli], {
+  const child = spawn(process.execPath, [cli, ...(service ? ["--service-config", serviceConfigurationPath(home, process.platform)] : [])], {
     env: environment(home), signal: deadline.signal, killSignal: "SIGKILL",
     stdio: ["ignore", "pipe", "pipe"],
   })
@@ -77,6 +79,78 @@ async function startOwner(home: string, deadline: OperationDeadline) {
   if (record?.state !== "ready") throw new Error(`Missing ready owner: ${output}`)
   return { record, kill: async () => { child.kill("SIGKILL"); await beforeDeadline(exited, deadline) } }
 }
+
+function serviceTarget(home: string) {
+  const user = userInfo()
+  return {
+    platform: process.platform, home, uid: user.uid, user: user.username,
+    execPath: cli, runtime: process.execPath,
+    configuration: createServiceConfiguration({ DOMOVOI_PORT: "0" }, { homeDirectory: home, workingDirectory: home, platform: process.platform }),
+  }
+}
+
+it("assigns a fresh registration on every install and invalidates an earlier recovery receipt", async () => {
+  const deadline = OperationDeadline.start(operationBudget)
+  try {
+    const home = await setup(deadline)
+    const effects = { ...nodeServiceEffects(), run: vi.fn(async () => {}) }
+    const target = serviceTarget(home)
+    await beforeDeadline(installService(target, effects), deadline)
+    const first = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
+    expect(first.registrationId).toMatch(/^[0-9a-f-]{36}$/)
+    await writeFile(receiptPath(home), "old receipt", { mode: 0o600 })
+    await beforeDeadline(installService(target, effects), deadline)
+    const second = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
+    expect(second.registrationId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(second.registrationId).not.toBe(first.registrationId)
+    await expect(stat(receiptPath(home))).rejects.toMatchObject({ code: "ENOENT" })
+  } finally { deadline.clear() }
+}, operationBudget + 1_000)
+
+it("receipts the installed owner's exact instance only after stopping its supervisor", async () => {
+  const deadline = OperationDeadline.start(operationBudget)
+  try {
+    const home = await setup(deadline)
+    const node = nodeServiceEffects()
+    const target = serviceTarget(home)
+    await beforeDeadline(installService(target, { ...node, run: async () => {} }), deadline)
+    const saved = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
+    expect(saved.registrationId).toMatch(/^[0-9a-f-]{36}$/)
+    const owner = await startOwner(home, deadline, true)
+    expect(owner.record).toHaveProperty("serviceRegistrationId", saved.registrationId)
+    const stop = async () => {
+      await expect(stat(receiptPath(home))).rejects.toMatchObject({ code: "ENOENT" })
+      await owner.kill()
+      expect(readLocalOwnerRecord(home)).toEqual(owner.record)
+    }
+    await beforeDeadline(removeService(target, {
+      ...node,
+      run: async (_command, args) => { if (args.includes("disable") || args.includes("bootout")) await stop() },
+      capture: async (_command, args) => {
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (script.includes("$task.Stop(0)")) await stop()
+        return { code: 0, stdout: script.includes("$folder.DeleteTask(") ? "domovoi-task:deleted" : "domovoi-task:1" }
+      },
+      remove: async (path, budget) => {
+        // The manager stopped, but configuration deletion must not expose a
+        // free profile before the receipt has been committed.
+        let contender: ReturnType<typeof claimProfile> | undefined
+        try {
+          expect(() => { contender = claimProfile(home) }).toThrow(/already owned/)
+        } finally { contender?.release() }
+        await expect(stat(receiptPath(home))).rejects.toMatchObject({ code: "ENOENT" })
+        await node.remove(path, budget)
+      },
+    }), deadline)
+    const savedReceipt = JSON.parse(await readFile(receiptPath(home), "utf8")) as object
+    expect(savedReceipt).toMatchObject({
+      instanceId: owner.record.instanceId, machineId: owner.record.machineId,
+      authorization: { kind: "service-removal", registrationId: saved.registrationId },
+    })
+    expect(readLocalOwnerRecord(home)).toEqual(owner.record)
+    expect((await acquire(home, deadline)).kind).toBe("owned")
+  } finally { deadline.clear() }
+}, operationBudget + 1_000)
 
 async function setup(deadline: OperationDeadline) {
   const home = await beforeDeadline(mkdtemp(join(tmpdir(), "domovoi-profile-recovery-")), deadline)
