@@ -229,6 +229,10 @@ Every ledger entry is now merged.
     execution record under Build auto. The resolver's verdict is now authoritative, so Build auto
     asks whenever the resolver cannot prove what a command expands to.
 - [x] Add a searchable audit log with redaction and export
+  - `audit.query` and `audit.export` bounded their store reads with `agentTimeoutMs`, so a test
+    daemon with a 5 ms agent budget timed a real read out on macOS CI. #250 gives them their own
+    `auditReadTimeoutMs`, default 30 s, through the same deadline validation; open as of
+    2026-09-05.
 - [x] Add command-level secret redaction before persistence or display
 - [x] Add a global emergency stop that cancels all active tools and providers, not only UI state
 
@@ -378,25 +382,75 @@ rendered; CLI tests stubbed the socket handshake; fleet tests seeded remote rows
 bypassed its daemon; service tests replaced OS managers; and WSL tests replaced `wsl.exe`. Goal 2
 remains open until production-boundary acceptance proofs exercise those assemblies.
 
-One known lifecycle finding remains parked with that audit: `MachineCredentialStore.forget()` has
-no production caller, so an outbound machine credential remains in the OS keychain until it is
-overwritten. Deletion needs an authoritative revocation, removal, or re-pair event before that
-method can be wired safely.
+#244 closed the headline gap on 2026-09-05. `apps/daemon/src/fleet-production.test.ts` builds two
+daemons through the production factory, with no seeded fleet row and no mocked registry or socket,
+and takes them through code issuance, enrollment, refreshed target facts after restart, revocation
+health, and a session move. The OS keyring and provider readiness are injected there, so it is not
+evidence of platform keychain behaviour or cross-host TLS, and no two physical machines have been
+paired.
+
+The parked `MachineCredentialStore.forget()` finding is closed with it: `fleet.forget` stages the
+removal, attempts a bounded revocation on the target, then removes the row and the keychain entry,
+and the receipt says whether the target confirmed before replying.
+
+### Assembly remediation ledger
+
+Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
+
+- [#244](https://github.com/getdomovoi/domovoi/pull/244) `Enroll a second machine end to end`
+  `MERGED`: daemon-to-daemon enrollment through `fleet.enroll`, `fleet.forget`, `fleet.heartbeat`,
+  and the uncoalesced `fleet.changed` snapshot; the route pairing used is stored as a
+  source-verified route and dialed first; admission is capped at 128 machines and display at 512
+  entries, where a larger keychain refuses `fleet.list` with a typed overflow error and
+  `domovoid fleet-keychain` is the local escape; `pairing-required` and
+  `credential-store-unavailable` health states. Protocol `0.4.0`.
+- [#245](https://github.com/getdomovoi/domovoi/pull/245) `Claim bundle restores before any git work`
+  `MERGED`: a process-local reservation plus an exclusive `.restore-claims/<session-id>` file
+  holding an ownership token, so two restores of one session cannot both succeed; cleanup failures
+  surface as `SessionRestoreClaimCleanupError` without hiding the restore outcome.
+- [#246](https://github.com/getdomovoi/domovoi/pull/246)
+  `Stop starving daemon tests on the Windows runner` `MERGED`: `maxWorkers` 2 on win32, trimmed
+  heavy fixtures, and every default `vi.waitFor` in the daemon suite routed through `waitForDaemon`,
+  bounded at 10 s on Windows and 3 s elsewhere, with a guard test that refuses new direct waits.
+  Test only.
+- [#249](https://github.com/getdomovoi/domovoi/pull/249) `Bound the enrollment test waits`
+  `MERGED`: the four waits #244 added that the #246 guard caught once both were on `main`. Test
+  only.
+- [#247](https://github.com/getdomovoi/domovoi/pull/247)
+  `Bound pairing claims and isolate pre-auth audit retention` `MERGED`: audit item A2. Claims are
+  admitted before code validation, 3 per source and 30 per listener within 60 seconds, and
+  unauthenticated audit events keep their own 1000-entry class so refused claims cannot evict
+  authenticated receipts.
+- [#248](https://github.com/getdomovoi/domovoi/pull/248)
+  `Add device.rename for paired device labels` `MERGED`: label only, 1 to 128 characters shared
+  with the pairing label limit, audited like `device.revoke`.
+- [#250](https://github.com/getdomovoi/domovoi/pull/250) `Give audit reads their own deadline`
+  `OPEN`: `audit.query` and `audit.export` read under their own `auditReadTimeoutMs` instead of
+  `agentTimeoutMs`, after a macOS run of #245 timed a real audit read out under a 5 ms agent budget.
 
 - [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
-  - The schemas, `machine.json` identity, and local facts exist. Desktop uses a different fallback
-    identity, an existing `state.sqlite` can override `machine.json` and current facts, and no
-    remote heartbeat writer exists. Close with one production daemon factory plus startup
-    reconciliation and restart tests.
+  - The schemas, `machine.json` identity, and local facts exist, and since #244 the daemon keeps
+    one authenticated socket per remote row with a fifteen-second heartbeat. Desktop uses a
+    different fallback identity and an existing `state.sqlite` can override `machine.json` and
+    current facts. Close with one production daemon factory plus startup reconciliation and
+    restart tests.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+- [x] Bound pairing claim admission and keep pre-auth noise out of authenticated audit history
+  - Audit item A2, closed by #247. Claims are admitted before code validation: 3 per TCP source
+    and 30 per listener within 60 seconds, and reconnects, forwarding headers, new codes, and
+    bearer greetings cannot reset them. Unauthenticated audit events keep their own 1000-entry
+    class. The five wrong guesses rule stays, and throttling cannot guarantee pairing availability
+    against hostile peers.
 - [x] Expose device revocation and rotation in a client or `domovoid` command
   - `packages/ui/src/client.ts` calls `device.revoke` and `device.rotate`, and the Fleet surface
     drives both. This duplicates the checked entry below it under paired-device management.
-- [ ] Add a fleet registry and machine selector to the shared protocol and UI
-  - The registry, protocol, and selector UI exist. Production writes only the local row; pairing
-    saves a credential but no remote facts or endpoint, and nothing refreshes a peer. Close with
-    two real daemons from pairing through selection and restart, without registry seeding.
+- [x] Add a fleet registry and machine selector to the shared protocol and UI
+  - Closed by #244. `fleet.enroll` owns the claim, handshake, and first descriptor on one socket
+    and records the target's own facts; the heartbeat refreshes the row; and the two-daemon
+    production test takes enrollment through restart without registry seeding. Each enrollment
+    and forget is journaled by credential digest and promoted or rolled back on restart, because
+    SQLite and the OS keychain cannot be atomic.
 - [ ] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
   - Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not
     grant the initiating desktop a remote client credential. Until a separate client-admission
@@ -452,11 +506,29 @@ method can be wired safely.
   - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
     automount roots, and no real mount-boundary test exists.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
-  - Protocol derivation and client rendering exist, but there is no production remote row or
-    refresh path on which these remote states can operate.
+  - #244 adds the production remote row and refresh path these states run on, plus
+    `pairing-required` for a target that refused this machine's credential and
+    `credential-store-unavailable` for a keychain that could not be read. The two-daemon test
+    covers revocation health; version mismatch and upgrade-required still have no
+    production-boundary proof.
 - [x] Add checkpointed machine transfer with live source and target preflight
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
+  - Since #245 a bundle restore claims the session before any Git work: a process-local
+    reservation taken before the first await, plus an exclusive `.restore-claims/<session-id>`
+    file holding an ownership token so a second daemon on the same worktree root is excluded too.
+    Contention fails at once; nothing waits, steals a timed-out claim, or removes another owner's
+    file. A claim left by a killed process is named in the error and removed by hand with every
+    Domovoi process stopped.
+- [ ] Give restore claim release a deadline and a lifecycle
+  - The claim write and the ownership read are bounded, but the claim close and unlink have no
+    deadline yet, so a stalled cleanup holds the process-local reservation and every later restore
+    of that session refuses. This needs a lifecycle design, not a bare race fix.
+- [ ] Stop transfer chunk directory cleanup failing with `EPERM` on Windows
+  - `transfer-transactions.test.ts` "handles concurrent retries of the same chunk" failed once on
+    the Windows job of #245 (run 33938587480) with `EPERM: operation not permitted, rmdir` on the
+    chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. A fix is in
+    progress on a branch and is not merged.
 - [x] Transfer dialog in the client with preflight, method, and what travels, calling
   `session.transfer`
   - `packages/ui/src/transfer-session-dialog.tsx` is wired into the workspace shell and
@@ -484,36 +556,50 @@ method can be wired safely.
     Provider credentials and state, terminals, approval rules, skill authority, audit history,
     ignored files, external databases, and Auto consent remain machine-local. The daemon reports
     these coverage keys and warnings to the dialog instead of relying on fixed client prose.
-  - End-to-end reachability is still blocked by missing remote enrollment: no production paired
-    machine has ever appeared in the fleet, so no move has run between two real daemons. The
-    transfer invariants above are peer-reviewed and tested; the outcome is unproven.
+  - Since #244 a move runs between two production daemons in `fleet-production.test.ts`,
+    preserving files, thread, and plan while freezing the source. That test found a real defect
+    on its first run: an optional working-plan field serialised as `undefined`, which JSON cannot
+    carry, so every portable-state fixture now round-trips through the exact encoder and the
+    exact target schema. No move has run between two physical machines.
 - [x] Record every attempted move in the thread as a receipt that names the reason the daemon
   refused rather than a generic failure
 - [x] Add a Fleet surface listing machine platform, architecture, version, connection, health,
   capabilities, session count for this machine, and the transport order the dialer would use
 - [x] Manage paired devices from the Fleet surface, with revocation behind a confirmation and
   credential rotation that shows the new credential once
+- [x] Rename a paired device from the Fleet surface
+  - `device.rename` (#248) changes the label and nothing else: never hostname, machine identity,
+    platform facts, or credential material. The label is 1 to 128 characters, the pairing limit.
+    Rename is allowed on revoked rows because the record is kept for audit; rotate stays refused
+    there. There is no device change event, so clients update from the returned device.
+- [ ] Give Undo on a rename an expected-label precondition
+  - Undo is one more rename back to the previous label with no precondition, so it can overwrite
+    a concurrent rename by another client. The follow-up adds an expected-label field so a stale
+    undo refuses instead.
 
 Completion proof. Current evidence first, then what closing actually requires.
 
 Covered today:
 
+- two production daemons taken from code issuance to a fleet row, a heartbeat refresh after
+  restart, revocation health, and a session move, with no seeded registry;
 - one session controlled across two clients on one machine without divergent state;
-- revocation and rotation paths exist in the client;
-- transfer safety is tested against constructed remote facts;
+- revocation, rotation, and rename paths exist in the client;
+- transfer safety is tested against constructed remote facts and once against a production peer;
 - repository bytes never flow through a filesystem sync layer.
 
 Not covered, and the reason this goal is open:
 
-- no test pairs two production daemons and then observes the peer in `fleet.list`;
+- the two-daemon test injects the OS keyring and provider readiness, so platform keychain
+  behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
 - Windows and macOS run component suites, but service managers and WSL remain simulated;
-- a production paired-machine move has never run end to end.
+- no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 
-Required to close: two production daemons taken from pairing to a fleet row, a bounded ordered
-dial, a session move, reconnect, restart, revocation, and removal, plus jobs that invoke native
-service managers and a real WSL. A daemon must also remain reachable from a paired phone across
-private-network identity changes without exposing payload plaintext to the relay, and a bearer or
-channel key alone must not be enough to enter.
+Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
+bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus jobs that
+invoke native service managers and a real WSL. A daemon must also remain reachable from a paired
+phone across private-network identity changes without exposing payload plaintext to the relay,
+and a bearer or channel key alone must not be enough to enter.
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
@@ -542,6 +628,23 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
 - [ ] Touch-capable terminal with explicit ownership transfer
 - [ ] Push notifications for completion, failure, and approval-needed events
 - [ ] Offline-safe read cache for previously opened plans, without offline command mutation
+- [x] Give the native phone app the design's fonts and one token source
+  - #234 started the Expo app. #236 loads Instrument Sans and JetBrains Mono through `expo-font`
+    behind a 3000 ms gate that falls back to the platform face, and `scripts/mobile-tokens.mjs`
+    generates the phone's colours and radii from `packages/ui/src/styles.css`, checked by
+    `pnpm release:invariants`. Glyph rendering on a device is unverified.
+- [x] Render the phone's screens under test
+  - #235 renders the real approval, sessions, and settings screens with protocol fixtures under
+    jest-expo. It proves text, order, roles, and handler wiring, not pixels, styling, or a device
+    boot. The first render found the approval screen omitting the operation, estimate, and
+    checkpoint, which is fixed.
+- [x] Guard the phone's fleet list loader by request generation
+  - `apps/mobile/src/fleet-load.ts` (#244) bumps a generation per load so a stale response cannot
+    replace a newer list.
+- [ ] Give the phone's Fleet tab the facts the mockup shows
+  - Building the tab against the mockup found four gaps: the protocol has no paused fact for a
+    fleet machine, no wake RPC, and no per-machine session or tool counts, and the phone has no
+    pairing flow of its own; it takes a daemon address and pairing token in Settings.
 
 ### Guest sessions
 
@@ -633,7 +736,8 @@ These are valuable but must not displace the secure single-user fleet workflow:
 - [ ] encrypted client-side provider-key vault sync
 - [ ] team organizations, roles, shared projects, policies, and audit retention
 - [ ] hosted relay regions and enterprise self-hosting
-- [ ] native iOS and Android shells where PWA limitations justify them
+- [ ] native iOS and Android shells where PWA limitations justify them; the phone app under
+  Goal 3 is that shell's start, not its finish
 - [ ] native tablet multitasking and platform notification extensions
 - [ ] provider routing policies based on cost, context, capability, and availability
 - [ ] parallel agents in isolated worktrees with explicit merge/review workflows
