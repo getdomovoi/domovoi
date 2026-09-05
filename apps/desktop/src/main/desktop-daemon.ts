@@ -34,6 +34,7 @@ function describeAcquisition(handle: LocalDaemonHandle): DesktopDaemonAcquisitio
 export class DesktopDaemon {
   #attempt: Promise<LocalDaemonHandle> | undefined
   #handle: LocalDaemonHandle | undefined
+  #current: LocalDaemonHandle | undefined
   #releasing: Promise<void> | undefined
 
   constructor(
@@ -61,6 +62,10 @@ export class DesktopDaemon {
     return this.#releasing
   }
 
+  current(): DesktopDaemonAcquisition | undefined {
+    return this.#current ? describeAcquisition(this.#current) : undefined
+  }
+
   #acquireWith(mode: AcquireLocalDaemonOptions["mode"]): Promise<DesktopDaemonAcquisition> {
     const previous = this.#handle
     this.#handle = undefined
@@ -73,7 +78,10 @@ export class DesktopDaemon {
     this.#attempt = attempt
     const settle = (handle?: LocalDaemonHandle): void => {
       if (previous?.kind === "attached") previous.detach()
-      if (handle) this.#handle = handle
+      if (handle) {
+        this.#handle = handle
+        this.#current = handle
+      }
     }
     return attempt.then(
       (handle) => {

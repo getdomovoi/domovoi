@@ -57,6 +57,38 @@ export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarg
   }
 }
 
+const loopbackHosts = ["127.0.0.1", "localhost"] as const
+const websocketSchemes = ["ws:", "wss:"] as const
+
+function endpointSource(endpointUrl: string | undefined): string | undefined {
+  if (!endpointUrl) return undefined
+  try {
+    const url = new URL(endpointUrl)
+    if (url.protocol !== "ws:" && url.protocol !== "wss:") return undefined
+    if (url.hostname.startsWith("[")) return undefined
+    return `${url.protocol}//${url.host}`
+  } catch {
+    return undefined
+  }
+}
+
+export function rendererContentSecurityPolicy(endpointUrl: string | undefined): string {
+  const sources = new Set(["'self'"])
+  for (const host of loopbackHosts) {
+    for (const scheme of websocketSchemes) sources.add(`${scheme}//${host}:*`)
+  }
+  const endpoint = endpointSource(endpointUrl)
+  if (endpoint) sources.add(endpoint)
+  return [
+    "default-src 'self'",
+    `connect-src ${[...sources].join(" ")}`,
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    "img-src 'self' data:",
+    "script-src 'self'",
+  ].join("; ")
+}
+
 export function isAuthorizedRendererEvent(
   event: RendererIpcEvent,
   expectedWebContents: RendererWebContents,

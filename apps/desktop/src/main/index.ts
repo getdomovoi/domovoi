@@ -4,13 +4,15 @@ import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
 import { acquireLocalDaemon } from "@getdomovoi/daemon"
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   isAuthorizedRendererEvent,
+  isTrustedRendererFrameUrl,
+  rendererContentSecurityPolicy,
   resolveRendererTarget,
   type RendererTarget,
 } from "./renderer-security.js"
@@ -193,16 +195,43 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault())
 
-  mainRendererTarget = resolveRendererTarget({
+  const target = resolveRendererTarget({
     isPackaged: app.isPackaged,
     rendererUrl: process.env.ELECTRON_RENDERER_URL,
     bundledRendererPath: join(import.meta.dirname, "../renderer/index.html"),
   })
-  if (mainRendererTarget.kind === "url") {
-    void mainWindow.loadURL(mainRendererTarget.url)
-  } else {
-    void mainWindow.loadFile(mainRendererTarget.path)
+  mainRendererTarget = target
+  const window = mainWindow
+  const load = () => {
+    if (window.isDestroyed()) return
+    if (target.kind === "url") void window.loadURL(target.url)
+    else void window.loadFile(target.path)
   }
+  // The document's policy names the acquired endpoint, so the load waits for
+  // the acquisition to settle. The smoke never acquires and loads at once.
+  if (launchSmoke) load()
+  else void desktopDaemon.acquire().then(load, () => {})
+}
+
+// The renderer's policy is served with its document rather than pinned in the
+// markup, so connect-src can name the endpoint that was actually acquired.
+function serveRendererPolicy(): void {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const target = mainRendererTarget
+    if (details.resourceType !== "mainFrame" || !target || !isTrustedRendererFrameUrl(details.url, target)) {
+      callback({})
+      return
+    }
+    const acquisition = desktopDaemon.current()
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [
+          rendererContentSecurityPolicy(acquisition && acquisition.kind !== "refused" ? acquisition.url : undefined),
+        ],
+      },
+    })
+  })
 }
 
 ipcMain.handle("domovoi:window-decoration-get", (event) => {
@@ -280,6 +309,7 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     startupMetrics.mark("app-ready")
+    serveRendererPolicy()
     if (launchSmoke) {
       launchSmokeTimeout = setTimeout(() => {
         console.error(`Domovoi desktop launch smoke stopped after ${launchSmokeStage} readiness`)
