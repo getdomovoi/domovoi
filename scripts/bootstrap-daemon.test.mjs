@@ -7,7 +7,7 @@ import { join } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
-import { bootstrapDaemon } from "./bootstrap-daemon.mjs"
+import { bootstrapDaemon, maximumManifestBytes } from "./bootstrap-daemon.mjs"
 
 const baseUrl = "https://github.com/getdomovoi/domovoi/releases/download"
 const version = "0.1.0"
@@ -90,6 +90,127 @@ test("writes each archive chunk before requesting the next one", { timeout: 10_0
     assert.equal(result.sha256, expectedSha256)
     assert.deepEqual(await readFile(result.path), expected)
     assert.deepEqual(await readdir(release), [archive])
+  } finally {
+    await rm(into, { force: true, recursive: true })
+  }
+})
+
+test("retains only bounded chunk buffers across a large streamed archive", { timeout: 30_000 }, async () => {
+  const into = await destination()
+  try {
+    const script = fileURLToPath(new URL("./test-fixtures/bootstrap-memory.mjs", import.meta.url))
+    const result = await new Promise((settle, reject) => {
+      execFile(process.execPath, ["--expose-gc", script, into], {
+        timeout: 25_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+      }, (error, stdout, stderr) => {
+        if (error) { reject(new Error(`${error.message}\n${stderr}`, { cause: error })); return }
+        try { settle(JSON.parse(stdout)) } catch (error) { reject(error) }
+      })
+    })
+    assert.equal(result.archiveBytes, 64 * 1024 * 1024)
+    assert.ok(result.maxBufferGrowthBytes < 8 * 1024 * 1024, JSON.stringify(result))
+  } finally {
+    await rm(into, { force: true, recursive: true })
+  }
+})
+
+for (const declared of [true, false]) {
+  test(`bounds the manifest separately before staging (${declared ? "declared" : "streamed"})`, { timeout: 10_000 }, async (t) => {
+    const into = await destination()
+    let cancelled = false
+    let requested = 0
+    const body = new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(64 * 1024)) },
+      cancel() { cancelled = true },
+    }, { highWaterMark: 0 })
+    t.mock.method(globalThis, "fetch", async () => {
+      requested += 1
+      return new Response(body, { headers: declared ? { "content-length": String(maximumManifestBytes + 1) } : {} })
+    })
+    try {
+      await assert.rejects(bootstrapDaemon({ version, baseUrl, destination: into, expectedSha256: digest }),
+        new RegExp(`SHA256SUMS.*larger than ${maximumManifestBytes}`))
+      assert.equal(cancelled, true)
+      assert.equal(requested, 1, "an oversized manifest must not reach the archive fetch")
+      assert.deepEqual(await readdir(into), [])
+    } finally {
+      await rm(into, { force: true, recursive: true })
+    }
+  })
+
+  test(`cancels an oversized archive and removes its private staging (${declared ? "declared" : "streamed"})`,
+    { timeout: 10_000 }, async (t) => {
+      const into = await destination()
+      let cancelled = false
+      const body = new ReadableStream({
+        pull(controller) { controller.enqueue(new Uint8Array(8)) },
+        cancel() { cancelled = true },
+      }, { highWaterMark: 0 })
+      t.mock.method(globalThis, "fetch", async (url) => url.endsWith("SHA256SUMS")
+        ? new Response(`${digest}  ${archive}\n`)
+        : new Response(body, { headers: declared ? { "content-length": "17" } : {} }))
+      try {
+        await assert.rejects(bootstrapDaemon({ version, baseUrl, destination: into, expectedSha256: digest, maximumBytes: 16 }), /larger than 16/)
+        assert.equal(cancelled, true)
+        assert.deepEqual(await readdir(join(into, `v${version}`)), [])
+      } finally {
+        await rm(into, { force: true, recursive: true })
+      }
+    })
+}
+
+test("expires a silent fetch and never stages its late result", { timeout: 10_000 }, async (t) => {
+  const into = await destination()
+  const pending = Promise.withResolvers()
+  let signal
+  let cancelled = false
+  const calls = []
+  t.mock.method(globalThis, "fetch", (url, options) => {
+    calls.push(url)
+    signal = options.signal
+    return pending.promise
+  })
+  try {
+    await assert.rejects(bootstrapDaemon({ version, baseUrl, destination: into, expectedSha256: digest, timeoutMs: 100 }),
+      /Bootstrap exceeded 100 ms.*https:/)
+    assert.equal(signal.aborted, true)
+    const response = new Response(new ReadableStream({ cancel() { cancelled = true } }))
+    pending.resolve(response)
+    // Drain late promise continuations, not an elapsed-time assumption.
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(cancelled, true, "a fetch that ignores abort must lose its late body too")
+    assert.equal(calls.length, 1)
+    assert.deepEqual(await readdir(into), [])
+  } finally {
+    pending.resolve(new Response(null))
+    await rm(into, { force: true, recursive: true })
+  }
+})
+
+test("cancels a stalled archive body at the original deadline", { timeout: 10_000 }, async (t) => {
+  const into = await destination()
+  let now = 0
+  let cancelled = false
+  let reads = 0
+  t.mock.method(performance, "now", () => now)
+  const body = new ReadableStream({
+    pull(controller) {
+      reads += 1
+      if (reads === 1) controller.enqueue(new Uint8Array(8))
+      else {
+        now = 1_000
+        controller.enqueue(new Uint8Array(8))
+      }
+    },
+    cancel() { cancelled = true },
+  }, { highWaterMark: 0 })
+  t.mock.method(globalThis, "fetch", async (url) => new Response(url.endsWith("SHA256SUMS") ? `${digest}  ${archive}\n` : body))
+  try {
+    await assert.rejects(bootstrapDaemon({ version, baseUrl, destination: into, expectedSha256: digest, timeoutMs: 1_000 }),
+      /exceeded 1000 ms/)
+    assert.equal(cancelled, true)
+    assert.equal(reads, 2, "trickling a chunk must not renew the deadline")
+    await assert.rejects(readFile(join(into, `v${version}`, archive)), { code: "ENOENT" })
   } finally {
     await rm(into, { force: true, recursive: true })
   }
