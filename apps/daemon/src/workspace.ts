@@ -81,6 +81,7 @@ export const maximumEvidenceFiles = 200
 export const maximumEvidenceDiffBytes = 256 * 1_024
 const maximumEvidenceAttempts = 3
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
+const restoreClaimIoTimeoutMs = 10_000
 
 export class SessionWorktreeExistsError extends Error {
   constructor(restoreClaimPath?: string) {
@@ -88,6 +89,15 @@ export class SessionWorktreeExistsError extends Error {
       ? "Session worktree already exists"
       : `Session worktree already exists or its restore claim is held at ${restoreClaimPath}. Stop Domovoi and its supervisor before removing a confirmed stale claim.`)
     this.name = "SessionWorktreeExistsError"
+  }
+}
+
+class RestoreClaimOwnerVerificationError extends Error {
+  constructor(tokenWritten: boolean) {
+    super(tokenWritten
+      ? "Restore claim now belongs to another owner"
+      : "Restore claim owner could not be established")
+    this.name = "RestoreClaimOwnerVerificationError"
   }
 }
 
@@ -99,7 +109,8 @@ export class SessionRestoreClaimCleanupError extends AggregateError {
     cleanupErrors: readonly unknown[],
     restoreFailure?: { error: unknown },
   ) {
-    const diagnostic = `Restore claim cleanup failed at ${claimPath}`
+    const ownershipError = cleanupErrors.find((error) => error instanceof RestoreClaimOwnerVerificationError)
+    const diagnostic = `Restore claim cleanup failed at ${claimPath}${ownershipError ? `. ${ownershipError.message}` : ""}`
     super(
       restoreFailure ? [restoreFailure.error, ...cleanupErrors] : cleanupErrors,
       restoreFailure
@@ -1238,9 +1249,11 @@ export class GitWorkspaceService implements WorkspaceService {
     signal?.throwIfAborted()
     const claimDirectory = join(this.worktreeRoot, ".restore-claims")
     const claimPath = join(claimDirectory, sessionId)
+    const claimToken = randomUUID()
     if (activeBundleRestores.has(claimPath)) throw new SessionWorktreeExistsError()
     activeBundleRestores.add(claimPath)
     let claim: Awaited<ReturnType<typeof open>> | undefined
+    let claimTokenWritten = false
     let outcome: { completed: true; workspace: SessionWorkspace } | { completed: false; error: unknown }
     const cleanupErrors: unknown[] = []
     try {
@@ -1254,6 +1267,14 @@ export class GitWorkspaceService implements WorkspaceService {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new SessionWorktreeExistsError(claimPath)
         throw error
       }
+      // Once the file exists, finish its identity even if the restore was
+      // cancelled. Otherwise cancellation itself leaves an unverified claim
+      // that cleanup cannot safely remove. No repository work starts below
+      // until the caller's cancellation has been checked again.
+      const writeSignal = AbortSignal.timeout(restoreClaimIoTimeoutMs)
+      await claim.writeFile(claimToken, { encoding: "utf8", signal: writeSignal })
+      claimTokenWritten = true
+      writeSignal.throwIfAborted()
       signal?.throwIfAborted()
       outcome = { completed: true, workspace: await this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal) }
     } catch (error) {
@@ -1264,7 +1285,17 @@ export class GitWorkspaceService implements WorkspaceService {
           // A close failure must not skip unlink. Neither cleanup failure may
           // hide the restore outcome or keep the process reservation occupied.
           try { await claim.close() } catch (error) { cleanupErrors.push(error) }
-          try { await unlink(claimPath) } catch (error) { cleanupErrors.push(error) }
+          try {
+            // The ownership read has its own deadline after cancellation too.
+            // Check the pathname, not the original handle, which may now refer
+            // to an unlinked file. Manual deletion still requires stopped
+            // daemons: token verification and unlink are not one atomic action.
+            const readSignal = AbortSignal.timeout(restoreClaimIoTimeoutMs)
+            const currentToken = await readFile(claimPath, { encoding: "utf8", signal: readSignal })
+            readSignal.throwIfAborted()
+            if (currentToken !== claimToken) cleanupErrors.push(new RestoreClaimOwnerVerificationError(claimTokenWritten))
+            else await unlink(claimPath)
+          } catch (error) { cleanupErrors.push(error) }
         }
       } finally {
         activeBundleRestores.delete(claimPath)
