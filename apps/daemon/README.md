@@ -51,6 +51,29 @@ own short-lived signed capabilities on every listener, loopback included; each c
 to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
 retargeted request returns 404.
 
+## Pairing admission and audit retention
+
+Pairing claims are limited to three per source address and thirty across the listener in a rolling
+minute. Admission runs before parameter validation or code verification, so malformed claims count
+and a throttled valid code is not consumed. The source is the TCP peer address, not a forwarding
+header. Reconnecting, greeting with a credential, or issuing another code does not reset these
+budgets. Peers behind the same NAT or proxy share the source budget. A throttled claim receives the
+ordinary pairing refusal and its socket closes with code `1008`, reason `pairing rate limit`.
+Wait a minute before trying again; an expired code needs replacing after the cooldown.
+
+The five-wrong-guesses limit and three-minute code lifetime still apply. Admission limits reduce
+abuse; they do not guarantee pairing availability against distributed peers or a peer that keeps
+trying after cooldown. Keep code-based pairing on a protected direct route. Limits are held for
+the lifetime of the daemon; a restart also invalidates its open pairing code.
+
+The audit retains up to 10,000 activity entries and a separate maximum of 1,000 pre-authentication
+entries. Rejected claims, authentication failures, and invalid requests cannot spend activity
+retention. Repeated ingress events record only the first event of each category per minute, not a
+complete attempt count. Successful pairings remain activity records. Both classes remain available
+through audit query and export, without recording submitted codes, credentials, or claimant labels.
+Upgrades preserve existing history without guessing which older rows were unauthenticated; the
+retention distinction applies to new writes.
+
 ## When state cannot reach disk
 
 The daemon writes the workspace snapshot after every change. A single failed write is retried on
