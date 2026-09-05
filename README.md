@@ -63,6 +63,12 @@ URL. Preview documents
 on every listener, loopback included, require short-lived signed capabilities scoped to one
 artifact revision, purpose, annotation bridge channel, and parent origin.
 
+File-backed credentials are written, synced and closed in private staging before a no-replace
+hard link publishes the final name. An interrupted first write therefore does not publish an
+empty `daemon.token` or `local-owner.key`. Existing malformed files are preserved and startup
+names their path; see [credential initialization and offline recovery](docs/credential-files.md)
+before quarantining one. Initialization requires a filesystem with hard-link support.
+
 For supervised operation, `domovoid service install` saves validated non-secret daemon settings and
 uses them on every service start. Environment-only bearer tokens are not copied into service files.
 See [daemon service configuration](docs/daemon-services.md) for credential setup and lifecycle limits.

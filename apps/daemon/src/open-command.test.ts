@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { runOpenCommand, type OpenCommandDependencies } from "./open-command.js"
 import type { WslDistribution } from "./wsl-distributions.js"
+import { listWslDistributions } from "./wsl-list.js"
 
 const distributions: WslDistribution[] = [
   { name: "Ubuntu-24.04", state: "Running", version: 2, default: true },
@@ -39,6 +40,31 @@ describe("runOpenCommand", () => {
     expect(deps.open).toHaveBeenCalledWith({ kind: "windows", path: "C:\\work\\repo" })
     expect(deps.distributions).not.toHaveBeenCalled()
     expect(deps.translate).not.toHaveBeenCalled()
+  })
+
+  it("opens a Windows path without waiting on a wsl.exe that never answers", async () => {
+    const deps = dependencies({
+      distributions: vi.fn(() => new Promise<WslDistribution[]>(() => {})),
+      translate: vi.fn(() => new Promise<string>(() => {})),
+    })
+    expect(await runOpenCommand(["open", "C:\\work\\repo"], deps)).toBe(0)
+    expect(deps.open).toHaveBeenCalledWith({ kind: "windows", path: "C:\\work\\repo" })
+  })
+
+  it("does not call a wsl.exe it may not run a missing distribution", async () => {
+    const deps = dependencies({
+      distributions: vi.fn(() => listWslDistributions({
+        platform: "win32",
+        run: async () => {
+          throw Object.assign(new Error("spawn wsl.exe EACCES"), { code: "EACCES" })
+        },
+      })),
+    })
+    expect(await runOpenCommand(["open", "\\\\wsl$\\Ubuntu-24.04\\home\\me"], deps)).toBe(1)
+    const stderr = deps.stderr.mock.calls.join("")
+    expect(stderr).not.toMatch(/no WSL distribution called/)
+    expect(stderr).toMatch(/denied/i)
+    expect(deps.open).not.toHaveBeenCalled()
   })
 
   it("opens a directory inside a distribution through that distribution, at the path it answered", async () => {

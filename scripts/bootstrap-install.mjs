@@ -3,14 +3,28 @@ import { chmod, link, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/pr
 import { dirname, join, posix, win32 } from "node:path"
 import { promisify } from "node:util"
 
-import { bootstrapDaemon, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
-import { bootstrapDeadline, defaultCleanupTimeoutMs } from "./bootstrap-deadline.mjs"
+import { bootstrapDaemon, defaultBootstrapInactivityTimeoutMs, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
+import { bootstrapDeadline, defaultCleanupTimeoutMs, validateBootstrapTimeout } from "./bootstrap-deadline.mjs"
 import { pinnedSha256 } from "./bootstrap-plan.mjs"
-import { hashRuntimeFile, readRuntimeJson, validateRuntimeLock, verifyInstalledRuntime } from "./runtime-verification.mjs"
+import { hashRuntimeFile, readRuntimeJson, runtimePlatform, validateRuntimeLock, verifyInstalledRuntime } from "./runtime-verification.mjs"
 
 const execute = promisify(execFile)
 export const minimumBootstrapNpm = "10.0.0"
 const npmRemedy = `Bootstrap requires npm ${minimumBootstrapNpm} or newer bundled with Node. Install a supported Node distribution including npm`
+
+export function nodePtyBuildEnvironment(platform, environment) {
+  const env = { ...environment }
+  if (platform.os === "linux" && platform.libc !== "glibc") {
+    // node-pty's platform/architecture prebuild path does not distinguish libc.
+    // Its reviewed install hook removes those prebuilds when this flag is true.
+    // An inherited false, including differently cased npm keys, must not win.
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === "npm_config_build_from_source") delete env[key]
+    }
+    env.npm_config_build_from_source = "true"
+  }
+  return env
+}
 
 export async function runBootstrapCommand(command, args, { cwd, deadline, env }) {
   deadline.check()
@@ -86,7 +100,26 @@ async function lockedInput(directory, version, deadline) {
   return { lock, manifest, lockSha256: await hashRuntimeFile(join(directory, "runtime/lock.json"), "sha256", deadline) }
 }
 
-async function existingRuntime(release, archive, deadline) {
+async function verifyNativeRuntime(directory, lock, deadline, run) {
+  if (!lock.packages["node_modules/node-pty"]) return
+  // Successful npm output is not evidence that the native addon loads in this
+  // Node/libc combination. Probe only the verified installed package, in a
+  // child process spending the original bootstrap deadline, before publication
+  // and on reuse. Never start a daemon or create a profile during installation.
+  try {
+    // The pinned node-pty loads ConPTY lazily on Windows. Importing its public
+    // entry alone would not exercise the binding on that platform. Use its own
+    // loader for the selected native addon without spawning a terminal.
+    const probe = 'const root = process.argv[1]; require(root); require(require("node:path").join(root, "lib/utils.js")).loadNativeModule(process.platform === "win32" ? "conpty" : "pty")'
+    await deadline.run(() => run(process.execPath, ["--input-type=commonjs", "--eval", probe,
+      join(directory, "node_modules/node-pty")], { cwd: directory, deadline }))
+  } catch (error) {
+    deadline.check()
+    throw new Error(`The native terminal module could not load at ${directory}. Check the Node version and native build toolchain, then install into a new destination; existing installations were not replaced. ${error.message}`, { cause: error })
+  }
+}
+
+async function existingRuntime(release, archive, deadline, run) {
   let receipt
   try { receipt = await readRuntimeJson(join(release, "runtime.json"), deadline, 16 * 1024) }
   catch (error) { if (error.code === "ENOENT") return undefined; throw error }
@@ -98,12 +131,14 @@ async function existingRuntime(release, archive, deadline) {
   const input = await lockedInput(directory, archive.version, deadline)
   if (receipt.lockSha256 !== input.lockSha256) throw new Error(`Existing runtime lock changed at ${directory}. Nothing was replaced`)
   await verifyInstalledRuntime(directory, input.lock, deadline)
+  await verifyNativeRuntime(directory, input.lock, deadline, run)
   return { ...archive, runtimePath: directory }
 }
 
 export async function installBootstrapDaemon(options) {
   const timeoutMs = options.timeoutMs ?? defaultBootstrapTimeoutMs
   pinnedSha256(options.expectedSha256)
+  validateBootstrapTimeout(options.inactivityTimeoutMs === undefined ? defaultBootstrapInactivityTimeoutMs : options.inactivityTimeoutMs)
   const deadline = bootstrapDeadline(timeoutMs,
     `Bootstrap exceeded ${timeoutMs} ms, including installation and verification; inspect ${options.destination} before retrying`)
   const run = options.run ?? runBootstrapCommand
@@ -117,7 +152,7 @@ export async function installBootstrapDaemon(options) {
     const npm = await bundledNpm(deadline, run)
     const archive = await bootstrapDaemon({ ...options, deadline })
     const release = dirname(archive.path)
-    result = await existingRuntime(release, archive, deadline)
+    result = await existingRuntime(release, archive, deadline, run)
     if (result) { deadline.clear(); return result }
     await deadline.run(async () => { staging = await mkdtemp(join(release, ".runtime-")) })
     await privateDirectory(staging, deadline, run)
@@ -140,9 +175,11 @@ export async function installBootstrapDaemon(options) {
     // The reviewed runtime's only build hook is node-pty. Do not grant every
     // downloaded package lifecycle execution because one native module needs it.
     if (lock.packages["node_modules/node-pty"]) {
-      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", ...location, "--foreground-scripts", "--ignore-scripts=false"], commandOptions))
+      const nativeOptions = { ...commandOptions, env: nodePtyBuildEnvironment(runtimePlatform(), commandOptions.env) }
+      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", ...location, "--foreground-scripts", "--ignore-scripts=false"], nativeOptions))
       await verifyInstalledRuntime(directory, lock, deadline)
     }
+    await verifyNativeRuntime(directory, lock, deadline, run)
     const materializedHash = await hashRuntimeFile(join(directory, "package-lock.json"), "sha256", deadline)
     if (materializedHash !== lockSha256) throw new Error("npm changed the frozen runtime lock. Installation was not published")
     const receipt = { format: 1, version: archive.version, sha256: archive.sha256, lockSha256,
@@ -154,7 +191,7 @@ export async function installBootstrapDaemon(options) {
       // Concurrent installers keep private trees until one verified receipt wins.
       await deadline.run(async () => { await link(receiptPath, join(release, "runtime.json")); keep = true })
     } catch (error) { if (error.code !== "EEXIST") throw error }
-    result = await existingRuntime(release, archive, deadline)
+    result = await existingRuntime(release, archive, deadline, run)
     if (!result) throw new Error("Verified runtime receipt disappeared before publication completed")
   } catch (error) { failure = error } finally { deadline.clear() }
   if (staging && !keep) {

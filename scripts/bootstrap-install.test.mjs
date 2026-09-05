@@ -55,6 +55,7 @@ async function fixture(t) {
   let installVersion = "1.0.0"
   let failInstall
   let afterInstall
+  let afterBuild
   const run = async (command, args, options) => {
     calls.push({ command, args, deadline: options.deadline })
     options.deadline.check()
@@ -63,6 +64,10 @@ async function fixture(t) {
       return await execute(command, args, { cwd: options.cwd, signal: options.deadline.signal, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 })
     }
     if (failInstall) throw failInstall
+    if (args.includes("rebuild")) {
+      await afterBuild?.(options)
+      return { stdout: "rebuild reported success", stderr: "" }
+    }
     assert.ok(args.includes("--global=false"))
     assert.equal(args[args.indexOf("--prefix") + 1], options.cwd)
     assert.equal(args[args.indexOf("--cache") + 1], join(options.cwd, "../.npm-cache"))
@@ -85,8 +90,99 @@ async function fixture(t) {
     setVersion: (value) => { installVersion = value },
     fail: (error) => { failInstall = error },
     afterInstall: (action) => { afterInstall = action },
+    afterBuild: (action) => { afterBuild = action },
   }
 }
+
+async function nativeFixture(t, source = "module.exports = {}\n", bindingSource = "module.exports = {}\n") {
+  const setup = await fixture(t)
+  const { lock, packageRoot, options, afterInstall, pack } = setup
+  lock.packages[""].dependencies["node-pty"] = "1.0.0"
+  lock.packages[""].allowScripts = { "node-pty@1.0.0": true }
+  lock.packages["node_modules/node-pty"] = {
+    version: "1.0.0", resolved: "https://registry.npmjs.org/node-pty/-/node-pty-1.0.0.tgz", integrity: integrity("node-pty"), hasInstallScript: true,
+  }
+  await fs.writeFile(join(packageRoot, "runtime/lock.json"), JSON.stringify(lock))
+  await fs.writeFile(join(packageRoot, "runtime/package.json"), JSON.stringify(lock.packages[""]))
+  const bytes = await pack()
+  options.expectedSha256 = sha256(bytes)
+  options.download = async (url) => url.endsWith("SHA256SUMS") ? `${sha256(bytes)}  ${archiveName}\n` : bytes
+  afterInstall(async ({ cwd }) => {
+    const native = join(cwd, "node_modules/node-pty")
+    await fs.mkdir(native, { recursive: true })
+    await fs.writeFile(join(native, "package.json"), JSON.stringify({ name: "node-pty", version: "1.0.0", main: "index.js" }))
+    await fs.writeFile(join(native, "index.js"), source)
+    await fs.mkdir(join(native, "lib"))
+    await fs.writeFile(join(native, "lib/utils.js"), 'exports.loadNativeModule = () => ({ module: require("../binding.js") })\n')
+    await fs.writeFile(join(native, "binding.js"), bindingSource)
+  })
+  return setup
+}
+
+test("musl native builds cannot inherit an instruction to keep a glibc prebuild", async () => {
+  const { nodePtyBuildEnvironment } = await import("./bootstrap-install.mjs")
+  assert.equal(typeof nodePtyBuildEnvironment, "function")
+  const original = { NPM_CONFIG_BUILD_FROM_SOURCE: "false", npm_config_build_from_source: "false", UNRELATED: "kept" }
+  for (const libc of ["musl", undefined]) {
+    const env = nodePtyBuildEnvironment({ os: "linux", cpu: "x64", libc }, original)
+    assert.equal(env.npm_config_build_from_source, "true")
+    assert.equal(Object.hasOwn(env, "NPM_CONFIG_BUILD_FROM_SOURCE"), false)
+    assert.equal(env.UNRELATED, "kept")
+  }
+  for (const os of ["darwin", "win32", "linux"]) {
+    assert.deepEqual(nodePtyBuildEnvironment({ os, cpu: "x64", libc: "glibc" }, original), original)
+  }
+  assert.equal(original.npm_config_build_from_source, "false", "native build policy must not mutate the caller environment")
+})
+
+test("does not publish when npm succeeds but the native terminal module cannot load", { timeout: testTimeout }, async (t) => {
+  const { options, calls } = await nativeFixture(t, 'throw new Error("glibc prebuild on musl")\n')
+  await assert.rejects(installer(options), /native terminal.*load/i)
+  assert.equal(calls.filter(({ args }) => args.includes("rebuild")).length, 1)
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
+})
+
+test("rejects an old unusable native runtime receipt without replacing it", { timeout: testTimeout }, async (t) => {
+  const { options, calls } = await nativeFixture(t)
+  const result = await installer(options)
+  const receiptPath = join(options.destination, `v${version}`, "runtime.json")
+  const receipt = await fs.readFile(receiptPath)
+  await fs.writeFile(join(result.runtimePath, "node_modules/node-pty/index.js"), 'throw new Error("wrong libc")\n')
+  await assert.rejects(installer(options), /native terminal.*load/i)
+  assert.deepEqual(await fs.readFile(receiptPath), receipt)
+  assert.equal(calls.filter(({ args }) => args.includes("ci")).length, 1)
+  assert.ok(calls.every(({ deadline }) => deadline === calls.find(({ args }) => args.includes("ci")).deadline ||
+    deadline === calls.at(-1).deadline), "native probes stay within their install or reuse deadline")
+})
+
+test("a failed native build cannot publish a runnable receipt", { timeout: testTimeout }, async (t) => {
+  const { options, afterBuild } = await nativeFixture(t)
+  afterBuild(() => { throw new Error("node-gyp: missing C++ compiler") })
+  await assert.rejects(installer(options), /node-gyp: missing C\+\+ compiler/)
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
+})
+
+test("does not publish when the entry loads but the lazy native binding is broken", { timeout: testTimeout }, async (t) => {
+  const { options } = await nativeFixture(t, "module.exports = {}\n", 'throw new Error("ConPTY native binding cannot load")\n')
+  await assert.rejects(installer(options), /native terminal.*load/i)
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
+})
+
+test("native load verification cannot extend the installation deadline", { timeout: testTimeout }, async (t) => {
+  const { options, calls } = await nativeFixture(t)
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const run = options.run
+  options.run = async (command, args, context) => {
+    const result = await run(command, args, context)
+    if (args.includes("--eval")) now = 1_000
+    return result
+  }
+  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), /Bootstrap.*1000 ms/)
+  assert.equal(calls.filter(({ args }) => args.includes("--eval")).length, 1)
+  assert.ok(calls.every(({ deadline }) => deadline === calls[0].deadline))
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
+})
 
 test("installs and verifies the frozen tree before publishing a runnable receipt", { timeout: testTimeout }, async (t) => {
   const { options, calls } = await fixture(t)
@@ -133,6 +229,16 @@ test("refuses a missing or old npm with the supported minimum", { timeout: testT
     } }), /npm 10\.0\.0 or newer.*Node/i)
   }
 })
+
+for (const inactivityTimeoutMs of [0, null]) {
+  test(`validates download inactivity before the installer starts npm: ${inactivityTimeoutMs}`, { timeout: testTimeout }, async () => {
+    let calls = 0
+    await assert.rejects(installer({ version, expectedSha256: "0".repeat(64), inactivityTimeoutMs,
+      run: () => { calls += 1; assert.fail("Invalid download policy must not start npm") },
+    }), /timeout must be a positive integer/)
+    assert.equal(calls, 0)
+  })
+}
 
 test("binds protocol archive bytes before npm receives them", { timeout: testTimeout }, async (t) => {
   const { options, calls, packageRoot, pack } = await fixture(t)
