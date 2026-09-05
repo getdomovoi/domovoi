@@ -93,7 +93,7 @@ it("assigns a fresh registration on every install and invalidates an earlier rec
   const deadline = OperationDeadline.start(operationBudget)
   try {
     const home = await setup(deadline)
-    const effects = { ...nodeServiceEffects(), run: vi.fn(async () => {}) }
+    const effects = { ...nodeServiceEffects({ userHomeDirectory: home }), run: vi.fn(async () => {}) }
     const target = serviceTarget(home)
     await beforeDeadline(installService(target, effects), deadline)
     const first = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
@@ -111,7 +111,7 @@ it("receipts the installed owner's exact instance only after stopping its superv
   const deadline = OperationDeadline.start(operationBudget)
   try {
     const home = await setup(deadline)
-    const node = nodeServiceEffects()
+    const node = nodeServiceEffects({ userHomeDirectory: home })
     const target = serviceTarget(home)
     await beforeDeadline(installService(target, { ...node, run: async () => {} }), deadline)
     const saved = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }

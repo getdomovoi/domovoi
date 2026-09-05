@@ -22,6 +22,7 @@ function manager(platform: "linux" | "darwin" | "win32") {
   const { before, after, owner } = snapshots()
   const release = vi.fn()
   const effects: ServiceEffects = {
+    claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
     claimProfile: vi.fn(() => ({ release })),
     removalSnapshot: vi.fn().mockImplementationOnce(() => before).mockImplementation(() => after),
     writeRemovalReceipt: vi.fn(), write: vi.fn(async () => {}),

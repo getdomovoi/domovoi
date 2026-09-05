@@ -63,7 +63,7 @@ describe("service command exclusion", () => {
         write: vi.fn(node.write), remove: vi.fn(node.remove),
         exists: vi.fn(node.exists), removalSnapshot: vi.fn(node.removalSnapshot),
       }
-      await expect(within(() => second === "install" ? installService(target, contender)
+      await expect(within<unknown>(() => second === "install" ? installService(target, contender)
         : second === "remove" ? removeService(target, contender) : serviceStatus(target, contender)))
         .rejects.toThrow(/Another Domovoi service operation/)
       for (const operation of [contender.run, contender.capture, contender.write, contender.remove, contender.exists, contender.removalSnapshot]) {

@@ -23,6 +23,7 @@ vi.mock("node:timers/promises", () => ({
 function taskManager() {
   const task = { registered: true, enabled: true, running: true }
   const effects: ServiceEffects = {
+    claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
     claimProfile: vi.fn(() => ({ release: vi.fn() })),
     removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
     writeRemovalReceipt: vi.fn(),

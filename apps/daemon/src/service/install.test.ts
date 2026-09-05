@@ -43,6 +43,7 @@ const windowsScript = {
 
 function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   return {
+    claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
     claimProfile: vi.fn(() => ({ release: vi.fn() })),
     removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
     writeRemovalReceipt: vi.fn(),
@@ -150,7 +151,7 @@ describe("installService", () => {
   it("refuses before installing anything while Desktop owns the canonical profile", async () => {
     const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-install-owned-"))
     const desktop = await createProductionDaemon({ homeDirectory, environment: {}, owner: "desktop" })
-    const dependencies = { ...nodeServiceEffects(), write: vi.fn(async () => {}), run: vi.fn(async () => {}) }
+    const dependencies = { ...nodeServiceEffects({ userHomeDirectory: homeDirectory }), write: vi.fn(async () => {}), run: vi.fn(async () => {}) }
     try {
       await expect(installService({
         ...linux, home: homeDirectory, configuration: configuration(homeDirectory, process.platform),
@@ -257,6 +258,65 @@ describe("installService", () => {
       run: ran,
     })).rejects.toThrow("read-only file system")
     expect(ran).not.toHaveBeenCalled()
+  })
+})
+
+describe("service operation lease lifecycle", () => {
+  const invoke = (verb: "install" | "remove" | "status", dependencies: ServiceEffects): Promise<unknown> =>
+    verb === "install" ? installService(linux, dependencies)
+      : verb === "remove" ? removeService(linux, dependencies) : serviceStatus(linux, dependencies)
+
+  it.each(["install", "remove", "status"] as const)("releases %s exclusion after success or a settled error", async (verb) => {
+    const release = vi.fn()
+    const dependencies = effects({ claimServiceOperation: vi.fn(() => ({ release })) })
+    await invoke(verb, dependencies)
+    expect(release).toHaveBeenCalledOnce()
+    vi.mocked(dependencies.run).mockRejectedValue(new Error("manager refused"))
+    vi.mocked(dependencies.capture).mockRejectedValue(new Error("manager refused"))
+    await expect(invoke(verb, dependencies)).rejects.toThrow("manager refused")
+    expect(release).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(["install", "remove", "status"] as const)("retains %s exclusion after expiry and ignores late completion", async (verb) => {
+    vi.useFakeTimers()
+    try {
+      let finish = () => {}
+      const pending = new Promise<void>((resolve) => { finish = resolve })
+      const release = vi.fn()
+      const dependencies = effects({
+        claimServiceOperation: vi.fn(() => ({ release })),
+        run: vi.fn(() => pending),
+        capture: vi.fn(async () => { await pending; return { code: 0, stdout: "active" } }),
+      })
+      const rejected = expect(invoke(verb, dependencies)).rejects.toThrow(/deadline/)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await rejected
+      expect(release).not.toHaveBeenCalled()
+      const calls = [dependencies.run, dependencies.capture, dependencies.write, dependencies.remove]
+        .map((operation) => vi.mocked(operation).mock.calls.length)
+      finish()
+      await vi.advanceTimersByTimeAsync(0)
+      expect([dependencies.run, dependencies.capture, dependencies.write, dependencies.remove]
+        .map((operation) => vi.mocked(operation).mock.calls.length)).toEqual(calls)
+      expect(release).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it("starts the deadline before acquisition and rejects a late claim before any work", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(30_000, { now: () => now })
+    const start = vi.spyOn(OperationDeadline, "start").mockReturnValue(deadline)
+    const release = vi.fn()
+    try {
+      const dependencies = effects({ claimServiceOperation: vi.fn(() => { now = 30_000; return { release } }) })
+      await expect(installService(linux, dependencies)).rejects.toThrow(/deadline/)
+      expect(start).toHaveBeenCalledOnce()
+      expect(dependencies.claimProfile).not.toHaveBeenCalled()
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(dependencies.remove).not.toHaveBeenCalled()
+      expect(dependencies.run).not.toHaveBeenCalled()
+    } finally { start.mockRestore(); deadline.clear() }
   })
 })
 
