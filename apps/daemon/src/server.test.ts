@@ -12290,3 +12290,116 @@ describe("DomovoiDaemon persistence refusal", () => {
     socket.close()
   })
 })
+
+describe("DomovoiDaemon and WSL", () => {
+  it("describes the distribution this daemon runs in", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      machineIdentity: { id: `machine-${"8".repeat(32)}`, label: "ubuntu-daemon" },
+      wsl: { distribution: "Ubuntu-24.04", version: 2 },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "fleet.list", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      result: {
+        entries: [{ kind: "machine", machine: {
+          id: `machine-${"8".repeat(32)}`,
+          platform: process.platform,
+          wsl: { distribution: "Ubuntu-24.04", version: 2 },
+          self: true,
+        } }],
+      },
+    })
+    socket.close()
+  })
+
+  it("reports no WSL facts for a daemon that has none", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      machineIdentity: { id: `machine-${"9".repeat(32)}`, label: "plain" },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<{ result: { entries: Array<{ machine: Record<string, unknown> }> } }>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()))
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "fleet.list", params: {} }))
+
+    expect((await response).result.entries[0]?.machine).not.toHaveProperty("wsl")
+    socket.close()
+  })
+
+  it.each([
+    "\\\\wsl$\\Ubuntu-24.04\\home\\me\\project",
+    "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\project",
+    "//wsl$/Ubuntu-24.04/home/me/project",
+  ])("refuses to do repository work through the WSL share: %s", async (path) => {
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: testAuthToken("wsl-share-token"),
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "project.open",
+      params: { path, client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: {
+        code: -32602,
+        message: expect.stringMatching(/Ubuntu-24\.04.*domovoid open/s),
+      },
+    })
+    expect(workspaceService.inspect).not.toHaveBeenCalled()
+    socket.close()
+  })
+})

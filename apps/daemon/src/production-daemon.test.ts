@@ -283,3 +283,44 @@ describe("createProductionDaemon", () => {
     peerRpc.socket.close()
   })
 })
+
+describe("createProductionDaemon under WSL", () => {
+  it("describes the distribution the daemon runs in from its environment", async () => {
+    const homeDirectory = join("", "home", "tester")
+    const environment = { WSL_DISTRO_NAME: "Ubuntu-24.04", WSL_INTEROP: "/run/WSL/8_interop" }
+    const wsl = { distribution: "Ubuntu-24.04", version: 2 as const }
+    const wslFacts = vi.fn(() => wsl)
+    let daemonOptions: DaemonServerOptions | undefined
+    await createProductionDaemonWithDependencies({ environment, homeDirectory, machineLabel: "studio" }, {
+      ...productionDaemonDependencies,
+      loadOrCreateToken: async () => testToken("wsl-factory"),
+      loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
+      createMachineCredentials: () => new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} }),
+      wslFacts,
+      createDaemon: (options) => {
+        daemonOptions = options
+        return fakeRuntime(options)
+      },
+    })
+
+    expect(wslFacts).toHaveBeenCalledWith(environment)
+    expect(daemonOptions).toMatchObject({ wsl })
+  })
+
+  it("passes no WSL facts to a daemon outside WSL", async () => {
+    let daemonOptions: DaemonServerOptions | undefined
+    await createProductionDaemonWithDependencies({ environment: {}, homeDirectory: join("", "home", "tester"), machineLabel: "studio" }, {
+      ...productionDaemonDependencies,
+      loadOrCreateToken: async () => testToken("plain-factory"),
+      loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
+      createMachineCredentials: () => new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} }),
+      wslFacts: () => undefined,
+      createDaemon: (options) => {
+        daemonOptions = options
+        return fakeRuntime(options)
+      },
+    })
+
+    expect(daemonOptions).not.toHaveProperty("wsl")
+  })
+})

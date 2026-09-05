@@ -1,6 +1,8 @@
 import { homedir, hostname } from "node:os"
 import { join } from "node:path"
 
+import type { MachineWslFacts } from "@getdomovoi/protocol"
+
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
@@ -15,6 +17,7 @@ import {
   type DaemonServerOptions,
 } from "./server.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
+import { wslHostFacts } from "./wsl-host.js"
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
@@ -63,6 +66,7 @@ export type ProductionDaemonDependencies = {
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   createProviderProbe(): ProviderProbe
   createMachineCredentials(): MachineCredentials
+  wslFacts(environment: DaemonEnvironment): MachineWslFacts | undefined
   createDaemon(options: DaemonServerOptions): ProductionDaemonRuntime
 }
 
@@ -73,6 +77,7 @@ export const productionDaemonDependencies = {
   loadTls: loadTlsMaterial,
   createProviderProbe: () => new CliProviderProbe(),
   createMachineCredentials: () => new MachineCredentialStore(),
+  wslFacts: (environment) => wslHostFacts({ environment }),
   createDaemon: (options) => new DomovoiDaemon(options),
 } satisfies ProductionDaemonDependencies
 
@@ -99,6 +104,9 @@ export async function createProductionDaemonWithDependencies(
     dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
   ])
   const stateDirectory = join(homeDirectory, ".domovoi")
+  // A daemon inside a WSL distribution says so in its fleet facts, so the
+  // machine that enrolls it can tell it apart from any other Linux daemon.
+  const wsl = dependencies.wslFacts(environment)
   const daemon = dependencies.createDaemon({
     host: config.host,
     port: config.port,
@@ -109,6 +117,7 @@ export async function createProductionDaemonWithDependencies(
     machineIdentity,
     ...(tls ? { tls } : {}),
     ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
+    ...(wsl ? { wsl } : {}),
     machineCredentials: dependencies.createMachineCredentials(),
     statePath: join(stateDirectory, "state.sqlite"),
     worktreeRoot: join(stateDirectory, "worktrees"),
