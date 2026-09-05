@@ -13,5 +13,10 @@ describe("daemon test scheduling", () => {
 
   it("applies the scheduling policy to the actual runner config", () => {
     expect(config.test).toMatchObject(daemonTestScheduling(process.platform))
+    if (process.platform === "win32") {
+      expect(config.test).toHaveProperty("maxWorkers", 2)
+    } else {
+      expect(config.test).not.toHaveProperty("maxWorkers")
+    }
   })
 })
