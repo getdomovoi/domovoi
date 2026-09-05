@@ -31,13 +31,15 @@ const notAuthorized = "Desktop request is not authorized"
 const rect = { x: 0, y: 0, width: 10, height: 10 }
 const notification = { id: "desktop-completion-0123456789abcdef", kind: "completion", sessionId: "session-one" }
 const externalRequest = { editor: "system", path: "/home/user/.domovoi/worktrees/project" }
-const rpcEndpoint = { url: "ws://127.0.0.1:47831/rpc", token: "factory-token" }
+const acquisition = { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" } as const
+const reacquisition = { kind: "attached", owner: "daemon", url: "wss://[::1]:50123/rpc", token: "rotated-token" } as const
 
 const channels: readonly ChannelSpec[] = [
   { channel: "window:minimize", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "window:maximize", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "window:close", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "domovoi:rpc-endpoint", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:rpc-endpoint-reconnect", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:capture-annotation",
     via: "handle",
@@ -126,7 +128,8 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "webContents.send": webContents.send,
     "event.sender.send": event.sender.send as Mock,
     focusMainWindow: vi.fn(),
-    rpcEndpoint: vi.fn(async () => rpcEndpoint),
+    rpcEndpoint: vi.fn(async () => acquisition),
+    reconnectRpcEndpoint: vi.fn(async () => reacquisition),
     "openDirectoryDialog.showOpenDirectory": vi.fn(async () => ({ canceled: false, filePaths: ["/projects/app"] })),
     "clipboard.readText": vi.fn(async () => "pasted"),
     "clipboard.writeText": vi.fn(async () => true),
@@ -147,6 +150,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     mainWindow: () => (options.withWindow ?? true) ? window : undefined,
     focusMainWindow: effects.focusMainWindow,
     rpcEndpoint: effects.rpcEndpoint,
+    reconnectRpcEndpoint: effects.reconnectRpcEndpoint,
     platform: "linux",
     fileSystem: {
       realpath: async (path) => path,
@@ -232,18 +236,27 @@ describe("registerDesktopIpc", () => {
     expect(disabled.effects["launchSmoke.preloadReady"]).not.toHaveBeenCalled()
   })
 
-  it("serves the renderer the endpoint of the daemon that was actually built", async () => {
+  it("serves the renderer the daemon acquisition the main process resolved", async () => {
     const target = harness({ launchSmoke: false })
 
-    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(rpcEndpoint)
-    expect(target.effects.rpcEndpoint).toHaveBeenCalledOnce()
+    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(acquisition)
+    expect(target.calledEffects()).toEqual(["rpcEndpoint"])
   })
 
-  it("refuses daemon credentials during the launch smoke without building a daemon", async () => {
+  it("re-acquires the owner's current endpoint when the renderer reconnects", async () => {
+    const target = harness({ launchSmoke: false })
+
+    await expect(target.listener("handle", "domovoi:rpc-endpoint-reconnect")(target.event)).resolves.toBe(reacquisition)
+    expect(target.calledEffects()).toEqual(["reconnectRpcEndpoint"])
+  })
+
+  it("refuses daemon credentials during the launch smoke without acquiring a daemon", async () => {
     const target = harness({ launchSmoke: true })
 
-    await expect(async () => target.listener("handle", "domovoi:rpc-endpoint")(target.event))
-      .rejects.toThrow("Daemon credentials are unavailable during the launch smoke")
+    for (const channel of ["domovoi:rpc-endpoint", "domovoi:rpc-endpoint-reconnect"]) {
+      await expect(async () => target.listener("handle", channel)(target.event))
+        .rejects.toThrow("Daemon credentials are unavailable during the launch smoke")
+    }
     expect(target.calledEffects()).toEqual([])
   })
 

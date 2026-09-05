@@ -2,7 +2,6 @@ import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { on, once } from "node:events"
 import { chmod, copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
-import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -13,6 +12,7 @@ import { describe, expect, it } from "vitest"
 import { WebSocket } from "ws"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { readLocalOwnerRecord } from "../local-owner-record.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { parseServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
@@ -24,20 +24,6 @@ const budget = process.platform === "win32" ? 30_000 : 15_000
 // A real process also drains provider probes on shutdown. That is not the
 // idle observation budget used by waitForDaemon, and remains bounded here.
 const cleanupBudget = 10_000
-
-async function unusedPort(deadline: OperationDeadline): Promise<number> {
-  deadline.throwIfExpired()
-  const server = createServer()
-  try {
-    server.listen({ host: "127.0.0.1", port: 0, signal: deadline.signal })
-    await once(server, "listening", { signal: deadline.signal })
-    const address = server.address()
-    if (!address || typeof address === "string") throw new Error("No test listener")
-    return address.port
-  } finally {
-    if (server.listening) await withinServiceDeadline(deadline, () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())))
-  }
-}
 
 describe("distributed service CLI", () => {
   it("installs saved settings and serves them with a changed supervisor environment", async () => {
@@ -53,7 +39,6 @@ describe("distributed service CLI", () => {
       const managerShimPath = join(home, "manager # shim.mjs")
       await within(() => copyFile(managerShimSource, managerShimPath))
       const managerShim = pathToFileURL(managerShimPath).href
-      const port = await unusedPort(deadline)
       const certPath = join(home, "cert.pem")
       const keyPath = join(home, "private.key")
       await within(() => run("openssl", [
@@ -70,7 +55,7 @@ describe("distributed service CLI", () => {
         ...process.env,
         HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1",
         DOMOVOI_TEST_MANAGER_LOG: managerLog,
-        DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: String(port),
+        DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0",
         DOMOVOI_AUTH_TOKEN: undefined,
         DOMOVOI_TLS_CERT_PATH: certPath, DOMOVOI_TLS_KEY_PATH: keyPath,
         DOMOVOI_CREDENTIAL_PATH: credentialPath, DOMOVOI_MACHINE_IDENTITY_PATH: identityPath,
@@ -88,7 +73,7 @@ describe("distributed service CLI", () => {
         env: environment, signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()),
       }))
       const saved = parseServiceConfiguration(await within(() => readFile(configPath, "utf8")))
-      expect(saved).toMatchObject({ port, tls: { certPath, keyPath }, credentialPath, machineIdentityPath: identityPath })
+      expect(saved).toMatchObject({ port: 0, tls: { certPath, keyPath }, credentialPath, machineIdentityPath: identityPath })
       expect(JSON.stringify(saved)).not.toContain(token)
       if (process.platform !== "win32") expect((await within(() => stat(configPath))).mode & 0o777).toBe(0o600)
       await expect(within(() => stat(identityPath))).rejects.toMatchObject({ code: "ENOENT" })
@@ -119,8 +104,15 @@ describe("distributed service CLI", () => {
       child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
       await within(() => waitForDaemon(() => {
         expect(stderr).not.toContain("Error:")
-        expect(stdout).toContain(`domovoid listening on wss://localhost:${port}/rpc`)
+        const owner = readLocalOwnerRecord(home)
+        expect(owner?.state).toBe("ready")
+        if (owner?.state !== "ready") throw new Error("Owner has not published its bound endpoint")
+        expect(stdout).toContain(`domovoid listening on ${owner.url}`)
       }))
+      const owner = readLocalOwnerRecord(home)
+      if (owner?.state !== "ready") throw new Error("Owner record disappeared after startup")
+      const port = Number(new URL(owner.url).port)
+      expect(port).toBeGreaterThan(0)
       for (const bearer of [undefined, "s".repeat(43)]) {
         deadline.throwIfExpired()
         const rejected = new WebSocket(`wss://127.0.0.1:${port}/rpc`, {

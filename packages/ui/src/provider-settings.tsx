@@ -26,15 +26,31 @@ export type ProviderSecretStatus = {
 type ProviderSettingsProps = {
   providers: readonly ProviderRuntime[]
   secrets: readonly ProviderSecretStatus[]
+  localDaemon?: { title: string; detail: string }
 }
 
-export function ProviderSettings({ providers, secrets }: ProviderSettingsProps) {
+export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSettingsProps) {
   return (
     <>
       <h1 className="m-0 text-[17px] font-semibold">Providers on this machine</h1>
       <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
         Subscription CLIs own their credentials. Direct API keys stay in the OS keychain on the machine that runs the agent and never pass through a client or relay.
       </p>
+
+      {localDaemon ? (
+        <section className="mt-6" aria-labelledby="local-daemon">
+          <div className="flex items-center gap-2">
+            <h2 id="local-daemon" className="m-0 text-[9.5px] font-medium tracking-[0.12em] text-faint">LOCAL DAEMON</h2>
+            <Separator className="flex-1" />
+          </div>
+          <Card className="mt-2.5">
+            <CardHeader>
+              <CardTitle>{localDaemon.title}</CardTitle>
+              <CardDescription>{localDaemon.detail}</CardDescription>
+            </CardHeader>
+          </Card>
+        </section>
+      ) : null}
 
       <section className="mt-6" aria-labelledby="subscription-providers">
         <div className="flex items-center gap-2">

@@ -98,3 +98,19 @@ export class OperationDeadline {
     if (!this.signal.aborted) this.#controller.abort(reason)
   }
 }
+
+// The caller must cancel resources or fence late side effects separately.
+// Expiry bounds the wait, not an operation that ignores its AbortSignal.
+export function beforeDeadline<T>(operation: Promise<T>, deadline: OperationDeadline): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(deadline.signal.reason)
+    deadline.signal.addEventListener("abort", abort, { once: true })
+    operation.then((value) => {
+      try { deadline.throwIfExpired(); resolve(value) } catch (error) { reject(error) }
+    }, reject).finally(() => deadline.signal.removeEventListener("abort", abort))
+    try { deadline.throwIfExpired() } catch (error) {
+      deadline.signal.removeEventListener("abort", abort)
+      reject(error)
+    }
+  })
+}

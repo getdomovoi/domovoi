@@ -412,3 +412,59 @@ describe("useWorkspace fleet", () => {
     expect(view.result.current.fleet).toEqual(enrolledFleet)
   })
 })
+
+describe("useWorkspace endpoint resolution", () => {
+  it("resolves the endpoint before every dial, including reconnect()", async () => {
+    const endpoints = [
+      { url: daemonUrl, token: "first-token" },
+      { url: otherDaemonUrl, token: "second-token" },
+    ]
+    const resolveRpcEndpoint = vi.fn(async () => endpoints.shift() ?? { url: otherDaemonUrl, token: "second-token" })
+    const view = renderHook(() => useWorkspace(daemonUrl, "desktop", "stale-token", resolveRpcEndpoint))
+    expect(harness.sockets).toHaveLength(0)
+    await drive(() => {})
+
+    const first = harness.socket(0)
+    expect(first.url).toBe(daemonUrl)
+    await drive(() => completeHandshake(first))
+    expect(sentRequests(first, "system.hello")[0]?.params).toMatchObject({ authToken: "first-token" })
+    expect(view.result.current.connected).toBe(true)
+    expect(view.result.current.endpointUrl).toBe(daemonUrl)
+
+    await drive(() => first.drop(1006, "daemon restarted"))
+    expect(view.result.current.connected).toBe(false)
+
+    let reconnecting!: Promise<void>
+    await drive(() => { reconnecting = view.result.current.reconnect() })
+    const second = harness.socket(1)
+    expect(second.url).toBe(otherDaemonUrl)
+    await drive(() => completeHandshake(second))
+    await reconnecting
+
+    expect(sentRequests(second, "system.hello")[0]?.params).toMatchObject({ authToken: "second-token" })
+    expect(resolveRpcEndpoint).toHaveBeenCalledTimes(2)
+    expect(view.result.current.connected).toBe(true)
+    expect(view.result.current.endpointUrl).toBe(otherDaemonUrl)
+  })
+
+  it("surfaces a refused resolution as the reconnect failure without dialing", async () => {
+    const resolveRpcEndpoint = vi.fn<() => Promise<{ url: string; token: string }>>()
+      .mockResolvedValueOnce({ url: daemonUrl, token: "first-token" })
+      .mockRejectedValueOnce(new Error("The profile has no reachable owner."))
+    const view = renderHook(() => useWorkspace(daemonUrl, "desktop", undefined, resolveRpcEndpoint))
+    await drive(() => {})
+    const first = harness.socket(0)
+    await drive(() => completeHandshake(first))
+    await drive(() => first.drop(1006, "daemon stopped"))
+
+    let outcome!: Promise<unknown>
+    await drive(() => {
+      outcome = view.result.current.reconnect().then(() => "reconnected", (cause: unknown) => cause)
+    })
+
+    expect(await outcome).toEqual(new Error("The profile has no reachable owner."))
+    expect(harness.sockets).toHaveLength(1)
+    expect(view.result.current.connected).toBe(false)
+    expect(view.result.current.endpointUrl).toBe(daemonUrl)
+  })
+})

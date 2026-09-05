@@ -16,7 +16,7 @@ are welcome.
 
 Requirements:
 
-- Node.js 22 or newer;
+- Node.js 22.13.0 or newer;
 - pnpm 11; and
 - a native build toolchain supported by `node-gyp` for daemon terminal development.
 

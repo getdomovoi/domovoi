@@ -5,6 +5,7 @@ import { join } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
+import { createProductionDaemon } from "../production-daemon.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 
@@ -42,6 +43,7 @@ const windowsScript = {
 
 function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   return {
+    claimProfile: vi.fn(() => ({ release: vi.fn() })),
     write: vi.fn(async () => {}),
     run: vi.fn(async () => {}),
     capture: vi.fn(async () => ({ code: 0, stdout: "" })),
@@ -143,6 +145,21 @@ describe("servicePlan", () => {
 })
 
 describe("installService", () => {
+  it("refuses before installing anything while Desktop owns the canonical profile", async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-install-owned-"))
+    const desktop = await createProductionDaemon({ homeDirectory, environment: {}, owner: "desktop" })
+    const dependencies = { ...nodeServiceEffects(), write: vi.fn(async () => {}), run: vi.fn(async () => {}) }
+    try {
+      await expect(installService({
+        ...linux, home: homeDirectory, configuration: configuration(homeDirectory, process.platform),
+      }, dependencies)).rejects.toThrow(/Close Desktop.*start the service.*reopen Desktop/)
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(dependencies.run).not.toHaveBeenCalled()
+    } finally {
+      await desktop.stop()
+      await rm(homeDirectory, { recursive: true, force: true })
+    }
+  })
   it("keeps the last complete configuration when a replacement write fails partway", async () => {
     const deadline = OperationDeadline.start(5_000)
     const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
@@ -208,7 +225,7 @@ describe("installService", () => {
     try {
       const write = vi.fn(() => new Promise<void>((resolve) => { finishWrite = resolve }))
       const run = vi.fn(async () => {})
-      const installing = installService(linux, { write, run })
+      const installing = installService(linux, { ...effects(), write, run })
       const rejection = expect(installing).rejects.toThrow(/deadline/)
       await vi.advanceTimersByTimeAsync(30_000)
       await rejection
@@ -226,13 +243,14 @@ describe("installService", () => {
     const order: string[] = []
     const written = vi.fn(async () => { order.push("write") })
     const ran = vi.fn(async () => { order.push("run") })
-    await installService(linux, { write: written, run: ran })
+    await installService(linux, { ...effects(), write: written, run: ran })
     expect(order).toEqual(["write", "write", "run", "run"])
   })
 
   it("does not run the manager when the unit cannot be written", async () => {
     const ran = vi.fn(async () => {})
     await expect(installService(linux, {
+      ...effects(),
       write: async () => { throw new Error("read-only file system") },
       run: ran,
     })).rejects.toThrow("read-only file system")

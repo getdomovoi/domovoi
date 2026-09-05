@@ -37,7 +37,7 @@ design/
 
 ## Develop
 
-Requirements: Node.js 22 or newer and pnpm 11.
+Requirements: Node.js 22.13.0 or newer and pnpm 11.
 
 ```bash
 pnpm install

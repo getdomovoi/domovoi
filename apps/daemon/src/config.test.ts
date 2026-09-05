@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest"
 import { DaemonConfigurationError, parseDaemonEnvironment } from "./config.js"
 
 describe("parseDaemonEnvironment", () => {
+  it("accepts port zero as a request for a kernel-assigned port", () => {
+    expect(parseDaemonEnvironment({ DOMOVOI_PORT: "0" }, "/home/tester").port).toBe(0)
+  })
   it("returns bounded local defaults", () => {
     expect(parseDaemonEnvironment({}, "/home/tester")).toEqual({
       host: "127.0.0.1",
@@ -15,7 +18,7 @@ describe("parseDaemonEnvironment", () => {
     })
   })
 
-  it.each(["", "0", "65536", "47831garbage", "1.5", "-1"])(
+  it.each(["", "00", "65536", "47831garbage", "1.5", "-1"])(
     "rejects invalid ports: %s",
     (port) => {
       expect(() => parseDaemonEnvironment({ DOMOVOI_PORT: port }, "/home/tester"))

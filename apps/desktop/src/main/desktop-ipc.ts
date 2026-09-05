@@ -1,6 +1,6 @@
 import { captureAnnotationPng, type CaptureTarget } from "./annotation-capture.js"
 import type { DesktopDeepLink } from "./deep-links.js"
-import type { DesktopRpcEndpoint } from "./desktop-daemon.js"
+import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
 import {
   chooseDirectory,
   type DesktopFileSystem,
@@ -38,7 +38,8 @@ export type DesktopIpcDependencies = {
   authorized(event: DesktopIpcEvent): boolean
   mainWindow(): DesktopIpcWindow | undefined
   focusMainWindow(): void
-  rpcEndpoint(): Promise<DesktopRpcEndpoint>
+  rpcEndpoint(): Promise<DesktopDaemonAcquisition>
+  reconnectRpcEndpoint(): Promise<DesktopDaemonAcquisition>
   platform: DesktopPlatform
   fileSystem: DesktopFileSystem
   openDirectoryDialog: OpenDirectoryDialog
@@ -83,12 +84,19 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.on("window:close", (event) => {
     if (deps.authorized(event)) deps.mainWindow()?.close()
   })
-  ipcMain.handle("domovoi:rpc-endpoint", (event) => {
+  // The smoke proves the packaged app starts; it must never acquire a daemon
+  // or mint a credential on the machine running the packaging test.
+  const daemonRequest = (event: DesktopIpcEvent): void => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
-    // The smoke proves the packaged app starts; it must never build a daemon
-    // or mint a credential on the machine running the packaging test.
     if (deps.launchSmoke.enabled) throw new Error("Daemon credentials are unavailable during the launch smoke")
+  }
+  ipcMain.handle("domovoi:rpc-endpoint", (event) => {
+    daemonRequest(event)
     return deps.rpcEndpoint()
+  })
+  ipcMain.handle("domovoi:rpc-endpoint-reconnect", (event) => {
+    daemonRequest(event)
+    return deps.reconnectRpcEndpoint()
   })
   ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
     const window = deps.authorized(event) ? deps.mainWindow() : undefined

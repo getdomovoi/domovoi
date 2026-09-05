@@ -20,9 +20,15 @@ type DesktopCapability = {
   onWindowDecorationChange: (decoration: WorkspaceWindowDecoration) => void
 }
 
+export type LocalDaemonDescription = {
+  title: string
+  detail: string
+}
+
 export type SettingsShellProps = {
   providers: readonly ProviderRuntime[]
   secrets: readonly ProviderSecretStatus[]
+  localDaemon?: LocalDaemonDescription
   approvalRules: readonly ApprovalRule[]
   notifications: NotificationPreferences
   onNotificationsChange: (preferences: NotificationPreferences) => void
@@ -51,6 +57,7 @@ const paneLabels: Record<SettingsPane, string> = {
 export function SettingsShell({
   providers,
   secrets,
+  localDaemon,
   approvalRules,
   notifications,
   externalEditor,
@@ -130,7 +137,7 @@ export function SettingsShell({
           ) : activePane === "external-editor" && editorCapability ? (
             <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
           ) : (
-            <ProviderSettings providers={providers} secrets={secrets} />
+            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon ? { localDaemon } : {})} />
           )}
         </main>
       </ScrollArea>
