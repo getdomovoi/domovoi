@@ -593,10 +593,12 @@ it("keeps an empty or unchanged label out of the daemon", async () => {
   expect(within(row).queryByRole("textbox")).toBeNull()
 })
 
-it("keeps the old label and says why when a rename is refused", async () => {
-  const { user } = renderFleet({
-    onRenameDevice: () => Promise.reject(new Error("Managing paired devices requires the daemon credential")),
-  })
+it("keeps the draft open for retry and says why when a rename is refused", async () => {
+  const onRenameDevice = vi.fn()
+    .mockRejectedValueOnce(new Error("Managing paired devices requires the daemon credential"))
+    .mockImplementationOnce((params: { deviceId: string; label: string }) =>
+      Promise.resolve({ device: { ...device, label: params.label } }))
+  const { user } = renderFleet({ onRenameDevice })
   const row = await screen.findByRole("row", { name: /studio-ipad/ })
 
   await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
@@ -605,8 +607,17 @@ it("keeps the old label and says why when a rename is refused", async () => {
 
   expect((await screen.findByRole("alert")).textContent)
     .toContain("Managing paired devices requires the daemon credential")
-  expect(screen.getByRole("row", { name: /studio-ipad/ }).textContent).not.toContain("kitchen-ipad")
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  expect(field).toHaveProperty("value", "kitchen-ipad")
   expect(screen.queryByRole("button", { name: "Undo" })).toBeNull()
+
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).toHaveBeenCalledTimes(2)
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "kitchen-ipad" })
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+  expect(within(renamed).queryByRole("textbox")).toBeNull()
+  expect(within(renamed).getByRole("button", { name: "Undo" })).toBeTruthy()
 })
 
 it("states why a device action was refused", async () => {

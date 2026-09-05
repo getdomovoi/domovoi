@@ -526,7 +526,11 @@ function LabelCell({
       close()
       return
     }
-    await onRename(label.data)
+    try {
+      await onRename(label.data)
+    } catch {
+      return
+    }
     close()
   }
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -1047,6 +1051,7 @@ export function FleetView({
       setUndo({ deviceId: device.id, label: device.label })
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : "That device could not be renamed")
+      throw cause
     } finally {
       setPendingDeviceId("")
     }
