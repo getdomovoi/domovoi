@@ -103,6 +103,7 @@ function renderFleet(overrides: {
   onForgetMachine?: (machineId: string) => Promise<FleetForgetResult>
   onRevokeDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary; token: string }>
+  onRenameDevice?: (params: { deviceId: string; label: string }) => Promise<{ device: PairedDeviceSummary }>
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(() => Promise.resolve({ devices }))
@@ -117,6 +118,12 @@ function renderFleet(overrides: {
       ?? ((params: { deviceId: string }) => Promise.resolve({
         device: { ...device, id: params.deviceId },
         token: "r".repeat(43),
+      })),
+  )
+  const onRenameDevice = vi.fn(
+    overrides.onRenameDevice
+      ?? ((params: { deviceId: string; label: string }) => Promise.resolve({
+        device: { ...devices.find((candidate) => candidate.id === params.deviceId)!, label: params.label },
       })),
   )
   const onPairMachine = vi.fn(() => Promise.resolve({
@@ -141,6 +148,7 @@ function renderFleet(overrides: {
         onListDevices={onListDevices as never}
         onRevokeDevice={onRevokeDevice as never}
         onRotateDevice={onRotateDevice as never}
+        onRenameDevice={onRenameDevice as never}
         onPairMachine={onPairMachine}
         onForgetMachine={onForgetMachine}
         onUseMachine={onUseMachine}
@@ -148,7 +156,7 @@ function renderFleet(overrides: {
       />
     </TooltipProvider>,
   )
-  return { user, onListDevices, onRevokeDevice, onRotateDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal }
+  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal }
 }
 
 it("describes each machine in the fleet", () => {
@@ -492,6 +500,7 @@ it("holds the table shape while the list loads", async () => {
         onListDevices={(() => pending) as never}
         onRevokeDevice={(() => Promise.resolve({})) as never}
         onRotateDevice={(() => Promise.resolve({})) as never}
+        onRenameDevice={(() => Promise.resolve({})) as never}
       />
     </TooltipProvider>,
   )
@@ -517,6 +526,98 @@ it("offers no consequence and no action on a revoked row", async () => {
   expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).queryByText(clientConsequence)).toBeNull()
   expect(row.textContent).toContain("revoked")
+})
+
+it("renames a device in place and offers Undo after committing", async () => {
+  const { user, onRenameDevice } = renderFleet()
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  expect(field).toHaveProperty("value", "studio-ipad")
+  await user.clear(field)
+  await user.type(field, "kitchen-ipad")
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).toHaveBeenCalledWith({ deviceId: device.id, label: "kitchen-ipad" })
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+  expect(within(renamed).queryByRole("textbox")).toBeNull()
+  expect(within(renamed).getByRole("button", { name: "Revoke kitchen-ipad" })).toBeTruthy()
+
+  await user.click(within(renamed).getByRole("button", { name: "Undo" }))
+
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "studio-ipad" })
+  const restored = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(within(restored).queryByRole("button", { name: "Undo" })).toBeNull()
+  expect(within(restored).getByRole("button", { name: "Rename studio-ipad" })).toBeTruthy()
+})
+
+it("commits a rename with Enter and abandons one with Escape", async () => {
+  const { user, onRenameDevice } = renderFleet()
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("desk-ipad{Escape}")
+
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(within(row).queryByRole("textbox")).toBeNull()
+  expect(row.textContent).toContain("studio-ipad")
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("desk-ipad{Enter}")
+
+  expect(onRenameDevice).toHaveBeenCalledWith({ deviceId: device.id, label: "desk-ipad" })
+  expect(await screen.findByRole("row", { name: /desk-ipad/ })).toBeTruthy()
+})
+
+it("keeps an empty or unchanged label out of the daemon", async () => {
+  const { user, onRenameDevice } = renderFleet()
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  await user.clear(field)
+  await user.type(field, "   ")
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(field.getAttribute("aria-invalid")).toBe("true")
+
+  await user.click(within(row).getByRole("button", { name: "Cancel" }))
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(within(row).queryByRole("textbox")).toBeNull()
+})
+
+it("keeps the draft open for retry and says why when a rename is refused", async () => {
+  const onRenameDevice = vi.fn()
+    .mockRejectedValueOnce(new Error("Managing paired devices requires the daemon credential"))
+    .mockImplementationOnce((params: { deviceId: string; label: string }) =>
+      Promise.resolve({ device: { ...device, label: params.label } }))
+  const { user } = renderFleet({ onRenameDevice })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("kitchen-ipad{Enter}")
+
+  expect((await screen.findByRole("alert")).textContent)
+    .toContain("Managing paired devices requires the daemon credential")
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  expect(field).toHaveProperty("value", "kitchen-ipad")
+  expect(screen.queryByRole("button", { name: "Undo" })).toBeNull()
+
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).toHaveBeenCalledTimes(2)
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "kitchen-ipad" })
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+  expect(within(renamed).queryByRole("textbox")).toBeNull()
+  expect(within(renamed).getByRole("button", { name: "Undo" })).toBeTruthy()
 })
 
 it("states why a device action was refused", async () => {
@@ -618,6 +719,7 @@ it("does not offer machine actions while the daemon is unreachable", () => {
       onListDevices={(() => Promise.resolve({ devices: [] })) as never}
       onRevokeDevice={(() => Promise.resolve({})) as never}
       onRotateDevice={(() => Promise.resolve({})) as never}
+      onRenameDevice={(() => Promise.resolve({})) as never}
       onUseMachine={onUseMachine}
       onOpenMachineTerminal={vi.fn()}
     />,

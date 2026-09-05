@@ -23,6 +23,8 @@ import {
   type AuditExportParams,
   type AuditExportResult,
   type DevicePairResult,
+  type DeviceRenameParams,
+  type DeviceRenameResult,
   type DevicesResult,
   type FleetEnrollParams,
   type FleetEnrollResult,
@@ -779,6 +781,13 @@ export class DomovoiClient extends EventTarget {
     options?: DomovoiRequestOptions,
   ): Promise<DevicePairResult> {
     return this.request("device.rotate", { ...params, client: this.kind }, options)
+  }
+
+  renameDevice(
+    params: DeviceRenameParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<DeviceRenameResult> {
+    return this.request("device.rename", params, options)
   }
 
   // The daemon claims, greets and stores on the client's behalf, so the only

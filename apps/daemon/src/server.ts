@@ -4485,12 +4485,14 @@ export class DomovoiDaemon {
         || method === "device.list"
         || method === "device.revoke"
         || method === "device.rotate"
+        || method === "device.rename"
       ) {
         const params = paramsResult.data as
           | RpcParams<"device.pair">
           | RpcParams<"device.list">
           | RpcParams<"device.revoke">
           | RpcParams<"device.rotate">
+          | RpcParams<"device.rename">
         const devices = this.#store.devices
         if (!devices) {
           this.#error(socket, request.id, internalError, "Device pairing is unavailable")
@@ -4519,7 +4521,14 @@ export class DomovoiDaemon {
             ? { devices: devices.list() }
             : method === "device.revoke"
               ? { device: devices.revoke((params as { deviceId: string }).deviceId) }
-              : devices.rotate((params as { deviceId: string }).deviceId)
+              : method === "device.rename"
+                ? {
+                    device: devices.rename(
+                      (params as RpcParams<"device.rename">).deviceId,
+                      (params as RpcParams<"device.rename">).label,
+                    ),
+                  }
+                : devices.rotate((params as { deviceId: string }).deviceId)
         if (method === "device.revoke" || method === "device.rotate") {
           this.#disconnectInactiveDevices()
         }
