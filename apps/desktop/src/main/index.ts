@@ -3,11 +3,11 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { createProductionDaemon } from "@getdomovoi/daemon"
+import { acquireLocalDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
 
-import { ownDesktopDaemon } from "./desktop-daemon.js"
-import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
+import { DesktopDaemon } from "./desktop-daemon.js"
+import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   isAuthorizedRendererEvent,
@@ -50,9 +50,6 @@ const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
 let launchSmokeStage = "main"
 let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
 const deepLinks = new DesktopDeepLinkQueue()
-const ownedDaemon = new OwnedDaemonLifecycle((error) => {
-  console.error("Owned daemon failed to stop during desktop shutdown", error)
-})
 const startupMetrics = new DesktopStartupMetrics({
   enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
 })
@@ -90,18 +87,20 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
-// Desktop, the CLI, and the service build a daemon the same way, from the
-// same environment, so a paired device keeps meeting the same identity and
-// credential no matter which of them started the daemon.
-const ensureDaemon = ownDesktopDaemon(
-  () => createProductionDaemon({
-    environment: process.env,
-    homeDirectory: homedir(),
-    machineLabel: hostname(),
-    errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
-  }),
-  ownedDaemon,
-)
+// Desktop attaches to whichever daemon already owns this profile, the
+// installed service or another owner, and starts its own only when the
+// profile is free. Either way the daemon is assembled from the same
+// environment the CLI and the service use, so a paired device keeps meeting
+// the same identity and credential no matter who started it.
+const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
+  environment: process.env,
+  homeDirectory: homedir(),
+  machineLabel: hostname(),
+  errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
+}))
+const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
+  console.error("Local daemon failed to release during desktop shutdown", error)
+})
 
 function windowDecorationPath(): string {
   return join(app.getPath("userData"), windowDecorationFileName)
@@ -220,7 +219,8 @@ registerDesktopIpc(ipcMain, {
   authorized: authorizedDesktopSender,
   mainWindow: () => mainWindow,
   focusMainWindow,
-  rpcEndpoint: ensureDaemon,
+  rpcEndpoint: () => desktopDaemon.acquire(),
+  reconnectRpcEndpoint: () => desktopDaemon.reacquire(),
   platform: desktopPlatform,
   fileSystem: desktopFileSystem,
   openDirectoryDialog: {
@@ -289,7 +289,7 @@ if (!hasSingleInstanceLock) {
       return
     }
     await startDesktop(createWindow, async () => {
-      await ensureDaemon()
+      await desktopDaemon.acquire()
       startupMetrics.mark("daemon-ready")
     })
     app.on("activate", () => {
@@ -311,5 +311,5 @@ app.on("window-all-closed", () => {
 })
 
 app.on("before-quit", (event) => {
-  ownedDaemon.beforeQuit(event, () => app.quit())
+  daemonLifecycle.beforeQuit(event, () => app.quit())
 })
