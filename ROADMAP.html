@@ -778,15 +778,17 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
 </li>
-<li>[x] Bootstrap <code>domovoid</code> through a version-pinned install script that checks the archive against a caller-supplied SHA-256 and the <code>SHA256SUMS</code> the release publishes; signature verification is tracked under signed GitHub Release artifacts
+<li>[x] Install a frozen daemon runtime from a version-pinned release archive, checked against a caller-supplied SHA-256 and the <code>SHA256SUMS</code> the release publishes; signature verification is tracked under signed GitHub Release artifacts
 <ul>
-<li>Bootstrap streams and verifies the archive, stages it privately, materialises its embedded integrity lock as <code>package-lock.json</code>, runs bundled npm 10.0.0 or newer with <code>npm ci</code>, and verifies the installed graph before publishing a runnable receipt. Same-release protocol bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download, installation, native build, verification, publication, and cleanup share five minutes.
+<li><code>node scripts/bootstrap-daemon.mjs &lt;version&gt; &lt;baseUrl&gt; &lt;destination&gt; &lt;expectedSha256&gt;</code> streams and verifies the archive into <code>&lt;destination&gt;/v&lt;version&gt;</code>, stages it privately, materialises its embedded integrity lock as <code>package-lock.json</code>, runs bundled npm 10.0.0 or newer with <code>npm ci</code>, verifies the installed graph, permits only the reviewed <code>node-pty</code> native build, and publishes a <code>runtime.json</code> receipt naming the installed directory. Same-release protocol bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download, installation, native build, verification, publication, and cleanup share five minutes.
 </li>
 <li>HTTPS downloads add a 30-second byte-progress inactivity allowance within that total. Redirects and empty chunks do not renew it; local disk backpressure spends only the total. Deterministic and real HTTPS regressions reject silent or late responses. Refusal does not promise immediate socket disposal: Node may retain a stalled TLS connection until its own connect timeout, delaying CLI exit. See the transport limits in <code>docs/distribution.md</code>.
 </li>
 <li>Fresh musl or unknown-libc Linux installs force the reviewed node-pty source build rather than selecting an unqualified Linux prebuild. Native loading is checked before publication and on reuse. Ubuntu CI's pinned Node 22 Alpine smoke installs the real archive, opens a PTY, and authenticates against the production daemon; other musl architectures remain unproven.
 </li>
-<li>Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the external toolchain remain reproducibility limits. The protocol library keeps all three package managers. Tests drive the real bootstrap CLI with an isolated changing registry; a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not performed by bootstrap. See <code>docs/distribution.md</code>.
+<li>What lands is an installed runtime tree, not an installed command. The result's <code>runtimePath</code> is run as <code>node &lt;runtimePath&gt;/dist/index.js</code>. Nothing creates a <code>domovoid</code> entry on <code>PATH</code>, starts the daemon, configures daemon state, or installs supervision. The separately exported <code>bootstrapDaemon</code> download step on its own only publishes a verified archive and installs nothing.
+</li>
+<li>Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the external toolchain remain reproducibility limits. The protocol library keeps all three package managers. Tests drive the real bootstrap CLI with an isolated changing registry; a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not performed by bootstrap. No release is published yet, so this path cannot be run against a real release today. See <code>docs/distribution.md</code>, and <code>docs/clean-machine-setup.md</code> for the operator steps that surround it.
 </li>
 </ul>
 </li>
@@ -795,6 +797,8 @@ td { color: var(--ink2); }
 <li>Unit and task generators plus <code>service install</code>, <code>status</code>, and <code>remove</code> exist, and nothing is written to a system-wide location. Since #256 installation records the validated non-secret settings in <code>~/.domovoi/service.json</code> and replays them as the supervised environment: host, port, credential and identity paths, TLS material, advertised and tailnet hosts, SSH forwards, allowed origins, and the remote-transport opt-in. It refuses to retain <code>DOMOVOI_AUTH_TOKEN</code> rather than silently changing authority. Since #261 Desktop no longer contends for the port: it attaches to the verified local owner, and it refuses to start a fallback daemon at all when a service configuration is present.
 </li>
 <li>The Windows logon task still has no crash restart, where the systemd unit has <code>Restart=on-failure</code> and the launchd agent has <code>KeepAlive</code>. CI reaches a real manager only on the Windows runner, where <code>apps/daemon/src/service/windows-task.native.test.ts</code> registers, stops, and removes a real scheduled task under a throwaway name. No test invokes a real systemd or launchd.
+</li>
+<li><code>docs/clean-machine-setup.md</code> gives the operator sequence from an uninstalled machine through installation, first start, TLS, supervision, pairing, and recovery, and names what remains unproven per platform.
 </li>
 </ul>
 </li>

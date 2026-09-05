@@ -18,7 +18,15 @@ verified bootstrap described in [the distribution contract](https://github.com/g
 It requires Node 22 with bundled npm 10.0.0 or newer and installs the archive's integrity-locked
 runtime before publishing its receipt. Manual npm, pnpm, or Bun adds of the daemon are not frozen.
 Native compilation and the external toolchain remain reproducibility limits; provider SDKs are
-downloaded under their existing terms, not bundled in this package.
+downloaded under their existing terms, not bundled in this package. Bootstrap installs a runtime
+tree rather than a command: run it as `node <runtimePath>/dist/index.js`, since nothing adds
+`domovoid` to `PATH`, starts the daemon, or installs supervision.
+
+To set up a machine that has nothing installed, follow
+[clean-machine setup](https://github.com/getdomovoi/domovoi/blob/main/docs/clean-machine-setup.md).
+It carries an operator from a runtime installation through first start, TLS, service supervision,
+fleet pairing, machine-credential recovery, and Windows to WSL access, and names what remains
+unproven per platform. This page is the reference for the pieces that guide assembles.
 
 ## Run
 
