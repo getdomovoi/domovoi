@@ -120,6 +120,8 @@ SSH configuration is bounded to 32 KiB of JSON, 128 unique machine IDs, and one 
 Endpoints use `localhost`, `127.0.0.1` or `::1` after URL normalization, at most 2,048 characters,
 with no credentials, query or fragment. It is source-local configuration, not fleet fact: it never
 appears in a peer descriptor. A target cannot enable SSH by advertising `configured: true`.
+Remote loopback advertisements are ignored even with TLS; only a source-verified direct route
+or source-local SSH configuration can authorize a remote peer's loopback endpoint here.
 Enrollment still requires a code and a successful authenticated descriptor exchange. Adding a
 route never enrolls a peer, supplies a missing credential or unmasks a pending forget.
 

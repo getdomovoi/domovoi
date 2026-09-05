@@ -139,6 +139,22 @@ describe("createMachineDialer", () => {
     expect(io.opened).toEqual([])
   })
 
+  it("does not mistake a peer's TLS loopback advertisement for a configured source route", async () => {
+    const forward = "wss://localhost:47900/rpc"
+    const input = {
+      machine: () => machine({ connection: "direct", transports: [
+        { kind: "local" as const, endpoint: forward, authenticated: true as const },
+      ] }),
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      dialTimeoutMs: 1000,
+      open: vi.fn(async () => ({ call: async () => ({}), close: () => {} })),
+    }
+    await expect(createMachineDialer(input)(machineId)).rejects.toThrow()
+    expect(input.open).not.toHaveBeenCalled()
+    expect(await createMachineDialer({ ...input, sshTunnels: [{ machineId, endpoint: forward }] })(machineId))
+      .toMatchObject({ endpoint: forward, routeSource: "ssh" })
+  })
+
   it("dials a machine with the credential kept for it", async () => {
     const io = dialer()
 

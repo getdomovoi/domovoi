@@ -3,7 +3,7 @@ import { fleetDirectEndpointSchema, orderedTransports, type FleetMachineFacts } 
 import type { MachineCredentials } from "./machine-credentials.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
-import { configuredSshTunnelsSchema, type ConfiguredSshTunnel } from "./transport-config.js"
+import { configuredSshTunnelsSchema, isLoopbackHost, type ConfiguredSshTunnel } from "./transport-config.js"
 
 export type MachineConnection = {
   call: (
@@ -82,6 +82,10 @@ export function createMachineDialer(input: {
           refusedPlaintext = true
           continue
         }
+        // TLS authenticates a server name, not which machine owns loopback.
+        // Remote advertisements cannot supply our local endpoint or disguise
+        // a removable SSH forward as a permanent advertised route.
+        if (machine.connection !== "local" && isLoopbackHost(new URL(transport.endpoint).hostname)) continue
         addRoute(transport.endpoint, "advertised")
       }
       // Source-local forwards follow the direct candidates in protocol order.
