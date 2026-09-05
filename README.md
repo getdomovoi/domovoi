@@ -25,6 +25,7 @@ This repository is early. The current vertical slice includes:
 apps/
   daemon/    domovoid execution service and JSON-RPC endpoint
   desktop/   Electron client
+  mobile/    Expo phone app, see apps/mobile/README.md
   web/       browser client and installable PWA
 packages/
   protocol/  publishable wire schemas and shared types
@@ -61,6 +62,10 @@ dials `ws://127.0.0.1:47831/rpc` by default; set the build-time Vite variable
 URL. Preview documents
 on every listener, loopback included, require short-lived signed capabilities scoped to one
 artifact revision, purpose, annotation bridge channel, and parent origin.
+
+For supervised operation, `domovoid service install` saves validated non-secret daemon settings and
+uses them on every service start. Environment-only bearer tokens are not copied into service files.
+See [daemon service configuration](docs/daemon-services.md) for credential setup and lifecycle limits.
 
 ## Verify
 

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -55,6 +55,8 @@ import type {
   SessionTransferPreview,
   SessionTransferPreviewParams,
   SessionUsage,
+  UsageWindow,
+  UsageWindowParams,
   TurnSkillSelection,
   TurnSkillSelectionRefusal,
   SystemEmergencyStopResult,
@@ -174,6 +176,11 @@ import {
   sessionUsageCostNote,
   sessionUsageFetchKey,
   sessionUsageReportedCost,
+  usageTodayDetail,
+  usageTodayReadout,
+  usageTodayRefreshDelayMs,
+  usageTodayWindow,
+  usageWindowFetchKey,
 } from "./session-usage"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
@@ -455,6 +462,7 @@ export function AppBar({
   onOpenCommands,
   commandShortcut,
   usage,
+  usageToday,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -468,6 +476,7 @@ export function AppBar({
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
   usage?: SessionUsage | null | undefined
+  usageToday?: UsageWindow | null | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
@@ -528,10 +537,69 @@ export function AppBar({
             {emergencyStopMessage}
           </span>
         ) : null}
+        <UsageTodayReadout usage={usageToday ?? null} />
       </div>
       {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
   )
+}
+
+export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
+  const id = useId()
+  const readout = usage ? usageTodayReadout(usage) : undefined
+  if (!usage || !readout) return null
+  const labelId = `${id}-label`
+  const valueId = `${id}-value`
+  return (
+    <span role="status" aria-labelledby={`${labelId} ${valueId}`} className="font-machine text-[10.5px] text-faint">
+      <span id={labelId} className="sr-only">Usage today</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            id={valueId}
+            className="rounded-[4px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+          >
+            {readout}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[42ch] text-[11.5px] leading-relaxed">
+          {usageTodayDetail(usage)}
+        </TooltipContent>
+      </Tooltip>
+    </span>
+  )
+}
+
+export function useUsageToday(
+  connected: boolean,
+  key: string | null,
+  fetch: (window: UsageWindowParams) => Promise<UsageWindow>,
+): UsageWindow | null {
+  const [usage, setUsage] = useState<UsageWindow | null>(null)
+  useEffect(() => {
+    if (!connected || !key) {
+      setUsage(null)
+      return
+    }
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => {
+      const now = new Date()
+      void fetch(usageTodayWindow(now)).then((next) => {
+        if (active) setUsage(next)
+      }, () => {
+        if (active) setUsage(null)
+      })
+      timer = setTimeout(refresh, usageTodayRefreshDelayMs(now))
+    }
+    refresh()
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [connected, fetch, key])
+  return usage
 }
 
 export function SessionUsageFooter({ usage }: { usage: SessionUsage | null }) {
@@ -3281,6 +3349,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     reviewSkill,
     sendMessage,
     sessionUsage,
+    usageWindow,
     setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
@@ -3616,6 +3685,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   })
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
+  const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
@@ -3831,7 +3901,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
