@@ -160,13 +160,36 @@ refuse publication rather than choosing substitute dependencies.
 `pnpm release:artifacts` writes the files a GitHub Release carries into `release/`:
 
 - one npm tarball per publishable package, packed exactly as `pnpm publish` would;
-- a CycloneDX 1.6 SBOM beside each tarball, listing every production dependency with its version,
-  package URL, and declared license, and recording the tarball's own SHA-256 in the metadata; and
+- a CycloneDX 1.6 SBOM beside each tarball, recording locked production components, their
+  versions, package URLs and archive SHA-512 hashes, plus the root tarball's own SHA-256; and
 - `SHA256SUMS` over both, in the format `sha256sum -c` and `shasum -a 256 -c` verify.
 
-A dependency that declares no license appears in the SBOM with an empty `licenses` array rather
-than an invented one. Today that is the proprietary Claude Code agent SDK described in
-[licensing.md](licensing.md), so the SBOM shows the same constraint the license audit records.
+Inventory comes from `runtime/lock.json` extracted from the packed daemon, not the build host's
+installed dependency list. It includes every optional platform package, multiple versions when
+required, and the embedded same-release protocol. The standalone protocol SBOM contains only
+its dependency closure in that lock. The separately packed protocol must match the exact bytes
+bound by the daemon lock before metadata is written. Duplicate coordinates with conflicting
+integrity refuse generation. Metadata records the lock's SHA-256 and the inventory scope.
+
+This is the reviewed all-platform runtime graph, not a claim that every component is installed
+on one host or contained inside the daemon tarball. Manual daemon installs through npm, pnpm or
+Bun are not frozen; future protocol consumer installs can also resolve different versions.
+Native compilation, external toolchains, separately installed provider CLIs and provider services
+remain outside this inventory and the reproducibility guarantee described above.
+
+License observations from `pnpm licenses list --prod` annotate only matching name/version pairs.
+The verified first-party protocol manifest supplies its own license. A component with no local
+license observation, or an observation marked unknown, has an empty `licenses` array. Empty
+does not imply permissive licensing or prove the publisher declared no license. Non-host native
+packages can have missing observations; the proprietary Claude Code agent SDK is a separate
+known licensing constraint documented in [licensing.md](licensing.md). The license audit remains
+host-specific and runs on each supported CI host; it does not determine SBOM membership.
+
+Generation has one five-minute deadline covering packing, inspection and license collection.
+Before writing SBOMs and checksums, it validates documents against the pinned upstream
+CycloneDX 1.6 schemas under `scripts/fixtures/cyclonedx-1.6/`, with no schema network fetch.
+Tests reject invalid documents and independently compare real packed coordinates and hashes.
+Schema conformance alone does not establish inventory completeness or package authenticity.
 
 The generator runs on Linux in CI so it cannot rot. The release workflow below packs the same
 tarballs for publishing, refuses to continue if their checksums differ from `SHA256SUMS`, and

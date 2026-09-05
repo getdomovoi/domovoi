@@ -701,6 +701,12 @@ before any public package or application publish.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
+  - E2 completeness fix: membership and SHA-512 component hashes come from the packed
+    all-platform runtime lock, including optional non-host binaries and the embedded protocol.
+    The separate protocol artifact is byte-bound to that lock and reports only its closure.
+    Offline pinned CycloneDX 1.6 validation and a real-archive completeness regression cover
+    generation. Host license observations annotate exact versions only; missing observations
+    remain empty. External toolchains and unfrozen manual installs are outside this inventory.
   - The release workflow attaches them to each published package's GitHub release once enabled.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set
