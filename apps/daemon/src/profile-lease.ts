@@ -14,6 +14,11 @@ export type ProfileLease = { release(): void }
 // Losing a caller's handle is not evidence that its listener stopped. Retain
 // the lease until explicit shutdown, never until JavaScript happens to collect it.
 const heldLeases = new Set<DatabaseSync>()
+const liveHandles = new WeakSet<ProfileLease>()
+
+export function assertProfileLeaseHeld(lease: ProfileLease): void {
+  if (!liveHandles.has(lease)) throw new Error("Profile metadata mutation requires a held profile lease")
+}
 
 export function claimProfile(homeDirectory: string): ProfileLease {
   const directory = join(homeDirectory, ".domovoi")
@@ -40,12 +45,15 @@ export function claimProfile(homeDirectory: string): ProfileLease {
 
   heldLeases.add(database)
   let released = false
-  return {
+  const lease: ProfileLease = {
     release: () => {
       if (released) return
       database.close()
       heldLeases.delete(database)
+      liveHandles.delete(lease)
       released = true
     },
   }
+  liveHandles.add(lease)
+  return lease
 }

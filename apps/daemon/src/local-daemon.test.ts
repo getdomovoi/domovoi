@@ -11,6 +11,11 @@ import { createProductionDaemon, type ProductionDaemonHandle } from "./productio
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
 
+vi.mock("./local-owner-record.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./local-owner-record.js")>()
+  return { ...actual, readLocalOwnerRecord: vi.fn(actual.readLocalOwnerRecord) }
+})
+
 const homes: string[] = []
 const handles: Array<ProductionDaemonHandle | LocalDaemonHandle> = []
 beforeEach(() => { vi.spyOn(CliProviderProbe.prototype, "inspect").mockResolvedValue([]) })
@@ -100,4 +105,28 @@ it("refuses busy startup and invalid records without changing the owner", async 
   expect(readLocalOwnerRecord(homeDirectory)).toEqual(record)
   await writeFile(join(homeDirectory, ".domovoi", "local-owner.json"), "malformed-private-value")
   expect(await acquire(homeDirectory)).toMatchObject({ kind: "refused", reason: "profile-invalid" })
+})
+
+it("refuses as unreachable when the deadline expires after a good final verification", async () => {
+  const homeDirectory = await home()
+  const daemon = await createProductionDaemon({ homeDirectory, environment: defaults.environment })
+  handles.push(daemon)
+  await daemon.start()
+  const actual = vi.mocked(readLocalOwnerRecord).getMockImplementation()!
+  const realNow = performance.now.bind(performance)
+  const reads = vi.mocked(readLocalOwnerRecord).mock.calls.length
+  // Discovery reads the record once, then verifies it again at settlement.
+  // The clock passes the deadline inside that final read; no timer fires.
+  vi.mocked(readLocalOwnerRecord).mockImplementationOnce(actual).mockImplementationOnce((directory) => {
+    const record = actual(directory)
+    expect(record?.state).toBe("ready")
+    vi.spyOn(performance, "now").mockImplementation(() => realNow() + 10_000)
+    return record
+  })
+  try {
+    expect(await acquire(homeDirectory, "attach-only")).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+  } finally {
+    vi.mocked(performance.now).mockRestore()
+  }
+  expect(vi.mocked(readLocalOwnerRecord).mock.calls.length - reads).toBe(2)
 })
