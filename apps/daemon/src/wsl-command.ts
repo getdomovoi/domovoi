@@ -1,4 +1,5 @@
 import type { WslMachineFact } from "./wsl-discovery.js"
+import { WslError, type WslFailureKind } from "./wsl-run.js"
 
 export type WslCommandDependencies = {
   platform: NodeJS.Platform
@@ -9,10 +10,20 @@ export type WslCommandDependencies = {
 
 const usage = "Usage: domovoid wsl list\n"
 
+// Why a running distribution could not be asked, in a word or two, so the
+// listing says what to fix rather than only that something is unknown.
+const failureWords: Record<WslFailureKind, string> = {
+  absent: "WSL is not installed",
+  denied: "denied",
+  "timed-out": "timed out",
+  unavailable: "wsl.exe failed",
+  corrupt: "endpoint file unreadable",
+}
+
 const daemonWords: Record<WslMachineFact["daemon"], (fact: WslMachineFact) => string> = {
   present: (fact) => `daemon at ${fact.endpoint}`,
   absent: () => "no daemon",
-  unknown: () => "could not be asked",
+  unknown: (fact) => (fact.failure ? `could not be asked (${failureWords[fact.failure]})` : "could not be asked"),
 }
 
 function describe(fact: WslMachineFact, nameWidth: number): string {
@@ -44,12 +55,18 @@ export async function runWslCommand(
   try {
     facts = await dependencies.discover()
   } catch (error) {
+    // A machine without WSL has answered the question. Every other failure is
+    // reported as the kind it was, with the remedy the reader already carries.
+    if (error instanceof WslError && error.kind === "absent") {
+      dependencies.stdout(`${error.message}\n`)
+      return 0
+    }
     dependencies.stderr(`Could not ask wsl.exe: ${error instanceof Error ? error.message : String(error)}\n`)
     return 1
   }
 
   if (facts.length === 0) {
-    dependencies.stdout("No WSL distribution is installed, or wsl.exe did not answer.\n")
+    dependencies.stdout("No WSL distribution is installed.\n")
     return 0
   }
   const nameWidth = Math.max(...facts.map((fact) => fact.distribution.length))

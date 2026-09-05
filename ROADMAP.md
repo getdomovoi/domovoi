@@ -318,10 +318,16 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
     so a client shows the readout only when the provider reported the pair. No adapter populates
     them and no client reads them yet.
-- [ ] Add-skill flow with declared-capability review and install scope
-  - Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol
-    has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
-    code before the trust model exists is the wrong order.
+- [x] Add-skill flow with declared-capability review and install scope
+  - `skill.installPreview` reads a folder on the execution machine and returns its manifest,
+    digests, signature and trust state, files, and per-scope targets; `skill.install` copies it
+    into `~/.domovoi/skills` or `<project>/.domovoi/skills` only when the folder's digest still
+    matches the preview, refusing a blocked skill, a link that leaves the folder, and a name that
+    already exists with different files. The copy is staged and renamed inside the root, and every
+    install is audited. The Skills surface reviews the capabilities, trust, and scope before
+    Install, and `domovoid skill add` does the same from a terminal.
+  - Still local only: no bundle, URL, installer command, or other-machine source, and no fleet
+    push. Installing grants nothing; enablement review and trust are unchanged.
 - [x] Editable working plan with per-step state in the Plan tab
   - Protocol, daemon, and client all ship. Codex, Claude, and ACP report plan structure and
     progress; the daemon owns canonical state, binds a blocked step to its approval, delivers the
@@ -550,15 +556,23 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
   - Since #262 `domovoid wsl list` discovers each distribution and whether a daemon answers there,
     the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
-    Windows path inside the distro through its own `wslpath`. A real Windows-to-WSL test now
-    exists: `apps/daemon/src/wsl-windows.test.ts` drives the installed `wsl.exe` for listing,
-    discovery, an absent distribution, and a path round trip, and it skips by name off Windows or
-    on a Windows machine without `wsl.exe`, so it proves the boundary only where WSL is installed.
-    No `domovoi` alias exists, and WSL is still neither a transport nor a fleet candidate: nothing
-    but the CLI and `domovoid open` consumes the discovery.
+    Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
+    denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
+    daemon. Unit tests drive them with a fake `wsl.exe`. A real Windows-to-WSL test now exists:
+    `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
+    by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
+    running WSL 2 distribution, four of them prove that the listing answers or refuses within its
+    deadline and that a distribution that does not exist is refused, and the two that need a
+    running distribution skip. Discovery, open, authentication, repository ownership, Git, and
+    restart against a running distribution remain unverified. No `domovoi` alias exists, and WSL
+    is still neither a transport nor a fleet candidate: nothing but the CLI and `domovoid open`
+    consumes the discovery.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-  - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
-    automount roots, and no real mount-boundary test exists.
+  - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
+    a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
+    it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
+    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
+    which CI does not have.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
