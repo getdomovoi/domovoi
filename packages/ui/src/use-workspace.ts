@@ -440,16 +440,20 @@ export function useWorkspace(
     return next
   }, [updateSnapshotFrom])
 
-  const listSkills = useCallback(async (): Promise<SkillSummary[]> => {
+  const listSkills = useCallback(async (
+    options?: DomovoiRequestOptions,
+  ): Promise<SkillSummary[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.listSkills()
+    return client.listSkills(options)
   }, [])
 
-  const getSkillInventory = useCallback(async (): Promise<SkillInventory> => {
+  const getSkillInventory = useCallback(async (
+    options?: DomovoiRequestOptions,
+  ): Promise<SkillInventory> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.getSkillInventory()
+    return client.getSkillInventory(options)
   }, [])
 
   const listProviderSecrets = useCallback(async () => {
