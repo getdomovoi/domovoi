@@ -4,6 +4,7 @@ import { dirname, posix } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
+import { claimProfile, type ProfileLease } from "../profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { launchdPlist, systemdUnit } from "./units.js"
@@ -40,6 +41,7 @@ export type ServiceTarget = {
 export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
+  claimProfile: (homeDirectory: string) => ProfileLease
   write: (path: string, contents: string, deadline: OperationDeadline) => Promise<void>
   run: (command: string, args: string[], deadline: OperationDeadline) => Promise<void>
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
@@ -291,17 +293,27 @@ async function serviceOperation<T>(operation: (deadline: OperationDeadline) => P
 // with a unit or configuration that is not there.
 async function installWithDeadline(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run">,
+  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile">,
   deadline: OperationDeadline,
 ): Promise<ServicePlan> {
   const plan = servicePlan(target)
-  await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
-  if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+  deadline.throwIfExpired()
+  const lease = effects.claimProfile(target.configuration.homeDirectory)
+  try {
+    await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
+    if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+    deadline.throwIfExpired()
+  } finally {
+    // Timed-out filesystem work may still settle. Retain the lease until this
+    // CLI process exits in that case. Otherwise the saved service config now
+    // prevents Desktop fallback, so release before asking the manager to start.
+    if (!deadline.signal.aborted) lease.release()
+  }
   for (const { command, args } of plan.commands) await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
   return plan
 }
 
-export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run">): Promise<ServicePlan> {
+export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile">): Promise<ServicePlan> {
   return serviceOperation((deadline) => installWithDeadline(target, effects, deadline))
 }
 
@@ -485,6 +497,7 @@ export async function runServiceCommand(
 
 export function nodeServiceEffects(): ServiceEffects {
   return {
+    claimProfile,
     write: writeUnit,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")
