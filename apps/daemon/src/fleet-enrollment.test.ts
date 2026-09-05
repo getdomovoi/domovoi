@@ -7,6 +7,7 @@ import { maximumFleetMachines, protocolVersion, type FleetMachineDescriptor } fr
 import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
 
 function release(minorOffset: number) {
@@ -41,6 +42,7 @@ function fixture() {
     delete: vi.fn((id: string) => { values.delete(id) }),
   }
   const credentials = new MachineCredentialStore(keyring)
+  const asyncCredentials = asyncTestCredentials(credentials)
   const call = vi.fn(async (method: string): Promise<unknown> => method === "device.revokeCurrent" ? { revoked: true } : descriptor)
   const close = vi.fn()
   const open = vi.fn(async () => ({ call, close }))
@@ -49,16 +51,63 @@ function fixture() {
   let now = 1_000
   const create = () => {
     const service = new FleetEnrollmentService({
-      selfId: sourceId, registry, credentials, claim, open, changed,
+      selfId: sourceId, registry, credentials: asyncCredentials, claim, open, changed,
       now: () => now, operationTimeoutMs: 1_000, heartbeatIntervalMs: 15_000,
     })
     services.push(service)
     return service
   }
-  return { service: create(), create, registry, database, credentials, values, keyring, claim, open, call, close, changed, time: (value: number) => { now = value } }
+  return { service: create(), create, registry, database, credentials, asyncCredentials, values, keyring, claim, open, call, close, changed, time: (value: number) => { now = value } }
 }
 
 describe("fleet enrollment coordinator", () => {
+  it("renders a snapshot without reading the keychain again after a successful mutation", async () => {
+    const f = fixture()
+    expect(await f.service.enroll(params)).toMatchObject({ outcome: "enrolled" })
+    const reads = vi.spyOn(f.asyncCredentials, "machines").mockRejectedValue(new Error("native locked"))
+    expect(f.service.snapshot().entries).toMatchObject([{ kind: "machine" }])
+    expect(reads).not.toHaveBeenCalled()
+    expect(f.call.mock.calls.filter(([method]) => method === "device.revokeCurrent")).toEqual([])
+  })
+
+  it("does not resurrect orphan metadata from an older list after forget completed", async () => {
+    const f = fixture()
+    f.credentials.save(targetId, token)
+    await f.service.list()
+    let release: (value: string[]) => void = () => {}
+    vi.spyOn(f.asyncCredentials, "machines").mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const oldList = f.service.list()
+    expect(await f.service.forget({ machineId: targetId, client: "cli" })).toMatchObject({ outcome: "forgotten" })
+    release([targetId])
+    expect(await oldList).toEqual({ entries: [] })
+    expect(f.service.snapshot()).toEqual({ entries: [] })
+  })
+
+  it("does not publish a late keyring result after shutdown", async () => {
+    const f = fixture()
+    let release: (value: string[]) => void = () => {}
+    vi.spyOn(f.asyncCredentials, "machines").mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const listing = expect(f.service.list()).rejects.toThrow("keychain is unavailable")
+    const stopping = f.service.stop()
+    release([targetId])
+    await listing
+    await stopping
+    expect(f.service.snapshot()).toEqual({ entries: [] })
+    expect(f.changed).not.toHaveBeenCalled()
+  })
+
+  it("does not replace a newer healthy observation with an older index failure", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    let reject: (error: Error) => void = () => {}
+    vi.spyOn(f.asyncCredentials, "machines").mockImplementationOnce(() => new Promise((_resolve, failure) => { reject = failure }))
+    const oldList = f.service.list()
+    await f.service.refresh()
+    expect(f.service.snapshot().entries[0]).toMatchObject({ machine: { health: "healthy" } })
+    reject(new Error("earlier native attempt failed"))
+    expect((await oldList).entries[0]).toMatchObject({ machine: { health: "healthy" } })
+  })
+
   it("requires a known expected identity to re-pair at capacity without spending an ambiguous claim", async () => {
     const f = fixture()
     for (let index = 0; index < maximumFleetMachines; index++) {
@@ -142,7 +191,7 @@ describe("fleet enrollment coordinator", () => {
     f.credentials.save(targetId, "z".repeat(43))
     await f.service.reconcile()
     expect(f.registry.enrolled()).toEqual([])
-    expect(f.service.snapshot().entries).toEqual([{ kind: "unenrolled", machineId: targetId }])
+    expect((await f.service.list()).entries).toEqual([{ kind: "unenrolled", machineId: targetId }])
     expect(f.credentials.forMachine(targetId)).toBe("z".repeat(43))
   })
 
@@ -220,7 +269,7 @@ describe("fleet enrollment coordinator", () => {
   it("shows and forgets an orphan key without fabricating target facts or remote revocation", async () => {
     const f = fixture()
     f.credentials.save(targetId, token)
-    expect(f.service.snapshot()).toEqual({ entries: [{ kind: "unenrolled", machineId: targetId }] })
+    expect(await f.service.list()).toEqual({ entries: [{ kind: "unenrolled", machineId: targetId }] })
     expect(await f.service.forget({ machineId: targetId, client: "cli" })).toMatchObject({ outcome: "forgotten", remoteRevocation: "unconfirmed" })
     expect(f.open).not.toHaveBeenCalled()
   })
