@@ -1,6 +1,7 @@
 import type { AcquireLocalDaemonOptions, LocalDaemonHandle } from "@getdomovoi/daemon"
 
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
+import { rendererEndpointUrl } from "./renderer-security.js"
 
 export type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
 
@@ -13,22 +14,20 @@ export type DesktopDaemonBudgets = {
   readonly releaseMs: number
 }
 
-// Acquiring gets the 30 seconds the daemon gives its own start; releasing at
-// quit keeps the desktop's 10 second bound.
+// The daemon's own 30 second start budget and the desktop's 10 second quit bound.
 export const desktopDaemonBudgets: DesktopDaemonBudgets = { acquireMs: 30_000, releaseMs: 10_000 }
 
 type AttachedHandle = Extract<LocalDaemonHandle, { kind: "attached" }>
 
 function describeAcquisition(handle: LocalDaemonHandle): DesktopDaemonAcquisition {
   if (handle.kind === "refused") return { kind: "refused", reason: handle.reason, message: handle.message }
-  const { url, token } = handle.endpoint
+  const url = rendererEndpointUrl(handle.endpoint.url)
+  const { token } = handle.endpoint
   return handle.kind === "owned" ? { kind: "owned", url, token } : { kind: "attached", owner: handle.owner, url, token }
 }
 
-// One start-or-attach per process; everything after rereads the owner record
-// in attach-only mode, so no gap, refusal, or failure starts a second daemon.
-// Racing callers share the current acquisition. An attachment the owner closes
-// triggers one bounded attach-only acquisition, handed to the next reconnect.
+// One start-or-attach per process, attach-only after that, so nothing starts a
+// second daemon. A closed attachment triggers one re-attach for the next reconnect.
 export class DesktopDaemon {
   #attempt: Promise<LocalDaemonHandle> | undefined
   #handle: LocalDaemonHandle | undefined

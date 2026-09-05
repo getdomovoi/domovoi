@@ -89,8 +89,7 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
-// Desktop attaches to whichever daemon owns this profile and starts its own
-// only when the profile is free, from the environment the CLI and service use.
+// Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
   environment: process.env,
   homeDirectory: homedir(),
@@ -200,9 +199,7 @@ function createWindow(): void {
   mainRendererTarget = target
   const window = mainWindow
   const load = () => {
-    if (window.isDestroyed()) return
-    if (target.kind === "url") void window.loadURL(target.url)
-    else void window.loadFile(target.path)
+    if (!window.isDestroyed()) void (target.kind === "url" ? window.loadURL(target.url) : window.loadFile(target.path))
   }
   // The document's policy names the acquired endpoint, so the load waits.
   if (launchSmoke) load()
@@ -212,20 +209,17 @@ function createWindow(): void {
 // Served with the document so connect-src can name the acquired endpoint.
 function serveRendererPolicy(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const target = mainRendererTarget
-    if (details.resourceType !== "mainFrame" || !target || !isTrustedRendererFrameUrl(details.url, target)) {
-      callback({})
-      return
-    }
     const acquisition = desktopDaemon.current()
-    callback({
+    const trusted = details.resourceType === "mainFrame" && mainRendererTarget
+      && isTrustedRendererFrameUrl(details.url, mainRendererTarget)
+    callback(trusted ? {
       responseHeaders: {
         ...details.responseHeaders,
         "Content-Security-Policy": [
-          rendererContentSecurityPolicy(acquisition && acquisition.kind !== "refused" ? acquisition.url : undefined),
+          rendererContentSecurityPolicy(acquisition?.kind === "refused" ? undefined : acquisition?.url),
         ],
       },
-    })
+    } : {})
   })
 }
 

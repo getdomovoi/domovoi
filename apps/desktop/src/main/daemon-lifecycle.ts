@@ -20,19 +20,13 @@ export class DesktopDaemonLifecycle {
     if (this.#quitAllowed) return
     event.preventDefault()
     if (this.#stopping) return
-
     this.#stopping = this.#stop()
-    const allowQuit = (): void => {
-      this.#quitAllowed = true
-      quit()
-    }
-    void this.#stopping.then(allowQuit, (error) => {
-      try {
-        this.errorSink(error)
-      } finally {
-        allowQuit()
-      }
-    })
+      .catch((error: unknown) => { this.errorSink(error) })
+      .catch(() => {})
+      .finally(() => {
+        this.#quitAllowed = true
+        quit()
+      })
   }
 
   async #stop(): Promise<void> {

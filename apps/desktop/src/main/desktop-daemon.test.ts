@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import { DesktopDaemon, desktopDaemonBudgets, type DesktopDaemonSeam } from "./desktop-daemon.js"
 
 const endpoint = { url: "ws://127.0.0.1:47831/rpc", token: "file-token" }
-const restarted = { url: "wss://[::1]:50123/rpc", token: "rotated-token" }
+const restarted = { url: "wss://localhost:50123/rpc", token: "rotated-token" }
 const factoryOptions = {
   environment: { DOMOVOI_PORT: "0" },
   homeDirectory: "/home/user",

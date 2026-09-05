@@ -59,28 +59,30 @@ export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarg
 
 const loopbackSources = "ws://127.0.0.1:* wss://127.0.0.1:* ws://localhost:* wss://localhost:*"
 
-function endpointSource(endpointUrl: string | undefined): string | undefined {
-  if (!endpointUrl) return undefined
+const loopbackIpv6 = /^\[(?:::1|::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4})\]$/iu
+
+function parsedEndpoint(endpointUrl: string | undefined): URL | undefined {
   try {
-    const url = new URL(endpointUrl)
-    if (url.protocol !== "ws:" && url.protocol !== "wss:") return undefined
-    if (url.hostname.startsWith("[")) return undefined
-    return `${url.protocol}//${url.host}`
+    return endpointUrl === undefined ? undefined : new URL(endpointUrl)
   } catch {
     return undefined
   }
 }
 
+export function rendererEndpointUrl(endpointUrl: string): string {
+  const url = parsedEndpoint(endpointUrl)
+  if (!url || !loopbackIpv6.test(url.hostname)) return endpointUrl
+  url.hostname = "localhost"
+  return url.href
+}
+
 export function rendererContentSecurityPolicy(endpointUrl: string | undefined): string {
-  const endpoint = endpointSource(endpointUrl)
-  return [
-    "default-src 'self'",
-    `connect-src 'self' ${loopbackSources}${endpoint ? ` ${endpoint}` : ""}`,
-    "style-src 'self' 'unsafe-inline'",
-    "font-src 'self' data:",
-    "img-src 'self' data:",
-    "script-src 'self'",
-  ].join("; ")
+  const url = parsedEndpoint(endpointUrl && rendererEndpointUrl(endpointUrl))
+  const endpoint = url && (url.protocol === "ws:" || url.protocol === "wss:") && !url.hostname.startsWith("[")
+    ? ` ${url.protocol}//${url.host}`
+    : ""
+  return `default-src 'self'; connect-src 'self' ${loopbackSources}${endpoint}; `
+    + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; script-src 'self'"
 }
 
 export function isAuthorizedRendererEvent(
