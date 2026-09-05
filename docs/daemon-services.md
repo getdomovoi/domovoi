@@ -65,6 +65,12 @@ and the saved configuration before retrying. A failed stop can leave the task di
 it explicitly if keeping the service instead of retrying removal. No other process is killed by
 name, and a daemon already orphaned by an older delete-only removal needs manual reconciliation.
 
+Task Scheduler termination is not a graceful daemon shutdown. Versions with local-owner discovery
+can retain an owner record after the process lease is released, and Desktop must still treat that
+as an unconfirmed shutdown rather than start a fallback owner. Removal does not clear profile-owner
+records: the task may not have been the profile's current owner. Safely retiring that record after
+a forced manager stop is separate ownership-lifecycle work, not proved by task removal alone.
+
 ## Evidence and remaining limits
 
 Tests round trip one non-default configuration through all three service formats. A distributed-CLI
