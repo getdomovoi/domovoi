@@ -12292,7 +12292,7 @@ describe("DomovoiDaemon persistence refusal", () => {
 })
 
 describe("DomovoiDaemon and WSL", () => {
-  it("describes the distribution this daemon runs in", async () => {
+  it.skipIf(process.platform !== "linux")("describes the distribution this daemon runs in", async () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",

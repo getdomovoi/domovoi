@@ -292,7 +292,7 @@ describe("createProductionDaemon under WSL", () => {
     const wsl = { distribution: "Ubuntu-24.04", version: 2 as const }
     const wslFacts = vi.fn(() => wsl)
     let daemonOptions: DaemonServerOptions | undefined
-    await createProductionDaemonWithDependencies({ environment, homeDirectory, machineLabel: "studio" }, {
+    running.push(await createProductionDaemonWithDependencies({ environment, homeDirectory, machineLabel: "studio" }, {
       ...productionDaemonDependencies,
       loadOrCreateToken: async () => testToken("wsl-factory"),
       loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
@@ -302,7 +302,7 @@ describe("createProductionDaemon under WSL", () => {
         daemonOptions = options
         return fakeRuntime(options)
       },
-    })
+    }))
 
     expect(wslFacts).toHaveBeenCalledWith(environment)
     expect(daemonOptions).toMatchObject({ wsl })
@@ -310,7 +310,7 @@ describe("createProductionDaemon under WSL", () => {
 
   it("passes no WSL facts to a daemon outside WSL", async () => {
     let daemonOptions: DaemonServerOptions | undefined
-    await createProductionDaemonWithDependencies({ environment: {}, homeDirectory: await temporaryHome(), machineLabel: "studio" }, {
+    running.push(await createProductionDaemonWithDependencies({ environment: {}, homeDirectory: await temporaryHome(), machineLabel: "studio" }, {
       ...productionDaemonDependencies,
       loadOrCreateToken: async () => testToken("plain-factory"),
       loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
@@ -320,7 +320,7 @@ describe("createProductionDaemon under WSL", () => {
         daemonOptions = options
         return fakeRuntime(options)
       },
-    })
+    }))
 
     expect(daemonOptions).not.toHaveProperty("wsl")
   })
