@@ -230,6 +230,16 @@ test("refuses a missing or old npm with the supported minimum", { timeout: testT
   }
 })
 
+for (const inactivityTimeoutMs of [0, null]) {
+  test(`validates download inactivity before the installer starts npm: ${inactivityTimeoutMs}`, { timeout: testTimeout }, async () => {
+    let calls = 0
+    await assert.rejects(installer({ version, expectedSha256: "0".repeat(64), inactivityTimeoutMs,
+      run: () => { calls += 1; assert.fail("Invalid download policy must not start npm") },
+    }), /timeout must be a positive integer/)
+    assert.equal(calls, 0)
+  })
+}
+
 test("binds protocol archive bytes before npm receives them", { timeout: testTimeout }, async (t) => {
   const { options, calls, packageRoot, pack } = await fixture(t)
   await fs.writeFile(join(packageRoot, "runtime/protocol.tgz"), "different protocol")

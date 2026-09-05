@@ -506,6 +506,11 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     verifies the installed graph before publishing a runnable receipt. Same-release protocol
     bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
     installation, native build, verification, publication, and cleanup share five minutes.
+  - HTTPS downloads add a 30-second byte-progress inactivity allowance within that total.
+    Redirects and empty chunks do not renew it; local disk backpressure spends only the total.
+    Deterministic and real HTTPS regressions reject silent or late responses. Refusal does not
+    promise immediate socket disposal: Node may retain a stalled TLS connection until its own
+    connect timeout, delaying CLI exit. See the transport limits in `docs/distribution.md`.
   - Fresh musl or unknown-libc Linux installs force the reviewed node-pty source build rather
     than selecting an unqualified Linux prebuild. Native loading is checked before publication
     and on reuse. Ubuntu CI's pinned Node 22 Alpine smoke installs the real archive, opens a PTY,

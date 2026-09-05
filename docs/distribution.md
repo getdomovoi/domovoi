@@ -129,9 +129,10 @@ redirects, body reads, staging, fsync, extraction, npm installation, the native 
 and native-load verification, and receipt publication. Archive publication gets at most
 30 seconds and only the remainder of that original budget. Embedded calls
 can set initial budgets with positive integer `timeoutMs` and `publicationTimeoutMs`;
-redirects, trickling bodies, and phase changes never renew the total. Fetch receives the same abort
-signal, abandoned bodies are cancelled, and late results cannot begin another step. Cancellation
-notifications do not wait beyond expiry for an uncooperative transport to finish closing.
+redirects, trickling bodies, and phase changes never renew the total. Both deadlines reach fetch
+through one linked signal, abandoned bodies are cancelled, and late results cannot begin another
+step. Cancellation notifications do not wait beyond expiry for an uncooperative transport to
+finish closing.
 A timed-out filesystem request may still complete at the OS. The error therefore says to inspect
 the destination before retrying, not that no file was written. npm receives the abort signal and
 its process is killed on expiry; a toolchain child may outlive it, but cannot cause a later
@@ -141,6 +142,23 @@ fresh 30-second budget, never the exhausted one, so retries do not accumulate st
 Embedded calls can set it with `cleanupTimeoutMs`. A removal that outlives that budget is not
 awaited further; the error names the retained directory.
 File flush is not a guarantee of directory-entry durability across a power loss.
+
+Each HTTPS download also has a 30-second inactivity allowance, configurable for embedded callers
+through positive integer `inactivityTimeoutMs`. Connection setup, headers, redirects, and body reads
+spend the same allowance until a non-empty body chunk arrives. Headers, redirects, and empty chunks
+never replenish it. Local consumer backpressure pauses inactivity accounting, not the five-minute
+total. Manifest and archive each start their own inactivity allowance within that unchanged total.
+Expiry aborts fetch and reports `BOOTSTRAP_DOWNLOAD_INACTIVE`, the original release origin, and a
+connection-check remedy. It does not echo credentials, paths, or query strings from the URL.
+
+The download refusal is bounded, not the runtime's physical socket disposal. In the live Node
+v26.8.1 TLS-stall regression, refusal arrives at the two-second test allowance while a connection
+stuck before TLS completion remains until Node's connect timeout, roughly ten seconds. That can
+delay CLI process exit; it does not admit later bytes, publication, or another installation step.
+Tests also cover stalled headers and bodies through real HTTPS with certificate verification
+enabled. No fixed socket-disposal time is promised across Node versions. Injected custom download
+adapters retain the mandatory total deadline and receive the inactivity option, but implementing
+transport-specific inactivity is the adapter's responsibility.
 
 Cleanup removes only the current invocation's unpublished staging, never the published archive,
 the winning installation, or an older shared `.partial` file. If installation fails, a verified
