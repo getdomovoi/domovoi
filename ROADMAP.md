@@ -404,6 +404,13 @@ The parked `MachineCredentialStore.forget()` finding is closed with it: `fleet.f
 removal, attempts a bounded revocation on the target, then removes the row and the keychain entry,
 and the receipt says whether the target confirmed before replying.
 
+Audit item G2 now has a real Electron launch proof. `pnpm --filter @getdomovoi/desktop test:launch`
+uses normal Desktop acquisition and the production factory in a fresh profile on an ephemeral
+loopback port. The renderer pairs a client, authenticates it, reads the workspace and revokes it;
+the runner independently checks the persisted device record and released owner after exit.
+This covers Desktop assembly, IPC, CSP and local authenticated RPC, not native machine-keychain
+enrollment, cross-host transfer or a provider turn. See `docs/desktop-launch-smoke.md` for limits.
+
 ### Assembly remediation ledger
 
 Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
