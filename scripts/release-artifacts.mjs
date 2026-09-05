@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
+import { validateCycloneDx } from "./cyclonedx-validation.mjs"
 import { collectDependencyLicenses } from "./dependency-licenses.mjs"
 import { inspectArchive, packPackage, readArchiveEntry } from "./pack-package.mjs"
 import { resolveRuntimeDependency } from "./runtime-lock.mjs"
@@ -188,6 +189,7 @@ async function buildWithinDeadline(root, destination, deadline) {
     })
     const sbomFile = file.replace(/\.tgz$/, ".sbom.json")
 
+    validateCycloneDx(document)
     deadline.check()
     writeFileSync(join(destination, sbomFile), `${JSON.stringify(document, null, 2)}\n`)
     checksums.push({ file, sha256 }, { file: sbomFile, sha256: sha256File(join(destination, sbomFile)) })

@@ -128,7 +128,7 @@ test("records a WITH exception clause as an expression", () => {
   })[0].licenses, [{ expression: "GPL-2.0-only WITH Classpath-exception-2.0" }])
 })
 
-test("omits a license the package never declared", () => {
+test("leaves a license observation marked unknown empty", () => {
   assert.deepEqual(sbomComponents({
     "Unknown": [{ name: "mystery", versions: ["1.0.0"] }],
   })[0].licenses, [])
@@ -162,6 +162,25 @@ test("builds a CycloneDX document describing the packed artifact", () => {
   assert.deepEqual(document.components, [])
 })
 
+test("offline CycloneDX 1.6 validation rejects malformed release documents", async () => {
+  const { validateCycloneDx } = await import("./cyclonedx-validation.mjs").catch(() => ({}))
+  assert.equal(typeof validateCycloneDx, "function", "release metadata needs pinned offline schema validation")
+  const document = sbomDocument({ name: "@getdomovoi/daemon", version: "1.0.0", sha256: "a".repeat(64),
+    components: lockedComponents(lockedFixture()), lockSha256: "b".repeat(64) })
+  assert.doesNotThrow(() => validateCycloneDx(document))
+  for (const mutate of [
+    (doc) => { doc.specVersion = "1.5" },
+    (doc) => { doc.components[0].hashes[0].content = "not a hash" },
+    (doc) => { doc.components[0].licenses = [{ license: { id: "invented-license" } }] },
+    (doc) => { doc.components[0].type = "invented-type" },
+    (doc) => { doc.extra = true },
+  ]) {
+    const invalid = structuredClone(document)
+    mutate(invalid)
+    assert.throws(() => validateCycloneDx(invalid), /CycloneDX 1.6/)
+  }
+})
+
 test("the real release SBOM covers every packed runtime coordinate, not just this host", { timeout: 180_000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "domovoi-sbom-release-"))
   t.after(() => rm(directory, { recursive: true, force: true }))
@@ -186,5 +205,21 @@ test("the real release SBOM covers every packed runtime coordinate, not just thi
   }
   assert.equal(document.metadata.component.hashes[0].content,
     createHash("sha256").update(await readFile(archive)).digest("hex"))
+  assert.equal(document.metadata.properties.find((p) => p.name === "domovoi:sbom:runtime-lock-sha256").value,
+    createHash("sha256").update(stdout).digest("hex"))
+  assert.deepEqual(actual.get(`@getdomovoi/protocol@${manifest.version}`).licenses, [{ license: { id: "Apache-2.0" } }])
+  const protocolArchive = join(output, `getdomovoi-protocol-${manifest.version}.tgz`)
+  assert.equal(`sha512-${createHash("sha512").update(await readFile(protocolArchive)).digest("base64")}`, lock.packages[protocolPath].integrity)
+  const protocolDocument = JSON.parse(await readFile(protocolArchive.replace(/\.tgz$/, ".sbom.json"), "utf8"))
+  assert.equal(protocolDocument.components.some((c) => c.name === "@getdomovoi/protocol"), false)
+  assert.equal(protocolDocument.components.some((c) => c.name.includes("claude-agent-sdk")), false)
+  const { validateCycloneDx } = await import("./cyclonedx-validation.mjs")
+  validateCycloneDx(document)
+  validateCycloneDx(protocolDocument)
+  const checksums = await readFile(join(output, "SHA256SUMS"), "utf8")
+  for (const line of checksums.trim().split("\n")) {
+    const [digest, file] = line.split("  ")
+    assert.equal(createHash("sha256").update(await readFile(join(output, file))).digest("hex"), digest)
+  }
   t.diagnostic(`SBOM covers all ${expected.size} locked runtime components, including non-host packages and first-party protocol`)
 })
