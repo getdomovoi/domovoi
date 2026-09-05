@@ -24,6 +24,8 @@ function taskManager() {
   const task = { registered: true, enabled: true, running: true }
   const effects: ServiceEffects = {
     claimProfile: vi.fn(() => ({ release: vi.fn() })),
+    removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
+    writeRemovalReceipt: vi.fn(),
     write: vi.fn(async () => {}),
     exists: vi.fn(async () => true),
     remove: vi.fn(async () => {}),

@@ -318,6 +318,7 @@ async function main() {
   const daemon = await createProductionDaemon({
     environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
     homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
     machineLabel: hostname(),
   })
 

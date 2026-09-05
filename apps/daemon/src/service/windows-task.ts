@@ -89,12 +89,12 @@ async function taskResult(command: ServiceCommand, effects: Pick<ServiceEffects,
   return match[1]!
 }
 
-export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<void> {
+export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"removed" | "already-missing"> {
   try {
     let state = await taskResult(plan.stop, effects, deadline)
     // Absence before any stop attempt is idempotent. Once an instance may have
     // been running, disappearance of its registration does not prove it died.
-    if (state === "missing") return
+    if (state === "missing") return "already-missing"
     while (state === "2" || state === "4") {
       await withinServiceDeadline(deadline, () => delay(100, undefined, { signal: deadline.signal }))
       state = await taskResult(plan.inspect, effects, deadline)
@@ -103,6 +103,7 @@ export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: P
     if (await taskResult(plan.remove, effects, deadline) !== "deleted") {
       throw new Error("Task registration disappeared before removal could be confirmed")
     }
+    return "removed"
   } catch (cause) {
     throw new WindowsTaskRemovalError(plan.name, cause)
   }
