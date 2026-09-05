@@ -165,6 +165,46 @@ is installed. `remove` stops the service and deletes the file it pointed at.
 A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
 user-private files the daemon already reads.
 
+## Windows and WSL
+
+A daemon inside a WSL distribution is its own machine. Run `domovoid` inside the distribution;
+it publishes its loopback endpoint at `~/.domovoi/endpoint.json` there, and WSL 2 forwards that
+port to the Windows loopback. The Windows side never opens `\\wsl$` or `\\wsl.localhost`: every
+question is put to `wsl.exe` as an argument list with a 10 second deadline, and the distribution
+answers with its own tools.
+
+```powershell
+domovoid wsl list
+domovoid open \\wsl$\Ubuntu-24.04\home\me\project
+domovoid open .
+```
+
+`wsl list` runs `wsl.exe --list --verbose` and, for each running distribution, asks it to read
+its endpoint file. It prints one line per distribution: the name, `WSL 1` or `WSL 2`, `running`
+or `stopped`, and `daemon at ws://127.0.0.1:<port>/rpc`, `no daemon`, or `could not be asked`.
+The credential in the endpoint file is never printed. A stopped distribution is not asked, since
+asking would start it. The command runs only on Windows, and prints an empty list when `wsl.exe`
+is missing or does not answer in time.
+
+`open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
+separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
+path that is, and then sends `project.open` to the daemon inside the distribution with the
+distribution's credential. This machine's credential never travels into a distribution. The
+command refuses, naming the distribution and the remedy, when the distribution is not installed,
+is stopped, runs under WSL 1, has no daemon endpoint, or when the path reads back as a Windows
+drive the distribution mounts, wherever it mounts it. A plain Windows path opens through this
+machine's daemon as before, without asking `wsl.exe` anything.
+
+Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
+work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
+inside the distribution.
+
+A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
+from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
+A supervisor that starts the daemon without `WSL_DISTRO_NAME` leaves those facts unreported, and
+the daemon is listed as plain Linux. Discovery does not enroll a distribution in the fleet; pair
+it with `domovoid pair` inside the distribution like any other machine.
+
 ## Programmatic use
 
 `@getdomovoi/daemon` exposes one supported production factory. It owns the daemon credential,
