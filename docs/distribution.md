@@ -1,14 +1,20 @@
 # Distribution contract
 
-Domovoi uses pnpm for repository development. Published JavaScript artifacts remain compatible
-with npm and Bun because they use standard package manifests, ESM exports, and declared Node
-engine ranges. Consumers do not need pnpm.
+Domovoi uses pnpm for repository development. The protocol library supports npm, pnpm, and Bun
+through standard package manifests and ESM exports. Consumers do not need pnpm.
+
+The supported frozen daemon installation is the verified bootstrap below. Manual npm, pnpm, or
+Bun adds of `@getdomovoi/daemon` are not frozen: selecting the daemon version does not freeze its
+transitive dependencies. Bootstrap uses the npm bundled with Node regardless of the package
+manager used for a person's other projects. This freezes the reviewed package graph, not native
+compilation or the external toolchain.
 
 ## Planned channels
 
 | Channel | Artifact | Source of truth |
 | --- | --- | --- |
-| npm, pnpm, Bun | `@getdomovoi/protocol`, daemon and CLI packages | signed npm tarballs |
+| npm, pnpm, Bun | `@getdomovoi/protocol` | signed npm tarballs |
+| verified bootstrap | frozen daemon and CLI runtime | caller-pinned release archive and embedded integrity lock |
 | Homebrew | `domovoi` CLI and `domovoid` service formulae | GitHub release checksums |
 | AUR | source and binary packages | GitHub release checksums |
 | Windows | signed installer and package-manager manifest | GitHub release artifacts |
@@ -32,16 +38,136 @@ document is proven rather than assumed. The Bun version CI installs is pinned by
 `.github/workflows/ci.yml` and must be bumped by hand; Dependabot moves the action SHA but not that
 input.
 
-The daemon is not part of this check. Its production graph builds native modules, so a cold install
-per package manager on every CI run costs far more than it proves; its packaged contents are
-covered by `pnpm test:packages`.
+The daemon is not part of the three-manager import check. `pnpm test:packages` checks its real
+packed contents and exercises the bootstrap CLI over HTTPS against an isolated fixture registry.
+It installs the same archive into fresh private trees before and after a transitive release
+changes, requires the pinned version both times, checks that the permitted build actually ran,
+and refuses replaced tarball bytes without publishing an installation. It does not cold-build
+every production native dependency on every CI run.
+
+### Verified bootstrap installation
+
+`node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` installs an
+exact release for Linux, macOS, or Windows. It requires Node 22 or newer with bundled npm 10.0.0
+or newer, `tar`, registry access, and the host's native build toolchain. Missing or older npm is
+refused with that minimum and the remedy to install a supported Node distribution including npm.
+Bootstrap invokes npm through the same Node executable, not a different manager on PATH.
+
+Both the release's `SHA256SUMS` and the SHA-256 supplied by the caller must agree with the archive
+bytes. Obtain the script and expected digest through a trusted release channel. A checksum from
+the same compromised source as the archive is not independent authentication. Signature
+verification remains a separate release item.
+
+The daemon's prepack hook converts the reviewed `pnpm-lock.yaml` production graph into a
+lockfile-v3 integrity lock at `runtime/lock.json`, with its install manifest at
+`runtime/package.json`. These non-special names survive package-manager packing. Packaging
+refuses stale workspace importers, missing SHA-512 integrity, unknown workspace links, or an
+unsupported dependency source instead of resolving newer registry metadata. Every supported
+platform's optional packages remain in the lock. The archive also contains the exact same-release
+protocol tarball at `runtime/protocol.tgz`, bound by SHA-512 in the lock. No provider SDK is
+bundled: those bytes are fetched from the registry under their existing terms.
+
+After archive verification, installation proceeds in a separate private `.runtime-*` directory:
+
+1. Reject unsafe paths, duplicate entries, links, and special files before extraction.
+2. Check the install manifest and protocol bytes against the lock, then materialise the exact
+   lock bytes as `package-lock.json` at the private install root.
+3. Run `npm ci --omit=dev --ignore-scripts`, then verify physical package names, versions,
+   dependency resolution, required platform packages, and npm's fetched-integrity records
+   against the lock. Additional or missing packages refuse publication.
+4. Run only the reviewed `node-pty` native build, with its exact-version build permission, then
+   verify again and require that npm left the input lock byte-identical. Other dependency
+   lifecycle hooks require an explicit policy change and are refused.
+5. Publish `v<version>/runtime.json` with a no-replace hard link only after verification. The
+   receipt names that private installation, the release digest, and the lock digest.
+
+The JSON result includes `runtimePath`; `node <runtimePath>/dist/index.js` runs the installed
+daemon. Bootstrap does not start it, change PATH, configure daemon state, or install supervision.
+Private runtime staging is owner-only on POSIX; on Windows bootstrap applies a protected ACL
+granting the current user before extraction and installation. Elevated administrators and code
+already running as that user are outside this filesystem boundary.
+
+An identical repeat checks the existing receipt and installed graph without rerunning npm.
+Concurrent identical installers converge on the first verified receipt and discard only their
+own unpublished tree. Drift refuses rather than repairing a possibly running installation. npm
+checks downloaded tarball integrity; the later graph check is not a hash of every extracted file
+and does not protect against arbitrary modification by the OS user after installation.
+
+#### Download publication and resource bounds
+
+Each invocation streams the archive into a unique private `.bootstrap-*` directory beside the
+destination, hashing and enforcing the byte ceiling as chunks arrive. Staging contains unverified
+bytes until both checksums pass. It is fsynced and closed before publication, then published with a
+hard link that cannot replace an existing path. POSIX staging directories and files are owner-only;
+Windows inherits the destination's access controls, so choose a destination writable only by the
+installing user. Concurrent
+invocations with the same digest may both succeed. Different digests refuse
+without replacing the first archive. An existing archive is accepted only after a bounded,
+streamed read verifies its length and digest; a symlink or other non-file destination is refused.
+The filesystem must support hard links. Unsupported publication fails rather than falling back to
+a replacing rename or a copy that another process could read while incomplete.
+
+The archive ceiling remains 256 MiB by default. `SHA256SUMS` has its own 256 KiB byte ceiling and
+is the only accumulated download. Archive memory follows individual network chunks and the file
+writer, not the total archive size; final verification reads in 64 KiB chunks. This is not a fixed
+RSS limit on Node or its transport buffers. The regression measures retained download buffers in
+an isolated process, including the staging-to-publication boundary, and separately checks that
+each chunk reaches disk before the next read.
+
+One five-minute deadline starts before the npm version probe and covers connection setup,
+redirects, body reads, staging, fsync, extraction, npm installation, the native build, graph
+verification, and receipt publication. Archive publication gets at most 30 seconds and
+only the remainder of that original budget. Embedded calls
+can set initial budgets with positive integer `timeoutMs` and `publicationTimeoutMs`;
+redirects, trickling bodies, and phase changes never renew the total. Fetch receives the same abort
+signal, abandoned bodies are cancelled, and late results cannot begin another step. Cancellation
+notifications do not wait beyond expiry for an uncooperative transport to finish closing.
+A timed-out filesystem request may still complete at the OS. The error therefore says to inspect
+the destination before retrying, not that no file was written. npm receives the abort signal and
+its process is killed on expiry; a toolchain child may outlive it, but cannot cause a later
+bootstrap step or receipt publication. Removing the current unpublished `.runtime-*` staging,
+including its `node_modules` and `.npm-cache`, runs after any failure or expiry under its own
+fresh 30-second budget, never the exhausted one, so retries do not accumulate staging trees.
+Embedded calls can set it with `cleanupTimeoutMs`. A removal that outlives that budget is not
+awaited further; the error names the retained directory.
+File flush is not a guarantee of directory-entry durability across a power loss.
+
+Cleanup removes only the current invocation's unpublished staging, never the published archive,
+the winning installation, or an older shared `.partial` file. If installation fails, a verified
+archive can remain without a runtime receipt. If cleanup fails, the error names retained staging.
+An interrupted process can leave `.bootstrap-*` or `.runtime-*` directories. Stop bootstrap and
+any remaining build processes before inspecting or removing an exact unpublished directory by
+hand. Do not remove a directory referenced by `runtime.json` while its daemon is running. No
+age-based cleanup runs automatically. A conflicting archive or installation requires an explicit
+operator decision or a different destination; bootstrap never replaces it for the caller.
+
+#### What freezing does not promise
+
+Manual npm, pnpm, or Bun adds of the daemon do not use this controlled install root and are not
+frozen. A nested shrinkwrap is not a portable substitute: the manager probe observed both npm 12
+and pnpm resolving a newer transitive version; npm 12 no longer uses `npm-shrinkwrap.json`, as
+recorded in the [npm 12 breaking changes](https://github.com/npm/cli/blob/latest/CHANGELOG.md#1200-2026-07-08). The
+same lock bytes materialised as root `package-lock.json` kept the pinned version with `npm ci`.
+Bun was unavailable in that probe, so no Bun shrinkwrap behavior was established. The protocol
+library keeps its independent three-manager installation contract.
+
+Native compilation and the external toolchain remain reproducibility limits. Node, npm, the OS,
+compiler, Python, system libraries, and any downloaded native build inputs are not frozen by the
+package graph. Neither are separately installed provider CLIs or provider services. This is not
+a bit-for-bit reproducible binary, an offline installation, or an authenticity guarantee for
+third-party code. Registry unavailability, native build failures, and verification failures
+refuse publication rather than choosing substitute dependencies.
 
 ### Verified bootstrap download
 
-`node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` downloads
-an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256 supplied by the
-caller must agree with the downloaded bytes. This remains a downloader, not an installer: it does
-not unpack the archive, resolve dependencies, configure PATH, or install a service.
+The download phase of the CLI above is exported separately as `bootstrapDaemon` from
+`scripts/bootstrap-download.mjs`, re-exported by `scripts/bootstrap-daemon.mjs` for embedding
+callers. It takes the same `version`, `baseUrl`, `destination`, and `expectedSha256` inputs and
+downloads an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256
+supplied by the caller must agree with the downloaded bytes. On its own it is a downloader, not an
+installer: it does not unpack the archive, resolve dependencies, configure PATH, or install a
+service. The CLI continues from its result into the private `.runtime-*` installation described
+under Verified bootstrap installation.
 
 Each invocation streams the archive into a unique private `.bootstrap-*` directory beside the
 destination, hashing and enforcing the byte ceiling as chunks arrive. Staging contains unverified
