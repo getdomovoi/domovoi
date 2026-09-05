@@ -40,7 +40,9 @@ deadline across filesystem and manager steps; an expired step cannot initiate a 
 To change settings, stop the service, run installation again with the intended environment, then
 restart it. Installation does not guarantee that a manager reloads an already running process.
 Removal deletes the saved configuration after the manager stops and the profile lease is free.
-It does not remove the
+A corrupt, oversized or unreadable owner record or saved configuration does not block that removal,
+but it yields no recovery receipt: the command names the unreadable file and points to
+`domovoid profile recover --confirm-no-supervisor` after repair. It does not remove the
 credential, identity, workspace database, or worktrees.
 
 ## Windows removal
@@ -63,8 +65,10 @@ A missing task at the initial lookup is already removed. Once a task has been fo
 state or disappearing registration is not proof that its process stopped. Manager failures and
 stop timeouts retain the configuration; a failure during final deletion may have already changed
 OS or filesystem state. The error names the task and asks the operator to inspect Task Scheduler
-and the saved configuration before retrying. A failed stop can leave the task disabled. Re-enable
-it explicitly if keeping the service instead of retrying removal. No other process is killed by
+and the saved configuration before retrying. A failure after the stop step can leave the task
+disabled with its registration and configuration kept; the error says so. Re-enable it with
+`schtasks /change /tn "Domovoi daemon" /enable` or reinstall with `domovoid service install` if
+keeping the service instead of retrying removal. No other process is killed by
 name, and a daemon already orphaned by an older delete-only removal needs manual reconciliation.
 
 Task Scheduler termination is not a graceful daemon shutdown and can leave a ready owner record
