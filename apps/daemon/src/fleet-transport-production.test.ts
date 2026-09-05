@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { chmod, readFile } from "node:fs/promises"
+import { chmod, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
@@ -19,23 +19,26 @@ describe("production transport producers", () => {
   it("publishes a configured tailnet endpoint through the real TLS listener with its actual port", async () => {
     const deadline = OperationDeadline.start(30_000)
     try {
-      const folder = await scratch()
+      const folder = await withinServiceDeadline(deadline, scratch)
       const certPath = join(folder, "cert.pem")
       const keyPath = join(folder, "key.pem")
+      const configPath = join(folder, "openssl.cnf")
+      await withinServiceDeadline(deadline, () => writeFile(configPath,
+        "[req]\ndistinguished_name=dn\nx509_extensions=names\n[dn]\n[names]\nsubjectAltName=DNS:localhost\n"))
       await withinServiceDeadline(deadline, () => promisify(execFile)("openssl", [
         "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
         "-keyout", keyPath, "-out", certPath, "-days", "1", "-subj", "/CN=localhost",
-        "-addext", "subjectAltName=DNS:localhost",
+        "-config", configPath,
       ], { signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()) }))
       await withinServiceDeadline(deadline, () => chmod(keyPath, 0o600))
       const ca = await withinServiceDeadline(deadline, () => readFile(certPath))
-      const daemon = await machine("TLS studio", undefined, {
+      const daemon = await withinServiceDeadline(deadline, () => machine("TLS studio", undefined, {
         environment: { DOMOVOI_HOST: "0.0.0.0", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
           DOMOVOI_TLS_CERT_PATH: certPath, DOMOVOI_TLS_KEY_PATH: keyPath,
           DOMOVOI_ADVERTISE_HOST: "localhost", DOMOVOI_TAILNET_HOST: "studio.tailnet.example" },
         clientOptions: { ca },
-      })
-      const facts = remote(fleetSnapshotSchema.parse(await daemon.root.ok("fleet.list", {})), daemon.id)
+      }))
+      const facts = remote(fleetSnapshotSchema.parse(await withinServiceDeadline(deadline, () => daemon.root.ok("fleet.list", {}))), daemon.id)
       expect(daemon.address.url).toBe(`wss://localhost:${daemon.address.port}/rpc`)
       expect(facts.transports).toEqual([
         { kind: "lan", endpoint: `wss://localhost:${daemon.address.port}/rpc`, authenticated: true },

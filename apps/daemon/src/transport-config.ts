@@ -11,7 +11,8 @@ export function endpointHost(host: string): string {
 export function isLoopbackHost(host: string): boolean {
   try {
     const normalized = new URL(`wss://${endpointHost(host)}/`).hostname
-    return normalized === "localhost" || normalized === "[::1]" || normalized.startsWith("127.")
+    return normalized === "localhost" || normalized === "localhost." || normalized === "[::1]"
+      || /^127\.\d+\.\d+\.\d+$/u.test(normalized) || normalized.startsWith("[::ffff:7f")
   } catch { return false }
 }
 
@@ -30,8 +31,10 @@ export const tailnetHostSchema = z.string().min(1).max(253).refine((host) => {
 // advertisements, and this setting neither starts SSH nor accepts remote URLs.
 const configuredSshTunnelSchema = z.object({
   machineId: machineIdSchema,
-  endpoint: fleetDirectEndpointSchema.refine((endpoint) =>
-    ["localhost", "127.0.0.1", "[::1]"].includes(new URL(endpoint).hostname)),
+  endpoint: fleetDirectEndpointSchema.refine((endpoint) => {
+    try { return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(endpoint).hostname) }
+    catch { return false }
+  }),
 }).strict()
 
 export const configuredSshTunnelsSchema = z.array(configuredSshTunnelSchema).max(maximumFleetMachines)

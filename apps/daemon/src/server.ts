@@ -172,6 +172,7 @@ import {
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
 import type { MachineCredentials } from "./machine-credentials.js"
+import type { ConfiguredSshTunnel } from "./transport-config.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -768,6 +769,8 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
+  tailnetHost?: string
+  sshTunnels?: readonly ConfiguredSshTunnel[]
   // Below the production factory only. The version this daemon advertises and
   // admits peers by, so a test peer can stand in for another release. Its own
   // dials keep the build's version.
@@ -890,6 +893,7 @@ export class DomovoiDaemon {
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
   #advertiseHost: string | undefined
+  #tailnetHost: string | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
@@ -927,6 +931,7 @@ export class DomovoiDaemon {
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
     this.#advertiseHost = options.advertiseHost
+    this.#tailnetHost = options.tailnetHost
     this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
     if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
       throw new RangeError("Advertised protocol version must be a three-part semver")
@@ -948,6 +953,7 @@ export class DomovoiDaemon {
         return target
       },
       credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
       dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
       open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
         endpoint,
@@ -1028,6 +1034,7 @@ export class DomovoiDaemon {
     this.#localMachine = structuredClone(this.#snapshot.machine)
     this.#fleetEnrollment = new FleetEnrollmentService({
       selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
       operationTimeoutMs: options.fleetOperationTimeoutMs ?? defaultFleetOperationTimeoutMs,
       heartbeatIntervalMs: options.fleetHeartbeatIntervalMs ?? defaultFleetHeartbeatIntervalMs,
       recordLocal: () => this.#recordThisMachine(),
@@ -1098,6 +1105,7 @@ export class DomovoiDaemon {
         host: this.host, port: this.address?.port ?? this.requestedPort,
         ...(this.#tls ? { tls: true } : {}),
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
+        ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
       }),
     })
   }

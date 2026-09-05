@@ -21,6 +21,13 @@ describe("advertisedTransports", () => {
     ])
   })
 
+  it("does not invent a preferred LAN duplicate of an explicitly classified tailnet endpoint", () => {
+    const input = { host: "studio.tailnet.example", port: 47831, tls: true, tailnetHost: "STUDIO.tailnet.example" }
+    expect(advertisedTransports(input)).toEqual([
+      { kind: "tailnet", endpoint: "wss://studio.tailnet.example:47831/rpc", authenticated: true },
+    ])
+  })
+
   it("reports TLS for an encrypted loopback listener too", () => {
     expect(advertisedTransports({ host: "127.0.0.1", port: 47831, tls: true })).toEqual([
       { kind: "local", endpoint: "wss://127.0.0.1:47831/rpc", authenticated: true },

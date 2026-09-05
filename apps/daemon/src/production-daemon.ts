@@ -109,6 +109,8 @@ export async function createProductionDaemonWithDependencies(
     machineIdentity,
     ...(tls ? { tls } : {}),
     ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
+    ...(config.tailnetHost ? { tailnetHost: config.tailnetHost } : {}),
+    ...(config.sshTunnels ? { sshTunnels: config.sshTunnels } : {}),
     machineCredentials: dependencies.createMachineCredentials(),
     statePath: join(stateDirectory, "state.sqlite"),
     worktreeRoot: join(stateDirectory, "worktrees"),

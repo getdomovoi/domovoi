@@ -87,6 +87,19 @@ async function openRpc(handle: ProductionDaemonHandle) {
 }
 
 describe("createProductionDaemon", () => {
+  it.each([
+    { DOMOVOI_TAILNET_HOST: "studio.tailnet.example" },
+    { DOMOVOI_SSH_TUNNELS: JSON.stringify([{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://not-local/rpc" }]) },
+  ])("refuses invalid route configuration before creating secrets or a server: %j", async (environment) => {
+    const loadOrCreateToken = vi.fn(async () => testToken("unused"))
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    await expect(createProductionDaemonWithDependencies({ environment, homeDirectory: await temporaryHome() }, {
+      ...productionDaemonDependencies, loadOrCreateToken, createDaemon,
+    })).rejects.toThrow(/DOMOVOI_(TAILNET_HOST|SSH_TUNNELS)/)
+    expect(loadOrCreateToken).not.toHaveBeenCalled()
+    expect(createDaemon).not.toHaveBeenCalled()
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

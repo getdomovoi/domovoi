@@ -4,6 +4,7 @@ import type { FleetMachine } from "@getdomovoi/protocol"
 
 import { createMachineDialer } from "./machine-dial.js"
 import { OperationDeadline } from "./operation-deadline.js"
+import { MachineIdentityMismatchError } from "./machine-socket.js"
 
 const credential = "n".repeat(43)
 const machineId = `machine-${"b".repeat(32)}`
@@ -67,6 +68,40 @@ function dialer(overrides: {
 }
 
 describe("createMachineDialer", () => {
+  it.each(["ineligible", "missing-credential", "different-machine"] as const)("cannot enable an SSH route past %s", async (scenario) => {
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    const dial = createMachineDialer({
+      machine: () => scenario === "ineligible" ? undefined : machine({ transports: [] }),
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId],
+        forMachine: () => scenario === "missing-credential" ? undefined : credential },
+      sshTunnels: [{ machineId: scenario === "different-machine" ? `machine-${"c".repeat(32)}` : machineId,
+        endpoint: "ws://127.0.0.1:47900/rpc" }],
+      dialTimeoutMs: 1000, open,
+    })
+    await expect(dial(machineId)).rejects.toThrow()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it("does not try SSH after a direct route fails verified identity", async () => {
+    const open = vi.fn(async () => { throw new MachineIdentityMismatchError() })
+    const dial = createMachineDialer({
+      machine: () => machine(),
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47900/rpc" }],
+      dialTimeoutMs: 1000, open,
+    })
+    await expect(dial(machineId)).rejects.toBeInstanceOf(MachineIdentityMismatchError)
+    expect(open).toHaveBeenCalledOnce()
+  })
+
+  it("never opens a socket for invalid source-local configuration", () => {
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    expect(() => createMachineDialer({ machine: () => machine(), credentials: undefined, dialTimeoutMs: 1000, open,
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1.example.com/rpc" }],
+    })).toThrow()
+    expect(open).not.toHaveBeenCalled()
+  })
+
   it("produces a configured local SSH fallback within the original route deadline", async () => {
     let now = 0
     const deadline = OperationDeadline.start(100, { now: () => now })
@@ -184,6 +219,7 @@ describe("createMachineDialer", () => {
       ] }),
       credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
       dialTimeoutMs: 1_000, open,
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47900/rpc" }],
     })
     try {
       await expect(dial(machineId, undefined, deadline)).rejects.toThrow(/deadline/)

@@ -29,15 +29,21 @@ export function advertisedTransports(input: AdvertisedTransportInput): Transport
 
   const reachableHost = input.advertiseHost
     ?? (wildcardHosts.has(input.host) ? undefined : input.host)
+  const tailnetEndpoint = input.tailnetHost
+    ? `wss://${new URL(`wss://${endpointHost(input.tailnetHost)}/`).hostname}:${input.port}/rpc`
+    : undefined
   const candidates: TransportCandidate[] = []
-  if (reachableHost && !wildcardHosts.has(reachableHost)) candidates.push({
-    kind: "lan",
-    endpoint: `wss://${endpointHost(reachableHost)}:${input.port}/rpc`,
-    authenticated: true,
-  })
-  if (input.tailnetHost) candidates.push({
+  if (reachableHost && !wildcardHosts.has(reachableHost)) {
+    const endpoint = `wss://${endpointHost(reachableHost)}:${input.port}/rpc`
+    // An explicit classification outranks the inferred default for that same
+    // endpoint. Do not insert a preferred LAN duplicate ahead of a tailnet.
+    if (!tailnetEndpoint || new URL(endpoint).href !== new URL(tailnetEndpoint).href) {
+      candidates.push({ kind: "lan", endpoint, authenticated: true })
+    }
+  }
+  if (tailnetEndpoint) candidates.push({
     kind: "tailnet",
-    endpoint: `wss://${endpointHost(input.tailnetHost)}:${input.port}/rpc`,
+    endpoint: tailnetEndpoint,
     authenticated: true,
   })
   return candidates
