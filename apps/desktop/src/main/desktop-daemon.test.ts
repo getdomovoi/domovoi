@@ -24,7 +24,12 @@ function owned(address = endpoint) {
 }
 
 function attached(owner: "daemon" | "desktop" = "daemon", address = endpoint) {
-  return { kind: "attached" as const, owner, endpoint: address, detach: vi.fn() }
+  const closure = deferred<void>()
+  return { kind: "attached" as const, owner, endpoint: address, closed: closure.promise, detach: vi.fn(), close: closure.resolve }
+}
+
+async function settled(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve()
 }
 
 function refused(reason: Extract<LocalDaemonHandle, { kind: "refused" }>["reason"]) {
@@ -156,15 +161,119 @@ describe("DesktopDaemon", () => {
     expect(results).toEqual(Array(3).fill({ kind: "attached", owner: "daemon", ...restarted }))
   })
 
-  it("does not acquire again after the seam itself failed", async () => {
+  it("retries only in attach-only mode after the seam itself failed", async () => {
     const failure = new Error("seam exploded")
-    const seam = vi.fn<DesktopDaemonSeam>(async () => { throw failure })
+    const seam = vi.fn<DesktopDaemonSeam>()
+      .mockRejectedValueOnce(failure)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(attached("daemon"))
     const daemon = new DesktopDaemon(seam, () => factoryOptions)
 
     await expect(daemon.acquire()).rejects.toBe(failure)
-    await expect(daemon.acquire()).rejects.toBe(failure)
     await expect(daemon.reacquire()).rejects.toBe(failure)
-    expect(seam).toHaveBeenCalledOnce()
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    expect(seam.mock.calls.map(([options]) => options.mode)).toEqual(["start-or-attach", "attach-only", "attach-only"])
+  })
+
+  describe("closure of an attachment", () => {
+    it("re-attaches once when the owner closes the attachment and hands the renderer that state", async () => {
+      const first = attached("daemon")
+      const { seam, modes } = scriptedSeam([first, attached("daemon", restarted), attached("daemon")])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      first.close()
+      await settled()
+      expect(modes()).toEqual(["start-or-attach", "attach-only"])
+      expect(daemon.current()).toEqual({ kind: "attached", owner: "daemon", ...restarted })
+
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+      expect(seam).toHaveBeenCalledTimes(2)
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+      expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+    })
+
+    it("publishes the refusal when re-attachment after a closure is refused", async () => {
+      const first = attached("daemon")
+      const { seam, modes } = scriptedSeam([first, refused("owner-unreachable"), attached("daemon", restarted)])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      first.close()
+      await settled()
+      expect(daemon.current()).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+
+      await expect(daemon.reacquire()).resolves.toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+      expect(seam).toHaveBeenCalledTimes(2)
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+      expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+    })
+
+    it("keeps listening on the attachment it re-attached to", async () => {
+      const first = attached("daemon")
+      const second = attached("daemon", restarted)
+      const { seam, modes } = scriptedSeam([first, second, attached("desktop")])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      first.close()
+      await settled()
+      second.close()
+      await settled()
+
+      expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "desktop", ...endpoint })
+      expect(seam).toHaveBeenCalledTimes(3)
+    })
+
+    it("ignores the closure of an attachment Desktop detached itself", async () => {
+      const first = attached("daemon")
+      const second = attached("daemon", restarted)
+      const { seam } = scriptedSeam([first, second])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await daemon.reacquire()
+      expect(first.detach).toHaveBeenCalledOnce()
+      first.close()
+      await settled()
+      expect(seam).toHaveBeenCalledTimes(2)
+
+      await daemon.release()
+      expect(second.detach).toHaveBeenCalledOnce()
+      second.close()
+      await settled()
+      expect(seam).toHaveBeenCalledTimes(2)
+    })
+
+    it("ignores a closure that lands while another acquisition is pending", async () => {
+      const first = attached("daemon")
+      const reattaching = deferred<LocalDaemonHandle>()
+      const seam = vi.fn<DesktopDaemonSeam>()
+        .mockResolvedValueOnce(first)
+        .mockReturnValueOnce(reattaching.promise)
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      const reacquiring = daemon.reacquire()
+      first.close()
+      await settled()
+      expect(seam).toHaveBeenCalledTimes(2)
+
+      reattaching.resolve(attached("daemon", restarted))
+      await expect(reacquiring).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+      expect(seam).toHaveBeenCalledTimes(2)
+    })
+
+    it("never re-attaches an owned daemon", async () => {
+      const { seam } = scriptedSeam([owned()])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await settled()
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "owned", ...endpoint })
+      expect(seam).toHaveBeenCalledOnce()
+    })
   })
 
   it("reports the acquisition it currently holds without touching the seam", async () => {
