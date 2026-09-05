@@ -20,6 +20,7 @@ export {
 export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
 export {
   dialTransport,
+  TransportDialTimeoutError,
   isLoopbackEndpoint,
   TransportDialError,
   type DialedTransport,

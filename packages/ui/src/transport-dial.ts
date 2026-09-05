@@ -1,9 +1,30 @@
 import { orderedTransports, type TransportCandidate } from "@getdomovoi/protocol"
 
+import { DeadlineExceededError } from "./deadline.js"
+
 export class TransportDialError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "TransportDialError"
+  }
+}
+
+export class TransportDialTimeoutError extends TransportDialError {
+  readonly target: string
+  readonly stage: "open" | "hello" | "route-setup"
+  readonly budgetMs: number
+
+  constructor(endpoint: string, timeout: DeadlineExceededError, summary: string) {
+    // Only local deadline facts survive. Neither a remote error's text nor
+    // endpoint userinfo, path, query or fragment belongs in a refusal.
+    const target = new URL(endpoint).origin
+    const stage = timeout.stage === "open" ? "open"
+      : timeout.stage === "hello" || timeout.stage === "system.hello" ? "hello" : "route-setup"
+    super(`${summary}. Timed out during ${stage} at ${target}. Check that route and try again.`)
+    this.name = "TransportDialTimeoutError"
+    this.target = target
+    this.stage = stage
+    this.budgetMs = timeout.budgetMs
   }
 }
 
@@ -50,6 +71,7 @@ export async function dialTransport<Connection>(input: {
   for (const candidate of usable) assertProtectedEndpoint(candidate)
 
   const refusedBy: string[] = []
+  let lastTimeout: { endpoint: string; error: DeadlineExceededError } | undefined
   for (const [index, candidate] of usable.entries()) {
     try {
       return { transport: candidate, connection: await input.connect({
@@ -57,14 +79,15 @@ export async function dialTransport<Connection>(input: {
         credential: input.credential,
         remainingCandidates: usable.length - index,
       }) }
-    } catch {
+    } catch (error) {
       // The failure text is deliberately not carried: a transport error can
       // quote the request that produced it, credential included.
       refusedBy.push(candidate.kind)
+      lastTimeout = error instanceof DeadlineExceededError ? { endpoint: candidate.endpoint, error } : undefined
     }
   }
 
-  throw new TransportDialError(
-    `No transport reached that machine${refusedBy.length > 0 ? ` (tried ${refusedBy.join(", ")})` : ""}`,
-  )
+  const summary = `No transport reached that machine${refusedBy.length > 0 ? ` (tried ${refusedBy.join(", ")})` : ""}`
+  if (lastTimeout) throw new TransportDialTimeoutError(lastTimeout.endpoint, lastTimeout.error, summary)
+  throw new TransportDialError(summary)
 }

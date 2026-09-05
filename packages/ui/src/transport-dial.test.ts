@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { TransportCandidate } from "@getdomovoi/protocol"
 
 import { dialTransport, TransportDialError } from "./transport-dial.js"
+import { DeadlineExceededError } from "./deadline.js"
 
 const loopback: TransportCandidate = {
   kind: "local",
@@ -111,5 +112,36 @@ describe("dialTransport", () => {
       .catch((error: Error) => error)
 
     expect(String(failure)).not.toContain(credential)
+  })
+
+  it("keeps a timeout typed without copying credentials or arbitrary error text", async () => {
+    const endpoint = `wss://private-user:private-pass@studio.example/${credential}?token=${credential}#${credential}`
+    const failure: unknown = await dialTransport({
+      candidates: [{ ...lan, endpoint }], credential,
+      connect: async () => {
+        const error = new DeadlineExceededError("hello", endpoint, 500)
+        error.message = `private provider error ${credential}`
+        throw error
+      },
+    }).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(TransportDialError)
+    expect(failure).toMatchObject({
+      name: "TransportDialTimeoutError", stage: "hello", target: "wss://studio.example", budgetMs: 500,
+    })
+    expect(String(failure)).toContain("hello")
+    expect(String(failure)).toContain("wss://studio.example")
+    for (const secret of [credential, "private-user", "private-pass", "private provider error"]) {
+      expect(JSON.stringify(failure)).not.toContain(secret)
+      expect(String(failure)).not.toContain(secret)
+    }
+  })
+
+  it("counts only eligible routes when allocating attempt budgets", async () => {
+    const connect = vi.fn(async () => ({}))
+    await dialTransport({
+      candidates: [loopback, { ...loopback, kind: "ssh", configured: false }, { ...tailnet, kind: "relay" }],
+      credential, connect, relayAvailable: false,
+    })
+    expect(connect).toHaveBeenCalledWith({ endpoint: loopback.endpoint, credential, remainingCandidates: 1 })
   })
 })

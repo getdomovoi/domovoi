@@ -294,7 +294,10 @@ describe("createMachineDialer", () => {
       open,
     })
     const opening = dial(machineId, undefined, deadline)
-    const refused = expect(opening).rejects.toThrow(/deadline/)
+    const refused = expect(opening).rejects.toMatchObject({
+      name: "MachineDialTimeoutError", stage: "connect-and-hello", target: "wss://studio.tailnet:47831",
+      message: expect.stringContaining("connect and authenticated hello"),
+    })
     // Credential access is async too. Expire the opener after it actually
     // starts, not while the credential phase is still pending.
     await waitForDaemon(() => expect(open).toHaveBeenCalledOnce())
