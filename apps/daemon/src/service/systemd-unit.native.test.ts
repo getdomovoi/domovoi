@@ -50,14 +50,16 @@ it.runIf(managerRunning)("installs, reports and removes a real systemd user unit
   const base = nodeServiceEffects()
   const systemctl = (args: readonly string[], active: OperationDeadline) =>
     withinServiceDeadline(active, () => base.capture("systemctl", userScoped("systemctl", args, unit), active))
-  let home: string | undefined
+  let installedHome: string | undefined
   let readyPath: string | undefined
   let pid: number | undefined
   try {
-    home = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-systemd-")))
+    const home = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-systemd-")))
+    installedHome = home
     const productionUnitPath = posix.join(home, ".config", "systemd", "user", productionUnit)
     const configurationPath = serviceConfigurationPath(home, "linux")
-    readyPath = join(posix.dirname(configurationPath), "ready")
+    const ready = join(posix.dirname(configurationPath), "ready")
+    readyPath = ready
     // The unit is the only file that leaves the throwaway home, and it may only
     // land on the UUID path this test preflighted.
     const scopedPath = (path: string) => {
@@ -101,7 +103,7 @@ it.runIf(managerRunning)("installs, reports and removes a real systemd user unit
     expect(loaded.stdout).toContain("ActiveState=active")
     await withinServiceDeadline(deadline, () => waitForDaemon(async () => {
       deadline.throwIfExpired()
-      pid = Number(await readFile(readyPath!, "utf8"))
+      pid = Number(await readFile(ready, "utf8"))
       expect(Number.isSafeInteger(pid) && pid > 0).toBe(true)
       expect(() => process.kill(pid!, 0)).not.toThrow()
     }))
@@ -132,20 +134,23 @@ it.runIf(managerRunning)("installs, reports and removes a real systemd user unit
       // removal under test having worked. A deliberately broken remover may
       // have left a live process: ask the fixture to exit through its own
       // private path, never kill by a PID which might have been reused.
-      if (readyPath !== undefined && existsSync(readyPath)) {
-        await withinServiceDeadline(cleanup, () => writeFile(`${readyPath}.stop`, "stop"))
+      const ready = readyPath
+      if (ready !== undefined && existsSync(ready)) {
+        await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
       }
       await systemctl(["--user", "disable", "--now", unit], cleanup)
-      if (pid !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
+      const started = pid
+      if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
         cleanup.throwIfExpired()
-        expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+        expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
       }))
       await withinServiceDeadline(cleanup, () => rm(unitPath, { force: true }))
       await withinServiceDeadline(cleanup, () => rm(wantsPath, { force: true }))
       await systemctl(["--user", "daemon-reload"], cleanup)
       const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
       expect(left.stdout.trim()).toBe("LoadState=not-found")
-      if (home !== undefined) await withinServiceDeadline(cleanup, () => rm(home, { recursive: true, force: true }))
+      const created = installedHome
+      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
     } finally { cleanup.clear() }
   }
 }, lifecycleBudget + cleanupBudget + 1_000)
