@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { connectionForTarget, type OpenConnectionDependencies } from "./open-connection.js"
+import { readDistroEndpoint } from "./wsl-endpoint.js"
 
 const localToken = "local-daemon-token"
 const distroToken = "distro-daemon-token"
@@ -80,6 +81,19 @@ describe("connectionForTarget", () => {
       local: async () => ({ host: "127.0.0.1", port: 47831, token: localToken, tls: true }),
     }))
     expect(connection).toMatchObject({ tls: true })
+  })
+
+  it("does not call a torn endpoint file a missing daemon, and repeats none of it", async () => {
+    const torn = JSON.stringify({ host: "127.0.0.1", port: 47900, token: distroToken }).slice(0, -5)
+    const refused = connectionForTarget(
+      { kind: "wsl", distribution: "debian", path: "/srv/app" },
+      dependencies({ endpoint: (distribution) => readDistroEndpoint({ distribution, run: async () => torn }) }),
+    )
+    await expect(refused).rejects.toThrow(/endpoint file in debian.*domovoid/s)
+    await expect(refused).rejects.not.toThrow(/no daemon is running/)
+    await expect(refused).rejects.toThrow(expect.objectContaining({
+      message: expect.not.stringContaining(distroToken.slice(0, 8)),
+    }))
   })
 
   it("reports a distribution that could not be asked at all", async () => {

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest"
 import { waitForDaemon } from "./test-wait-for.js"
 import { discoverWslMachines, wslDaemonEndpointUrl, type WslDiscoveryInput } from "./wsl-discovery.js"
 import type { WslDistribution } from "./wsl-distributions.js"
+import { readDistroEndpoint } from "./wsl-endpoint.js"
+import { listWslDistributions } from "./wsl-list.js"
 
 const token = "distro-daemon-token"
 const listing: WslDistribution[] = [
@@ -65,6 +67,38 @@ describe("discoverWslMachines", () => {
     })
     const [ubuntu] = await discoverWslMachines(input)
     expect(ubuntu).toMatchObject({ daemon: "unknown" })
+  })
+
+  it("carries why a distribution could not be asked, in the endpoint reader's own words", async () => {
+    const denied = (distribution: string) => readDistroEndpoint({
+      distribution,
+      run: async () => {
+        throw Object.assign(new Error("cat: .domovoi/endpoint.json: Permission denied"), {
+          code: 1,
+          stderr: "cat: .domovoi/endpoint.json: Permission denied\n",
+        })
+      },
+    })
+    const [deniedFact] = await discoverWslMachines(discovery({ endpoint: vi.fn(denied) }))
+    expect(deniedFact).toMatchObject({ daemon: "unknown", failure: "denied" })
+
+    const corrupt = (distribution: string) => readDistroEndpoint({ distribution, run: async () => "{\"host\":\"127.0.0.1\",\"po" })
+    const [corruptFact] = await discoverWslMachines(discovery({ endpoint: vi.fn(corrupt) }))
+    expect(corruptFact).toMatchObject({ daemon: "unknown", failure: "corrupt" })
+    expect(JSON.stringify(corruptFact)).not.toContain("127.0.0.1")
+  })
+
+  it("reports a listing that failed rather than an empty machine", async () => {
+    const input = discovery({
+      distributions: vi.fn(() => listWslDistributions({
+        platform: "win32",
+        run: async () => {
+          throw Object.assign(new Error("spawn wsl.exe EACCES"), { code: "EACCES" })
+        },
+      })),
+    })
+    await expect(discoverWslMachines(input)).rejects.toMatchObject({ kind: "denied" })
+    expect(input.endpoint).not.toHaveBeenCalled()
   })
 
   it("asks the running distributions together rather than one deadline after another", async () => {

@@ -360,8 +360,12 @@ domovoid open .
 its endpoint file. It prints one line per distribution: the name, `WSL 1` or `WSL 2`, `running`
 or `stopped`, and `daemon at ws://127.0.0.1:<port>/rpc`, `no daemon`, or `could not be asked`.
 The credential in the endpoint file is never printed. A stopped distribution is not asked, since
-asking would start it. The command runs only on Windows, and prints an empty list when `wsl.exe`
-is missing or does not answer in time.
+asking would start it. The command runs only on Windows. A machine without WSL is told so and the
+command exits 0. A `wsl.exe` that this session may not run, that does not answer within the
+deadline, that fails, or that answers with something other than a listing is reported as that,
+with the remedy, and the command exits 1. A running distribution that could not be asked is listed
+as `could not be asked` with the reason: `timed out`, `denied`, `wsl.exe failed`, or `endpoint
+file unreadable`. None of these is ever reported as a missing distribution or a missing daemon.
 
 `open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
 separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
@@ -369,12 +373,25 @@ path that is, and then sends `project.open` to the daemon inside the distributio
 distribution's credential. This machine's credential never travels into a distribution. The
 command refuses, naming the distribution and the remedy, when the distribution is not installed,
 is stopped, runs under WSL 1, has no daemon endpoint, or when the path reads back as a Windows
-drive the distribution mounts, wherever it mounts it. A plain Windows path opens through this
-machine's daemon as before, without asking `wsl.exe` anything.
+drive the distribution mounts, wherever it mounts it. When `wsl.exe` itself cannot answer, the
+refusal says whether WSL is not installed, the call was denied, it timed out, or the service
+failed, rather than that the distribution does not exist. An endpoint file that is not one a daemon
+published is refused as unreadable rather than reported as no daemon, and nothing read from it is
+repeated. A plain Windows path opens through this machine's daemon as before, without asking
+`wsl.exe` anything.
 
 Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
 work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
-inside the distribution.
+inside the distribution. The runner that starts `git` inside a distribution asks the same
+`wslpath` question before running anything, so a repository on a Windows drive is refused
+wherever the distribution mounts it, not only under `/mnt`.
+
+What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
+the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
+the listing answers or refuses within its deadline and that a distribution that does not exist is
+refused; the path round trip and the drive refusal need a running distribution and skip there.
+Discovery, open, authentication, repository ownership, Git, and restart against a running
+distribution are not verified by CI.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.

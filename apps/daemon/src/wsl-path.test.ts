@@ -98,6 +98,15 @@ describe("distributionPath", () => {
       .resolves.toBe("/mnt/c")
   })
 
+  it("refuses a drive the distribution mounted by hand, wherever it put it", async () => {
+    const byHand = wslpath({
+      "-u \\\\wsl$\\Ubuntu-24.04\\data\\repo": "/data/repo",
+      "-w /data/repo": "D:\\repo",
+    })
+    await expect(distributionPath({ distribution, path: "\\\\wsl$\\Ubuntu-24.04\\data\\repo", run: byHand }))
+      .rejects.toThrow(/Windows drive.*mounts at \/data\/repo.*D:\\repo/s)
+  })
+
   it("refuses a path the distribution's wslpath could not place", async () => {
     await expect(distributionPath({ distribution, path: "\\\\wsl$\\Ubuntu-24.04\\nowhere", run: defaultMounts }))
       .rejects.toThrow(/Ubuntu-24\.04.*nowhere/s)

@@ -527,11 +527,20 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     contends for the same port instead of consuming the service, Windows lacks crash restart, and
     CI never invokes a real manager.
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
-  - Discovery, endpoint, and `domovoid open` helpers exist and unit tests stub `wsl.exe`. No real
-    Windows-to-WSL test exists, no `domovoi` alias exists, and WSL is not a fleet candidate.
+  - Discovery, endpoint, `domovoid wsl list`, and `domovoid open` exist, and a `wsl.exe` that
+    cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than
+    reported as a missing distribution or daemon. Unit tests drive them with a fake `wsl.exe`.
+    Six tests run the real `wsl.exe` on the Windows CI job, which has no running WSL 2
+    distribution: four prove that the listing answers or refuses within its deadline and that a
+    distribution that does not exist is refused, and the two that need a running distribution
+    skip. Discovery, open, authentication, repository ownership, Git, and restart against a running
+    distribution remain unverified. No `domovoi` alias exists, and WSL is not a fleet candidate.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-  - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
-    automount roots, and no real mount-boundary test exists.
+  - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
+    a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
+    it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
+    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
+    which CI does not have.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and

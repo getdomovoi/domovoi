@@ -55,29 +55,48 @@ describe("readDistroEndpoint", () => {
     await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/no distribution/)
   })
 
-  it("does not call a denied read a missing endpoint", async () => {
+  it("does not call a denied read a missing endpoint, and says it was denied", async () => {
     const run = reader(() => {
       throw Object.assign(new Error("cat: .domovoi/endpoint.json: Permission denied"), {
         code: 1,
         stderr: "cat: .domovoi/endpoint.json: Permission denied\n",
       })
     })
-    await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/Permission denied/)
+    const refused = readDistroEndpoint({ distribution, run })
+    await expect(refused).rejects.toThrow(/Permission denied/)
+    await expect(refused).rejects.toMatchObject({ kind: "denied" })
   })
 
   it("does not call a missing wsl.exe a missing endpoint", async () => {
     const run = reader(() => {
       throw Object.assign(new Error("spawn wsl.exe ENOENT"), { code: "ENOENT" })
     })
-    await expect(readDistroEndpoint({ distribution, run })).rejects.toThrow(/ENOENT/)
+    const refused = readDistroEndpoint({ distribution, run })
+    await expect(refused).rejects.toThrow(/not installed/)
+    await expect(refused).rejects.toMatchObject({ kind: "absent" })
   })
 
-  it("gives up on a wsl.exe that never answers", async () => {
+  it("names a distribution wsl.exe could not start as unavailable, not as one with no daemon", async () => {
+    const run = reader(() => {
+      throw Object.assign(new Error("Command failed: wsl.exe"), {
+        code: -1,
+        stderr: "The Windows Subsystem for Linux instance has terminated.\nError code: Wsl/Service/E_FAIL\n",
+      })
+    })
+    const refused = readDistroEndpoint({ distribution, run })
+    await expect(refused).rejects.toMatchObject({ kind: "unavailable" })
+    await expect(refused).rejects.toThrow(/Ubuntu-24\.04.*instance has terminated/s)
+  })
+
+  it("gives up on a wsl.exe that never answers, and says it timed out", async () => {
     vi.useFakeTimers()
     try {
       const run = vi.fn<NonNullable<DistroEndpointInput["run"]>>(() => new Promise<string>(() => {}))
       const reading = readDistroEndpoint({ distribution, run, timeoutMs: 1_000 })
-      const settled = expect(reading).rejects.toThrow(/in time/)
+      const settled = Promise.all([
+        expect(reading).rejects.toThrow(/did not answer within 1 seconds.*Ubuntu-24\.04/s),
+        expect(reading).rejects.toMatchObject({ kind: "timed-out" }),
+      ])
       await vi.advanceTimersByTimeAsync(1_000)
       await settled
     } finally {
@@ -108,8 +127,24 @@ describe("readDistroEndpoint", () => {
     expect(run).toHaveBeenCalledWith("wsl.exe", expect.any(Array), { timeoutMs: 3_000 })
   })
 
-  it("reports nothing when the file is not something it can read", async () => {
-    expect(await readDistroEndpoint({ distribution, run: reader("not json at all") })).toBeUndefined()
+  it("reports a file it cannot read as corrupt, not as a missing daemon", async () => {
+    for (const contents of ["not json at all", "[]", "42", "null", ""]) {
+      const refused = readDistroEndpoint({ distribution, run: reader(contents) })
+      await expect(refused).rejects.toMatchObject({ kind: "corrupt" })
+      await expect(refused).rejects.toThrow(/endpoint file in Ubuntu-24\.04.*domovoid/s)
+    }
+  })
+
+  it("never repeats a truncated file in the error, since it may hold part of the credential", async () => {
+    const truncated = JSON.stringify({ host: "127.0.0.1", port: 47831, token }).slice(0, -6)
+    await expect(readDistroEndpoint({ distribution, run: reader(truncated) })).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining(token.slice(0, 8)) }),
+    )
+  })
+
+  it("classifies an endpoint it refuses as corrupt", async () => {
+    const run = reader(JSON.stringify({ host: "10.0.0.5", port: 47831, token }))
+    await expect(readDistroEndpoint({ distribution, run })).rejects.toMatchObject({ kind: "corrupt" })
   })
 
   it("refuses an endpoint that would send the credential off the machine", async () => {

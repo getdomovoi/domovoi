@@ -1,6 +1,7 @@
 import type { WslDistribution } from "./wsl-distributions.js"
 import { readDistroEndpoint, type DistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
+import { WslError, type WslFailureKind } from "./wsl-run.js"
 
 export type WslDaemonPresence = "present" | "absent" | "unknown"
 
@@ -11,6 +12,7 @@ export type WslMachineFact = {
   default: boolean
   daemon: WslDaemonPresence
   endpoint?: string
+  failure?: WslFailureKind
 }
 
 export type WslDiscoveryInput = {
@@ -30,7 +32,7 @@ export function wslDaemonEndpointUrl(endpoint: { host: string; port: number }): 
 async function daemonInside(
   distribution: WslDistribution,
   endpoint: NonNullable<WslDiscoveryInput["endpoint"]>,
-): Promise<Pick<WslMachineFact, "daemon" | "endpoint">> {
+): Promise<Pick<WslMachineFact, "daemon" | "endpoint" | "failure">> {
   // A stopped distribution runs nothing, so it has no daemon, and asking it
   // would start it on the strength of a listing.
   if (distribution.state === "Stopped") return { daemon: "absent" }
@@ -39,12 +41,15 @@ async function daemonInside(
     return published
       ? { daemon: "present", endpoint: wslDaemonEndpointUrl(published) }
       : { daemon: "absent" }
-  } catch {
-    // Not answering is not the same as answering that there is no daemon.
-    return { daemon: "unknown" }
+  } catch (error) {
+    // Not answering is not the same as answering that there is no daemon,
+    // and why it did not answer is kept, since each reason has its own remedy.
+    return { daemon: "unknown", failure: error instanceof WslError ? error.kind : "unavailable" }
   }
 }
 
+// The listing is not caught here: a wsl.exe that could not list anything is
+// reported as what it was, not as a machine with no distribution.
 export async function discoverWslMachines(input: WslDiscoveryInput = {}): Promise<WslMachineFact[]> {
   const platform = input.platform ?? process.platform
   if (platform !== "win32") return []
