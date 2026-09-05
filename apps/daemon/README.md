@@ -146,6 +146,35 @@ is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyS
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
 
+## Provider prompt budget
+
+Each `session.send` composes one provider prompt from reviewed skills, open annotations, the
+working plan, the provider handoff, and the person's request. The prompt is measured in UTF-16
+code units (`String.length`) against one total budget. The default is 262,144, the protocol's
+`maximumProviderPromptCodeUnits`, which is also the most a single `session.send` request may
+carry. `DaemonServerOptions.providerPromptBudgetCodeUnits` lowers it. The value must be an
+integer from 1 through 262,144 and is validated before workspace state is opened. The budget
+bounds payload size only; it is not a provider token-window guarantee.
+
+Each section is shaped by its own limit first: skill content is cut at 12,000 code units per
+skill, at most 20 open annotations are offered, and the handoff offers its newest 40 thread items
+inside 24,000 code units. The total budget then applies to the composed prompt. When it does not
+fit, the composer drops one item at a time in this order and stops as soon as the prompt fits:
+
+1. Project-default skills, last by name first. Skills a person selected for the turn are required
+   and are never dropped.
+2. Open annotations, oldest first.
+3. Handoff thread history, oldest item first.
+4. Handoff open annotations, last listed first.
+5. Handoff artifacts, last listed first.
+
+The person's request, the working plan, the handoff summary, and the framing instructions are never
+dropped. If those alone exceed the budget, `session.send` fails with `invalidParams` naming the
+budget and what to shorten, and nothing is sent or recorded. Every drop is recorded on the sent
+user thread item's `providerPromptDelivery`: `budget.limit` and `budget.used`,
+`skills.omitted.budget`, `annotations.omitted.budget`, and `handoff.omitted`. The prompt itself
+opens with a `domovoi_context_delivery` marker whenever context was omitted.
+
 ## Supervise
 
 Install the daemon as a service for the user who asks for it:
