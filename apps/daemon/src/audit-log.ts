@@ -131,7 +131,10 @@ export class SqliteAuditLog implements AuditLog {
       ...(input.detail === undefined ? {} : { detail: sanitizeAuditText(input.detail, 4_096) }),
     })
 
-    this.#database.exec("BEGIN IMMEDIATE")
+    // A quarantine must become durable with its receipt, not before it.
+    // A savepoint nests under the caller's transaction when one exists;
+    // otherwise RELEASE commits this append and its retention pruning.
+    this.#database.exec("SAVEPOINT domovoi_audit_append")
     try {
       this.#database.prepare(`
         INSERT INTO audit_log (
@@ -166,9 +169,10 @@ export class SqliteAuditLog implements AuditLog {
         retention,
         retention === "pre-auth" ? this.#maximumPreAuthEntries : this.#maximumEntries,
       )
-      this.#database.exec("COMMIT")
+      this.#database.exec("RELEASE domovoi_audit_append")
     } catch (error) {
-      this.#database.exec("ROLLBACK")
+      this.#database.exec("ROLLBACK TO domovoi_audit_append")
+      this.#database.exec("RELEASE domovoi_audit_append")
       throw error
     }
     return entry
