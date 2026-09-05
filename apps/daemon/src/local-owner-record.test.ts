@@ -6,9 +6,10 @@ import { join } from "node:path"
 
 import { protocolVersion } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
-import { afterEach, expect, it } from "vitest"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "./operation-deadline.js"
+import { CliProviderProbe } from "./providers.js"
 import { verifyLocalOwnerProof } from "./local-owner-proof.js"
 import {
   localOwnerRecordPath, localOwnerSecretPath, maximumLocalOwnerRecordBytes,
@@ -20,9 +21,13 @@ import {
 
 const homes: string[] = []
 const handles: ProductionDaemonHandle[] = []
+// Keep production assembly and real sockets, not discovery of whichever SDK
+// executables happen to be installed on the test runner.
+beforeEach(() => { vi.spyOn(CliProviderProbe.prototype, "inspect").mockResolvedValue([]) })
 afterEach(async () => {
   await Promise.allSettled(handles.splice(0).map((handle) => handle.stop()))
   await Promise.all(homes.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  vi.restoreAllMocks()
 })
 async function owner() {
   const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-local-owner-"))
