@@ -86,6 +86,9 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
       expect(reply.error).toBeUndefined()
       expect(workspaceSnapshotSchema.parse(reply.result).machine.id).toMatch(/^machine-/)
       expect(thread).toEqual({ isMainThread: false })
+      // Source development must execute today's source, not a worker left
+      // behind by an earlier build. No worker-constructor mock proves this.
+      expect(await readFile(join(home, "native-stack"), "utf8")).toMatch(/machine-keyring-worker\.ts[?:]/)
     } finally { probe.clear() }
     await beforeDeadline(rm(join(home, "block")), deadline)
     expect((await listing).error).toBeUndefined()

@@ -37,6 +37,28 @@ type Pending = {
   settled: boolean
 }
 
+function createNativeWorker(): Worker {
+  if (new URL(import.meta.url).pathname.endsWith(".ts")) {
+    // Explicit registration avoids relying on version-specific loader
+    // inheritance. Source development must not execute stale dist code.
+    const loader = import.meta.resolve("tsx/esm/api")
+    const entry = new URL("./machine-keyring-worker.ts", import.meta.url).href
+    const bootstrap = `import { register } from ${JSON.stringify(loader)}; register({ tsconfig: false }); await import(${JSON.stringify(entry)});`
+    // Register exactly once in this thread. Inheriting the parent's tsx
+    // preload as well installs competing workspace-alias resolution hooks.
+    const tsxImports = new Set(["tsx", "tsx/esm", import.meta.resolve("tsx"), import.meta.resolve("tsx/esm")])
+    const execArgv: string[] = []
+    for (let index = 0; index < process.execArgv.length; index++) {
+      const arg = process.execArgv[index]!
+      if (arg === "--import" && tsxImports.has(process.execArgv[index + 1] ?? "")) { index++; continue }
+      if (arg.startsWith("--import=") && tsxImports.has(arg.slice("--import=".length))) continue
+      execArgv.push(arg)
+    }
+    return new Worker(new URL(`data:text/javascript,${encodeURIComponent(bootstrap)}`), { execArgv })
+  }
+  return new Worker(new URL("./machine-keyring-worker.js", import.meta.url))
+}
+
 // The native constructor can contact the OS keychain too. Keep the complete
 // logical operation, including index maintenance, on one worker. No main-thread
 // NativeMachineKeyring fallback and no secret cache is allowed here.
@@ -49,9 +71,7 @@ export class MachineCredentialWorker implements AsyncMachineCredentials {
   #closed = false
   #closing: Promise<number> | undefined
 
-  constructor(createWorker: () => Worker = () => new Worker(new URL(
-    import.meta.url.endsWith(".ts") ? "../dist/machine-keyring-worker.js" : "./machine-keyring-worker.js", import.meta.url,
-  ))) {
+  constructor(createWorker: () => Worker = createNativeWorker) {
     this.#createWorker = createWorker
   }
 

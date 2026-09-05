@@ -255,8 +255,10 @@ async function main() {
       const cleanup = OperationDeadline.start(5_000)
       try { await credentials.close(cleanup) }
       catch {
-        process.stderr.write("The native keyring worker did not stop. Local keychain outcome is unconfirmed.\n")
-        process.exitCode = 1
+        process.stderr.write("Native keyring worker exit could not be confirmed. Stopping this CLI process.\n")
+        // A native call can ignore Worker.terminate until it returns to JS.
+        // This short-lived CLI must not leave the terminal waiting forever.
+        process.exit(1)
       } finally { cleanup.clear() }
     }
     return

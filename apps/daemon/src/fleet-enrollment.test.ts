@@ -96,6 +96,18 @@ describe("fleet enrollment coordinator", () => {
     expect(f.changed).not.toHaveBeenCalled()
   })
 
+  it("does not replace a newer healthy observation with an older index failure", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    let reject: (error: Error) => void = () => {}
+    vi.spyOn(f.asyncCredentials, "machines").mockImplementationOnce(() => new Promise((_resolve, failure) => { reject = failure }))
+    const oldList = f.service.list()
+    await f.service.refresh()
+    expect(f.service.snapshot().entries[0]).toMatchObject({ machine: { health: "healthy" } })
+    reject(new Error("earlier native attempt failed"))
+    expect((await oldList).entries[0]).toMatchObject({ machine: { health: "healthy" } })
+  })
+
   it("requires a known expected identity to re-pair at capacity without spending an ambiguous claim", async () => {
     const f = fixture()
     for (let index = 0; index < maximumFleetMachines; index++) {

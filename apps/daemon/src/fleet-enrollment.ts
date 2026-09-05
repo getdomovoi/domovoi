@@ -84,9 +84,13 @@ export class FleetEnrollmentService {
 
   async #list(): Promise<FleetSnapshot> {
     const deadline = this.#deadline()
+    const read = this.#indexRead + 1
     try { await this.#readIndex(deadline) }
     catch {
       if (this.#stopped) throw new MachineCredentialUnavailableError()
+      // Failure is also a late result. An older attempt must not downgrade
+      // facts accepted after a newer index read or lifecycle mutation.
+      if (read !== this.#indexRead) return this.snapshot()
       const registry = this.#input.registry
       if (!registry) return { entries: [] }
       for (const entry of registry.enrolled()) {
@@ -215,6 +219,7 @@ export class FleetEnrollmentService {
     const { registry, credentials } = this.#input
     try {
       deadline.throwIfExpired()
+      ++this.#indexRead
       const matched = await credentials!.repairIndex(operation.machineId, operation.credentialDigest, deadline)
       deadline.throwIfExpired()
       if (!matched) {
