@@ -484,8 +484,10 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     transfer over a configured loopback endpoint, forget masking and configuration removal.
     They do not prove an external tailnet or an SSH process. WSL transport production remains
     open in its own lane; WSL facts and the open shim are not a transport producer. Relay stays
-    deferred under Goal 3. A silent route can still spend the shared attempt deadline before
-    fallback begins.
+    deferred under Goal 3. Client and daemon dialers reserve a share of the remaining overall
+    deadline for each eligible route. Real socket tests prove fallback after silent upgrade and
+    hello, with typed timeout refusals and losing-attempt cancellation. These bounds and their
+    runtime disposal limits are documented in `docs/fleet-routing.md`.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
   rendezvous in `docs/encrypted-relay.md`

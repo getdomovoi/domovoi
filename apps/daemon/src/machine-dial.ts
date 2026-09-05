@@ -1,7 +1,7 @@
 import { fleetDirectEndpointSchema, orderedTransports, type FleetMachineFacts } from "@getdomovoi/protocol"
 
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
-import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { OperationDeadline, OperationDeadlineExceededError, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
 import { configuredSshTunnelsSchema, isLoopbackHost, type ConfiguredSshTunnel } from "./transport-config.js"
 
@@ -18,6 +18,20 @@ export type MachineConnection = {
 export type MachineRouteConnection = MachineConnection & {
   endpoint: string
   routeSource: "verified" | "advertised" | "ssh"
+}
+
+export class MachineDialTimeoutError extends OperationDeadlineExceededError {
+  readonly stage = "connect-and-hello" as const
+  readonly target: string
+
+  constructor(endpoint: string) {
+    super()
+    this.name = "MachineDialTimeoutError"
+    // An address, not arbitrary transport failure text or URL credentials.
+    this.target = new URL(endpoint).origin
+    this.message = `The machine at ${this.target} did not complete connect and authenticated hello before the route deadline.`
+      + " Check that route and try again."
+  }
 }
 
 const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
@@ -102,22 +116,28 @@ export function createMachineDialer(input: {
         ? "Refusing to authenticate over an unencrypted connection"
         : "That machine advertises no usable transport")
       let lastError: unknown
-      for (const { endpoint, routeSource } of routes) {
+      for (const [index, { endpoint, routeSource }] of routes.entries()) {
+        if (deadline.remainingMs() === 0 && lastError instanceof MachineDialTimeoutError) throw lastError
         deadline.throwIfExpired()
         if (signal?.aborted) throw new Error("The transfer was cancelled")
+        // Reserve a share for every remaining eligible route. A silent open
+        // or hello spends this attempt only, never the whole fallback budget.
+        // Recompute after fast failures so later routes can use the spare time.
+        const attempt = deadline.limit(Math.max(1, deadline.remainingMs() / (routes.length - index)))
         try {
           const connection = await boundedOpen(input.open({
-            endpoint, expectedMachineId: machine.id, credential, deadline,
+            endpoint, expectedMachineId: machine.id, credential, deadline: attempt,
             ...(signal ? { signal } : {}),
-          }), deadline, signal)
+          }), attempt, signal)
           return { ...connection, endpoint, routeSource }
         } catch (error) {
           // Failed identity/authority is not evidence to keep trying elsewhere.
           if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
             || error instanceof MachineProtocolMismatchError || error instanceof MachineDescriptorError) throw error
-          lastError = error
-        }
+          lastError = error instanceof OperationDeadlineExceededError ? new MachineDialTimeoutError(endpoint) : error
+        } finally { attempt.clear() }
       }
+      if (lastError instanceof MachineDialTimeoutError) throw lastError
       deadline.throwIfExpired()
       throw lastError
     } finally { deadline.clear() }

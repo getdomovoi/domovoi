@@ -4,6 +4,7 @@ import type { TransportCandidate } from "@getdomovoi/protocol"
 
 import { Deadline } from "./deadline.js"
 import { connectMachineClient } from "./machine-client.js"
+import { completeHandshake, installFakeWebSocket } from "./test-support/fake-websocket.js"
 
 const loopback: TransportCandidate = {
   kind: "local",
@@ -55,7 +56,7 @@ describe("connectMachineClient", () => {
     vi.useRealTimers()
   })
 
-  it("shares one deadline across every candidate it dials", async () => {
+  it("gives each route its share without renewing the overall deadline", async () => {
     const { created, createClient } = fakeClients([lan.endpoint], { [lan.endpoint]: 800 })
     const deadline = Deadline.start(1_000)
 
@@ -69,9 +70,93 @@ describe("connectMachineClient", () => {
     })
 
     expect(connected.transport).toEqual(tailnet)
-    expect(created[0]).toMatchObject({ url: lan.endpoint, remainingMs: 1_000 })
+    expect(created[0]).toMatchObject({ url: lan.endpoint, remainingMs: 500 })
     expect(created[1]).toMatchObject({ url: tailnet.endpoint, remainingMs: 200 })
     deadline.clear()
+  })
+
+  it("closes a silent route before fallback and cancels its reconnect", async () => {
+    const sockets = installFakeWebSocket()
+    const deadline = Deadline.start(1_000)
+    const opening = connectMachineClient({ candidates: [lan, tailnet], credential, kind: "desktop", budgets, deadline })
+    // Observe failures immediately, including when a removed guard spends the whole budget.
+    const outcome = opening.catch((error: unknown) => error)
+    try {
+      sockets.socket(0).open()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(sockets.sockets).toHaveLength(2)
+      expect(sockets.socket(0).closeCalls.length).toBeGreaterThan(0)
+      expect(sockets.socket(0).readyState).toBe(sockets.socket(0).CLOSED)
+      completeHandshake(sockets.socket(1))
+      const connected = await opening
+      expect(connected.transport).toEqual(tailnet)
+      expect(vi.getTimerCount()).toBe(1)
+      // An abandoned hello and its scheduled reconnect must not revive route one.
+      completeHandshake(sockets.socket(0))
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(sockets.sockets).toHaveLength(2)
+      connected.client.disconnect()
+    } finally {
+      await vi.advanceTimersByTimeAsync(1_000)
+      await outcome
+      deadline.clear()
+      sockets.uninstall()
+    }
+  })
+
+  it("rejects a late route result even before the timer callback runs", async () => {
+    const deadline = Deadline.start(1_000)
+    const { created, createClient } = fakeClients()
+    createClient.mockImplementationOnce((url, _kind, options) => ({
+      url,
+      connect: async () => { vi.setSystemTime(Date.now() + 600) },
+      disconnect: () => { created.push({ url, authToken: options.authToken, disconnected: true, remainingMs: 0 }) },
+    }) as never)
+    try {
+      const connected = await connectMachineClient({
+        candidates: [lan, tailnet], credential, kind: "desktop", budgets, deadline,
+        createClient: createClient as never,
+      })
+      expect(connected.transport).toEqual(tailnet)
+      expect(created[0]).toMatchObject({ url: lan.endpoint, disconnected: true })
+      expect(created[1]).toMatchObject({ url: tailnet.endpoint, remainingMs: 400 })
+      expect(vi.getTimerCount()).toBe(1)
+    } finally { deadline.clear() }
+  })
+
+  it("does not create a socket after clock expiry with a queued timer", async () => {
+    const deadline = Deadline.start(1_000)
+    const { createClient } = fakeClients()
+    vi.setSystemTime(Date.now() + 1_000)
+    try {
+      await expect(connectMachineClient({
+        candidates: [lan, tailnet], credential, kind: "desktop", budgets, deadline,
+        createClient: createClient as never,
+      })).rejects.toMatchObject({
+        name: "TransportDialTimeoutError", stage: "route-setup", target: "wss://workshop.tailnet:47831", budgetMs: 1_000,
+      })
+      expect(createClient).not.toHaveBeenCalled()
+    } finally { deadline.clear() }
+  })
+
+  it("keeps expiry between child allocation and socket creation typed", async () => {
+    const deadline = Deadline.start(1_000)
+    const { createClient } = fakeClients()
+    const limit = deadline.limit.bind(deadline)
+    vi.spyOn(deadline, "limit").mockImplementationOnce((budgetMs) => {
+      const attempt = limit(budgetMs)
+      vi.setSystemTime(Date.now() + budgetMs)
+      return attempt
+    })
+    try {
+      await expect(connectMachineClient({
+        candidates: [lan], credential, kind: "desktop", budgets, deadline,
+        createClient: createClient as never,
+      })).rejects.toMatchObject({
+        name: "TransportDialTimeoutError", stage: "route-setup", target: "wss://workshop.local:47831", budgetMs: 1_000,
+      })
+      expect(createClient).not.toHaveBeenCalled()
+    } finally { deadline.clear() }
   })
 
   it("dials no further candidate once the deadline has run out", async () => {
