@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
+import { readLocalOwnerRecord } from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemon, type ProductionDaemonHandle } from "./production-daemon.js"
 import { CliProviderProbe } from "./providers.js"
@@ -43,6 +44,11 @@ it.each(["localhost", "127.0.0.1"])("keeps TLS certificate and hostname checks w
       DOMOVOI_ADVERTISE_HOST: advertiseHost,
     } }), deadline)
     const endpoint = await beforeDeadline(owner.start(), deadline)
+    const advertised = new URL(endpoint.url)
+    expect(advertised.protocol).toBe("wss:")
+    expect(endpoint.port).toBeGreaterThan(0)
+    expect(advertised.port).toBe(String(endpoint.port))
+    expect(readLocalOwnerRecord(homeDirectory)).toMatchObject({ state: "ready", owner: "daemon", url: endpoint.url })
     attachment = await acquireLocalDaemon({ homeDirectory, environment: {}, mode: "attach-only", timeoutMs: deadline.remainingMs() })
     if (advertiseHost === "localhost") expect(attachment).toMatchObject({ kind: "attached", endpoint: { url: endpoint.url, token: owner.authToken } })
     else expect(attachment.kind).toBe("refused")

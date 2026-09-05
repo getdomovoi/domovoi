@@ -6,6 +6,8 @@ Prevent CLI, service and Desktop daemons from writing the same profile concurren
 profile lease precedes store construction. Local clients can acquire an owned handle or attach
 only after a same-socket instance proof and ordinary authenticated hello. Attachments cannot stop
 the owner, and restarting or unconfirmed owners never trigger a Desktop fallback.
+An attached handle notifies the client when its verification socket closes, without polling or
+automatic reacquisition.
 
 Service installation refuses while the profile is owned. Close Desktop, install or start the
 service, then reopen Desktop to attach. Port zero requests a kernel-assigned port and discovery

@@ -23,7 +23,7 @@ export type LocalDaemonRefusalReason =
 export type LocalDaemonEndpoint = { url: string; token: string }
 export type LocalDaemonHandle =
   | { kind: "owned"; endpoint: LocalDaemonEndpoint; stop(): Promise<void> }
-  | { kind: "attached"; owner: "daemon" | "desktop"; endpoint: LocalDaemonEndpoint; detach(): void }
+  | { kind: "attached"; owner: "daemon" | "desktop"; endpoint: LocalDaemonEndpoint; closed: Promise<void>; detach(): void }
   | { kind: "refused"; reason: LocalDaemonRefusalReason; message: string }
 export type AcquireLocalDaemonOptions = Omit<ProductionDaemonOptions, "owner"> & {
   // Reconnects must rediscover the owner, never turn a restart gap into a new
@@ -65,6 +65,9 @@ async function attach(
       followRedirects: false, maxPayload: 2 * 1024 * 1024,
       ...(ca ? { ca } : {}),
     })
+    // A lifetime notification, not a reconnect attempt or operation timeout.
+    // It stays registered after discovery settles and never rejects.
+    const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()))
     let settled = false
     let proved = false
     const cleanup = () => {
@@ -112,7 +115,7 @@ async function attach(
         deadline.throwIfExpired()
         settled = true
         cleanup()
-        settle({ kind: "attached", owner: record.owner, endpoint: { url: record.url, token }, detach: () => socket.terminate() })
+        settle({ kind: "attached", owner: record.owner, endpoint: { url: record.url, token }, closed, detach: () => socket.terminate() })
       } catch {
         fail("owner-unverified")
       }

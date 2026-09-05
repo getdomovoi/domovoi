@@ -155,3 +155,29 @@ it("classifies clock expiry during final record verification as unreachable, not
   expect(await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: 3_000 }))
     .toMatchObject({ kind: "refused", reason: "owner-unreachable" })
 })
+
+it.each(["owner-close", "broken-socket", "detach"] as const)("notifies attachment closure without rejecting or reacquiring after %s", async (cause) => {
+  const fake = await peer()
+  const attached = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: 3_000 })
+  if (attached.kind !== "attached") throw new Error("Missing attachment")
+  cleanup.push(async () => attached.detach())
+  expect(attached.closed).toBeInstanceOf(Promise)
+  let settled = false
+  void attached.closed.then(() => { settled = true })
+  await Promise.resolve()
+  expect(settled).toBe(false)
+  const record = readLocalOwnerRecord(fake.homeDirectory)
+  const observation = OperationDeadline.start(3_000)
+  try {
+    const socket = fake.connection()!
+    const peerClosed = once(socket, "close", { signal: observation.signal })
+    if (cause === "owner-close") socket.close(1001, "Owner stopped")
+    else if (cause === "broken-socket") socket.terminate()
+    else attached.detach()
+    await expect(beforeDeadline(attached.closed, observation)).resolves.toBeUndefined()
+    await peerClosed
+    expect(settled).toBe(true)
+    expect(fake.requests).toHaveLength(1)
+    expect(readLocalOwnerRecord(fake.homeDirectory)).toEqual(record)
+  } finally { observation.clear() }
+})

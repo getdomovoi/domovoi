@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, writeLocalOwnerRecord } from "./local-owner-record.js"
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemon, type ProductionDaemonHandle } from "./production-daemon.js"
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
@@ -55,8 +56,10 @@ it("attaches to a daemon owner and rediscovers its current endpoint after restar
   const attached = await acquire(homeDirectory)
   expect(attached).toMatchObject({ kind: "attached", owner: "daemon" })
   if (attached.kind !== "attached") throw new Error("Missing attachment")
-  attached.detach()
+  expect(attached.closed).toBeInstanceOf(Promise)
   await first.stop()
+  const closedDeadline = OperationDeadline.start(3_000)
+  try { await expect(beforeDeadline(attached.closed, closedDeadline)).resolves.toBeUndefined() } finally { closedDeadline.clear() }
   expect(await acquire(homeDirectory, "attach-only")).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
   const restarted = await createProductionDaemon({ homeDirectory, environment: defaults.environment })
   handles.push(restarted)

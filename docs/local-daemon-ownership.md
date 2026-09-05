@@ -48,13 +48,18 @@ This mechanism is local instance discovery, not relay encryption or protection f
 | Kind | Handle | Meaning |
 | --- | --- | --- |
 | `owned` | `endpoint: { url, token }`, `stop()` | This caller owns the runtime. |
-| `attached` | `owner: 'daemon' \| 'desktop'`, `endpoint`, `detach()` | Only the discovery socket belongs to this caller. There is no `stop`. |
+| `attached` | `owner: 'daemon' \| 'desktop'`, `endpoint`, `closed: Promise<void>`, `detach()` | Only the discovery socket belongs to this caller. There is no `stop`. |
 | `refused` | `reason`, `message` | No replacement daemon was started. |
 
 Refusal reasons are `owner-busy` (owner changed during discovery), `owner-unreachable`,
 `owner-incompatible`, `owner-unverified` and `profile-invalid`. The returned message names
 the remedy. Never turn any refusal into construction of another daemon or selection of a
 different profile.
+
+`attached.closed` resolves when the verification socket closes, including owner shutdown,
+connection failure and explicit detach. It never rejects or starts another acquisition. It is
+a lifetime notification, not a timed operation. Desktop can subscribe without polling and
+choose when to start a new bounded `attach-only` attempt.
 
 Use `start-or-attach` for initial acquisition. It may start Desktop's owner only after observing
 a free lease, an absent or `none` record, and no installed service configuration. After attaching,
