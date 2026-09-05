@@ -310,10 +310,16 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
     so a client shows the readout only when the provider reported the pair. No adapter populates
     them and no client reads them yet.
-- [ ] Add-skill flow with declared-capability review and install scope
-  - Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol
-    has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
-    code before the trust model exists is the wrong order.
+- [x] Add-skill flow with declared-capability review and install scope
+  - `skill.installPreview` reads a folder on the execution machine and returns its manifest,
+    digests, signature and trust state, files, and per-scope targets; `skill.install` copies it
+    into `~/.domovoi/skills` or `<project>/.domovoi/skills` only when the folder's digest still
+    matches the preview, refusing a blocked skill, a link that leaves the folder, and a name that
+    already exists with different files. The copy is staged and renamed inside the root, and every
+    install is audited. The Skills surface reviews the capabilities, trust, and scope before
+    Install, and `domovoid skill add` does the same from a terminal.
+  - Still local only: no bundle, URL, installer command, or other-machine source, and no fleet
+    push. Installing grants nothing; enablement review and trust are unchanged.
 - [x] Editable working plan with per-step state in the Plan tab
   - Protocol, daemon, and client all ship. Codex, Claude, and ACP report plan structure and
     progress; the daemon owns canonical state, binds a blocked step to its approval, delivers the

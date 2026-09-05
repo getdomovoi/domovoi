@@ -179,6 +179,49 @@ the skill directory or its `SKILL.md`, refuses a private key others can read, an
 the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
 the change up on its next catalog read.
 
+## Adding a skill
+
+A skill is added from a folder on the execution machine in two steps: a review, then an install
+pinned to what was reviewed. `skill.installPreview` takes `{ source: { kind: "path", path } }`,
+where `path` is absolute, and returns the parsed name and description, the declared capability
+manifest, the `SKILL.md` content digest, a `sourceDigest` over every regular file in the folder
+(relative path and SHA-256 of each file, `SKILL.md.sig` included), the signature and trust state
+computed exactly as the catalog computes them, the file list with sizes, one target per install
+scope, and any refusals. It reads the folder and writes nothing.
+
+`skill.install` takes the same `source`, a `scope`, and the previewed `sourceDigest`, and answers
+with the installed catalog entry. The scopes and their roots are the Domovoi-owned catalog roots:
+`user` is `~/.domovoi/skills` and `project` is `<project>/.domovoi/skills`, so a project install
+needs an open project and a user install does not. `system` (`/etc/domovoi/skills`) is not an
+install target. The install is refused with error code `-32018` and a
+`{ kind: "skill-install-refused", reason }` payload when:
+
+| `reason` | Condition |
+| --- | --- |
+| `source-changed` | The folder's `sourceDigest` no longer matches the previewed one, checked again over the bytes actually copied |
+| `blocked` | The trust state is `blocked`, so the signature is invalid |
+| `name-conflict` | `<root>/<name>` already exists with different files; identical files return the existing entry |
+| `symlink-escapes-source` | A link inside the folder resolves outside it; `path` names the link |
+| `source-too-large` | More than 256 files, 8 MiB, or eight directory levels |
+
+The copy never follows a link out of the source, writes only under the chosen root, and is
+atomic: files land in a `.domovoi-install-<random>` staging directory inside the root, which the
+catalog walk ignores, and one rename moves the finished directory to `<root>/<name>`. A failed
+copy removes its staging directory. Each `skill.install` is audited like every other mutation,
+with the scope, both digests, the source path, and on success the installed skill id and path.
+Installing grants nothing: the skill still needs a project enablement review before a turn carries
+it, and Build auto still requires a trusted state.
+
+```bash
+domovoid skill add path/to/skill --scope user
+domovoid skill add path/to/skill --scope project --yes
+```
+
+`add` prints the same review facts and installs only with `--yes`; without it nothing is written
+and the exit code is `0`. The project scope is the working directory. A refusal prints as
+`refused: <reason>` with exit code `1`. Like the other skill commands it contacts no daemon, so it
+writes no audit entry; the daemon lists the new entry on its next catalog read.
+
 ## Pairing admission and audit retention
 
 Pairing claims are limited to three per source address and thirty across the listener in a rolling
