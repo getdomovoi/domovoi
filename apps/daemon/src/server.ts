@@ -76,7 +76,7 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
-import { validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
@@ -174,7 +174,7 @@ import {
   DeviceLimitReachedError,
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
-import type { MachineCredentials } from "./machine-credentials.js"
+import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -780,7 +780,7 @@ export type DaemonServerOptions = {
   // admits peers by, so a test peer can stand in for another release. Its own
   // dials keep the build's version.
   advertisedProtocolVersion?: string
-  machineCredentials?: MachineCredentials
+  machineCredentials?: AsyncMachineCredentials
   fleetOperationTimeoutMs?: number
   fleetHeartbeatIntervalMs?: number
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
@@ -902,7 +902,7 @@ export class DomovoiDaemon {
   #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
-  #machineCredentials: MachineCredentials | undefined
+  #machineCredentials: AsyncMachineCredentials | undefined
   #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
   #transferTransactions: FileTransferTransactions
@@ -1372,6 +1372,12 @@ export class DomovoiDaemon {
     failures.push(...providerClosures.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : []
     ))
+    // Native work may survive its caller's deadline. Shutdown must observe
+    // worker exit, or report failure instead of claiming the writer stopped.
+    const keyringShutdown = OperationDeadline.start(5_000)
+    try { await this.#machineCredentials?.close(keyringShutdown) }
+    catch (error) { failures.push(error) }
+    finally { keyringShutdown.clear() }
     try {
       await this.#store.close()
     } catch (error) {
@@ -4613,7 +4619,7 @@ export class DomovoiDaemon {
         try {
           this.#send(socket, {
             jsonrpc: "2.0", id: request.id,
-            result: rpcMethods[method].result.parse(this.#fleetEnrollment.snapshot()),
+            result: rpcMethods[method].result.parse(await this.#fleetEnrollment.list()),
           })
         } catch (error) {
           if (!(error instanceof FleetSnapshotOverflowError)) throw error

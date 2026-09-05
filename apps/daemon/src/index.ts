@@ -7,7 +7,9 @@ import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
+import { exitAfterStderr } from "./flushed-exit.js"
+import { MachineCredentialWorker } from "./machine-credential-worker.js"
+import { OperationDeadline } from "./operation-deadline.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -253,11 +255,22 @@ async function main() {
   if (args[0] === "fleet-keychain") {
     // Exceptional local recovery, not enrollment or an unversioned RPC path.
     // The user must stop the daemon before removing an indexed credential.
-    process.exitCode = runFleetKeychainCommand(args, {
-      credentials: new MachineCredentialStore(),
-      stdout: (text) => process.stdout.write(text),
-      stderr: (text) => process.stderr.write(text),
-    })
+    const credentials = new MachineCredentialWorker()
+    try {
+      process.exitCode = await runFleetKeychainCommand(args, {
+        credentials,
+        stdout: (text) => process.stdout.write(text),
+        stderr: (text) => process.stderr.write(text),
+      })
+    } finally {
+      const cleanup = OperationDeadline.start(5_000)
+      try { await credentials.close(cleanup) }
+      catch {
+        // A native call can ignore Worker.terminate until it returns to JS.
+        // This short-lived CLI must not leave the terminal waiting forever.
+        await exitAfterStderr("Native keyring worker exit could not be confirmed. Stopping this CLI process.\n", 1, 1_000)
+      } finally { cleanup.clear() }
+    }
     return
   }
   if (args[0] === "profile") {

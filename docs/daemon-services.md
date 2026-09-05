@@ -37,6 +37,34 @@ unreadable file refuses startup and names the file. There is no fallback to defa
 Loading has a five-second deadline. Service install, status, and removal each share one 30-second
 deadline across filesystem and manager steps; an expired step cannot initiate a later step.
 
+## Concurrent commands
+
+Install, status and removal first acquire an exclusive operation lease. A competing command fails
+immediately, before reading service state, changing files or invoking the manager. Its error names
+the lease file and asks the operator to wait for the active command, then retry. Status does not
+combine a file observation from before an installation with a manager reply from after it.
+
+The lease is `<OS-user-home>/.domovoi/service-operation-lease.sqlite`, separate from both the runtime
+profile lease and the state database. The OS user lookup supplies this home, not shell `HOME` or
+`USERPROFILE`: changing the selected profile cannot create a second lock for the same service name.
+Unix sets the parent and file modes to `0700` and `0600`; Windows inherits the user directory ACLs.
+This empty SQLite database carries a lifetime exclusive transaction with a zero busy timeout.
+Never delete or replace it. File existence is not a held lease, and replacing the inode could let
+two commands hold independent locks at the same path.
+
+The operation lease remains held while installation releases the runtime profile lease and asks
+the manager to start the daemon. Removal holds it from its initial registration snapshot through
+the stop proof, configuration deletion and recovery receipt. Both paths acquire the operation
+lease before the runtime lease. The daemon only needs the latter, so it can start while installation
+waits for its manager. Normal completion or a settled error releases the operation lease.
+
+Expiry retains the lease until the CLI exits because an OS call can still finish late. The OS
+releases it on process exit without timestamps or PID guesses. Neither event proves that a native
+manager cancelled an already accepted job. After a killed or timed-out command, inspect the native
+manager and saved configuration before retrying. This is concurrent-command exclusion, not
+crash-atomic installation or automatic reconciliation of native jobs. The existing profile
+registration and receipt checks still apply; the operation lease is not recovery authorization.
+
 To change settings, stop the service, run installation again with the intended environment, then
 restart it. Installation does not guarantee that a manager reloads an already running process.
 Removal deletes the saved configuration after the manager stops and the profile lease is free.
@@ -89,6 +117,13 @@ launches the real daemon with a conflicting environment and authenticates over i
 endpoint. Removing the CLI environment handoff makes that test recover the default endpoint and
 identity paths instead.
 The TLS fixture requires `openssl` on the test runner's PATH to generate its temporary certificate.
+
+Concurrency tests hold the manager phase while using real file publication, registration digest
+checks and profile leases. A separate test starts two copies of the distributed CLI, intercepting
+only the native manager and OS-user home. It checks refusal before any competing file or manager
+action, including a different shell `HOME`, then reacquisition after normal completion or a killed
+CLI. Removing acquisition makes both process tests fail. Releasing exclusion on expiry makes all
+three deadline tests fail. These tests do not exercise native manager jobs after a CLI crash.
 
 Windows removal boundary tests model a live process surviving registration deletion, prove the
 stop-before-delete order, and exercise queued, unknown, absent, refused, silent, and late replies.

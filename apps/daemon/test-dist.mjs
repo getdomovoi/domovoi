@@ -70,3 +70,18 @@ const invalidRecovery = runCli("fleet-keychain", "forget", "token=must-not-be-ec
 assert.equal(invalidRecovery.status, 1)
 assert.match(invalidRecovery.stderr, /Invalid machine identity/)
 assert.doesNotMatch(invalidRecovery.stderr, /must-not-be-echoed/)
+
+// The real packaged CLI must find and shut down its packaged worker. Substitute
+// only the native binding, never open the operator's real OS keychain.
+const keyringHome = mkdtempSync(join(tmpdir(), "domovoi-dist-keyring-"))
+try {
+  const listing = spawnSync(process.execPath, [
+    "--import", new URL("./test-fixtures/blocked-keyring.mjs", import.meta.url).href,
+    "./dist/index.js", "fleet-keychain", "list",
+  ], { encoding: "utf8", timeout: 15_000, env: { ...process.env, DOMOVOI_TEST_KEYRING_DIRECTORY: keyringHome } })
+  assert.equal(listing.status, 0, listing.error?.message || listing.stderr)
+  assert.equal(listing.stdout, "")
+  const events = readFileSync(join(keyringHome, "events"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+  assert.ok(events.some((event) => event.kind === "get"))
+  assert.ok(events.every((event) => event.isMainThread === false))
+} finally { rmSync(keyringHome, { recursive: true, force: true }) }
