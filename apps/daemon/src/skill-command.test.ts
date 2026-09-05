@@ -26,6 +26,7 @@ function terminal(home: string) {
   const stderr: string[] = []
   const run = (...args: string[]) => runSkillCommand(["skill", ...args], {
     home,
+    cwd: () => join(home, "project"),
     stdout: (text) => { stdout.push(text) },
     stderr: (text) => { stderr.push(text) },
   })
@@ -181,6 +182,78 @@ describe("domovoid skill", () => {
     expect([...(await loadTrustedSkillKeys(trustPath)).keys.keys()]).toEqual([keyId])
     await expect(stat(join(home, ".domovoi", "skill-trusted-keys.json")))
       .rejects.toMatchObject({ code: "ENOENT" })
+  })
+
+  it("reviews a folder with add and installs only with --yes", async () => {
+    const { home, run } = await scratch()
+    const source = join(home, "work", "pr-triage")
+    await mkdir(join(source, "scripts"), { recursive: true })
+    await writeFile(join(source, "SKILL.md"), [
+      "---",
+      "name: pr-triage",
+      "description: Triage pull requests.",
+      "domovoi:",
+      "  manifest:",
+      "    version: 1",
+      "    capabilities:",
+      "      - filesystem.read",
+      "      - process.execute",
+      "---",
+      "",
+      "# Instructions",
+      "",
+    ].join("\n"))
+    await writeFile(join(source, "scripts", "triage.ts"), "export const triage = true\n")
+    const userTarget = join(home, ".domovoi", "skills", "pr-triage")
+
+    expect(await run("add", source, "--scope", "user")).toBe(0)
+
+    const review = run.stdout.join("")
+    expect(review).toMatch(/^skill:\s+pr-triage$/mu)
+    expect(review).toMatch(/^description:\s+Triage pull requests\.$/mu)
+    expect(review).toMatch(/^capabilities:\s+filesystem\.read, process\.execute$/mu)
+    expect(review).toMatch(/^signature:\s+unsigned$/mu)
+    expect(review).toMatch(/^trust:\s+untrusted \(unsigned\)$/mu)
+    expect(review).toMatch(/^content digest:\s+sha256:[a-f0-9]{64}$/mu)
+    expect(review).toMatch(/^source digest:\s+sha256:[a-f0-9]{64}$/mu)
+    expect(review).toMatch(/^files:\s+2 \(\d+ bytes\)$/mu)
+    expect(review).toContain(`installs to:    ${userTarget} (available)`)
+    expect(review).toContain("Nothing installed. Re-run with --yes to install.")
+    await expect(stat(userTarget)).rejects.toMatchObject({ code: "ENOENT" })
+
+    expect(await run("add", source, "--scope", "user", "--yes")).toBe(0)
+    expect(run.stdout.join("")).toContain(`installed pr-triage to ${userTarget}`)
+    expect(await readFile(join(userTarget, "scripts", "triage.ts"), "utf8")).toBe("export const triage = true\n")
+    const [installed] = await new FileSkillCatalog(
+      [{ path: join(home, ".domovoi", "skills"), scope: "user", source: "domovoi" }],
+    ).list()
+    expect(installed).toMatchObject({ name: "pr-triage", scope: "user", source: "domovoi" })
+  })
+
+  it("installs to the working project with --scope project and names a refusal", async () => {
+    const { home, run } = await scratch()
+    const source = join(home, "work", "pr-triage")
+    await mkdir(source, { recursive: true })
+    await writeFile(join(source, "SKILL.md"), "---\nname: pr-triage\ndescription: Triage.\n---\n")
+    await mkdir(join(home, "project"), { recursive: true })
+    const projectTarget = join(home, "project", ".domovoi", "skills", "pr-triage")
+
+    expect(await run("add", source, "--scope", "project", "--yes")).toBe(0)
+    expect(run.stdout.join("")).toContain(`installed pr-triage to ${projectTarget}`)
+    expect(await readFile(join(projectTarget, "SKILL.md"), "utf8")).toContain("name: pr-triage")
+
+    await writeFile(join(source, "SKILL.md"), "---\nname: pr-triage\ndescription: Changed.\n---\n")
+    expect(await run("add", source, "--scope", "project", "--yes")).toBe(1)
+    expect(run.stderr.join("")).toContain(`refused: A different skill already occupies ${projectTarget}`)
+    expect(await readFile(join(projectTarget, "SKILL.md"), "utf8")).toContain("description: Triage.")
+
+    await writeFile(join(source, "SKILL.md.sig"), "{}")
+    expect(await run("add", source, "--scope", "user", "--yes")).toBe(1)
+    expect(run.stderr.join("")).toContain("refused: Blocked skills cannot be installed")
+    expect(await run("add", join(home, "nowhere"), "--scope", "user")).toBe(1)
+    expect(run.stderr.join("")).toContain(`Skill source is not a readable directory: ${join(home, "nowhere")}`)
+    expect(await run("add", source, "--scope", "system")).toBe(1)
+    expect(run.stderr.join("")).toMatch(/Usage: domovoid skill keygen/u)
   })
 
   it.skipIf(process.platform === "win32")("refuses to add a key to a trust file other users can read", async () => {

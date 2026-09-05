@@ -322,6 +322,7 @@ async function main() {
     // the private key never leaves the file the person named.
     process.exitCode = await runSkillCommand(args, {
       home: homedir(),
+      cwd: () => process.cwd(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

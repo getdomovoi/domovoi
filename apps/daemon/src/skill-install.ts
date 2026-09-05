@@ -58,7 +58,7 @@ type SourceListing = {
   refusals: SkillInstallRefusal[]
 }
 
-function refusalMessage(refusal: SkillInstallRefusal): string {
+export function skillInstallRefusalMessage(refusal: SkillInstallRefusal): string {
   switch (refusal.reason) {
     case "source-changed":
       return "Skill source changed since it was reviewed; review it again"
@@ -75,7 +75,7 @@ function refusalMessage(refusal: SkillInstallRefusal): string {
 
 function refuse(refusal: Omit<SkillInstallRefusal, "kind">): SkillInstallError {
   const full: SkillInstallRefusal = { kind: "skill-install-refused", ...refusal }
-  return new SkillInstallError(full, refusalMessage(full))
+  return new SkillInstallError(full, skillInstallRefusalMessage(full))
 }
 
 function relativePosix(root: string, path: string): string {
@@ -263,7 +263,7 @@ export async function installSkill(
   const preview = await previewSkillInstall(params.source, [root], trust)
   if (preview.sourceDigest !== params.sourceDigest) throw refuse({ reason: "source-changed" })
   const refusal = preview.refusals[0]
-  if (refusal) throw new SkillInstallError(refusal, refusalMessage(refusal))
+  if (refusal) throw new SkillInstallError(refusal, skillInstallRefusalMessage(refusal))
   const target = preview.targets[0]!
   if (target.state === "installed") return { path: join(target.path, "SKILL.md") }
   if (target.state === "conflict") throw refuse({ reason: "name-conflict", path: target.path })
