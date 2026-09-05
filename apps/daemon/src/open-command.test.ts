@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { CliDeadlineError } from "./cli-rpc.js"
 import { runOpenCommand, type OpenCommandDependencies } from "./open-command.js"
 import type { WslDistribution } from "./wsl-distributions.js"
 import { listWslDistributions } from "./wsl-list.js"
@@ -142,6 +143,18 @@ describe("runOpenCommand", () => {
     })
     expect(await runOpenCommand(["open", "\\\\wsl$\\debian\\srv\\app"], deps)).toBe(1)
     expect(deps.stderr.mock.calls.join("")).toMatch(/no daemon is running in debian.*domovoid/s)
+  })
+
+  it("repeats a deadline refusal that names the address and the remedy", async () => {
+    const deps = dependencies({
+      open: vi.fn(async () => {
+        throw new CliDeadlineError("The daemon at ws://127.0.0.1:47831/rpc did not accept the connection"
+          + " before the deadline. Check that domovoid is running at that address, then run this command again.")
+      }),
+    })
+    expect(await runOpenCommand(["open", "C:\\work\\repo"], deps)).toBe(1)
+    expect(deps.stderr.mock.calls.join("")).toContain("did not accept the connection before the deadline")
+    expect(deps.stderr.mock.calls.join("")).toContain("Check that domovoid is running at that address")
   })
 
   it("prints usage for more arguments than it takes", async () => {

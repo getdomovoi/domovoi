@@ -50,6 +50,17 @@ and Alpine's native toolchain repositories are required; no host profile or cred
 the container. The smoke has an eight-minute total bound plus ten seconds for named-container
 cleanup. This is Linux x64 musl evidence, not an ARM, WSL, service-supervisor, or every-libc proof.
 
+A further check spends one cold install to prove the result is usable rather than merely present.
+It packs this repository's daemon, feeds that archive through the bootstrap installer into an
+empty directory, and then works only from the installed tree: it runs `domovoid --version` and
+`--help`, imports the same-release protocol together with the `node-pty` and keyring native
+modules, starts the daemon on an ephemeral loopback port under a throwaway home directory,
+completes a `system.hello` handshake with the published endpoint credential using the installed
+`ws` copy, and requires the endpoint file to be withdrawn after a graceful stop. Windows has no
+graceful termination signal, so it asserts the exit alone there. This check needs the public
+registry and the host's native build toolchain, so a production graph that cannot install or load
+fails the suite instead of passing as saved bytes.
+
 ### Verified bootstrap installation
 
 `node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` installs an
