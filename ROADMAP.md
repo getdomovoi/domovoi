@@ -498,25 +498,37 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     maintaining their own list.
 - [ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app
   with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
-- [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
-  a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
+- [x] Install a frozen daemon runtime from a version-pinned release archive, checked against a
+  caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
-  - Bootstrap streams and verifies the archive, stages it privately, materialises its embedded
-    integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`, and
-    verifies the installed graph before publishing a runnable receipt. Same-release protocol
-    bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
-    installation, native build, verification, publication, and cleanup share five minutes.
+  - `node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` streams
+    and verifies the archive into `<destination>/v<version>`, stages it privately, materialises its
+    embedded integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`,
+    verifies the installed graph, permits only the reviewed `node-pty` native build, and publishes
+    a `runtime.json` receipt naming the installed directory. Same-release protocol bytes are bound
+    inside the archive; provider SDKs are fetched, not bundled. Download, installation, native
+    build, verification, publication, and cleanup share five minutes.
+  - What lands is an installed runtime tree, not an installed command. The result's `runtimePath`
+    is run as `node <runtimePath>/dist/index.js`. Nothing creates a `domovoid` entry on `PATH`,
+    starts the daemon, configures daemon state, or installs supervision. The separately exported
+    `bootstrapDaemon` download step on its own only publishes a verified archive and installs
+    nothing.
   - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
     external toolchain remain reproducibility limits. The protocol library keeps all three
     package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
     a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not
-    performed by bootstrap. See `docs/distribution.md`.
+    performed by bootstrap. No release is published yet, so this path cannot be run against a real
+    release today. See `docs/distribution.md`, and `docs/clean-machine-setup.md` for the operator
+    steps that surround it.
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is
     written to a system-wide location. Nondefault listener and TLS configuration is lost, Desktop
     contends for the same port instead of consuming the service, Windows lacks crash restart, and
     CI never invokes a real manager.
+  - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
+    installation, first start, TLS, supervision, pairing, and recovery, and names what remains
+    unproven per platform.
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
   - Discovery, endpoint, and `domovoid open` helpers exist and unit tests stub `wsl.exe`. No real
     Windows-to-WSL test exists, no `domovoi` alias exists, and WSL is not a fleet candidate.

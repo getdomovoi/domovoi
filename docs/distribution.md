@@ -83,6 +83,7 @@ After archive verification, installation proceeds in a separate private `.runtim
 
 The JSON result includes `runtimePath`; `node <runtimePath>/dist/index.js` runs the installed
 daemon. Bootstrap does not start it, change PATH, configure daemon state, or install supervision.
+Those operator steps are in [clean-machine setup](clean-machine-setup.md).
 Private runtime staging is owner-only on POSIX; on Windows bootstrap applies a protected ACL
 granting the current user before extraction and installation. Elevated administrators and code
 already running as that user are outside this filesystem boundary.
