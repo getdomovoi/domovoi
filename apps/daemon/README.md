@@ -118,6 +118,21 @@ through audit query and export, without recording submitted codes, credentials, 
 Upgrades preserve existing history without guessing which older rows were unauthenticated; the
 retention distinction applies to new writes.
 
+## Transfer chunk retries
+
+Concurrent receives for the same transfer member use a process-local reservation keyed by the
+journal path. It covers chunk reads and writes, final publication, and chunk-directory cleanup.
+A competing receive gets the existing `chunk-out-of-order` refusal without waiting; a retry after
+the owner finishes can adopt its durable chunk or completed member. Other members can progress
+independently. This prevents cleanup racing a retry's open chunk handle within one daemon process,
+which Windows can reject with `EPERM`. It does not coordinate separate daemon processes sharing a
+journal directory.
+
+Production transfer RPCs share a per-transfer resource queue across sockets. A reconnected retry
+or abort waits for the original handler to finish; dropping its socket does not release that
+queue slot. The journal's overlap refusal protects concurrent direct journal calls, not the
+ordinary reconnect path. Retention pruning runs before the daemon opens its listener.
+
 ## When state cannot reach disk
 
 The daemon writes the workspace snapshot after every change. A single failed write is retried on
