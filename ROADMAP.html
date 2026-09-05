@@ -782,7 +782,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Implement WSL discovery and a <code>domovoi open .</code> Windows interop shim
 <ul>
-<li>Discovery, endpoint, and <code>domovoid open</code> helpers exist and unit tests stub <code>wsl.exe</code>. No real Windows-to-WSL test exists, no <code>domovoi</code> alias exists, and WSL is not a fleet candidate.
+<li>Discovery, endpoint, <code>domovoid wsl list</code>, and <code>domovoid open</code> exist, and a <code>wsl.exe</code> that cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or daemon. Unit tests drive them with a fake <code>wsl.exe</code>. Six tests run the real <code>wsl.exe</code> on the Windows CI job, which has no running WSL 2 distribution: four prove that the listing answers or refuses within its deadline and that a distribution that does not exist is refused, and the two that need a running distribution skip. Discovery, open, authentication, repository ownership, Git, and restart against a running distribution remain unverified. No <code>domovoi</code> alias exists, and WSL is not a fleet candidate.
 </li>
 </ul>
 </li>

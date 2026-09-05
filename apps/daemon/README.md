@@ -236,6 +236,13 @@ inside the distribution. The runner that starts `git` inside a distribution asks
 `wslpath` question before running anything, so a repository on a Windows drive is refused
 wherever the distribution mounts it, not only under `/mnt`.
 
+What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
+the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
+the listing answers or refuses within its deadline and that a distribution that does not exist is
+refused; the path round trip and the drive refusal need a running distribution and skip there.
+Discovery, open, authentication, repository ownership, Git, and restart against a running
+distribution are not verified by CI.
+
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
 A supervisor that starts the daemon without `WSL_DISTRO_NAME` leaves those facts unreported, and
