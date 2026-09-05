@@ -36,6 +36,39 @@ The daemon is not part of this check. Its production graph builds native modules
 per package manager on every CI run costs far more than it proves; its packaged contents are
 covered by `pnpm test:packages`.
 
+### Verified bootstrap download
+
+`node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` downloads
+an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256 supplied by the
+caller must agree with the downloaded bytes. This remains a downloader, not an installer: it does
+not unpack the archive, resolve dependencies, configure PATH, or install a service.
+
+Each invocation writes and flushes its verified bytes in a unique private `.bootstrap-*` directory
+beside the destination archive, then publishes with a hard link that cannot replace an existing
+path. POSIX staging directories and files are owner-only; Windows inherits the destination's
+access controls, so choose a destination writable only by the installing user. Concurrent
+invocations with the same digest may both succeed. Different digests refuse
+without replacing the first archive. An existing archive is accepted only after a bounded,
+streamed read verifies its length and digest; a symlink or other non-file destination is refused.
+The filesystem must support hard links. Unsupported publication fails rather than falling back to
+a replacing rename or a copy that another process could read while incomplete.
+
+Publication has one 30-second budget, including filesystem setup, writing, verification, and
+cleanup. Embedded calls can supply `publicationTimeoutMs`, a positive integer; phases never renew
+it. A timed-out filesystem request may still complete at the OS, but its late result cannot begin
+another publication step. The error therefore says to inspect the archive before retrying, not
+that no file was written. The preceding network download still lacks a shared deadline across
+connection setup, redirects, and body reads; publication's budget does not cover those waits.
+File flush is not a guarantee of directory-entry durability across a power loss.
+
+Cleanup removes only the current invocation's staging file and directory, never the published
+archive or an older shared `.partial` file. If cleanup fails after verification, the error names
+the verified archive separately from the retained staging. An interrupted process may leave a
+`.bootstrap-*` directory. Stop all bootstrap invocations before inspecting or removing that exact
+directory by hand. No age-based or recursive cleanup runs automatically. A conflicting archive
+also requires an explicit operator decision or a different destination; bootstrap never replaces
+it for the caller.
+
 ## Release artifacts
 
 `pnpm release:artifacts` writes the files a GitHub Release carries into `release/`:
