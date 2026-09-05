@@ -254,15 +254,18 @@ describe("serviceRemovalPlan", () => {
   })
 
   it("boots the launch agent out by label", () => {
-    expect(serviceRemovalPlan({ platform: "darwin", home: "/Users/dl", uid: 501 }).commands).toEqual([
+    expect(serviceRemovalPlan({ platform: "darwin", home: "/Users/dl", uid: 501 })).toMatchObject({ commands: [
       { command: "launchctl", args: ["bootout", "gui/501/sh.domovoi.domovoid"] },
-    ])
+    ] })
   })
 
-  it("deletes the Windows logon task", () => {
+  it("requires a Windows task stop and observation before removal", () => {
     expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
       kind: "task",
-      commands: [{ command: "schtasks", args: ["/delete", "/tn", "Domovoi daemon", "/f"] }],
+      name: "Domovoi daemon",
+      stop: { command: "powershell.exe", args: expect.any(Array) },
+      inspect: { command: "powershell.exe", args: expect.any(Array) },
+      remove: { command: "powershell.exe", args: expect.any(Array) },
     })
   })
 })
