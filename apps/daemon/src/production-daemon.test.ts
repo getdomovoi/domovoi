@@ -15,6 +15,7 @@ import {
   type ProductionDaemonRuntime,
 } from "./production-daemon.js"
 import { MachineCredentialStore, type MachineKeyring } from "./machine-credentials.js"
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
 
 const roots: string[] = []
@@ -113,7 +114,7 @@ describe("createProductionDaemon", () => {
     }, {
       ...productionDaemonDependencies,
       loadTls: async () => ({ cert: Buffer.from("test certificate"), key: Buffer.from("test private key") }),
-      createMachineCredentials: () => new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} }),
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
       createDaemon,
     })
     expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({ tailnetHost: "studio.tailnet.example", sshTunnels }))
@@ -121,15 +122,15 @@ describe("createProductionDaemon", () => {
   })
 
   it("assembles every mandatory production dependency", async () => {
-    const homeDirectory = join("", "home", "tester")
+    const homeDirectory = await temporaryHome()
     const authToken = testToken("production-factory")
     const machineIdentity = { id: `machine-${"a".repeat(32)}`, label: "studio" }
     const providerProbe = { inspect: async () => [] }
-    const machineCredentials = new MachineCredentialStore({
+    const machineCredentials = asyncTestCredentials(new MachineCredentialStore({
       get: () => undefined,
       set: () => {},
       delete: () => {},
-    })
+    }))
     let daemonOptions: DaemonServerOptions | undefined
     const handle = await createProductionDaemonWithDependencies({
       environment: {},
@@ -154,6 +155,7 @@ describe("createProductionDaemon", () => {
       },
     })
 
+    running.push(handle)
     expect(daemonOptions).toMatchObject({
       host: "127.0.0.1",
       port: 47_831,
@@ -238,7 +240,7 @@ describe("createProductionDaemon", () => {
       createMachineCredentials: () => {
         const store = new MachineCredentialStore(keyring)
         credentialStores.push(store)
-        return store
+        return asyncTestCredentials(store)
       },
       createDaemon: (options: DaemonServerOptions) => new DomovoiDaemon({
         ...options,
@@ -252,9 +254,9 @@ describe("createProductionDaemon", () => {
       environment: {}, homeDirectory: await temporaryHome(), machineLabel: "target studio",
     }, {
       ...dependencies,
-      createMachineCredentials: () => new MachineCredentialStore({
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({
         get: (id) => peerValues.get(id), set: (id, value) => { peerValues.set(id, value) }, delete: (id) => peerValues.delete(id),
-      }),
+      })),
     })
     running.push(peer)
     const peerRpc = await openRpc(peer)

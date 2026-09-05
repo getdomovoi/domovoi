@@ -42,7 +42,7 @@ describe("service configuration", () => {
     { authToken: "s".repeat(43) },
     { environment: { DOMOVOI_AUTH_TOKEN: "s".repeat(43) } },
     { version: 2 },
-    { port: 0 },
+    { port: -1 },
     { host: "0.0.0.0", allowRemoteTransport: true },
     { tls: { certPath: "/cert.pem" } },
     { credentialPath: "relative/daemon.token" },

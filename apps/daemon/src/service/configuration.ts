@@ -12,6 +12,7 @@ const maximumConfigurationBytes = 64 * 1_024
 const pathSchema = z.string().min(1).refine((path) => posix.isAbsolute(path) || win32.isAbsolute(path))
 const configurationSchema = z.object({
   version: z.literal(1),
+  registrationId: z.uuid().optional(),
   homeDirectory: pathSchema,
   host: z.string(),
   port: z.number().int(),
@@ -27,6 +28,7 @@ const configurationSchema = z.object({
 
 export type ServiceConfiguration = Omit<DaemonEnvironmentConfig, "authToken"> & {
   version: 1
+  registrationId?: string
   homeDirectory: string
 }
 
@@ -84,9 +86,10 @@ export function serviceConfigurationPath(home: string, platform: string): string
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, ...required } = configurationSchema.parse(JSON.parse(text))
     const config: ServiceConfiguration = {
       ...required,
+      ...(registrationId !== undefined ? { registrationId } : {}),
       ...(tls !== undefined ? { tls } : {}),
       ...(advertiseHost !== undefined ? { advertiseHost } : {}),
       ...(tailnetHost !== undefined ? { tailnetHost } : {}),

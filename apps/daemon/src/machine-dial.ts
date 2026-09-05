@@ -1,6 +1,6 @@
 import { fleetDirectEndpointSchema, orderedTransports, type FleetMachineFacts } from "@getdomovoi/protocol"
 
-import type { MachineCredentials } from "./machine-credentials.js"
+import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
 import { configuredSshTunnelsSchema, isLoopbackHost, type ConfiguredSshTunnel } from "./transport-config.js"
@@ -36,7 +36,7 @@ function leavesThisMachine(endpoint: string): boolean {
 // order the protocol defines.
 export function createMachineDialer(input: {
   machine: (machineId: string) => Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute"> | undefined
-  credentials: MachineCredentials | undefined
+  credentials: AsyncMachineCredentials | undefined
   sshTunnels?: readonly ConfiguredSshTunnel[]
   dialTimeoutMs: number
   open: (input: {
@@ -55,11 +55,17 @@ export function createMachineDialer(input: {
     try {
       deadline.throwIfExpired()
       if (signal?.aborted) throw new Error("The transfer was cancelled")
+      if (!input.machine(machineId)) throw new Error("That machine cannot be reached")
+
+      const credential = await input.credentials?.forMachine(machineId, deadline)
+      deadline.throwIfExpired()
+      if (signal?.aborted) throw new Error("The transfer was cancelled")
+      if (!credential) throw new Error("That machine has to be paired again")
+
+      // Forget can mask the peer while the keychain is working. Credentials
+      // read before that mutation do not authorize using yesterday's row.
       const machine = input.machine(machineId)
       if (!machine) throw new Error("That machine cannot be reached")
-
-      const credential = input.credentials?.forMachine(machineId)
-      if (!credential) throw new Error("That machine has to be paired again")
 
       const routes: Array<Pick<MachineRouteConnection, "endpoint" | "routeSource">> = []
       const addRoute = (endpoint: string, routeSource: MachineRouteConnection["routeSource"]) => {

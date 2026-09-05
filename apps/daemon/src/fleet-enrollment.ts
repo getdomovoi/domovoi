@@ -8,7 +8,8 @@ import {
 } from "@getdomovoi/protocol"
 
 import { createMachineDialer, type MachineConnection, type MachineRouteConnection } from "./machine-dial.js"
-import { machineCredentialDigest, MachineCredentialUnavailableError, type MachineCredentials } from "./machine-credentials.js"
+import { machineCredentialDigest, MachineCredentialUnavailableError } from "./machine-credentials.js"
+import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { fleetOperationSummary, type FleetEnrollmentOperation, type FleetForgetOperation } from "./fleet-operations.js"
 import {
   FleetLimitReachedError, FleetOperationInProgressError, FleetSnapshotOverflowError,
@@ -28,7 +29,7 @@ export const defaultFleetHeartbeatIntervalMs = 15_000
 type Options = {
   selfId: string
   registry: FleetRegistry | undefined
-  credentials: MachineCredentials | undefined
+  credentials: AsyncMachineCredentials | undefined
   sshTunnels?: readonly ConfiguredSshTunnel[]
   operationTimeoutMs: number
   heartbeatIntervalMs: number
@@ -48,6 +49,7 @@ export class FleetEnrollmentService {
   readonly #tasks = new Set<Promise<unknown>>()
   readonly #heartbeats = new Map<string, AbortController>()
   #knownCredentialIds: string[] = []
+  #indexRead = 0
   #timer: ReturnType<typeof setTimeout> | undefined
   #started = false
   #stopped = false
@@ -67,13 +69,38 @@ export class FleetEnrollmentService {
     const registry = this.#input.registry
     if (!registry) return { entries: [] }
     this.#input.recordLocal?.()
-    try { this.#knownCredentialIds = this.#input.credentials?.machines() ?? [] }
+    return registry.snapshot(this.#input.selfId, this.#now(), this.#knownCredentialIds)
+  }
+
+  // Render committed state without a new external wait. In particular, a
+  // keychain read for a response must not undo a successful enrollment.
+  // Only identity metadata is cached; dialing always reads the credential.
+  list(): Promise<FleetSnapshot> { return this.#track(this.#list()) }
+
+  async #readIndex(deadline: OperationDeadline): Promise<void> {
+    const read = ++this.#indexRead
+    const ids = await this.#input.credentials?.machines(deadline) ?? []
+    deadline.throwIfExpired()
+    if (!this.#stopped && read === this.#indexRead) this.#knownCredentialIds = ids
+  }
+
+  async #list(): Promise<FleetSnapshot> {
+    const deadline = this.#deadline()
+    const read = this.#indexRead + 1
+    try { await this.#readIndex(deadline) }
     catch {
+      if (this.#stopped) throw new MachineCredentialUnavailableError()
+      // Failure is also a late result. An older attempt must not downgrade
+      // facts accepted after a newer index read or lifecycle mutation.
+      if (read !== this.#indexRead) return this.snapshot()
+      const registry = this.#input.registry
+      if (!registry) return { entries: [] }
       for (const entry of registry.enrolled()) {
         registry.recordFailure(entry.facts.id, entry.credentialDigest, "credential-store-unavailable")
       }
-    }
-    return registry.snapshot(this.#input.selfId, this.#now(), this.#knownCredentialIds)
+    } finally { deadline.clear() }
+    if (this.#stopped) throw new MachineCredentialUnavailableError()
+    return this.snapshot()
   }
 
   start(): void {
@@ -135,7 +162,7 @@ export class FleetEnrollmentService {
     try {
       deadline.throwIfExpired()
       // Discover a locked keychain before spending a one-time pairing code.
-      this.#knownCredentialIds = credentials.machines()
+      await this.#readIndex(deadline)
       const entries = this.snapshot().entries
       if (params.expectedMachineId && registry.pendingOperations().some((entry) => entry.machineId === params.expectedMachineId)) {
         throw new FleetOperationInProgressError()
@@ -165,8 +192,9 @@ export class FleetEnrollmentService {
         verifiedRoute: { endpoint: claimed.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() },
       }, machineCredentialDigest(descriptor.id, claimed.credential), receivedAt)
       this.#changed()
-      try { credentials.save(descriptor.id, claimed.credential) } catch { /* Read back; a write can fail after changing the key. */ }
-      const settled = this.#settleEnrollment(operation, deadline)
+      ++this.#indexRead
+      try { await credentials.save(descriptor.id, claimed.credential, deadline) } catch { /* Read back; a write can fail after changing the key. */ }
+      const settled = await this.#settleEnrollment(operation, deadline)
       this.#changed()
       if (settled === "enrolled") return fleetEnrollResultSchema.parse({ outcome: "enrolled", machineId: descriptor.id, fleet: this.snapshot() })
       if (settled === "aborted") {
@@ -189,22 +217,18 @@ export class FleetEnrollmentService {
     return fleetEnrollResultSchema.parse({ outcome: "pending", operation: fleetOperationSummary(operation), fleet: this.snapshot() })
   }
 
-  #settleEnrollment(operation: FleetEnrollmentOperation, deadline: OperationDeadline): "enrolled" | "pending" | "aborted" {
+  async #settleEnrollment(operation: FleetEnrollmentOperation, deadline: OperationDeadline): Promise<"enrolled" | "pending" | "aborted"> {
     const { registry, credentials } = this.#input
     try {
       deadline.throwIfExpired()
-      const stored = credentials!.forMachine(operation.machineId)
-      if (!stored || machineCredentialDigest(operation.machineId, stored) !== operation.credentialDigest) {
+      ++this.#indexRead
+      const matched = await credentials!.repairIndex(operation.machineId, operation.credentialDigest, deadline)
+      deadline.throwIfExpired()
+      if (!matched) {
         registry!.abortEnrollment(operation.id)
         return "aborted"
       }
-      // Repair an index write that failed after the secret was already saved.
-      // Restart can repeat this because only the matching OS key supplies bytes.
-      credentials!.save(operation.machineId, stored)
-      if (!credentials!.machines().includes(operation.machineId)) return "pending"
-      const readback = credentials!.forMachine(operation.machineId)
-      deadline.throwIfExpired()
-      if (!readback || machineCredentialDigest(operation.machineId, readback) !== operation.credentialDigest) return "pending"
+      this.#knownCredentialIds = [...new Set([...this.#knownCredentialIds, operation.machineId])]
       return registry!.completeEnrollment(operation.id, operation.credentialDigest) ? "enrolled" : "pending"
     } catch { return "pending" }
   }
@@ -230,11 +254,12 @@ export class FleetEnrollmentService {
     let operation: FleetForgetOperation | undefined
     try {
       deadline.throwIfExpired()
-      this.#knownCredentialIds = credentials.machines()
+      await this.#readIndex(deadline)
       if (!this.snapshot().entries.some((entry) => fleetEntryMachineId(entry) === params.machineId)) {
         return { outcome: "refused", reason: "not-enrolled" }
       }
-      const credential = credentials.forMachine(params.machineId)
+      const credential = await credentials.forMachine(params.machineId, deadline)
+      deadline.throwIfExpired()
       const digest = credential === undefined ? null : machineCredentialDigest(params.machineId, credential)
       this.#cancelHeartbeat(params.machineId)
       operation = registry.stageForget(params.machineId, digest, this.#now())
@@ -260,7 +285,8 @@ export class FleetEnrollmentService {
     const { registry, credentials } = this.#input
     try {
       deadline.throwIfExpired()
-      const held = credentials!.forMachine(operation.machineId)
+      const held = await credentials!.forMachine(operation.machineId, deadline)
+      deadline.throwIfExpired()
       if (held !== undefined && machineCredentialDigest(operation.machineId, held) !== operation.credentialDigest) return undefined
       let revocation = operation.remoteRevocation
       const enrollment = registry!.pendingForgetEnrollment(operation.id)
@@ -282,11 +308,11 @@ export class FleetEnrollmentService {
       deadline.throwIfExpired()
       // Re-read after the remote await. A replacement key is not the key this
       // operation was authorised to delete, so keep the pending row visible.
-      const current = credentials!.forMachine(operation.machineId)
-      if (current !== undefined && machineCredentialDigest(operation.machineId, current) !== operation.credentialDigest) return undefined
-      credentials!.forget(operation.machineId)
-      if (credentials!.forMachine(operation.machineId) !== undefined || credentials!.machines().includes(operation.machineId)) return undefined
+      ++this.#indexRead
+      const removed = await credentials!.forgetIfMatching(operation.machineId, operation.credentialDigest, deadline)
       deadline.throwIfExpired()
+      if (!removed) return undefined
+      this.#knownCredentialIds = this.#knownCredentialIds.filter((id) => id !== operation.machineId)
       return registry!.completeForget(operation.id) ? revocation : undefined
     } catch { return undefined }
   }
@@ -298,7 +324,7 @@ export class FleetEnrollmentService {
       await Promise.all(this.#input.registry.pendingOperations().map(async (operation) => {
         const deadline = this.#deadline()
         try {
-          if (operation.kind === "enroll") this.#settleEnrollment(operation, deadline)
+          if (operation.kind === "enroll") await this.#settleEnrollment(operation, deadline)
           else await this.#settleForget(operation, deadline)
         } finally { deadline.clear() }
       }))
@@ -308,6 +334,8 @@ export class FleetEnrollmentService {
 
   async #refresh(): Promise<void> {
     if (this.#stopped || !this.#input.registry) return
+    await this.list()
+    if (this.#stopped) return
     // One bounded attempt per enrolled ID. The registry's 128-entry limit
     // bounds live probes, and a pending lifecycle operation is excluded here.
     await Promise.all(this.#input.registry.enrolled().map((entry) => this.#heartbeat(entry)))
@@ -323,14 +351,16 @@ export class FleetEnrollmentService {
     })
     let connection: MachineRouteConnection | undefined
     try {
-      const credential = this.#input.credentials?.forMachine(id)
+      const credential = await this.#input.credentials?.forMachine(id, deadline)
+      deadline.throwIfExpired()
       if (!this.#input.credentials) throw new MachineCredentialUnavailableError()
       if (!credential || machineCredentialDigest(id, credential) !== entry.credentialDigest) throw new MachinePairingRequiredError()
       connection = await this.#dial([entry.facts], id, deadline, controller.signal)
       const descriptor = await readMachineDescriptor(connection, id, credential, deadline)
       const receivedAt = this.#now()
       if (this.#heartbeats.get(id) !== controller || this.#stopped) return
-      const held = this.#input.credentials.forMachine(id)
+      const held = await this.#input.credentials.forMachine(id, deadline)
+      if (this.#heartbeats.get(id) !== controller || this.#stopped) return
       if (!held || machineCredentialDigest(id, held) !== entry.credentialDigest) throw new MachinePairingRequiredError()
       deadline.throwIfExpired()
       this.#input.registry!.refreshAuthenticated({
