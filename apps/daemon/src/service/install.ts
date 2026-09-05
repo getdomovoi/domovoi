@@ -4,9 +4,13 @@ import { dirname, posix } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
+import { claimProfile, type ProfileLease } from "../profile-lease.js"
+import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
+import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { launchdPlist, systemdUnit } from "./units.js"
+import { removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
 
 const serviceName = "domovoid"
 const unitFile = `${serviceName}.service`
@@ -24,6 +28,8 @@ export type ServicePlan = ServiceRegistrationPlan & {
   configuration: { path: string; contents: string }
 }
 
+type ServiceRemovalPlan = Extract<ServiceRegistrationPlan, { kind: "file" }> | WindowsTaskRemovalPlan
+
 export type ServiceTarget = {
   platform: string
   execPath: string
@@ -40,6 +46,9 @@ export type ServiceTarget = {
 export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
+  claimProfile: (homeDirectory: string) => ProfileLease
+  removalSnapshot: typeof readServiceRemovalSnapshot
+  writeRemovalReceipt: typeof writeLocalOwnerRemovalReceipt
   write: (path: string, contents: string, deadline: OperationDeadline) => Promise<void>
   run: (command: string, args: string[], deadline: OperationDeadline) => Promise<void>
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
@@ -222,7 +231,7 @@ export function serviceRemovalPlan({
   platform,
   home,
   uid,
-}: Pick<ServiceTarget, "platform" | "home" | "uid">): ServiceRegistrationPlan {
+}: Pick<ServiceTarget, "platform" | "home" | "uid">): ServiceRemovalPlan {
   if (platform === "linux") {
     return {
       kind: "file",
@@ -245,10 +254,7 @@ export function serviceRemovalPlan({
   }
 
   if (platform === "win32") {
-    return {
-      kind: "task",
-      commands: [{ command: "schtasks", args: ["/delete", "/tn", displayName, "/f"] }],
-    }
+    return windowsTaskRemovalPlan(displayName)
   }
 
   throw new Error(`${platform} has no service manager this knows how to remove from`)
@@ -291,29 +297,55 @@ async function serviceOperation<T>(operation: (deadline: OperationDeadline) => P
 // with a unit or configuration that is not there.
 async function installWithDeadline(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run">,
+  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove">,
   deadline: OperationDeadline,
 ): Promise<ServicePlan> {
-  const plan = servicePlan(target)
-  await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
-  if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+  // Reinstalling is a new supervisor decision, not reuse of an old recovery
+  // authorization. Assign the identity here, even if the caller supplied one.
+  const plan = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
+  deadline.throwIfExpired()
+  const lease = effects.claimProfile(target.configuration.homeDirectory)
+  try {
+    await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(target.configuration.homeDirectory), deadline))
+    await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
+    if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
+    deadline.throwIfExpired()
+  } finally {
+    // Timed-out filesystem work may still settle. Retain the lease until this
+    // CLI process exits in that case. Otherwise the saved service config now
+    // prevents Desktop fallback, so release before asking the manager to start.
+    if (!deadline.signal.aborted) lease.release()
+  }
   for (const { command, args } of plan.commands) await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
   return plan
 }
 
-export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run">): Promise<ServicePlan> {
+export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove">): Promise<ServicePlan> {
   return serviceOperation((deadline) => installWithDeadline(target, effects, deadline))
 }
 
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
+type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt">
+type ServiceRemovalResult = ServiceRemovalPlan & {
+  profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
+  profileRecoveryDetail?: string
+}
+
 async function removeWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "run" | "remove" | "exists">,
+  effects: RemovalEffects,
   deadline: OperationDeadline,
-): Promise<ServiceRegistrationPlan> {
+): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
-  for (const { command, args } of plan.commands) {
+  const home = assertHome(target.home)
+  deadline.throwIfExpired()
+  const before = effects.removalSnapshot(home, target.platform)
+  let managerStopped = true
+  if (plan.kind === "task") {
+    managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
+  }
+  for (const { command, args } of plan.kind === "file" ? plan.commands : []) {
     try {
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
     } catch (error) {
@@ -322,25 +354,48 @@ async function removeWithDeadline(
       // the unit: deleting it while a live manager still owns the service
       // strands a process and falsely reports a successful removal.
       if (!isMissingServiceFailure(target.platform, error)) throw error
+      managerStopped = false
     }
   }
-  const files = [
-    ...(plan.kind === "file" ? [plan.path] : []),
-    ...(target.home ? [serviceConfigurationPath(target.home, target.platform)] : []),
-  ]
-  for (const path of files) {
-    if (await withinServiceDeadline(deadline, () => effects.exists(path, deadline))) {
-      await withinServiceDeadline(deadline, () => effects.remove(path, deadline))
+  deadline.throwIfExpired()
+  const lease = effects.claimProfile(home)
+  try {
+    const recovery = serviceRemovalRecovery(before, effects.removalSnapshot(home, target.platform), managerStopped)
+    const files = [
+      ...(plan.kind === "file" ? [plan.path] : []),
+      serviceConfigurationPath(home, target.platform),
+    ]
+    for (const path of files) {
+      if (await withinServiceDeadline(deadline, () => effects.exists(path, deadline))) {
+        await withinServiceDeadline(deadline, () => effects.remove(path, deadline))
+      }
     }
+    deadline.throwIfExpired()
+    if (recovery.kind === "receipt") effects.writeRemovalReceipt(home, lease, serviceRemovalReceipt(recovery, target.platform), deadline)
+    return {
+      ...plan,
+      profileRecovery: recovery.kind === "receipt" ? "recorded" : recovery.kind,
+      ...(recovery.kind === "proof-unavailable" ? { profileRecoveryDetail: recovery.reason } : {}),
+    }
+  } finally {
+    // A late config deletion must not outlive the lease and erase a successor's
+    // launch settings. On expiry the CLI retains it until process exit.
+    if (!deadline.signal.aborted) lease.release()
   }
-  return plan
 }
 
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "run" | "remove" | "exists">,
-): Promise<ServiceRegistrationPlan> {
-  return serviceOperation((deadline) => removeWithDeadline(target, effects, deadline))
+  effects: RemovalEffects,
+): Promise<ServiceRemovalResult> {
+  return serviceOperation((deadline) => removeWithDeadline(target, effects, deadline)).catch((cause: unknown) => {
+    // The outer deadline can expire before the manager adapter settles. It
+    // needs the same actionable task-specific error, not a bare timer failure.
+    if (target.platform === "win32" && !(cause instanceof WindowsTaskRemovalError)) {
+      throw new WindowsTaskRemovalError(displayName, cause)
+    }
+    throw cause
+  })
 }
 
 async function statusWithDeadline(
@@ -469,6 +524,12 @@ export async function runServiceCommand(
           ? `Removed the Domovoi daemon service at ${plan.path}\n`
           : `Removed the Domovoi daemon service ${displayName}\n`,
       )
+      if (plan.profileRecovery === "operator-confirmation-required") {
+        dependencies.stdout("The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run domovoid profile recover --confirm-no-supervisor.\n")
+      }
+      if (plan.profileRecovery === "proof-unavailable") {
+        dependencies.stdout(`${plan.profileRecoveryDetail}. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run domovoid profile recover --confirm-no-supervisor.\n`)
+      }
       return 0
     }
 
@@ -485,6 +546,9 @@ export async function runServiceCommand(
 
 export function nodeServiceEffects(): ServiceEffects {
   return {
+    claimProfile,
+    removalSnapshot: readServiceRemovalSnapshot,
+    writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
     write: writeUnit,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")

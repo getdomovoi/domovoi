@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
-import { mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import { bootstrapPlan, pinnedSha256, verifyDownload } from "./bootstrap-plan.mjs"
+import { defaultPublicationTimeoutMs, publishBootstrapArchive } from "./bootstrap-publication.mjs"
 
 const defaultMaximumBytes = 256 * 1024 * 1024
 
@@ -79,6 +79,7 @@ export async function bootstrapDaemon({
   expectedSha256,
   download,
   maximumBytes = defaultMaximumBytes,
+  publicationTimeoutMs = defaultPublicationTimeoutMs,
 }) {
   const plan = bootstrapPlan({ version, baseUrl })
   const pinned = pinnedSha256(expectedSha256)
@@ -98,15 +99,7 @@ export async function bootstrapDaemon({
 
   const release = join(destination, `v${plan.version}`)
   const path = join(release, plan.archive)
-  const staging = `${path}.partial`
-  await mkdir(release, { recursive: true })
-  try {
-    await writeFile(staging, bytes, { mode: 0o600 })
-    await rename(staging, path)
-  } catch (error) {
-    await rm(staging, { force: true })
-    throw error
-  }
+  await publishBootstrapArchive({ release, path, bytes, sha256, timeoutMs: publicationTimeoutMs })
 
   return { version: plan.version, path, sha256 }
 }

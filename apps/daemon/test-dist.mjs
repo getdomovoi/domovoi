@@ -10,7 +10,7 @@ const internal = await import("./dist/server.js")
 
 // Published entry points cannot bypass production assembly. The internal path
 // remains as a package-artifact compatibility surface, not a construction API.
-assert.deepEqual(Object.keys(publicApi).sort(), ["createProductionDaemon"])
+assert.deepEqual(Object.keys(publicApi).sort(), ["acquireLocalDaemon", "createProductionDaemon"])
 assert.equal("DomovoiDaemon" in internal, false)
 
 const publicTypes = readFileSync(new URL("./dist/public.d.ts", import.meta.url), "utf8")
@@ -34,6 +34,7 @@ try {
 }
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+assert.equal(manifest.engines.node, ">=22.13.0", "The daemon requires unflagged node:sqlite")
 
 function runCli(...args) {
   return spawnSync(process.execPath, ["./dist/index.js", ...args], {
@@ -50,6 +51,8 @@ assert.equal(runCli("-v").stdout.trim(), manifest.version)
 const help = runCli("--help")
 assert.equal(help.status, 0, help.error?.message || help.stderr)
 assert.match(help.stdout, /^Usage: domovoid/m)
+assert.match(help.stdout, /domovoid profile recover --confirm-no-supervisor/)
+assert.match(help.stdout, /asserts that no supervisor will restart this profile/)
 assert.match(help.stdout, /DOMOVOI_AUTH_TOKEN/)
 assert.match(help.stdout, /DOMOVOI_CREDENTIAL_PATH/)
 assert.match(runCli("-h").stdout, /^Usage: domovoid/m)

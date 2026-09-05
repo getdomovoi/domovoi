@@ -27,7 +27,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | Variable | Purpose |
 | --- | --- |
 | `DOMOVOI_HOST` | Listener host |
-| `DOMOVOI_PORT` | Listener port |
+| `DOMOVOI_PORT` | Listener port; `0` selects an ephemeral port published in the owner record |
 | `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
 | `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |
 | `DOMOVOI_MACHINE_IDENTITY_PATH` | Stable machine identity file path |
@@ -194,6 +194,14 @@ user-private files the daemon already reads.
 
 ## Programmatic use
 
+Node.js 22.13.0 or newer is required for unflagged `node:sqlite`.
+
+One process owns the canonical profile, protected before the state store is constructed.
+Desktop can use `acquireLocalDaemon` to start or attach, with distinct `owned`, `attached` and
+`refused` handles. Attachments can detach but cannot stop the owner. See
+[local daemon ownership](../../docs/local-daemon-ownership.md) for the record, proof, deadlines,
+restart rules, platform limits and service-install refusal.
+
 `@getdomovoi/daemon` exposes one supported production factory. It owns the daemon credential,
 stable machine identity, provider discovery, peer-credential store, TLS loading, state database,
 and worktree root. Embedders cannot omit those production dependencies or replace them with test
@@ -220,6 +228,7 @@ await daemon.stop()
 | `homeDirectory` | State-directory base; defaults to the current user's home |
 | `machineLabel` | Initial label for a new machine identity; defaults to the hostname |
 | `errorSink` | Receives daemon failures as `{ context, detail }` |
+| `owner` | Record this direct owner as `daemon` (default) or `desktop`; acquisition sets Desktop automatically |
 
 The returned handle exposes the configured `host`, `requestedPort`, whether the transport is
 secure, where its credential came from, and `start()` and `stop()`. `start()` returns the actual

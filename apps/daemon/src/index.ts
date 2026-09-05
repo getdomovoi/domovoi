@@ -5,6 +5,7 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
@@ -201,6 +202,11 @@ const help = `Usage: domovoid [options]
        domovoid service install
        domovoid service status
        domovoid service remove
+       domovoid profile recover --confirm-no-supervisor
+
+Profile recovery:
+  --confirm-no-supervisor asserts that no supervisor will restart this profile.
+  Stop and remove those supervisors before making this confirmation.
 
 Options:
   -h, --help       Show this help
@@ -263,6 +269,14 @@ async function main() {
     }
     return
   }
+  if (args[0] === "profile") {
+    process.exitCode = runProfileCommand(args, {
+      homeDirectory: homedir(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
   if (args[0] === "service") {
     // The service runs as the user who asked for it, so the plan is built from
     // this process's own identity rather than anything a caller passes in.
@@ -322,6 +336,7 @@ async function main() {
   const daemon = await createProductionDaemon({
     environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
     homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
     machineLabel: hostname(),
   })
 
