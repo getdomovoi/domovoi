@@ -3853,7 +3853,8 @@ describe("DomovoiDaemon", () => {
       result: { machine: { id: expect.any(String) } },
     })
     socket.close()
-  })
+    // Real key generation and listener startup need their own Windows budget.
+  }, 90_000)
 
   async function unauthenticatedSocket(daemon: DomovoiDaemon) {
     const address = daemon.address!

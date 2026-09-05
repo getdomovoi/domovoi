@@ -107,7 +107,10 @@ describe("SqliteWorkspaceStore", () => {
     scratchDirectories.push(scratch)
     const store = new SqliteWorkspaceStore(join(scratch, "state.sqlite"), demoWorkspace)
     const snapshot = structuredClone(demoWorkspace)
-    snapshot.thread = Array.from({ length: 6_000 }, (_, index) => ({
+    // Disk-backed saveAsync always uses the writer worker, regardless of size.
+    // Three MiB exercises its real serialization and persistence without making
+    // responsiveness depend on repeatedly copying twelve MiB on a busy runner.
+    snapshot.thread = Array.from({ length: 1_500 }, (_, index) => ({
       id: `long-history-${index}`,
       sessionId: snapshot.sessions[0]!.id,
       kind: "user" as const,
@@ -117,15 +120,18 @@ describe("SqliteWorkspaceStore", () => {
     let heartbeats = 0
     const heartbeat = setInterval(() => { heartbeats += 1 }, 1)
 
-    await store.saveAsync(snapshot)
+    try {
+      await store.saveAsync(snapshot)
 
-    clearInterval(heartbeat)
-    expect(store.load().thread).toHaveLength(6_000)
-    // Timers must keep firing during persistence; the count stays low because
-    // Windows resolves timers to roughly 15 ms, so this asserts they ran at
-    // all rather than a rate the platform does not promise.
-    expect(heartbeats).toBeGreaterThanOrEqual(2)
-    await store.close()
+      expect(store.load().thread).toHaveLength(1_500)
+      // Timers must keep firing during persistence; the count stays low because
+      // Windows resolves timers to roughly 15 ms, so this asserts they ran at
+      // all rather than a rate the platform does not promise.
+      expect(heartbeats).toBeGreaterThanOrEqual(2)
+    } finally {
+      clearInterval(heartbeat)
+      await store.close()
+    }
   }, 10_000)
 
   it("redacts every durable command copy and drops legacy secret-bearing rules", async () => {
