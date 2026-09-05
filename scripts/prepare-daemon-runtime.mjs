@@ -3,6 +3,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { bootstrapDeadline, defaultCleanupTimeoutMs } from "./bootstrap-deadline.mjs"
@@ -13,18 +14,38 @@ const root = fileURLToPath(new URL("../", import.meta.url))
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
 
+// A packaging child the deadline aborted is killed but not yet reaped, and
+// Windows refuses to remove a directory any surviving handle still holds.
+// Retry inside the cleanup budget instead of reporting a leftover directory.
+const heldByAnExitingProcess = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"])
+
+async function removeStaging(staging, remove, cleanup) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await remove(staging, { recursive: true, force: true }) }
+    catch (error) {
+      if (!heldByAnExitingProcess.has(error?.code)) throw error
+      cleanup.check()
+      await delay(Math.min(20 * attempt, 200), undefined, { signal: cleanup.signal })
+    }
+  }
+}
+
 export async function prepareDaemonRuntime({
-  timeoutMs = 300_000, cleanupTimeoutMs = defaultCleanupTimeoutMs, stagingRoot = tmpdir(), pack = packPackage, remove = rm,
+  timeoutMs = 300_000, cleanupTimeoutMs = defaultCleanupTimeoutMs, stagingRoot = tmpdir(),
+  pack = packPackage, remove = rm, createStaging = mkdtemp,
 } = {}) {
   const deadline = bootstrapDeadline(timeoutMs, `Daemon runtime packaging exceeded ${timeoutMs} ms`)
-  let staging
+  let created
   let failure
   try {
     const json = async (path) => JSON.parse(await deadline.run(() => readFile(join(root, path), "utf8")))
     const manifest = await json("apps/daemon/package.json")
     const protocolManifest = await json("packages/protocol/package.json")
     const lock = parse(await deadline.run(() => readFile(join(root, "pnpm-lock.yaml"), "utf8")))
-    await deadline.run(async () => { staging = await mkdtemp(join(stagingRoot, "domovoi-runtime-pack-")) })
+    // Hold the creation itself. An expiry rejects without waiting for the
+    // operation, so this promise is the only remaining record of the path.
+    created = createStaging(join(stagingRoot, "domovoi-runtime-pack-"))
+    const staging = await deadline.run(() => created)
     const archive = await pack("@getdomovoi/protocol", staging, { deadline })
     const packed = await inspectArchive(archive, { deadline })
     if (packed.manifest.name !== protocolManifest.name || packed.manifest.version !== manifest.version) {
@@ -39,12 +60,15 @@ export async function prepareDaemonRuntime({
     await deadline.run(() => writeFile(join(directory, "package.json"), `${JSON.stringify(runtimeLock.packages[""], null, 2)}\n`))
     await deadline.run(() => writeFile(join(directory, "lock.json"), `${JSON.stringify(runtimeLock, null, 2)}\n`))
   } catch (error) { failure = error } finally { deadline.clear() }
-  if (staging) {
+  if (created) {
     const cleanup = bootstrapDeadline(cleanupTimeoutMs, `Packaging staging cleanup exceeded ${cleanupTimeoutMs} ms`)
-    try { await cleanup.run(() => remove(staging, { recursive: true, force: true })) }
-    catch (error) {
+    let staging
+    try {
+      staging = await cleanup.run(() => created.catch(() => undefined))
+      if (staging) await cleanup.run(() => removeStaging(staging, remove, cleanup))
+    } catch (error) {
       failure = new AggregateError(failure ? [failure, error] : [error],
-        `${failure?.message ?? error.message}. Packaging staging may remain at ${staging}`)
+        `${failure?.message ?? error.message}. Packaging staging may remain at ${staging ?? `${join(stagingRoot, "domovoi-runtime-pack-")}*`}`)
     } finally { cleanup.clear() }
   }
   if (failure) throw failure
