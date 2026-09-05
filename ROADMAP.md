@@ -466,9 +466,15 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open
     items below replace the earlier assumption that relay had to wait for the hosted Goal 3
     service.
-  - The union-like base schema, preference order, and UI loop exist. Production produces only local
-    and LAN candidates, the daemon tries only the first candidate, the UI can wait forever on a
-    silent first candidate, and no WSL, tailnet, or SSH producer exists. Relay stays deferred.
+  - The base schema, preference order, and bounded client/daemon fallback loops exist. Production
+    now produces local, LAN and explicitly configured TLS tailnet advertisements. Source-local
+    configured SSH forwards follow direct candidates without becoming target-authored facts or
+    permanent remembered routes. Production socket tests cover TLS descriptor publication,
+    transfer over a configured loopback endpoint, forget masking and configuration removal.
+    They do not prove an external tailnet or an SSH process. WSL transport production remains
+    open in its own lane; WSL facts and the open shim are not a transport producer. Relay stays
+    deferred under Goal 3. A silent route can still spend the shared attempt deadline before
+    fallback begins.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
   rendezvous in `docs/encrypted-relay.md`
