@@ -3,14 +3,13 @@ import { chmod, link, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/pr
 import { dirname, join, posix, win32 } from "node:path"
 import { promisify } from "node:util"
 
-import { bootstrapDaemon } from "./bootstrap-daemon.mjs"
+import { bootstrapDaemon, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 import { pinnedSha256 } from "./bootstrap-plan.mjs"
 import { hashRuntimeFile, readRuntimeJson, validateRuntimeLock, verifyInstalledRuntime } from "./runtime-verification.mjs"
 
 const execute = promisify(execFile)
 export const minimumBootstrapNpm = "10.0.0"
-const timeoutMsDefault = 300_000
 const npmRemedy = `Bootstrap requires npm ${minimumBootstrapNpm} or newer bundled with Node. Install a supported Node distribution including npm`
 
 export async function runBootstrapCommand(command, args, { cwd, deadline, env }) {
@@ -103,7 +102,7 @@ async function existingRuntime(release, archive, deadline) {
 }
 
 export async function installBootstrapDaemon(options) {
-  const timeoutMs = options.timeoutMs ?? timeoutMsDefault
+  const timeoutMs = options.timeoutMs ?? defaultBootstrapTimeoutMs
   pinnedSha256(options.expectedSha256)
   const deadline = bootstrapDeadline(timeoutMs,
     `Bootstrap exceeded ${timeoutMs} ms, including installation and verification; inspect ${options.destination} before retrying`)

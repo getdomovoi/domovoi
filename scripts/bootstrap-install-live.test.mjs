@@ -3,10 +3,12 @@ import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
 import { createServer } from "node:http"
+import { createServer as createHttpsServer } from "node:https"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
+import { fileURLToPath } from "node:url"
 
 import { installBootstrapDaemon, runBootstrapCommand } from "./bootstrap-install.mjs"
 import { daemonRuntimeLock } from "./runtime-lock.mjs"
@@ -118,11 +120,40 @@ test("identical archives install the reviewed transitive bytes after the registr
   assert.equal(requests.some((path) => path.includes("1.1.0.tgz")), false)
   assert.ok(requests.some((path) => path.includes("domovoi-lock-leaf-1.0.0.tgz")))
 
+  // Exercise the shipped command, including HTTPS download, not just the
+  // install function. EC certificate generation avoids expensive RSA setup.
+  const key = join(root, "release-key.pem")
+  const certificate = join(root, "release-cert.pem")
+  await execute("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+    "-nodes", "-keyout", key, "-out", certificate, "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+  { timeout: 10_000, killSignal: "SIGKILL" })
+  const releaseServer = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, (request, response) => {
+    if (request.url === "/v1.0.0/SHA256SUMS") response.end(`${sha256}  getdomovoi-daemon-1.0.0.tgz\n`)
+    else if (request.url === "/v1.0.0/getdomovoi-daemon-1.0.0.tgz") response.end(app.bytes)
+    else response.writeHead(404).end()
+  })
+  releaseServer.requestTimeout = 10_000
+  releaseServer.headersTimeout = 10_000
+  t.after(() => { releaseServer.closeAllConnections(); releaseServer.close() })
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("HTTPS fixture listen timed out")), 10_000)
+    releaseServer.once("error", (error) => { clearTimeout(timer); reject(error) })
+    releaseServer.listen(0, "127.0.0.1", () => { clearTimeout(timer); resolve() })
+  })
+  const cli = await execute(process.execPath, [fileURLToPath(new URL("./bootstrap-daemon.mjs", import.meta.url)),
+    "1.0.0", `https://127.0.0.1:${releaseServer.address().port}`, join(root, "cli"), sha256], {
+    timeout: 45_000, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate, npm_config_registry: registry },
+  })
+  const cliResult = JSON.parse(cli.stdout)
+  assert.equal(cliResult.sha256, sha256)
+  assert.equal(typeof cliResult.runtimePath, "string", "the shipped command must install, not merely download")
+  assert.equal(await readFile(join(cliResult.runtimePath, "node_modules/node-pty/built.txt"), "utf8"), "reviewed build ran")
+
   // Change the registry bytes under the same URL. A new install must reject on
   // SRI rather than publish a graph whose manifests happen to have the right versions.
   responses.set("/domovoi-lock-leaf/-/domovoi-lock-leaf-1.0.0.tgz", Buffer.from("replaced registry tarball"))
   const rejected = join(root, "replaced")
   await assert.rejects(install(rejected), /integrity|EINTEGRITY|TAR_BAD_ARCHIVE/i)
   await assert.rejects(readFile(join(rejected, "v1.0.0/runtime.json")), { code: "ENOENT" })
-  t.diagnostic("Same archive twice: leaf 1.0.0 before and after registry 1.1.0. Replaced locked bytes: refused, no runtime receipt.")
+  t.diagnostic("Same archive twice: leaf 1.0.0 before and after registry 1.1.0. Real HTTPS bootstrap CLI: installed and built. Replaced locked bytes: refused, no runtime receipt.")
 })
