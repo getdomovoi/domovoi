@@ -3096,8 +3096,9 @@ export class DomovoiDaemon {
 
     const method = request.method as RpcMethod
     if (method === "device.claim" && !this.#pairingClaimAdmission.admit(this.#socketSources.get(socket))) {
-      // Admission precedes parameter validation and code verification. Even a
-      // malformed claim costs a slot, and a throttled valid code is not spent.
+      // Admission precedes shape, version and code checks. Incompatible claims
+      // cost admission, not code guesses; exhausted sources get this uniform
+      // refusal even for an incompatible version or a valid unspent code.
       this.#appendPreAuthAudit("pairing-rate-limit", "Pairing claim admission limit reached")
       this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
       socket.close(1008, "pairing rate limit")

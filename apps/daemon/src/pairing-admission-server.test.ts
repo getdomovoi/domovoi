@@ -1,7 +1,7 @@
 import { once } from "node:events"
 import { DatabaseSync } from "node:sqlite"
 
-import { protocolVersion } from "@getdomovoi/protocol"
+import { protocolVersion, protocolVersionMismatchErrorCode } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -9,6 +9,7 @@ import { SqliteAuditLog } from "./audit-log.js"
 import { PairingCodeService } from "./pairing-codes.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
 import { DomovoiDaemon } from "./server.js"
+import { waitForDaemon } from "./test-wait-for.js"
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -85,6 +86,7 @@ describe("pairing admission over the daemon socket", () => {
         code: "wrong-wrong-wrong-11",
         machineId: `machine-${"a".repeat(32)}`,
         label: "untrusted-label",
+        protocolVersion,
       })).toMatchObject({ error: { message: "Pairing was refused" } })
     }
 
@@ -115,6 +117,7 @@ describe("pairing admission over the daemon socket", () => {
         code: "wrong-wrong-wrong-11",
         machineId: `machine-${"a".repeat(32)}`,
         label: "guess",
+        protocolVersion,
       })).toMatchObject({ error: { message: "Pairing was refused" } })
       socket.terminate()
     }
@@ -133,11 +136,12 @@ describe("pairing admission over the daemon socket", () => {
       code: issued.code,
       machineId: `machine-${"b".repeat(32)}`,
       label: "must-not-be-paired",
+      protocolVersion,
     })).toMatchObject({ error: { message: "Pairing was refused" } })
     expect(claim).toHaveBeenCalledTimes(3)
-    await vi.waitFor(() => expect(closed).toEqual([
+    await waitForDaemon(() => expect(closed).toEqual([
       { code: 1008, reason: "pairing rate limit" },
-    ]), { timeout: rpcDeadlineMs })
+    ]))
 
     now = 60_000
     const retry = await connect(daemon)
@@ -145,13 +149,24 @@ describe("pairing admission over the daemon socket", () => {
       code: issued.code,
       machineId: `machine-${"b".repeat(32)}`,
       label: "paired-after-cooldown",
+      protocolVersion,
     })
     expect(paired).not.toHaveProperty("error")
     expect(paired).toHaveProperty("result.device.label", "paired-after-cooldown")
     expect(claim).toHaveBeenCalledTimes(4)
   })
 
-  it("counts malformed claims without passing them to the pairing service", async () => {
+  it.each([
+    { kind: "malformed", params: {}, errorCode: -32602 },
+    {
+      kind: "incompatible",
+      params: {
+        code: "wrong-wrong-wrong-11", label: "old peer",
+        machineId: `machine-${"a".repeat(32)}`, protocolVersion: "0.3.0",
+      },
+      errorCode: protocolVersionMismatchErrorCode,
+    },
+  ])("counts $kind claims without passing them to the pairing service", async ({ params, errorCode }) => {
     const claim = vi.spyOn(PairingCodeService.prototype, "claim")
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     daemons.push(daemon)
@@ -159,13 +174,14 @@ describe("pairing admission over the daemon socket", () => {
     const issued = daemon.issuePairingCode()
     const socket = await connect(daemon)
     for (let id = 1; id <= 3; id += 1) {
-      expect(await call(socket, id, "device.claim", {}))
-        .toMatchObject({ error: { code: -32602 } })
+      expect(await call(socket, id, "device.claim", params))
+        .toMatchObject({ error: { code: errorCode } })
     }
     expect(await call(socket, 4, "device.claim", {
       code: issued.code,
       machineId: `machine-${"a".repeat(32)}`,
       label: "must-not-be-paired",
+      protocolVersion,
     })).toMatchObject({ error: { message: "Pairing was refused" } })
     expect(claim).not.toHaveBeenCalled()
   })
@@ -188,6 +204,7 @@ describe("pairing admission over the daemon socket", () => {
       code: issued.code,
       machineId: `machine-${"a".repeat(32)}`,
       label: "must-not-be-paired",
+      protocolVersion,
     })).toMatchObject({ error: { message: "Pairing was refused" } })
   })
 })
