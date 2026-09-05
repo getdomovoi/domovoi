@@ -1134,6 +1134,24 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
   }
 })
 
+export const usageWindowParamsSchema = z.object({
+  start: z.string().datetime(),
+  end: z.string().datetime(),
+}).strict().superRefine((window, context) => {
+  if (Date.parse(window.start) < Date.parse(window.end)) return
+  context.addIssue({
+    code: "custom",
+    path: ["end"],
+    message: "A usage window must end after it starts",
+  })
+})
+export const usageWindowSchema = usageTotalsSchema.extend({
+  sessions: z.number().int().nonnegative(),
+  turns: z.number().int().nonnegative(),
+  reportedCostTurns: z.number().int().nonnegative(),
+  unavailableCostTurns: z.number().int().nonnegative(),
+}).strict()
+
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: systemHelloResultSchema },
   "artifact.authorize": {
@@ -1270,6 +1288,10 @@ export const rpcMethods = {
     params: z.object({ sessionId: z.string().min(1) }).strict(),
     result: sessionUsageSchema,
   },
+  "usage.window": {
+    params: usageWindowParamsSchema,
+    result: usageWindowSchema,
+  },
   "annotation.create": {
     params: annotationCreateParamsSchema,
     result: workspaceSnapshotSchema,
@@ -1347,6 +1369,7 @@ export const rpcMethodMutations = {
   "session.evidence": "read-only",
   "session.history": "read-only",
   "session.usage": "read-only",
+  "usage.window": "read-only",
   "audit.query": "read-only",
   "audit.export": "read-only",
   "skill.list": "read-only",
@@ -1448,6 +1471,8 @@ export type PlanEditDisposition = z.infer<typeof planEditDispositionSchema>
 export type PlanEditReceipt = z.infer<typeof planEditReceiptSchema>
 export type PlanMutationResult = z.infer<typeof planMutationResultSchema>
 export type SessionUsage = z.infer<typeof sessionUsageSchema>
+export type UsageWindowParams = z.infer<typeof usageWindowParamsSchema>
+export type UsageWindow = z.infer<typeof usageWindowSchema>
 export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
 export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
 export type TestRunEvidence = z.infer<typeof testRunEvidenceSchema>

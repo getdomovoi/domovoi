@@ -10,6 +10,7 @@ import {
   canonicalBase64DecodedByteLength,
   credentialSchema,
   type MachineCapability,
+  type MachineWslFacts,
   type FleetMachine,
   fleetMachineDescriptorSchema,
   fleetSnapshotOverflowErrorCode,
@@ -31,6 +32,7 @@ import {
   terminalOutputBatchDelayMilliseconds,
   turnSkillSelectionErrorCode,
   maximumEmergencyStopFailureMessageLength,
+  maximumProviderPromptCodeUnits,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
@@ -38,6 +40,7 @@ import {
   sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
+  type ProtocolMismatch,
   rpcMethods,
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
@@ -75,8 +78,9 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
-import { validateOperationDeadlineBudget } from "./operation-deadline.js"
-import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
+import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
+import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
@@ -142,6 +146,7 @@ import {
 import {
   composeProviderPrompt,
   PromptCompositionLimitError,
+  validateProviderPromptBudget,
 } from "./prompt-composer.js"
 import { TurnSkillSelectionError } from "./skill-context.js"
 import {
@@ -166,13 +171,14 @@ import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
 import {
   DeviceLabelMismatchError,
   DeviceLimitReachedError,
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
-import type { MachineCredentials } from "./machine-credentials.js"
+import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -705,7 +711,7 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
   "capture" | "storeUpload"
 >
 
-type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "close"> & Partial<
+type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "window" | "close"> & Partial<
   Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
 >
 
@@ -739,6 +745,7 @@ export const localMachineCapabilities = [
 ] as const satisfies readonly MachineCapability[]
 
 export type DaemonServerOptions = {
+  localOwner?: { secret: LocalOwnerSecret; identity: LocalOwnerIdentity }
   host?: string
   port?: number
   allowedOrigins?: string[]
@@ -751,6 +758,7 @@ export type DaemonServerOptions = {
   worktreeRoot?: string
   agentTimeoutMs?: number
   auditReadTimeoutMs?: number
+  providerPromptBudgetCodeUnits?: number
   modelCacheTtlMs?: number
   authToken?: string
   allowRemoteTransport?: boolean
@@ -770,7 +778,15 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
-  machineCredentials?: MachineCredentials
+  // The distribution this daemon runs in, when it runs inside WSL. It is a
+  // fact about the executable's host, so it is supplied at construction like
+  // the platform rather than read back from stored state.
+  wsl?: MachineWslFacts
+  // Below the production factory only. The version this daemon advertises and
+  // admits peers by, so a test peer can stand in for another release. Its own
+  // dials keep the build's version.
+  advertisedProtocolVersion?: string
+  machineCredentials?: AsyncMachineCredentials
   fleetOperationTimeoutMs?: number
   fleetHeartbeatIntervalMs?: number
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
@@ -849,6 +865,7 @@ export class DomovoiDaemon {
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
+  #providerPromptBudgetCodeUnits: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #authToken: string
@@ -888,9 +905,12 @@ export class DomovoiDaemon {
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
+  #localOwner: DaemonServerOptions["localOwner"]
   #advertiseHost: string | undefined
+  #wsl: MachineWslFacts | undefined
+  #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
-  #machineCredentials: MachineCredentials | undefined
+  #machineCredentials: AsyncMachineCredentials | undefined
   #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
   #transferTransactions: FileTransferTransactions
@@ -915,6 +935,9 @@ export class DomovoiDaemon {
     // budget, validated before any workspace state or providers are opened.
     this.#auditReadTimeoutMs = options.auditReadTimeoutMs ?? 30_000
     validateOperationDeadlineBudget(this.#auditReadTimeoutMs)
+    this.#providerPromptBudgetCodeUnits = options.providerPromptBudgetCodeUnits
+      ?? maximumProviderPromptCodeUnits
+    validateProviderPromptBudget(this.#providerPromptBudgetCodeUnits)
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
@@ -924,7 +947,13 @@ export class DomovoiDaemon {
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
+    this.#localOwner = options.localOwner
     this.#advertiseHost = options.advertiseHost
+    this.#wsl = options.wsl
+    this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
+    if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
+      throw new RangeError("Advertised protocol version must be a three-part semver")
+    }
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
@@ -1088,12 +1117,13 @@ export class DomovoiDaemon {
     const machine = this.#localMachine
     return fleetMachineDescriptorSchema.parse({
       id: machine.id, label: machine.name, platform: machine.platform,
-      arch: machine.arch, version: machine.version, capabilities: [...localMachineCapabilities], protocolVersion,
+      arch: machine.arch, version: machine.version, capabilities: [...localMachineCapabilities], protocolVersion: this.#advertisedProtocolVersion,
       transports: advertisedTransports({
         host: this.host, port: this.address?.port ?? this.requestedPort,
         ...(this.#tls ? { tls: true } : {}),
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
       }),
+      ...(this.#wsl ? { wsl: this.#wsl } : {}),
     })
   }
 
@@ -1145,7 +1175,8 @@ export class DomovoiDaemon {
     return this.#authToken
   }
 
-  async start(): Promise<{ host: string; port: number }> {
+  async start(signal?: AbortSignal): Promise<{ host: string; port: number }> {
+    signal?.throwIfAborted()
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
 
@@ -1153,7 +1184,9 @@ export class DomovoiDaemon {
       this.#transferTransactions.pruneExpired(),
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
+    signal?.throwIfAborted()
     await this.#recoverSessionArchives()
+    signal?.throwIfAborted()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
 
@@ -1166,7 +1199,7 @@ export class DomovoiDaemon {
     this.#http = listen((request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
-        response.end(JSON.stringify({ status: "ok", protocolVersion }))
+        response.end(JSON.stringify({ status: "ok", protocolVersion: this.#advertisedProtocolVersion }))
         return
       }
 
@@ -1192,6 +1225,17 @@ export class DomovoiDaemon {
       path: "/rpc",
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
+    })
+    this.#websocket.on("headers", (headers, request) => {
+      const nonce = request.headers["x-domovoi-owner-nonce"]
+      const peer = request.socket.remoteAddress
+      const local = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
+        || (peer !== undefined && peer === request.socket.localAddress)
+      // Discovery proves this instance, not client authority. It uses a
+      // separate private key; the same socket must still complete hello.
+      if (this.#localOwner && local && typeof nonce === "string" && credentialSchema.safeParse(nonce).success) {
+        headers.push(`X-Domovoi-Owner-Proof: ${localOwnerProof(this.#localOwner.secret, this.#localOwner.identity, nonce)}`)
+      }
     })
     this.#websocket.on("connection", (socket, request) => {
       // Use the socket peer, never caller-authored forwarding headers. NAT or
@@ -1273,6 +1317,7 @@ export class DomovoiDaemon {
       this.#http!.once("error", reject)
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
+    signal?.throwIfAborted()
 
     // A dead target must not hold daemon startup hostage. Each frozen source
     // remains read-only while its own resource queue reconciles in background.
@@ -1339,6 +1384,12 @@ export class DomovoiDaemon {
     failures.push(...providerClosures.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : []
     ))
+    // Native work may survive its caller's deadline. Shutdown must observe
+    // worker exit, or report failure instead of claiming the writer stopped.
+    const keyringShutdown = OperationDeadline.start(5_000)
+    try { await this.#machineCredentials?.close(keyringShutdown) }
+    catch (error) { failures.push(error) }
+    finally { keyringShutdown.clear() }
     try {
       await this.#store.close()
     } catch (error) {
@@ -1547,7 +1598,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -2832,6 +2883,7 @@ export class DomovoiDaemon {
         || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
+        || request.method === "usage.window"
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "skill.read"
@@ -3154,7 +3206,7 @@ export class DomovoiDaemon {
       // versionless client is correctly judged incompatible rather than being
       // waved through as whatever the daemon happens to speak.
       const { clientProtocol, compatibility } = helloProtocolCompatibility(
-        protocolVersion,
+        this.#advertisedProtocolVersion,
         hello.protocolVersion,
       )
       if (compatibility !== "compatible") {
@@ -3165,7 +3217,8 @@ export class DomovoiDaemon {
           socket,
           request.id,
           protocolVersionMismatchErrorCode,
-          `This daemon speaks protocol ${protocolVersion}; the client speaks ${clientProtocol}`,
+          protocolMismatchRefusal(this.#advertisedProtocolVersion, clientProtocol),
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: clientProtocol, compatibility },
         )
         return
       }
@@ -3224,11 +3277,13 @@ export class DomovoiDaemon {
       // The one method a machine may reach before it has a credential, because
       // presenting the pairing code is how it gets one. It grants nothing else.
       const params = paramsResult.data as RpcParams<"device.claim">
-      if (protocolCompatibility(protocolVersion, params.protocolVersion) !== "compatible") {
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
         // The wire must be compatible before spending a short-lived code or a
         // guessing attempt. No credential exists until the claim succeeds.
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
-          "Update both daemons to the same protocol before pairing")
+          "Update both daemons to the same protocol before pairing",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
         return
       }
       if (!this.#pairing) {
@@ -3402,6 +3457,17 @@ export class DomovoiDaemon {
           id: request.id,
           result: rpcMethods[method].result.parse(
             this.#usageLedger.session(params.sessionId, activeUsageContext),
+          ),
+        })
+        return
+      }
+      if (method === "usage.window") {
+        const params = paramsResult.data as RpcParams<"usage.window">
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(
+            this.#usageLedger.window(Date.parse(params.start), Date.parse(params.end)),
           ),
         })
         return
@@ -4571,7 +4637,7 @@ export class DomovoiDaemon {
         try {
           this.#send(socket, {
             jsonrpc: "2.0", id: request.id,
-            result: rpcMethods[method].result.parse(this.#fleetEnrollment.snapshot()),
+            result: rpcMethods[method].result.parse(await this.#fleetEnrollment.list()),
           })
         } catch (error) {
           if (!(error instanceof FleetSnapshotOverflowError)) throw error
@@ -5562,6 +5628,19 @@ export class DomovoiDaemon {
 
       if (method === "project.open") {
         const params = paramsResult.data as RpcParams<"project.open">
+        // Repository work on a WSL distribution belongs to the daemon inside
+        // it. Reading the share from here would run git across the boundary,
+        // so the request is turned away before anything touches the path.
+        const share = wslSharePath(params.path)
+        if (share) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            `${params.path} is inside the WSL distribution ${share.distribution}, which this daemon does not reach through the share. Run domovoid open ${params.path} so the daemon inside ${share.distribution} opens it.`,
+          )
+          return
+        }
         const repository = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.inspect(params.path, signal),
           this.#agentTimeoutMs,
@@ -6011,6 +6090,7 @@ export class DomovoiDaemon {
             snapshot: this.#snapshot,
             sessionId: session.id,
             userPrompt: params.prompt,
+            budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,

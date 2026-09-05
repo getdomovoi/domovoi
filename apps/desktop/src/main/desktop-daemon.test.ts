@@ -1,7 +1,16 @@
+import type { AcquireLocalDaemonOptions, LocalDaemonHandle } from "@getdomovoi/daemon"
 import { describe, expect, it, vi } from "vitest"
 
-import { ownDesktopDaemon, type DesktopDaemonHandle } from "./desktop-daemon.js"
-import { OwnedDaemonLifecycle } from "./owned-daemon.js"
+import { DesktopDaemon, desktopDaemonBudgets, type DesktopDaemonSeam } from "./desktop-daemon.js"
+
+const endpoint = { url: "ws://127.0.0.1:47831/rpc", token: "file-token" }
+const restarted = { url: "wss://localhost:50123/rpc", token: "rotated-token" }
+const factoryOptions = {
+  environment: { DOMOVOI_PORT: "0" },
+  homeDirectory: "/home/user",
+  machineLabel: "workstation",
+  errorSink: () => {},
+}
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void
@@ -10,86 +19,381 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   return { promise, resolve, reject }
 }
 
-function handle(overrides: Partial<DesktopDaemonHandle> = {}): DesktopDaemonHandle {
-  return {
-    authToken: "factory-token",
-    start: vi.fn(async () => ({ host: "127.0.0.1", port: 47831, url: "ws://127.0.0.1:47831/rpc" })),
-    stop: vi.fn(async () => {}),
-    ...overrides,
-  }
+function owned(address = endpoint) {
+  return { kind: "owned" as const, endpoint: address, stop: vi.fn(async () => {}) }
 }
 
-describe("ownDesktopDaemon", () => {
-  it("builds exactly one daemon when callers race before the factory settles", async () => {
-    const building = deferred<DesktopDaemonHandle>()
-    const build = vi.fn(() => building.promise)
-    const lifecycle = new OwnedDaemonLifecycle()
-    const start = vi.spyOn(lifecycle, "start")
-    const ensureDaemon = ownDesktopDaemon(build, lifecycle)
+function attached(owner: "daemon" | "desktop" = "daemon", address = endpoint) {
+  const closure = deferred<void>()
+  return { kind: "attached" as const, owner, endpoint: address, closed: closure.promise, detach: vi.fn(), close: closure.resolve }
+}
 
-    const racing = [ensureDaemon(), ensureDaemon(), ensureDaemon()]
-    expect(build).toHaveBeenCalledOnce()
+async function settled(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve()
+}
 
-    const daemon = handle()
-    building.resolve(daemon)
-    const endpoints = await Promise.all(racing)
+function refused(reason: Extract<LocalDaemonHandle, { kind: "refused" }>["reason"]) {
+  return { kind: "refused" as const, reason, message: `daemon says ${reason}` }
+}
 
-    expect(start).toHaveBeenCalledOnce()
-    expect(start).toHaveBeenCalledWith(daemon)
-    expect(daemon.start).toHaveBeenCalledOnce()
-    expect(endpoints[0]).toEqual({ url: "ws://127.0.0.1:47831/rpc", token: "factory-token" })
-    expect(endpoints[1]).toBe(endpoints[0])
-    expect(endpoints[2]).toBe(endpoints[0])
+function scriptedSeam(handles: LocalDaemonHandle[]) {
+  const requests: AcquireLocalDaemonOptions[] = []
+  const seam: DesktopDaemonSeam = vi.fn(async (options) => {
+    requests.push(options)
+    const next = handles.shift()
+    if (!next) throw new Error("No handle was scripted for this acquisition")
+    return next
   })
+  return { seam, requests, modes: () => requests.map((request) => request.mode) }
+}
 
-  it("answers later callers from the daemon it already built", async () => {
-    const daemon = handle()
-    const build = vi.fn(async () => daemon)
-    const ensureDaemon = ownDesktopDaemon(build, new OwnedDaemonLifecycle())
+describe("DesktopDaemon", () => {
+  it("acquires once with start-or-attach and shares that acquisition with racing callers", async () => {
+    const acquiring = deferred<LocalDaemonHandle>()
+    const seam = vi.fn(() => acquiring.promise)
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
 
-    const first = await ensureDaemon()
-    const second = await ensureDaemon()
-
-    expect(build).toHaveBeenCalledOnce()
-    expect(daemon.start).toHaveBeenCalledOnce()
-    expect(second).toBe(first)
-  })
-
-  it("reports the address the listener actually claimed, not a fixed one", async () => {
-    const daemon = handle({
-      authToken: "file-token",
-      start: vi.fn(async () => ({ host: "::1", port: 50123, url: "wss://[::1]:50123/rpc" })),
+    const racing = [daemon.acquire(), daemon.acquire(), daemon.acquire()]
+    expect(seam).toHaveBeenCalledOnce()
+    expect(seam).toHaveBeenCalledWith({
+      ...factoryOptions,
+      mode: "start-or-attach",
+      timeoutMs: desktopDaemonBudgets.acquireMs,
     })
-    const ensureDaemon = ownDesktopDaemon(async () => daemon, new OwnedDaemonLifecycle())
+    expect(Number.isFinite(desktopDaemonBudgets.acquireMs)).toBe(true)
+    expect(desktopDaemonBudgets.acquireMs).toBeGreaterThan(0)
 
-    await expect(ensureDaemon()).resolves.toEqual({ url: "wss://[::1]:50123/rpc", token: "file-token" })
+    acquiring.resolve(owned())
+    const results = await Promise.all(racing)
+
+    expect(results[0]).toEqual({ kind: "owned", url: endpoint.url, token: endpoint.token })
+    expect(results[1]).toEqual(results[0])
+    expect(results[2]).toEqual(results[0])
+    expect(seam).toHaveBeenCalledOnce()
   })
 
-  it("does not build a second daemon after the first failed to start", async () => {
-    const conflict = Object.assign(new Error("address in use"), { code: "EADDRINUSE" })
-    const daemon = handle({ start: vi.fn(async () => { throw conflict }) })
-    const build = vi.fn(async () => daemon)
-    const ensureDaemon = ownDesktopDaemon(build, new OwnedDaemonLifecycle())
+  it("answers later callers from the daemon it already owns", async () => {
+    const { seam } = scriptedSeam([owned(restarted)])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
 
-    await expect(ensureDaemon()).rejects.toBe(conflict)
-    await expect(ensureDaemon()).rejects.toBe(conflict)
-    expect(build).toHaveBeenCalledOnce()
-    expect(daemon.start).toHaveBeenCalledOnce()
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "owned", ...restarted })
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "owned", ...restarted })
+    await expect(daemon.reacquire()).resolves.toEqual({ kind: "owned", ...restarted })
+    expect(seam).toHaveBeenCalledOnce()
   })
 
-  it("hands the built daemon to the lifecycle so quitting stops it", async () => {
-    const stopped = deferred<void>()
-    const daemon = handle({ stop: vi.fn(() => stopped.promise) })
-    const lifecycle = new OwnedDaemonLifecycle()
-    const ensureDaemon = ownDesktopDaemon(async () => daemon, lifecycle)
-    const quit = vi.fn()
+  it("describes an attached owner to the renderer without re-verifying on every request", async () => {
+    const { seam } = scriptedSeam([attached("desktop")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
 
-    await ensureDaemon()
-    lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "attached", owner: "desktop", ...endpoint })
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "attached", owner: "desktop", ...endpoint })
+    expect(seam).toHaveBeenCalledOnce()
+  })
 
-    await vi.waitFor(() => expect(daemon.stop).toHaveBeenCalledOnce())
-    expect(quit).not.toHaveBeenCalled()
-    stopped.resolve()
-    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
+  it("describes a refusal with the daemon's reason and message", async () => {
+    const { seam } = scriptedSeam([refused("profile-invalid")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await expect(daemon.acquire()).resolves.toEqual({
+      kind: "refused",
+      reason: "profile-invalid",
+      message: "daemon says profile-invalid",
+    })
+  })
+
+  it("reconnects in attach-only mode and hands over the owner's fresh endpoint", async () => {
+    const first = attached("daemon")
+    const { seam, requests, modes } = scriptedSeam([first, attached("daemon", restarted)])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await daemon.acquire()
+    await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+
+    expect(modes()).toEqual(["start-or-attach", "attach-only"])
+    expect(requests[1]).toEqual({ ...factoryOptions, mode: "attach-only", timeoutMs: desktopDaemonBudgets.acquireMs })
+    expect(first.detach).toHaveBeenCalledOnce()
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+    expect(seam).toHaveBeenCalledTimes(2)
+  })
+
+  it("surfaces owner-unreachable on reconnect and never starts a daemon to fill the gap", async () => {
+    const first = attached("daemon")
+    const { seam, modes } = scriptedSeam([first, refused("owner-unreachable"), refused("owner-unreachable")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await daemon.acquire()
+    await expect(daemon.reacquire()).resolves.toEqual({
+      kind: "refused",
+      reason: "owner-unreachable",
+      message: "daemon says owner-unreachable",
+    })
+    expect(first.detach).toHaveBeenCalledOnce()
+
+    await expect(daemon.acquire()).resolves.toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+    expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+    expect(seam).toHaveBeenCalledTimes(3)
+  })
+
+  it("retries a refused startup in attach-only mode rather than starting a daemon", async () => {
+    const { seam, modes } = scriptedSeam([refused("owner-busy"), attached("daemon")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await expect(daemon.acquire()).resolves.toMatchObject({ kind: "refused", reason: "owner-busy" })
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    expect(modes()).toEqual(["start-or-attach", "attach-only"])
+  })
+
+  it("shares one pending reconnect between callers", async () => {
+    const reattaching = deferred<LocalDaemonHandle>()
+    const first = attached("daemon")
+    const seam = vi.fn<DesktopDaemonSeam>()
+      .mockResolvedValueOnce(first)
+      .mockReturnValueOnce(reattaching.promise)
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await daemon.acquire()
+    const racing = [daemon.reacquire(), daemon.acquire(), daemon.reacquire()]
+    expect(seam).toHaveBeenCalledTimes(2)
+
+    reattaching.resolve(attached("daemon", restarted))
+    const results = await Promise.all(racing)
+    expect(results).toEqual(Array(3).fill({ kind: "attached", owner: "daemon", ...restarted }))
+  })
+
+  it("retries only in attach-only mode after the seam itself failed", async () => {
+    const failure = new Error("seam exploded")
+    const seam = vi.fn<DesktopDaemonSeam>()
+      .mockRejectedValueOnce(failure)
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(attached("daemon"))
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await expect(daemon.acquire()).rejects.toBe(failure)
+    await expect(daemon.reacquire()).rejects.toBe(failure)
+    await expect(daemon.acquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    expect(seam.mock.calls.map(([options]) => options.mode)).toEqual(["start-or-attach", "attach-only", "attach-only"])
+  })
+
+  describe("closure of an attachment", () => {
+    it("re-attaches once when the owner closes the attachment and hands the renderer that state", async () => {
+      const first = attached("daemon")
+      const { seam, modes } = scriptedSeam([first, attached("daemon", restarted), attached("daemon")])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      first.close()
+      await settled()
+      expect(modes()).toEqual(["start-or-attach", "attach-only"])
+      expect(daemon.current()).toEqual({ kind: "attached", owner: "daemon", ...restarted })
+
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+      expect(seam).toHaveBeenCalledTimes(2)
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+      expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+    })
+
+    it("publishes the refusal when re-attachment after a closure is refused", async () => {
+      const first = attached("daemon")
+      const { seam, modes } = scriptedSeam([first, refused("owner-unreachable"), attached("daemon", restarted)])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      first.close()
+      await settled()
+      expect(daemon.current()).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+
+      await expect(daemon.reacquire()).resolves.toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+      expect(seam).toHaveBeenCalledTimes(2)
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+      expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+    })
+
+    it("keeps listening on the attachment it re-attached to", async () => {
+      const first = attached("daemon")
+      const second = attached("daemon", restarted)
+      const { seam, modes } = scriptedSeam([first, second, attached("desktop")])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      first.close()
+      await settled()
+      second.close()
+      await settled()
+
+      expect(modes()).toEqual(["start-or-attach", "attach-only", "attach-only"])
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "attached", owner: "desktop", ...endpoint })
+      expect(seam).toHaveBeenCalledTimes(3)
+    })
+
+    it("ignores the closure of an attachment Desktop detached itself", async () => {
+      const first = attached("daemon")
+      const second = attached("daemon", restarted)
+      const { seam } = scriptedSeam([first, second])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await daemon.reacquire()
+      expect(first.detach).toHaveBeenCalledOnce()
+      first.close()
+      await settled()
+      expect(seam).toHaveBeenCalledTimes(2)
+
+      await daemon.release()
+      expect(second.detach).toHaveBeenCalledOnce()
+      second.close()
+      await settled()
+      expect(seam).toHaveBeenCalledTimes(2)
+    })
+
+    it("ignores a closure that lands while another acquisition is pending", async () => {
+      const first = attached("daemon")
+      const reattaching = deferred<LocalDaemonHandle>()
+      const seam = vi.fn<DesktopDaemonSeam>()
+        .mockResolvedValueOnce(first)
+        .mockReturnValueOnce(reattaching.promise)
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      const reacquiring = daemon.reacquire()
+      first.close()
+      await settled()
+      expect(seam).toHaveBeenCalledTimes(2)
+
+      reattaching.resolve(attached("daemon", restarted))
+      await expect(reacquiring).resolves.toEqual({ kind: "attached", owner: "daemon", ...restarted })
+      expect(seam).toHaveBeenCalledTimes(2)
+    })
+
+    it("never re-attaches an owned daemon", async () => {
+      const { seam } = scriptedSeam([owned()])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await settled()
+      await expect(daemon.reacquire()).resolves.toEqual({ kind: "owned", ...endpoint })
+      expect(seam).toHaveBeenCalledOnce()
+    })
+  })
+
+  it("hands the renderer a loopback IPv6 endpoint by its localhost name and leaves other hosts alone", async () => {
+    const { seam } = scriptedSeam([
+      attached("daemon", { url: "wss://[::1]:50123/rpc", token: "file-token" }),
+      attached("daemon", { url: "wss://[fe80::1]:50123/rpc", token: "file-token" }),
+    ])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    await expect(daemon.acquire()).resolves.toEqual({
+      kind: "attached",
+      owner: "daemon",
+      url: "wss://localhost:50123/rpc",
+      token: "file-token",
+    })
+    expect(daemon.current()).toMatchObject({ url: "wss://localhost:50123/rpc" })
+    await expect(daemon.reacquire()).resolves.toMatchObject({ url: "wss://[fe80::1]:50123/rpc" })
+  })
+
+  it("reports the acquisition it currently holds without touching the seam", async () => {
+    const { seam } = scriptedSeam([attached("daemon"), refused("owner-unreachable")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    expect(daemon.current()).toBeUndefined()
+    await daemon.acquire()
+    expect(daemon.current()).toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    const reacquiring = daemon.reacquire()
+    expect(daemon.current()).toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    await reacquiring
+    expect(daemon.current()).toEqual({ kind: "refused", reason: "owner-unreachable", message: "daemon says owner-unreachable" })
+    expect(seam).toHaveBeenCalledTimes(2)
+  })
+
+  it("reads the factory options when it acquires, not when it is constructed", async () => {
+    const options = vi.fn(() => factoryOptions)
+    const { seam } = scriptedSeam([owned()])
+    const daemon = new DesktopDaemon(seam, options)
+
+    expect(options).not.toHaveBeenCalled()
+    await daemon.acquire()
+    expect(options).toHaveBeenCalledOnce()
+  })
+
+  describe("release", () => {
+    it("stops an owned daemon exactly once", async () => {
+      const handle = owned()
+      const { seam } = scriptedSeam([handle])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await Promise.all([daemon.release(), daemon.release()])
+      await daemon.release()
+
+      expect(handle.stop).toHaveBeenCalledOnce()
+      await expect(daemon.acquire()).rejects.toThrow("Desktop is quitting")
+      await expect(daemon.reacquire()).rejects.toThrow("Desktop is quitting")
+      expect(seam).toHaveBeenCalledOnce()
+    })
+
+    it("detaches from an attached owner and never stops it", async () => {
+      const handle = attached("daemon")
+      const { seam } = scriptedSeam([handle])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await daemon.release()
+      await daemon.release()
+
+      expect(handle.detach).toHaveBeenCalledOnce()
+      expect(handle).not.toHaveProperty("stop")
+    })
+
+    it("does nothing for a refusal or when nothing was acquired", async () => {
+      const { seam } = scriptedSeam([refused("owner-incompatible")])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await expect(new DesktopDaemon(seam, () => factoryOptions).release()).resolves.toBeUndefined()
+      await daemon.acquire()
+      await expect(daemon.release()).resolves.toBeUndefined()
+      expect(seam).toHaveBeenCalledOnce()
+    })
+
+    it("waits for a pending acquisition before releasing what it produced", async () => {
+      const acquiring = deferred<LocalDaemonHandle>()
+      const seam = vi.fn(() => acquiring.promise)
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+      const handle = owned()
+
+      void daemon.acquire()
+      let released = false
+      const releasing = daemon.release().then(() => { released = true })
+      await Promise.resolve()
+      expect(released).toBe(false)
+      expect(handle.stop).not.toHaveBeenCalled()
+
+      acquiring.resolve(handle)
+      await releasing
+      expect(handle.stop).toHaveBeenCalledOnce()
+    })
+
+    it("releases the handle a reconnect produced, not the one it replaced", async () => {
+      const first = attached("daemon")
+      const second = attached("daemon", restarted)
+      const { seam } = scriptedSeam([first, second])
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire()
+      await daemon.reacquire()
+      await daemon.release()
+
+      expect(first.detach).toHaveBeenCalledOnce()
+      expect(second.detach).toHaveBeenCalledOnce()
+    })
+
+    it("swallows a failed acquisition so quitting can proceed", async () => {
+      const seam = vi.fn<DesktopDaemonSeam>(async () => { throw new Error("seam exploded") })
+      const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+      await daemon.acquire().catch(() => {})
+      await expect(daemon.release()).resolves.toBeUndefined()
+    })
   })
 })

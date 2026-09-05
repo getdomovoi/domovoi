@@ -435,11 +435,9 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown and an explicit count of turns the provider reported no cost for
 </li>
-<li>[ ] Usage totals across sessions over a time window, such as a today total in the app bar
+<li>[x] Usage totals across sessions over a time window, such as a today total in the app bar
 <ul>
-<li>The daemon usage ledger records no turn timestamp, so a windowed sum needs a schema change before any client can show one honestly.
-</li>
-<li>Deferred past the alpha on 2026-09-03. Per-session totals already ship; a windowed sum adds timestamp migration, window semantics, an aggregation RPC, and client work for an analytics readout rather than for the alpha workflow.
+<li>The ledger stamps each row with the time its turn was first recorded, <code>usage.window</code> sums tokens, reported cost, turns, and sessions between two instants with one query, and the app bar reads today's total in the viewer's local day. Rows recorded before the stamp existed and rows imported by a transfer carry no time, so they never count toward a window, and a window whose reported costs span more than one currency shows tokens rather than a summed cost.
 </li>
 </ul>
 </li>

@@ -1377,6 +1377,41 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("asks the daemon for usage totals over a window", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const window = { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" }
+    const usage = client.usageWindow(window)
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "usage.window",
+      params: window,
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessions: 2,
+        turns: 3,
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningTokens: 0,
+        totalTokens: 1200,
+        costMicros: 4500,
+        currency: "USD",
+        reportedCostTurns: 2,
+        unavailableCostTurns: 1,
+      },
+    })
+    await expect(usage).resolves.toMatchObject({ sessions: 2, turns: 3, totalTokens: 1200 })
+    client.disconnect()
+  })
+
   it("reads skill source by discovered ID", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
@@ -2124,6 +2159,144 @@ describe("DomovoiClient deadlines", () => {
 
     await expect(client.request("skill.list", {}, { deadline })).rejects.toBeInstanceOf(DomovoiRpcTimeoutError)
     expect(socket.sent).toHaveLength(1)
+    client.disconnect()
+  })
+})
+
+describe("DomovoiClient endpoint resolution", () => {
+  const NativeWebSocket = globalThis.WebSocket
+  const first = { url: "ws://127.0.0.1:47831/rpc", token: "first-token" }
+  const second = { url: "ws://127.0.0.1:50999/rpc", token: "second-token" }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    FakeWebSocket.instances = []
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = NativeWebSocket
+    vi.useRealTimers()
+  })
+
+  it("dials the endpoint its resolver returns and asks again on every reconnect", async () => {
+    const endpoints = [first, second]
+    const resolveEndpoint = vi.fn(async () => endpoints.shift()!)
+    const client = new DomovoiClient(first.url, "desktop", {
+      budgets,
+      reconnectDelayMs: 25,
+      reconnectJitterRatio: 0,
+      resolveEndpoint,
+    })
+
+    const connecting = client.connect()
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    expect(socket.url).toBe(first.url)
+    socket.open()
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({ method: "system.hello", params: { authToken: first.token } })
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await expect(connecting).resolves.toEqual(demoWorkspace)
+    expect(client.url).toBe(first.url)
+
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(25)
+    const reconnected = FakeWebSocket.instances[1]!
+    expect(reconnected.url).toBe(second.url)
+    reconnected.open()
+    expect(JSON.parse(reconnected.sent[0]!)).toMatchObject({ method: "system.hello", params: { authToken: second.token } })
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+    expect(client.url).toBe(second.url)
+    client.disconnect()
+  })
+
+  it("asks the resolver again for an explicit reconnect", async () => {
+    const endpoints = [first, second]
+    const resolveEndpoint = vi.fn(async () => endpoints.shift()!)
+    const client = new DomovoiClient(first.url, "desktop", { budgets, resolveEndpoint })
+
+    const connecting = client.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    socket.drop()
+
+    const reconnecting = client.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    const reconnected = FakeWebSocket.instances[1]!
+    expect(reconnected.url).toBe(second.url)
+    reconnected.open()
+    reconnected.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(reconnecting).resolves.toEqual(demoWorkspace)
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+    client.disconnect()
+  })
+
+  it("reports a resolver failure as the connect failure and keeps retrying", async () => {
+    const resolveEndpoint = vi.fn<() => Promise<{ url: string; token: string }>>()
+      .mockRejectedValueOnce(new Error("The profile has no reachable owner."))
+      .mockResolvedValueOnce(first)
+    const client = new DomovoiClient(first.url, "desktop", {
+      budgets,
+      reconnectDelayMs: 25,
+      reconnectJitterRatio: 0,
+      resolveEndpoint,
+    })
+    const states: boolean[] = []
+    const disconnected = vi.fn()
+    client.addEventListener("reconnecting", (event) => {
+      states.push((event as CustomEvent<{ active: boolean }>).detail.active)
+    })
+    client.addEventListener("disconnected", disconnected)
+
+    await expect(client.connect()).rejects.toThrow("The profile has no reachable owner.")
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(disconnected).toHaveBeenCalledOnce()
+    expect(states).toEqual([true])
+
+    await vi.advanceTimersByTimeAsync(25)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]!.url).toBe(first.url)
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+    client.disconnect()
+  })
+
+  it("never dials after a disconnect that arrived while resolving", async () => {
+    let settle!: (endpoint: { url: string; token: string }) => void
+    const resolveEndpoint = vi.fn(() => new Promise<{ url: string; token: string }>((resolve) => { settle = resolve }))
+    const client = new DomovoiClient(first.url, "desktop", { budgets, resolveEndpoint })
+
+    const connecting = client.connect()
+    client.disconnect()
+    settle(second)
+    await expect(connecting).rejects.toThrow("Daemon connection closed")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("charges resolution to the connect budget", async () => {
+    const resolveEndpoint = vi.fn(() => new Promise<{ url: string; token: string }>(() => {}))
+    const client = new DomovoiClient(first.url, "desktop", { budgets, resolveEndpoint })
+    const disconnected = vi.fn()
+    client.addEventListener("disconnected", disconnected)
+
+    const connecting = client.connect().catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(budgets.connectMs)
+
+    await expect(connecting).resolves.toBeInstanceOf(DomovoiConnectTimeoutError)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(disconnected).toHaveBeenCalledOnce()
+    client.disconnect()
+  })
+
+  it("dials synchronously when no resolver is given", () => {
+    const client = new DomovoiClient(first.url, "web", { budgets })
+    void client.connect().catch(() => {})
+    expect(FakeWebSocket.instances).toHaveLength(1)
     client.disconnect()
   })
 })

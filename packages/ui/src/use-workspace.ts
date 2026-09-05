@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
@@ -76,7 +76,17 @@ export const workspaceBudgets: DomovoiClientBudgets = {
 export const pairingBudgetMs = 60_000
 export const machineDialBudgetMs = 45_000
 
-export function useWorkspace(url: string, kind: ClientKind, authToken?: string) {
+export type WorkspaceEndpointResolver = () => Promise<{ url: string; token: string }>
+
+// A resolver, when given, is asked before every dial the client makes, so a
+// desktop attached to a daemon owner follows that owner across restarts. The
+// hook keeps the URL that last served the workspace for artifact addresses.
+export function useWorkspace(
+  url: string,
+  kind: ClientKind,
+  authToken?: string,
+  resolveRpcEndpoint?: WorkspaceEndpointResolver,
+) {
   const target = `${kind}:${url}`
   const clientRef = useRef<DomovoiClient | null>(null)
   const emergencyStopClientRef = useRef<DomovoiClient | null>(null)
@@ -86,6 +96,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     snapshot: null,
   }))
   const [connected, setConnected] = useState(false)
+  const [endpointUrl, setEndpointUrl] = useState(url)
   const [reconnecting, setReconnecting] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
   const [authenticationRequired, setAuthenticationRequired] = useState<string | null>(null)
@@ -116,6 +127,11 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
         : current
     })
   }, [target])
+  const resolverRef = useRef(resolveRpcEndpoint)
+  useEffect(() => {
+    resolverRef.current = resolveRpcEndpoint
+  }, [resolveRpcEndpoint])
+  const resolves = resolveRpcEndpoint !== undefined
 
   useEffect(() => {
     let active = true
@@ -130,9 +146,13 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     setFleet(null)
     setFleetOverflow(null)
     setWorkspace({ target, snapshot: null })
+    setEndpointUrl(url)
     const client = new DomovoiClient(url, kind, {
       budgets: workspaceBudgets,
       ...(authToken ? { authToken } : {}),
+      ...(resolves ? {
+        resolveEndpoint: () => resolverRef.current?.() ?? Promise.resolve({ url, token: authToken ?? "" }),
+      } : {}),
       clientId: clientIdRef.current,
     })
     clientRef.current = client
@@ -161,6 +181,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const onConnected = () => {
       if (!active) return
       setConnected(true)
+      setEndpointUrl(client.url)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
       void client.listFleet().then(
@@ -229,7 +250,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
       client.disconnect()
       clientRef.current = null
     }
-  }, [authToken, kind, target, updateDeltaFrom, updateSnapshotFrom, url])
+  }, [authToken, kind, resolves, target, updateDeltaFrom, updateSnapshotFrom, url])
 
   const resolveApproval = useCallback(
     async (
@@ -441,6 +462,12 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.sessionUsage(sessionId)
+  }, [])
+
+  const usageWindow = useCallback(async (window: UsageWindowParams): Promise<UsageWindow> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.usageWindow(window)
   }, [])
 
   const readSkill = useCallback(async (id: string): Promise<SkillDocument> => {
@@ -735,6 +762,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     emergencyStopError,
     emergencyStopOutcome,
     emergencyStopPending,
+    endpointUrl,
     exportAudit,
     fleet,
     fleetOverflow,
@@ -768,6 +796,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     resolveApproval,
     sendMessage,
     sessionUsage,
+    usageWindow,
     setSkillEnabled,
     reviewSkill,
     setAnnotationStatus,

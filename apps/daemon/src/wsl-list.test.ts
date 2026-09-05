@@ -14,10 +14,11 @@ function wslOutput(text: string): Buffer {
 }
 
 describe("listWslDistributions", () => {
-  it("asks wsl.exe for the verbose listing and reads it", async () => {
+  it("asks wsl.exe for the verbose listing and reads every distribution in it", async () => {
     const run = vi.fn(async () => wslOutput(listing))
     expect(await listWslDistributions({ run, platform: "win32" })).toEqual([
-      { name: "Ubuntu-24.04", default: true },
+      { name: "Ubuntu-24.04", state: "Running", version: 2, default: true },
+      { name: "debian", state: "Stopped", version: 2, default: false },
     ])
     expect(run).toHaveBeenCalledWith("wsl.exe", ["--list", "--verbose"], {
       timeoutMs: expect.any(Number),

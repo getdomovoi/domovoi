@@ -1,14 +1,23 @@
+import type { WslDistribution } from "./wsl-distributions.js"
 import { resolveOpenTarget, type OpenTarget } from "./wsl-open-target.js"
 
 export type OpenCommandDependencies = {
   cwd: () => string
-  distributions: () => Promise<readonly { name: string }[]>
+  distributions: () => Promise<readonly WslDistribution[]>
+  translate: (distribution: string, windowsPath: string) => Promise<string>
   open: (target: OpenTarget) => Promise<void>
   stdout: (text: string) => void
   stderr: (text: string) => void
 }
 
 const usage = "Usage: domovoid open [path]\n"
+
+// A refusal that names the distribution and what to do about it is worth
+// repeating; anything else from the daemon can quote a path someone is
+// watching the screen for, so only the fact of the failure is reported.
+function isNamedRefusal(error: unknown): error is Error {
+  return error instanceof Error && /domovoid|wsl\.exe/.test(error.message)
+}
 
 export async function runOpenCommand(
   args: readonly string[],
@@ -25,7 +34,11 @@ export async function runOpenCommand(
 
   let target: OpenTarget
   try {
-    target = resolveOpenTarget({ path, distributions: await dependencies.distributions() })
+    target = await resolveOpenTarget({
+      path,
+      distributions: dependencies.distributions,
+      translate: dependencies.translate,
+    })
   } catch (error) {
     dependencies.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1
@@ -33,10 +46,8 @@ export async function runOpenCommand(
 
   try {
     await dependencies.open(target)
-  } catch {
-    // The daemon's own error can name a path someone is watching the screen
-    // for, so the failure is reported without repeating it.
-    dependencies.stderr(`Could not open ${path}\n`)
+  } catch (error) {
+    dependencies.stderr(isNamedRefusal(error) ? `${error.message}\n` : `Could not open ${path}\n`)
     return 1
   }
 

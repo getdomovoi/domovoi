@@ -5,6 +5,7 @@ import {
   fleetHealthSchema,
   fleetMachineHealth,
   protocolCompatibility,
+  protocolMismatchSchema,
 } from "./fleet-health.js"
 
 const healthy = {
@@ -101,5 +102,29 @@ describe("fleetMachineHealth", () => {
       "reconnecting",
       "disconnected",
     ])
+  })
+})
+
+describe("protocolMismatchSchema", () => {
+  const mismatch = {
+    kind: "protocol-mismatch",
+    daemonProtocolVersion: "0.4.0",
+    clientProtocolVersion: "0.1.0",
+    compatibility: "machine-ahead",
+  }
+
+  it("names both versions and which side is behind, and nothing else", () => {
+    expect(protocolMismatchSchema.parse(mismatch)).toEqual(mismatch)
+    expect(protocolMismatchSchema.safeParse({ ...mismatch, message: "This daemon speaks protocol 0.4.0; the client speaks 0.1.0" }).success).toBe(false)
+    expect(protocolMismatchSchema.safeParse({ ...mismatch, daemonProtocolVersion: "0.4" }).success).toBe(false)
+    expect(protocolMismatchSchema.safeParse({ kind: "protocol-mismatch" }).success).toBe(false)
+  })
+
+  it("refuses a compatibility that does not follow from the two versions", () => {
+    expect(protocolMismatchSchema.safeParse({ ...mismatch, compatibility: "machine-behind" }).success).toBe(false)
+    expect(protocolMismatchSchema.safeParse({ ...mismatch, compatibility: "compatible" }).success).toBe(false)
+    expect(protocolMismatchSchema.safeParse({
+      ...mismatch, daemonProtocolVersion: "0.1.0", clientProtocolVersion: "0.4.0", compatibility: "machine-behind",
+    }).success).toBe(true)
   })
 })

@@ -1,3 +1,4 @@
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
 import { access, chmod, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -971,7 +972,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       agents: {},
-      usageLedger: { record: vi.fn(), session: usage, close: vi.fn() },
+      usageLedger: { record: vi.fn(), session: usage, window: vi.fn(), close: vi.fn() },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -1000,6 +1001,56 @@ describe("DomovoiDaemon", () => {
       model: "gpt-5.6-sol",
       threadId: "thread-current",
     })
+    socket.close()
+  })
+
+  it("reads usage totals over a window across sessions from the ledger", async () => {
+    const result = {
+      sessions: 2,
+      turns: 3,
+      inputTokens: 35,
+      cachedInputTokens: 2,
+      outputTokens: 13,
+      reasoningTokens: 1,
+      totalTokens: 49,
+      costMicros: 30_000,
+      currency: "USD",
+      reportedCostTurns: 2,
+      unavailableCostTurns: 1,
+    }
+    const window = vi.fn(() => result)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agents: {},
+      usageLedger: { record: vi.fn(), session: vi.fn(), window, close: vi.fn() },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: string }
+        if (message.id === "usage-window") resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "usage-window",
+      method: "usage.window",
+      params: { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" },
+    }))
+
+    await expect(response).resolves.toMatchObject({ result })
+    expect(window).toHaveBeenCalledWith(
+      Date.parse("2026-09-04T06:00:00.000Z"),
+      Date.parse("2026-09-05T06:00:00.000Z"),
+    )
     socket.close()
   })
 
@@ -1036,6 +1087,7 @@ describe("DomovoiDaemon", () => {
       usageLedger: {
         record: vi.fn(() => { throw new Error("usage database unavailable") }),
         session: vi.fn(),
+        window: vi.fn(),
         close: vi.fn(),
       },
       errorSink,
@@ -3958,12 +4010,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -3999,12 +4051,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     await daemon.start()
@@ -4029,12 +4081,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -4071,12 +4123,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     await daemon.start()
@@ -4098,12 +4150,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: () => {},
         forMachine: () => undefined,
         forget: () => {},
         machines: () => [],
-      },
+      }),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -6274,6 +6326,12 @@ describe("DomovoiDaemon", () => {
         message: `This daemon speaks protocol ${protocolVersion}; the client speaks 0.1.0`,
       },
     })
+    expect((refusal.error as { data: unknown }).data).toEqual({
+      kind: "protocol-mismatch",
+      daemonProtocolVersion: protocolVersion,
+      clientProtocolVersion: "0.1.0",
+      compatibility: "machine-ahead",
+    })
     socket.close()
   })
 
@@ -6316,6 +6374,12 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect((refusal.error as { message: string }).message).toContain("9.9.9")
+    expect((refusal.error as { data: unknown }).data).toEqual({
+      kind: "protocol-mismatch",
+      daemonProtocolVersion: protocolVersion,
+      clientProtocolVersion: "9.9.9",
+      compatibility: "machine-behind",
+    })
     socket.close()
   })
 
@@ -11256,12 +11320,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (id: string, credential: string) => credentials.set(id, credential),
         forMachine: (id: string) => credentials.get(id),
         forget: (id: string) => credentials.delete(id),
         machines: () => [...credentials.keys()],
-      },
+      }),
       statePath: ":memory:",
       workspaceService: {
         ...stubWorkspaceService(),
@@ -11358,12 +11422,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       statePath: ":memory:",
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: () => {},
         forMachine: () => targetCredential,
         forget: () => {},
         machines: () => [targetMachineId],
-      },
+      }),
       workspaceService: {
         ...stubWorkspaceService(),
         pushSessionRef: async (_worktree: string, remote: string, sessionId: string) => {
@@ -11430,12 +11494,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       statePath: ":memory:",
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: () => {},
         forMachine: () => "n".repeat(43),
         forget: () => {},
         machines: () => [targetMachineId],
-      },
+      }),
       connectToMachine: async () => ({
         call: async (method: string) => method === "transfer.preflight"
           ? {
@@ -12334,6 +12398,119 @@ describe("DomovoiDaemon persistence refusal", () => {
     await expect(activate()).resolves.toMatchObject({
       result: { activeSessionId: snapshot.sessions[1]!.id },
     })
+    socket.close()
+  })
+})
+
+describe("DomovoiDaemon and WSL", () => {
+  it.skipIf(process.platform !== "linux")("describes the distribution this daemon runs in", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      machineIdentity: { id: `machine-${"8".repeat(32)}`, label: "ubuntu-daemon" },
+      wsl: { distribution: "Ubuntu-24.04", version: 2 },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "fleet.list", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      result: {
+        entries: [{ kind: "machine", machine: {
+          id: `machine-${"8".repeat(32)}`,
+          platform: process.platform,
+          wsl: { distribution: "Ubuntu-24.04", version: 2 },
+          self: true,
+        } }],
+      },
+    })
+    socket.close()
+  })
+
+  it("reports no WSL facts for a daemon that has none", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      machineIdentity: { id: `machine-${"9".repeat(32)}`, label: "plain" },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<{ result: { entries: Array<{ machine: Record<string, unknown> }> } }>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()))
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "fleet.list", params: {} }))
+
+    expect((await response).result.entries[0]?.machine).not.toHaveProperty("wsl")
+    socket.close()
+  })
+
+  it.each([
+    "\\\\wsl$\\Ubuntu-24.04\\home\\me\\project",
+    "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\project",
+    "//wsl$/Ubuntu-24.04/home/me/project",
+  ])("refuses to do repository work through the WSL share: %s", async (path) => {
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: testAuthToken("wsl-share-token"),
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "project.open",
+      params: { path, client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: {
+        code: -32602,
+        message: expect.stringMatching(/Ubuntu-24\.04.*domovoid open/s),
+      },
+    })
+    expect(workspaceService.inspect).not.toHaveBeenCalled()
     socket.close()
   })
 })

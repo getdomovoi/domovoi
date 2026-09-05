@@ -8,14 +8,20 @@ import {
   daemonAuthenticationErrorCode,
   createEmptyWorkspace,
   demoWorkspace,
+  protocolCompatibility,
   protocolVersion,
+  protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
 
+import type { MachineConnection } from "./machine-dial.js"
 import {
   defaultMachineCallTimeoutMs,
   defaultMachineHandshakeTimeoutMs,
   MachinePairingRequiredError,
+  MachineProtocolMismatchError,
   openMachineSocket as openMachineSocketWithoutDefaults,
+  protocolMismatchRefusal,
+  readMachineDescriptor,
 } from "./machine-socket.js"
 import { OperationDeadline } from "./operation-deadline.js"
 
@@ -57,7 +63,8 @@ async function machineServer(handler: (message: Record<string, unknown>) => unkn
       seen.push(message)
       const result = handler(message)
       if (result === undefined) return
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }))
+      const reply = result && typeof result === "object" && "rpcError" in result ? { error: result.rpcError } : { result }
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply }))
     })
   })
   const address = server.address()
@@ -120,6 +127,28 @@ describe("openMachineSocket", () => {
       endpoint: machine.endpoint,
       credential: "n".repeat(43),
     })).rejects.toThrow(`That machine speaks protocol 9.9.9, this daemon speaks ${protocolVersion}`)
+  })
+
+  const mismatchData = (daemonProtocolVersion: string) => ({
+    kind: "protocol-mismatch", daemonProtocolVersion, clientProtocolVersion: protocolVersion,
+    compatibility: protocolCompatibility(daemonProtocolVersion, protocolVersion),
+  })
+  const claimRefusal = "Update both daemons to the same protocol before pairing"
+  const sentenceRefusal = protocolMismatchRefusal("0.3.0", protocolVersion)
+  const named = (version: string) => `That machine speaks protocol ${version}, this daemon speaks ${protocolVersion}`
+
+  it.each([
+    ["carries the daemon's version as data", { message: claimRefusal, data: mismatchData("0.2.0") }, "0.2.0", named("0.2.0")],
+    ["carries data that disagrees with its sentence", { message: sentenceRefusal, data: mismatchData("0.2.0") }, "0.2.0", named("0.2.0")],
+    ["carries data this daemon cannot read", { message: sentenceRefusal, data: { kind: "protocol-mismatch" } }, "0.3.0", named("0.3.0")],
+    ["names the daemon's version in its sentence only", { message: sentenceRefusal }, "0.3.0", named("0.3.0")],
+    ["names no version", { message: claimRefusal }, undefined, "That machine speaks an incompatible protocol"],
+  ])("keeps the version when a protocol refusal %s", async (_case, refusal, remoteVersion, message) => {
+    const machine = await machineServer(() => ({ rpcError: { code: protocolVersionMismatchErrorCode, ...refusal } }))
+    const refused: unknown = await openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43) })
+      .then(() => undefined, (cause: unknown) => cause)
+    expect(refused).toBeInstanceOf(MachineProtocolMismatchError)
+    expect(refused).toMatchObject({ remoteVersion, message })
   })
 
   it("accepts a compatible patch version without skipping workspace or identity validation", async () => {
@@ -382,5 +411,33 @@ describe("openMachineSocket", () => {
     for (const callback of fired) callback()
 
     await expect(opening).rejects.toThrow("That machine did not answer")
+  })
+})
+
+describe("readMachineDescriptor", () => {
+  const descriptor = {
+    id: machineId,
+    label: "workshop",
+    platform: "linux",
+    arch: "x64",
+    version: "0.0.1",
+    capabilities: ["sessions"],
+    protocolVersion,
+    transports: [{ kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true }],
+  }
+  const wsl = { distribution: "Ubuntu-24.04", version: 2 }
+
+  function heartbeat(result: unknown) {
+    const connection: MachineConnection = { call: async () => result, close: () => {} }
+    const deadline = OperationDeadline.start(1_000)
+    return readMachineDescriptor(connection, machineId, "n".repeat(43), deadline).finally(() => deadline.clear())
+  }
+
+  it("keeps the WSL facts a linux daemon reports from inside a distribution", async () => {
+    await expect(heartbeat({ ...descriptor, wsl })).resolves.toMatchObject({ platform: "linux", wsl })
+  })
+
+  it("refuses a heartbeat that pairs WSL facts with a platform no distribution runs", async () => {
+    await expect(heartbeat({ ...descriptor, platform: "win32", wsl })).rejects.toThrow("invalid descriptor")
   })
 })
