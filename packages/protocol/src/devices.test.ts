@@ -3,6 +3,7 @@ import { protocolVersion } from "./schema.js"
 
 import {
   deviceClaimParamsSchema,
+  deviceLabelMismatchSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
   deviceRenameParamsSchema,
@@ -194,6 +195,25 @@ describe("deviceRenameParamsSchema", () => {
     for (const label of ["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad", "line\nbreak"]) {
       expect(deviceRenameParamsSchema.safeParse({ deviceId: device.id, label }).success).toBe(false)
     }
+  })
+
+  it("carries an optional expected label as a precondition", () => {
+    expect(deviceRenameParamsSchema.parse({ deviceId: device.id, label: "studio-ipad", expectedLabel: " kitchen-ipad " }))
+      .toEqual({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
+    for (const expectedLabel of ["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1)]) {
+      expect(deviceRenameParamsSchema.safeParse({ deviceId: device.id, label: "studio-ipad", expectedLabel }).success)
+        .toBe(false)
+    }
+  })
+})
+
+describe("deviceLabelMismatchSchema", () => {
+  it("carries the current device and nothing else", () => {
+    const mismatch = { kind: "device-label-mismatch", device }
+    expect(deviceLabelMismatchSchema.parse(mismatch)).toEqual(mismatch)
+    expect(deviceLabelMismatchSchema.safeParse({ ...mismatch, token: "secret" }).success).toBe(false)
+    expect(deviceLabelMismatchSchema.safeParse({ ...mismatch, expectedLabel: "kitchen-ipad" }).success).toBe(false)
+    expect(deviceLabelMismatchSchema.safeParse({ device }).success).toBe(false)
   })
 })
 
