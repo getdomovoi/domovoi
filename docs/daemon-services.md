@@ -41,6 +41,28 @@ restart it. Installation does not guarantee that a manager reloads an already ru
 Removal deletes the saved configuration after the manager commands succeed. It does not remove the
 credential, identity, workspace database, or worktrees.
 
+## Windows removal
+
+`domovoid service remove` disables the logon task before stopping it, waits for Task Scheduler to
+report that it is disabled with no queued or running instances, and only then removes the task and
+saved configuration. Deleting a registration alone does not stop its running program.
+See [schtasks delete](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-delete)
+and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state).
+
+The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
+`schtasks /query` text. It runs noninteractively without a profile, elevation, execution-policy
+bypass, or a task password. Missing or blocked PowerShell refuses removal; there is no delete-only
+fallback. Disable, stop, status observations, deletion, and configuration cleanup share the same
+30-second deadline. Polling cannot renew it, and a late result cannot start a later deletion.
+
+A missing task at the initial lookup is already removed. Once a task has been found, an unknown
+state or disappearing registration is not proof that its process stopped. Manager failures and
+stop timeouts retain the configuration; a failure during final deletion may have already changed
+OS or filesystem state. The error names the task and asks the operator to inspect Task Scheduler
+and the saved configuration before retrying. A failed stop can leave the task disabled. Re-enable
+it explicitly if keeping the service instead of retrying removal. No other process is killed by
+name, and a daemon already orphaned by an older delete-only removal needs manual reconciliation.
+
 ## Evidence and remaining limits
 
 Tests round trip one non-default configuration through all three service formats. A distributed-CLI
@@ -50,8 +72,16 @@ endpoint. Removing the CLI environment handoff makes that test recover the defau
 identity paths instead.
 The TLS fixture requires `openssl` on the test runner's PATH to generate its temporary certificate.
 
-This proves configuration delivery, not native systemd, launchd, or Task Scheduler lifecycle
-behavior. Real manager restart/removal checks, installer rollback, and Desktop/service ownership
+Windows removal boundary tests model a live process surviving registration deletion, prove the
+stop-before-delete order, and exercise queued, unknown, absent, refused, silent, and late replies.
+The native Windows-only test creates a UUID-named limited-user task, observes its live Node process,
+runs the real removal subprocesses, and requires both process exit and an absent registration.
+It never replaces the user's Domovoi task. Its private stop marker cleans up even a deliberately
+broken delete-only remover. This test is skipped on other operating systems, so a green Linux run
+does not prove native Windows removal.
+
+These are configuration delivery and focused removal checks, not full native systemd, launchd,
+or Task Scheduler lifecycle acceptance. Native manager restart checks, installer rollback, and Desktop/service ownership
 remain separate audit work. A timed-out manager may already have changed OS state; inspect service
 status before retrying. Each file is replaced by a same-directory rename only after a complete
 private staging write. A failed write preserves the last complete file. Expiry or a crash can leave
