@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -32,6 +33,9 @@ const sourceMachineId = `machine-${"a".repeat(32)}`
 const targetMachineId = `machine-${"b".repeat(32)}`
 const baseCommit = "c".repeat(40)
 const checkpointCommit = "d".repeat(40)
+// This fixture journals and rereads three real file chunks. It proves durable
+// delivery, not throughput; retain the Windows headroom without raising the suite.
+const journalFixtureBudget = process.platform === "win32" ? 30_000 : 20_000
 
 afterEach(async () => {
   await Promise.all(scratchDirectories.splice(0).map((path) => (
@@ -465,7 +469,10 @@ describe("prepared source transfer delivery", () => {
     })).rejects.toThrow("Target transfer identity changed")
   })
 
-  it("journals every byte before streaming only the target's missing members", async () => {
+  it("journals every byte before streaming only the target's missing members", async ({ signal }) => {
+    // Opt-in scheduling pressure, without an unbounded hold or a late fixture
+    // write after Vitest cancels the test. The normal suite does not sleep.
+    if (process.env.DOMOVOI_TEST_SLOW_FIXTURES === "1") await delay(5_500, undefined, { signal })
     const repositoryBytes = Buffer.alloc(600_000, 7)
     const { packaged } = await transferFixture(repositoryBytes)
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-outgoing-transfer-"))
@@ -528,7 +535,7 @@ describe("prepared source transfer delivery", () => {
       { sequence: 2, final: true },
     ])
     expect(Buffer.concat(chunks.map(({ bytes }) => bytes))).toEqual(repositoryBytes)
-  })
+  }, journalFixtureBudget)
 
   it("reports durable recovery instead of competing with a target already committing", async () => {
     const { packaged } = await transferFixture()

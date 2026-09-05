@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { protocolVersion, workspaceSnapshotSchema } from "@getdomovoi/protocol"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
 import { OperationDeadline } from "./operation-deadline.js"
@@ -42,10 +42,12 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
     let stderr = ""
     child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
     child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
-    const { url } = await beforeDeadline(waitForDaemon(() => {
+    // This is child startup observation, not the responsiveness assertion.
+    // Keep the short workspace.get probe below unchanged once the owner listens.
+    const { url } = await beforeDeadline(vi.waitFor(() => {
       expect(child!.exitCode, stderr).toBeNull()
       return fixtureAddress(stdout)
-    }), deadline)
+    }, { timeout: 10_000 }), deadline)
     deadline.throwIfExpired()
     socket = new WebSocket(url, { handshakeTimeout: Math.ceil(deadline.remainingMs()) })
     await once(socket, "open", { signal: deadline.signal })
