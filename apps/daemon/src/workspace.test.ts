@@ -1186,12 +1186,12 @@ describe("GitWorkspaceService bundle restore", () => {
       .resolves.toMatchObject({ branch: "domovoi/session-1" })
   })
 
-  it("keeps the restore error primary when claim cleanup also fails", async () => {
+  it.each(["Error", "undefined"])("keeps a thrown %s primary when claim cleanup also fails", async (kind) => {
     const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-both-errors-")
     const root = join(scratch, "target-worktrees")
     const claimPath = join(root, ".restore-claims", "session-1")
     const target = new GitWorkspaceService(root)
-    const restoreError = Object.freeze(new Error("repository access refused"))
+    const restoreError = kind === "Error" ? Object.freeze(new Error("repository access refused")) : undefined
     const closeError = new Error("claim close failed")
     const cleanupError = new Error("claim unlink denied")
     const inspect = vi.spyOn(target, "inspect").mockRejectedValueOnce(restoreError)
@@ -1203,7 +1203,7 @@ describe("GitWorkspaceService bundle restore", () => {
       expect(failure).toMatchObject({ restoreCompleted: false, claimPath,
         cause: restoreError, errors: [restoreError, closeError, cleanupError],
       })
-      expect((failure as Error).message).toMatch(/^repository access refused/)
+      expect((failure as Error).message.startsWith(restoreError?.message ?? "Session restore failed")).toBe(true)
       expect((failure as Error).message).toContain(claimPath)
       expect((failure as Error).cause).toBe(restoreError)
       await expect(lstat(join(root, "session-1"))).rejects.toMatchObject({ code: "ENOENT" })
