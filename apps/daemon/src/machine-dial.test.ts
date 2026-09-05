@@ -67,6 +67,43 @@ function dialer(overrides: {
 }
 
 describe("createMachineDialer", () => {
+  it("produces a configured local SSH fallback within the original route deadline", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(100, { now: () => now })
+    const seen: Array<{ endpoint: string; remaining: number; deadline: OperationDeadline }> = []
+    const input = {
+      machine: () => machine(),
+      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47900/rpc" }],
+      dialTimeoutMs: 1000,
+      open: async (options: { endpoint: string; expectedMachineId: string; credential: string; deadline: OperationDeadline }) => {
+        expect(options.expectedMachineId).toBe(machineId)
+        expect(options.credential).toBe(credential)
+        seen.push({ endpoint: options.endpoint, remaining: options.deadline.remainingMs(), deadline: options.deadline })
+        if (seen.length === 1) { now = 75; throw new Error("direct route is down") }
+        return { call: async () => ({}), close: () => {} }
+      },
+    }
+    try {
+      expect(await createMachineDialer(input)(machineId, undefined, deadline)).toMatchObject({
+        endpoint: "ws://127.0.0.1:47900/rpc", routeSource: "ssh",
+      })
+      expect(seen.map(({ endpoint, remaining }) => ({ endpoint, remaining }))).toEqual([
+        { endpoint: "wss://studio.tailnet:47831/rpc", remaining: 100 },
+        { endpoint: "ws://127.0.0.1:47900/rpc", remaining: 25 },
+      ])
+      expect(seen[0]?.deadline).toBe(seen[1]?.deadline)
+    } finally { deadline.clear() }
+  })
+
+  it("never accepts the target's assertion that an SSH forward is configured here", async () => {
+    const io = dialer({ machines: [machine({ transports: [
+      { kind: "ssh", endpoint: "wss://localhost:47900/rpc", authenticated: true, configured: true },
+    ] })] })
+    await expect(io.dial(machineId)).rejects.toThrow("no usable transport")
+    expect(io.opened).toEqual([])
+  })
+
   it("dials a machine with the credential kept for it", async () => {
     const io = dialer()
 
