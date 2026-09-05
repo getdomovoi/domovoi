@@ -14,6 +14,11 @@ const skillSecurityMetadata = {
 
 const budgets = { connectMs: 10_000, requestMs: 120_000 }
 
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
+
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
   static readonly OPEN = 1
@@ -281,6 +286,7 @@ describe("DomovoiClient", () => {
       params: {
         client: "web",
         clientId: client.clientId,
+        clientVersion: "9.8.7-test",
         protocolVersion,
         authToken: "secret-token",
       },
