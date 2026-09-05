@@ -122,6 +122,45 @@ target: revoke this machine in the target's Devices list as well. Restart Domovo
 Fleet Forget for remaining recorded facts once the list fits. These commands require the OS
 keychain to be available. Pagination of larger legacy fleets is not implemented.
 
+### Damaged fleet records
+
+Each stored machine is decoded independently. Malformed JSON or invalid machine facts quarantine
+that row without hiding healthy peers. The daemon retains the original row bytes in the existing
+owner-only state database. Quarantine and a `fleet.quarantine` audit receipt commit together. The
+receipt contains an opaque quarantine ID and a fixed reason, never the damaged value or parser
+message. Relisting and restarting do not create another receipt for the same quarantine.
+
+Quarantined machines are excluded from dialing and heartbeats. Late heartbeat results cannot
+clear quarantine. Pending enrollment or forget operations still mask their retained machine
+facts. Corrupt operation journals and database access failures remain explicit errors, not absent
+authority; this recovery applies to machine rows, not arbitrary SQLite corruption.
+
+For inspection, an authenticated client calls `fleet.list` with `{ "includeQuarantined": true }`.
+A degraded result adds optional `registry: { state: "degraded", quarantined: [...] }` metadata.
+Each record has `kind: "quarantined"`, an opaque `id`, `detectedAt`, a fixed `reason`, and a
+`recoveryAction`. It includes `machineId` only when that stored identity is valid. These records
+share the 512-entry wire bound and do not consume active machine admission slots.
+
+The actions name these operator procedures:
+
+- `forget-and-enroll`: use the existing local-root `fleet.forget` call with the supplied machine
+  ID and client kind. Damaged routing facts are not used for revocation, so an unconfirmed result
+  requires revoking this machine in the target's Devices list. Then enroll again with a fresh
+  pairing code. Successful explicit re-enrollment can also replace the damaged facts.
+- `repair-registry-offline`: the stored identity cannot safely address a machine. Stop Domovoi
+  and its supervisor, take a consistent SQLite backup, and have an operator repair or remove
+  only the `fleet_machines` row whose `quarantine_id` matches the reported opaque ID. Do not
+  delete the whole profile or match by label. Retain the backup for recovery, inspect any
+  remaining keychain IDs using the recovery CLI above, and enroll the peer again. There is no
+  automatic repair, expiry, or online deletion by an untrusted identity.
+
+The current UI is unchanged. Existing clients still receive only valid ordinary lifecycle rows;
+they do not render quarantine diagnostics yet. The new field is emitted only for that explicit
+inspection request, since older parsers reject unknown fields even when a new parser calls them
+optional. Ordinary `fleet.list`, enrollment and forget results, and `fleet.changed` retain their
+previous shape. Inspection clients must request diagnostics again after a change notification.
+Quarantine is never described as a machine that was never enrolled.
+
 ## Skill signatures and trust
 
 A skill is a `SKILL.md` file with YAML frontmatter. Its content digest is `sha256:` followed by
