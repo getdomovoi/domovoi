@@ -14,6 +14,7 @@ import {
   type DaemonErrorSink,
   type DaemonServerOptions,
 } from "./server.js"
+import { skillTrustPath } from "./skill-signing.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 
 export type ProductionDaemonOptions = {
@@ -112,6 +113,7 @@ export async function createProductionDaemonWithDependencies(
     machineCredentials: dependencies.createMachineCredentials(),
     statePath: join(stateDirectory, "state.sqlite"),
     worktreeRoot: join(stateDirectory, "worktrees"),
+    skillTrustPath: skillTrustPath(homeDirectory),
     manageStateDirectoryPermissions: true,
     ...(options.errorSink ? { errorSink: options.errorSink } : {}),
   })

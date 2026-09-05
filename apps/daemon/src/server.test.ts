@@ -1,5 +1,5 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
@@ -63,6 +63,14 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { internalRpcErrorMessage } from "./rpc-errors.js"
 import { maximumPairedDevices } from "./device-registry.js"
 import { SqliteSkillReviews } from "./skill-reviews.js"
+import {
+  addTrustedSkillKey,
+  exportSkillPublicKey,
+  generateSkillSigningKey,
+  signSkillDigest,
+  skillContentDigest,
+  skillKeyId,
+} from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import {
   FileRevertIncompleteError,
@@ -5343,6 +5351,96 @@ describe("DomovoiDaemon", () => {
         expect.objectContaining({ name: "project-only", scope: "project", source: "domovoi" }),
       ]),
     })
+    socket.close()
+  })
+
+  it("reports a signed project skill as verified over RPC once its key is trusted", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "domovoi-project-signed-skill-"))
+    scratchDirectories.push(projectRoot)
+    const skillDirectory = join(projectRoot, ".domovoi", "skills", "signed")
+    await mkdir(skillDirectory, { recursive: true })
+    const content = "---\nname: signed\ndescription: Signed project instructions.\n---\n\n# Signed\n"
+    await writeFile(join(skillDirectory, "SKILL.md"), content)
+    const signer = generateSkillSigningKey()
+    const contentDigest = skillContentDigest(content)
+    const keyId = skillKeyId(signer.publicKey)
+    await writeFile(join(skillDirectory, "SKILL.md.sig"), JSON.stringify({
+      version: 1,
+      contentDigest,
+      algorithm: "ed25519",
+      keyId,
+      value: signSkillDigest(contentDigest, signer.privateKey),
+    }))
+    const trustPath = join(projectRoot, "state", "skill-trusted-keys.json")
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(signer.publicKey))
+    const errorSink = vi.fn()
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.project!.path = projectRoot
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agents: {},
+      skillTrustPath: trustPath,
+      errorSink,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+
+    expect(await rpc(1, "skill.list", {})).toMatchObject({
+      result: expect.arrayContaining([expect.objectContaining({
+        name: "signed",
+        signature: {
+          state: "verified",
+          algorithm: "ed25519",
+          keyId,
+          value: expect.any(String),
+          verifiedBy: trustPath,
+          verifiedAt: expect.any(String),
+        },
+        trust: { state: "trusted", reason: "verified-signature", authority: `signature · ${keyId}` },
+      })]),
+    })
+    expect(await rpc(2, "skill.inventory", {})).toMatchObject({
+      result: {
+        skills: expect.arrayContaining([expect.objectContaining({
+          name: "signed",
+          signature: { state: "verified" },
+          trust: { state: "trusted", reason: "verified-signature" },
+        })]),
+      },
+    })
+
+    if (process.platform !== "win32") {
+      await chmod(trustPath, 0o644)
+      expect(await rpc(3, "skill.list", {})).toMatchObject({
+        result: expect.arrayContaining([expect.objectContaining({
+          name: "signed",
+          signature: expect.objectContaining({ state: "unverified", keyId }),
+          trust: { state: "untrusted", reason: "unverified-signature" },
+        })]),
+      })
+      expect(errorSink).toHaveBeenCalledWith({
+        context: "skill-trust",
+        detail: `Skill trust file must not be readable by other users: ${trustPath}`,
+      })
+    }
     socket.close()
   })
 

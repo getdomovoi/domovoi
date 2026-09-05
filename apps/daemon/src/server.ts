@@ -151,6 +151,7 @@ import {
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
 import type { SkillReviews } from "./skill-reviews.js"
+import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -761,6 +762,7 @@ export type DaemonServerOptions = {
   usageLedger?: DaemonUsageLedger
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
+  skillTrustPath?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
@@ -873,6 +875,7 @@ export class DomovoiDaemon {
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
+  #skillTrustPath: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
@@ -1055,6 +1058,7 @@ export class DomovoiDaemon {
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
+    this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath(homedir())
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -2849,7 +2853,10 @@ export class DomovoiDaemon {
     if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
       this.#fileSkillCatalog = {
         projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews),
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews, {
+          trustPath: this.#skillTrustPath,
+          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+        }),
       }
     }
     return this.#fileSkillCatalog.catalog
