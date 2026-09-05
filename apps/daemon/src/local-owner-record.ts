@@ -26,7 +26,11 @@ export const localOwnerRecordSchema = z.discriminatedUnion("state", [
   z.object({ ...ownerFields, state: z.literal("starting") }).strict(),
   z.object({ ...ownerFields, state: z.literal("ready"), url: fleetDirectEndpointSchema }).strict(),
   z.object({ ...ownerFields, state: z.literal("stopping") }).strict(),
-])
+]).superRefine((record, context) => {
+  if (record.state !== "none" && record.owner !== "daemon" && record.serviceRegistrationId !== undefined) {
+    context.addIssue({ code: "custom", path: ["serviceRegistrationId"], message: "Only a daemon owner may carry a service registration" })
+  }
+})
 export type LocalOwnerRecord = z.infer<typeof localOwnerRecordSchema>
 export type ReadyLocalOwner = Extract<LocalOwnerRecord, { state: "ready" }>
 export const maximumLocalOwnerRecordBytes = 16 * 1024

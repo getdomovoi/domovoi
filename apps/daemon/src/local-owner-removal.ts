@@ -5,7 +5,8 @@ import { dirname, join } from "node:path"
 import { machineIdSchema } from "@getdomovoi/protocol"
 import { z } from "zod"
 
-import { readLocalProfileFile, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
+import { readLocalOwnerRecord, readLocalProfileFile, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
+import type { OperationDeadline } from "./operation-deadline.js"
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
 
 export const localOwnerRemovalReceiptSchema = z.object({
@@ -48,39 +49,58 @@ export function readLocalOwnerRemovalReceipt(homeDirectory: string): LocalOwnerR
 
 export function writeLocalOwnerRemovalReceipt(
   homeDirectory: string, lease: ProfileLease, receipt: LocalOwnerRemovalReceipt,
+  deadline: OperationDeadline,
 ): void {
+  deadline.throwIfExpired()
   assertProfileLeaseHeld(lease)
   const text = `${JSON.stringify(localOwnerRemovalReceiptSchema.parse(receipt))}\n`
   if (Buffer.byteLength(text) > maximumReceiptBytes) throw new Error("Owner removal receipt exceeds its size limit")
   const path = localOwnerRemovalReceiptPath(homeDirectory)
   const staging = `${path}.${randomUUID()}.partial`
   let descriptor: number | undefined
+  const failures: unknown[] = []
+  const closeFile = () => {
+    if (descriptor === undefined) return
+    const owned = descriptor
+    descriptor = undefined
+    // A failed close does not prove the descriptor stayed open. Never close
+    // that numeric handle again, which could refer to a different file.
+    closeSync(owned)
+  }
   try {
     descriptor = openSync(staging, "wx", 0o600)
     writeFileSync(descriptor, text)
     fsyncSync(descriptor)
-    closeSync(descriptor)
-    descriptor = undefined
+    closeFile()
+    deadline.throwIfExpired()
     renameSync(staging, path)
     // Windows does not expose directory fsync through Node. Receipt contents
     // are flushed before rename on every platform; POSIX also flushes the name.
     if (process.platform !== "win32") {
       descriptor = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY)
       fsyncSync(descriptor)
-      closeSync(descriptor)
-      descriptor = undefined
+      closeFile()
     }
   } catch (error) {
-    throw new Error(`Owner removal receipt publication did not complete at ${path}. No ownership recovery was performed.`, { cause: error })
+    failures.push(error)
   } finally {
-    try { if (descriptor !== undefined) closeSync(descriptor) } finally { rmSync(staging, { force: true }) }
+    try { closeFile() } catch (error) { failures.push(error) }
+    try { rmSync(staging, { force: true }) } catch (error) { failures.push(error) }
   }
+  if (failures.length > 0) throw new Error(`Owner removal receipt publication did not complete at ${path}. A staging file may remain at ${staging}. No ownership recovery was performed.`, {
+    cause: new AggregateError(failures, "Receipt publication and cleanup failures"),
+  })
 }
 
 export function retireRemovedLocalOwner(
   homeDirectory: string, lease: ProfileLease, record: Exclude<LocalOwnerRecord, { state: "none" }>,
+  deadline: OperationDeadline,
 ): boolean {
+  deadline.throwIfExpired()
   assertProfileLeaseHeld(lease)
+  const current = readLocalOwnerRecord(homeDirectory)
+  if (!current || current.state === "none" || current.instanceId !== record.instanceId
+    || current.machineId !== record.machineId || current.serviceRegistrationId !== record.serviceRegistrationId) return false
   const receipt = readLocalOwnerRemovalReceipt(homeDirectory)
   if (!receipt || receipt.instanceId !== record.instanceId || receipt.machineId !== record.machineId) return false
   if (receipt.authorization.kind === "service-removal"
@@ -88,6 +108,7 @@ export function retireRemovedLocalOwner(
   // This is the receipt's consumption point, under the same lease used to
   // construct the next owner. Keep the receipt as evidence; the new instance
   // cannot use it. A crash before publishing a new owner leaves state 'none'.
+  deadline.throwIfExpired()
   writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
   return true
 }

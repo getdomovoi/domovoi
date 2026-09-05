@@ -26,7 +26,7 @@ export type LocalDaemonHandle =
   | { kind: "owned"; endpoint: LocalDaemonEndpoint; stop(): Promise<void> }
   | { kind: "attached"; owner: "daemon" | "desktop"; endpoint: LocalDaemonEndpoint; closed: Promise<void>; detach(): void }
   | { kind: "refused"; reason: LocalDaemonRefusalReason; message: string }
-export type AcquireLocalDaemonOptions = Omit<ProductionDaemonOptions, "owner"> & {
+export type AcquireLocalDaemonOptions = Omit<ProductionDaemonOptions, "owner" | "serviceRegistrationId"> & {
   // Reconnects must rediscover the owner, never turn a restart gap into a new
   // Desktop daemon. Each attempt gets one finite budget before any resource.
   mode: "start-or-attach" | "attach-only"
@@ -151,7 +151,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     // its record, and an installed but restarting service keeps its config.
     if (options.mode !== "start-or-attach"
       || existsSync(serviceConfigurationPath(homeDirectory, process.platform))) return refused("owner-unreachable")
-    if (record && record.state !== "none" && !retireRemovedLocalOwner(homeDirectory, lease, record)) return refused("owner-unreachable")
+    if (record && record.state !== "none" && !retireRemovedLocalOwner(homeDirectory, lease, record, deadline)) return refused("owner-unreachable")
     deadline.throwIfExpired()
     const ownedLease = lease
     lease = undefined

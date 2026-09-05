@@ -36,7 +36,7 @@ export function runProfileCommand(args: readonly string[], input: {
       authorization: { kind: "operator" as const, confirmation: "no-supervisor-will-restart" as const, username: userInfo().username },
     }
     deadline.throwIfExpired()
-    writeLocalOwnerRemovalReceipt(input.homeDirectory, lease, receipt)
+    writeLocalOwnerRemovalReceipt(input.homeDirectory, lease, receipt, deadline)
     input.stdout(`Recorded your no-supervisor confirmation for owner instance ${record.instanceId} at ${localOwnerRemovalReceiptPath(input.homeDirectory)}. No daemon was started. Reopen Desktop to recover this profile.\n`)
     return 0
   } catch (error) {
