@@ -411,6 +411,14 @@ export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): st
     : "no-machine"
 }
 
+// The daemon keys its catalog by the project path, and a branch can carry
+// different project skills, so a refresh follows those facts and nothing else
+// a workspace change may bring.
+export function skillProjectRefreshKey(snapshot: WorkspaceSnapshot | null): string {
+  const project = snapshot?.project
+  return project ? JSON.stringify([project.id, project.path, project.branch]) : "no-project"
+}
+
 const defaultRuntime: Runtime = {
   provider: "codex",
   model: "default",
@@ -3507,6 +3515,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
   const skillMachineKey = skillInventoryRefreshKey(snapshot)
+  const skillProjectKey = skillProjectRefreshKey(snapshot)
+  // The composer names the skills a turn carries, so the catalog cannot wait
+  // for someone to open the Skills surface first.
+  const skillsWanted = surface === "skills" || skillProjectKey !== "no-project"
   const skillMachine = useMemo(() => {
     if (skillMachineKey === "no-machine") return null
     const [id, name, platform, arch, version] = JSON.parse(skillMachineKey) as [
@@ -3842,10 +3854,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     return () => { active = false }
   }, [connected, listProviderSecrets, surface])
 
+  // A refresh follows the machine and project keys, a reconnect, and an
+  // explicit retry. Other workspace changes and surface moves leave the catalog
+  // alone, and a refresh they would have made obsolete is cancelled rather than
+  // left to finish for nothing.
   useEffect(() => {
-    // The composer names the skills a turn carries, so the catalog cannot wait
-    // for someone to open the Skills surface first.
-    if (surface !== "skills" && !snapshot?.project) return
+    if (!skillsWanted) return
     if (!connected) {
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
@@ -3856,10 +3870,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       return
     }
     let active = true
+    const refresh = new AbortController()
+    const options = { signal: refresh.signal }
     setSkillsLoading(true)
     setSkillsError("")
-    void Promise.all([listSkills(), getSkillInventory()]).then(
-      async ([discovered, inventory]) => {
+    void Promise.all([listSkills(options), getSkillInventory(options)]).then(
+      ([discovered, inventory]) => {
         if (!active) return
         setSkills(discovered)
         // Only this machine answers. Asking a fleet member for its inventory is
@@ -3880,15 +3896,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     ).finally(() => {
       if (active) setSkillsLoading(false)
     })
-    return () => { active = false }
+    return () => {
+      active = false
+      refresh.abort()
+    }
   }, [
     connected,
     getSkillInventory,
     listSkills,
     skillMachine,
+    skillProjectKey,
     skillsRefresh,
-    snapshot?.project,
-    surface,
+    skillsWanted,
   ])
 
   useEffect(() => {

@@ -1263,6 +1263,59 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("cancels a skill catalog refresh through its request signals", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+    const controller = new AbortController()
+
+    const listing = client.listSkills({ signal: controller.signal }).catch((cause: unknown) => cause)
+    const inventory = client.getSkillInventory({ signal: controller.signal }).catch((cause: unknown) => cause)
+    controller.abort()
+
+    await expect(listing).resolves.toMatchObject({ name: "AbortError" })
+    await expect(inventory).resolves.toMatchObject({ name: "AbortError" })
+    expect(vi.getTimerCount()).toBe(0)
+    client.disconnect()
+  })
+
+  it("drops the daemon's late answer to a cancelled request without a protocol error", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+    const controller = new AbortController()
+
+    const listing = client.listSkills({ signal: controller.signal }).catch((cause: unknown) => cause)
+    controller.abort()
+    await expect(listing).resolves.toMatchObject({ name: "AbortError" })
+
+    socket.receive({ jsonrpc: "2.0", id: 2, result: [] })
+    expect(protocolErrors).toEqual([])
+
+    const inventory = client.getSkillInventory()
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        machine: { id: "machine-local", name: "devbox", platform: "linux", arch: "x64", version: "0.0.1" },
+        skills: [],
+      },
+    })
+    await expect(inventory).resolves.toMatchObject({ machine: { id: "machine-local" } })
+    expect(protocolErrors).toEqual([])
+    client.disconnect()
+  })
+
   it("fetches only metadata for fleet skill comparison", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()

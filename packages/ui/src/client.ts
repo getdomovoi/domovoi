@@ -159,6 +159,8 @@ function requestAbortError(signal: AbortSignal): Error {
   return new DOMException("Daemon RPC request aborted", "AbortError")
 }
 
+export const maximumReleasedRequests = 256
+
 // Every greeting this package sends carries the same build, so pairing and the
 // workspace connection cannot drift apart.
 export const clientVersion = "0.0.1"
@@ -170,6 +172,10 @@ export class DomovoiClient extends EventTarget {
   #socket: WebSocket | undefined
   #requestId = 0
   #pending = new Map<number, PendingRequest>()
+  // A request this client gave up on, by cancellation or by its deadline, is
+  // still answered by the daemon. That answer is expected, so it is dropped
+  // here rather than read as a daemon this client no longer understands.
+  #released = new Set<number>()
   #opening: Promise<WorkspaceSnapshot> | undefined
   #cancelOpening: ((error: Error) => void) | undefined
   #reconnectDelayMs: number
@@ -445,12 +451,14 @@ export class DomovoiClient extends EventTarget {
         const pending = this.#pending.get(id)
         if (!pending) return
         this.#pending.delete(id)
+        this.#release(id)
         pending.cleanup()
         pending.reject(requestAbortError(options.signal!))
       }
       const onExpire = () => {
         if (this.#pending.get(id) !== pending) return
         this.#pending.delete(id)
+        this.#release(id)
         pending.cleanup()
         pending.reject(new DomovoiRpcTimeoutError(method, target, deadline.budgetMs))
       }
@@ -737,12 +745,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("usage.window", window)
   }
 
-  listSkills(): Promise<SkillSummary[]> {
-    return this.request("skill.list", {})
+  listSkills(options?: DomovoiRequestOptions): Promise<SkillSummary[]> {
+    return this.request("skill.list", {}, options)
   }
 
-  getSkillInventory(): Promise<SkillInventory> {
-    return this.request("skill.inventory", {})
+  getSkillInventory(options?: DomovoiRequestOptions): Promise<SkillInventory> {
+    return this.request("skill.inventory", {}, options)
   }
 
   readSkill(id: string): Promise<SkillDocument> {
@@ -933,6 +941,16 @@ export class DomovoiClient extends EventTarget {
     }
   }
 
+  // Bounded so a daemon that never answers cannot grow this set without end;
+  // the oldest release is forgotten first, since its answer is the least due.
+  #release(id: number): void {
+    if (this.#released.size >= maximumReleasedRequests) {
+      const oldest = this.#released.values().next()
+      if (!oldest.done) this.#released.delete(oldest.value)
+    }
+    this.#released.add(id)
+  }
+
   #reportProtocolError(reason: string): void {
     this.dispatchEvent(new CustomEvent("protocol-error", { detail: { reason } }))
   }
@@ -1061,6 +1079,7 @@ export class DomovoiClient extends EventTarget {
     }
     const pending = this.#pending.get(response.data.id)
     if (!pending) {
+      if (this.#released.delete(response.data.id)) return
       this.#reportProtocolError(
         "Daemon sent a response for a request this client is not tracking",
       )
