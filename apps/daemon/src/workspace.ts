@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { chmod, lstat, mkdir, open, readFile, readlink, realpath, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, open, readFile, readlink, realpath, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -11,6 +11,10 @@ const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 const safeRemoteName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 const commitSha = /^[a-f0-9]{40}$/u
+// Reserve synchronously before the first await, across service instances.
+// Otherwise a delayed claim opener could acquire after the winner completes
+// and turn a concurrent request into an apparently sequential update.
+const activeBundleRestores = new Set<string>()
 
 function checkpointRef(commit: string): string {
   return `refs/domovoi/checkpoints/${commit}`
@@ -79,8 +83,10 @@ const maximumEvidenceAttempts = 3
 const maximumGitOutputBytes = 32 * 1_024 * 1_024
 
 export class SessionWorktreeExistsError extends Error {
-  constructor() {
-    super("Session worktree already exists")
+  constructor(restoreClaimPath?: string) {
+    super(restoreClaimPath === undefined
+      ? "Session worktree already exists"
+      : `Session worktree already exists or its restore claim is held at ${restoreClaimPath}. Stop Domovoi and its supervisor before removing a confirmed stale claim.`)
     this.name = "SessionWorktreeExistsError"
   }
 }
@@ -1208,12 +1214,46 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!safeSessionId.test(sessionId)) {
       throw new Error("Session id is not safe for a worktree")
     }
+    signal?.throwIfAborted()
+    const claimDirectory = join(this.worktreeRoot, ".restore-claims")
+    const claimPath = join(claimDirectory, sessionId)
+    if (activeBundleRestores.has(claimPath)) throw new SessionWorktreeExistsError()
+    activeBundleRestores.add(claimPath)
+    let claim: Awaited<ReturnType<typeof open>> | undefined
+    try {
+      await mkdir(claimDirectory, { recursive: true })
+      signal?.throwIfAborted()
+      try {
+        // The filesystem claim also excludes independent daemon processes.
+        // Never wait, steal a timed-out claim, or remove another owner's file.
+        claim = await open(claimPath, "wx", 0o600)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new SessionWorktreeExistsError(claimPath)
+        throw error
+      }
+      signal?.throwIfAborted()
+      return await this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal)
+    } finally {
+      try {
+        if (claim) {
+          await claim.close()
+          await unlink(claimPath)
+        }
+      } finally {
+        activeBundleRestores.delete(claimPath)
+      }
+    }
+  }
 
+  async #restoreClaimedSessionFromBundle(
+    bundlePath: string,
+    sessionId: string,
+    options: SessionBundleRestoreOptions,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
     const repository = await this.inspect(options.repositoryPath, signal)
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
-    await mkdir(this.worktreeRoot, { recursive: true })
-
     // Each restore owns its temporary ref, so concurrent attempts cannot
     // delete or retarget one another's fetched commit.
     const incomingPrefix = `refs/domovoi/incoming/${sessionId}/${randomUUID()}`

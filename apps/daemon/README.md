@@ -121,6 +121,19 @@ The package retains `@getdomovoi/daemon/internal` as an inert artifact-compatibi
 It does not expose the raw server constructor or a supported runtime API. Daemon tests import the
 source server module directly.
 
+## Bundle restore claims
+
+Only one bundle restore may mutate a session worktree at a time. A process-local reservation is
+taken before asynchronous work, and an exclusive file at
+`<worktree-root>/.restore-claims/<session-id>` also excludes other daemon processes. Contention
+fails immediately, without waiting or retrying. Restoring a different session remains independent;
+a later incremental restore is still allowed after the earlier operation settles.
+
+Success, failure and cancellation release the claim. A killed process can leave its claim behind.
+Domovoi never deletes a claim because it looks old. If the error names a stale claim, stop every
+Domovoi process using that worktree root and its supervisor, confirm no restore is active, then
+remove only the named claim file. Keep the session worktree, repository and Git refs intact.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed
