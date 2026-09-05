@@ -12,7 +12,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, type ReadyLocalOwner } from "./local-owner-record.js"
-import { writeLocalOwnerRemovalReceipt } from "./local-owner-removal.js"
+import { writeLocalOwnerRemovalReceipt, type LocalOwnerRemovalReceipt } from "./local-owner-removal.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { CliProviderProbe } from "./providers.js"
 import { claimProfile } from "./profile-lease.js"
@@ -175,7 +175,7 @@ async function acquire(homeDirectory: string, deadline: OperationDeadline) {
 }
 
 function receiptPath(home: string) { return join(home, ".domovoi", "local-owner-removal.json") }
-function receipt(record: ReadyLocalOwner) {
+function receipt(record: ReadyLocalOwner): LocalOwnerRemovalReceipt {
   return {
     version: 1, instanceId: record.instanceId, machineId: record.machineId,
     completedAt: "2026-09-05T12:00:00.000Z",
