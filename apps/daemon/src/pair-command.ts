@@ -1,5 +1,6 @@
 import type { DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
+import { CliDeadlineError } from "./cli-rpc.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
 
 export type PairCommandDependencies = {
@@ -23,10 +24,15 @@ export async function runPairCommand(
   let issued: DeviceIssueCodeResult
   try {
     issued = await dependencies.issue()
-  } catch {
-    // The underlying error is not printed: it can quote the request, and this
-    // command runs where someone may be reading the screen aloud.
-    dependencies.stderr("Could not ask the daemon for a pairing code\n")
+  } catch (error) {
+    // Pairing is the first command a new machine runs, so a daemon that never
+    // answers has to say which address was waited on and what to do next. Only
+    // this CLI's own deadline refusal is repeated: any other error can quote
+    // the request, and this command runs where someone may be reading the
+    // screen aloud.
+    dependencies.stderr(error instanceof CliDeadlineError
+      ? `${error.message}\n`
+      : "Could not ask the daemon for a pairing code\n")
     return 1
   }
 
