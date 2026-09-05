@@ -1,7 +1,8 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { once } from "node:events"
 
 import { createEmptyWorkspace, demoWorkspace, protocolVersion } from "@getdomovoi/protocol"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 
 import { claimMachineSocket } from "./machine-socket.js"
@@ -107,7 +108,7 @@ describe("machine enrollment socket", () => {
     })
     deadlines.push(deadline)
     const refused = expect(claimMachineSocket({ ...machine.input, deadline })).rejects.toThrow("different machine")
-    await vi.waitFor(() => expect(machine.calls.at(-1)?.method).toBe("device.revokeCurrent"))
+    await waitForDaemon(() => expect(machine.calls.at(-1)?.method).toBe("device.revokeCurrent"))
     expire!()
     await refused
   })
@@ -138,7 +139,7 @@ describe("machine enrollment socket", () => {
     deadlines.push(deadline)
     const outcome = claimMachineSocket({ ...machine.input, deadline })
     const refused = expect(outcome).rejects.toThrow(/deadline|answer/)
-    await vi.waitFor(() => expect(machine.calls.at(-1)?.method).toBe(silenceAt))
+    await waitForDaemon(() => expect(machine.calls.at(-1)?.method).toBe(silenceAt))
     expire!()
     await refused
     expect(machine.calls.at(-1)?.method).toBe(silenceAt)
