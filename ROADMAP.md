@@ -447,6 +447,11 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     current facts. Close with one production daemon factory plus startup reconciliation and
     restart tests.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+  - Audit item F3. `domovoid pair` and `domovoid open` spend one 15-second deadline across
+    connect, `system.hello`, and the call, so a listener that accepts the socket and then says
+    nothing is refused with the address waited on and a remedy rather than holding the terminal.
+    Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's:
+    a connection stalled inside a TLS handshake can outlive the refusal.
 - [x] Bound pairing claim admission and keep pre-auth noise out of authenticated audit history
   - Audit item A2, closed by #247. Claims are admitted before code validation: 3 per TCP source
     and 30 per listener within 60 seconds, and reconnects, forwarding headers, new codes, and
