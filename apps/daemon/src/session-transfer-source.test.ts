@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -465,7 +466,10 @@ describe("prepared source transfer delivery", () => {
     })).rejects.toThrow("Target transfer identity changed")
   })
 
-  it("journals every byte before streaming only the target's missing members", async () => {
+  it("journals every byte before streaming only the target's missing members", async ({ signal }) => {
+    // Opt-in scheduling pressure, without an unbounded hold or a late fixture
+    // write after Vitest cancels the test. The normal suite does not sleep.
+    if (process.env.DOMOVOI_TEST_SLOW_FIXTURES === "1") await delay(5_500, undefined, { signal })
     const repositoryBytes = Buffer.alloc(600_000, 7)
     const { packaged } = await transferFixture(repositoryBytes)
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-outgoing-transfer-"))
