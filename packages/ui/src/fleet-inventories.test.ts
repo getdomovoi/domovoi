@@ -164,7 +164,7 @@ describe("collectFleetInventories", () => {
     const collecting = collectFleetInventories({
       local,
       fleet,
-      open: async (candidate) => {
+      open: async () => {
         const answer = deferred<SkillInventory>()
         answers.push(answer)
         inFlight += 1
