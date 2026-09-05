@@ -241,6 +241,63 @@ describe("serviceStatus", () => {
 })
 
 describe("runServiceCommand", () => {
+  it.each([
+    linux,
+    darwin,
+    { ...windowsScript, home: "C:\\Users\\dl" },
+  ])("preserves non-default daemon configuration on $platform", async (target) => {
+    const root = target.home
+    const separator = target.platform === "win32" ? "\\" : "/"
+    const at = (name: string) => `${root}${separator}${name}`
+    const dependencies = command({
+      ...target,
+      environment: {
+        DOMOVOI_HOST: "0.0.0.0",
+        DOMOVOI_PORT: "7717",
+        DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+        DOMOVOI_TLS_CERT_PATH: at("cert.pem"),
+        DOMOVOI_TLS_KEY_PATH: at("private.key"),
+        DOMOVOI_CREDENTIAL_PATH: at("daemon.token"),
+        DOMOVOI_MACHINE_IDENTITY_PATH: at("machine.json"),
+        DOMOVOI_ADVERTISE_HOST: "studio.example.com",
+        DOMOVOI_ALLOWED_ORIGINS: "https://domovoi.example.com",
+      },
+    })
+
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+    const configuration = vi.mocked(dependencies.write).mock.calls.find(([path]) => path.endsWith("service.json"))
+    expect(configuration, "the supervised launch must carry a configuration file").toBeDefined()
+    expect(JSON.parse(configuration![1])).toEqual({
+      version: 1,
+      homeDirectory: root,
+      host: "0.0.0.0",
+      port: 7717,
+      allowRemoteTransport: true,
+      tls: { certPath: at("cert.pem"), keyPath: at("private.key") },
+      credentialPath: at("daemon.token"),
+      machineIdentityPath: at("machine.json"),
+      advertiseHost: "studio.example.com",
+      allowedOrigins: ["https://domovoi.example.com"],
+    })
+    const launch = target.platform === "win32"
+      ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")
+      : vi.mocked(dependencies.write).mock.calls.find(([path]) => !path.endsWith("service.json"))?.[1]
+    expect(launch).toContain("--service-config")
+    expect(launch).toContain(configuration![0])
+  })
+
+  it("rejects an environment-only bearer before writing or installing a service", async () => {
+    const dependencies = command({
+      ...windowsScript,
+      home: "C:\\Users\\dl",
+      environment: { DOMOVOI_AUTH_TOKEN: "s".repeat(43) },
+    })
+    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith(expect.stringContaining("DOMOVOI_CREDENTIAL_PATH"))
+    expect(dependencies.write).not.toHaveBeenCalled()
+    expect(dependencies.run).not.toHaveBeenCalled()
+  })
+
   it("installs and says where the service went", async () => {
     const dependencies = command()
     await expect(runServiceCommand(["service", "install"], dependencies)).resolves.toBe(0)
