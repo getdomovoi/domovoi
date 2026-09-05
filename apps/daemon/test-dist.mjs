@@ -55,6 +55,7 @@ assert.match(help.stdout, /domovoid profile recover --confirm-no-supervisor/)
 assert.match(help.stdout, /asserts that no supervisor will restart this profile/)
 assert.match(help.stdout, /DOMOVOI_AUTH_TOKEN/)
 assert.match(help.stdout, /DOMOVOI_CREDENTIAL_PATH/)
+assert.match(help.stdout, /domovoid skill sign <skill-path> --key <private-key-path>/)
 assert.match(runCli("-h").stdout, /^Usage: domovoid/m)
 
 const unknown = runCli("--unknown")

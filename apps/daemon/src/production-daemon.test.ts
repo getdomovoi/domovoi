@@ -132,6 +132,7 @@ describe("createProductionDaemon", () => {
       machineCredentials,
       statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
       worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
+      skillTrustPath: join(homeDirectory, ".domovoi", "skill-trusted-keys.json"),
       manageStateDirectoryPermissions: true,
     })
     expect(handle).toMatchObject({
