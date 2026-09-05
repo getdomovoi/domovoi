@@ -393,7 +393,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const connectToMachine = vi.fn(async () => ({
       call: async () => ({
@@ -1340,7 +1340,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const save = store.saveAsync.bind(store)
     vi.spyOn(store, "saveAsync").mockImplementation(async (snapshot) => {
@@ -1530,7 +1530,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     let checkpointed = false
     let statusCalls = 0
@@ -1820,7 +1820,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const remoteCalls: Array<{ method: string, params: Record<string, unknown> }> = []
     const daemon = new DomovoiDaemon({
@@ -1935,7 +1935,7 @@ describe("transactional session transfer RPC", () => {
         connection: "local",
         capabilities: ["sessions"],
         protocolVersion,
-        transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+        transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
       }, Date.now())
       const connectToMachine = vi.fn(async () => ({
         call: async () => ({
@@ -2003,7 +2003,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion: source.protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const daemon = new DomovoiDaemon({
       port: 0,
@@ -2061,7 +2061,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const checkpoint = vi.fn(async () => ({ commit: checkpointCommit, changedFiles: [] }))
     const terminal = {
@@ -2177,7 +2177,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     let checkpointed = false
     const daemon = new DomovoiDaemon({
@@ -2289,7 +2289,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const outgoing = new FileTransferTransactions(join(scratch, "outgoing"))
     const targetTransactions = new FileTransferTransactions(join(scratch, "target"))
@@ -2460,7 +2460,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     let checkpointed = false
     const daemon = new DomovoiDaemon({
@@ -2628,7 +2628,7 @@ describe("transactional session transfer RPC", () => {
       connection: "local",
       capabilities: ["sessions"],
       protocolVersion,
-      transports: [{ kind: "local", endpoint: "ws://studio/rpc", authenticated: true }],
+      transports: [{ kind: "local", endpoint: "ws://127.0.0.1/rpc", authenticated: true }],
     }, Date.now())
     const originalSave = store.saveAsync.bind(store)
     let releaseFirstFreeze = () => {}

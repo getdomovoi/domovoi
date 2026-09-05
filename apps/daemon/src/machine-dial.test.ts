@@ -331,14 +331,13 @@ describe("createMachineDialer", () => {
     })
 
     await expect(io.dial(machineId))
-      .rejects.toThrow("Refusing to authenticate over an unencrypted connection")
+      .rejects.toThrow("Remote transport endpoint requires TLS")
     expect(io.opened).toEqual([])
   })
 
   it("refuses a remote machine that claims a loopback address", async () => {
-    // Nothing ties an advertised endpoint to the transport it claims, so a
-    // machine elsewhere can name a loopback address and be handed a credential
-    // meant for it by whatever is listening here.
+    // The schema now rejects this before the dialer's peer-locality guard.
+    // Both boundaries must refuse without handing a credential to loopback.
     const io = dialer({
       machines: [machine({
         connection: "tailnet",
@@ -349,7 +348,7 @@ describe("createMachineDialer", () => {
     })
 
     await expect(io.dial(machineId))
-      .rejects.toThrow("Refusing to authenticate over an unencrypted connection")
+      .rejects.toThrow("Remote transport endpoint requires TLS")
     expect(io.opened).toEqual([])
   })
 

@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { fleetDirectEndpointSchema, machineIdSchema, maximumFleetMachines } from "@getdomovoi/protocol"
+import { loopbackTransportEndpointSchema, machineIdSchema, maximumFleetMachines } from "@getdomovoi/protocol"
 
 export const maximumSshConfigurationBytes = 32 * 1_024
 
@@ -31,10 +31,7 @@ export const tailnetHostSchema = z.string().min(1).max(253).refine((host) => {
 // advertisements, and this setting neither starts SSH nor accepts remote URLs.
 const configuredSshTunnelSchema = z.object({
   machineId: machineIdSchema,
-  endpoint: fleetDirectEndpointSchema.refine((endpoint) => {
-    try { return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(endpoint).hostname) }
-    catch { return false }
-  }),
+  endpoint: loopbackTransportEndpointSchema,
 }).strict()
 
 export const configuredSshTunnelsSchema = z.array(configuredSshTunnelSchema).max(maximumFleetMachines)
