@@ -5,6 +5,7 @@ import { z } from "zod"
 
 import { parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentConfig } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
+import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-config.js"
 import { withinServiceDeadline } from "./deadline.js"
 
 const maximumConfigurationBytes = 64 * 1_024
@@ -19,6 +20,8 @@ const configurationSchema = z.object({
   machineIdentityPath: pathSchema,
   tls: z.object({ certPath: pathSchema, keyPath: pathSchema }).strict().optional(),
   advertiseHost: z.string().optional(),
+  tailnetHost: tailnetHostSchema.optional(),
+  sshTunnels: configuredSshTunnelsSchema.optional(),
   allowedOrigins: z.array(z.string()).optional(),
   allowRemoteTransport: z.boolean(),
 }).strict()
@@ -45,6 +48,8 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
       DOMOVOI_TLS_KEY_PATH: config.tls.keyPath,
     } : {}),
     ...(config.advertiseHost !== undefined ? { DOMOVOI_ADVERTISE_HOST: config.advertiseHost } : {}),
+    ...(config.tailnetHost !== undefined ? { DOMOVOI_TAILNET_HOST: config.tailnetHost } : {}),
+    ...(config.sshTunnels !== undefined ? { DOMOVOI_SSH_TUNNELS: JSON.stringify(config.sshTunnels) } : {}),
     ...(config.allowedOrigins !== undefined ? { DOMOVOI_ALLOWED_ORIGINS: config.allowedOrigins.join(",") } : {}),
   }
 }
@@ -81,12 +86,14 @@ export function serviceConfigurationPath(home: string, platform: string): string
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, allowedOrigins, registrationId, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, ...required } = configurationSchema.parse(JSON.parse(text))
     const config: ServiceConfiguration = {
       ...required,
       ...(registrationId !== undefined ? { registrationId } : {}),
       ...(tls !== undefined ? { tls } : {}),
       ...(advertiseHost !== undefined ? { advertiseHost } : {}),
+      ...(tailnetHost !== undefined ? { tailnetHost } : {}),
+      ...(sshTunnels !== undefined ? { sshTunnels } : {}),
       ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
     }
     // Reuse the production listener and origin checks, including required TLS.
