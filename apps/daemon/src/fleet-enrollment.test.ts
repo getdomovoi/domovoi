@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { DatabaseSync } from "node:sqlite"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -209,7 +210,7 @@ describe("fleet enrollment coordinator", () => {
     let deliver: ((value: unknown) => void) | undefined
     f.call.mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve }))
     const heartbeat = f.service.refresh()
-    await vi.waitFor(() => expect(deliver).toBeDefined())
+    await waitForDaemon(() => expect(deliver).toBeDefined())
     expect(await f.service.forget({ machineId: targetId, client: "cli" })).toMatchObject({ outcome: "forgotten" })
     deliver!(descriptor)
     await heartbeat
@@ -223,7 +224,7 @@ describe("fleet enrollment coordinator", () => {
     let deliver: ((value: typeof response) => void) | undefined
     f.claim.mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve }))
     const first = f.service.enroll(params)
-    await vi.waitFor(() => expect(deliver).toBeDefined())
+    await waitForDaemon(() => expect(deliver).toBeDefined())
     expect(await f.service.enroll({ ...params, endpoint: "wss://another-host/rpc" }))
       .toEqual({ outcome: "refused", reason: "operation-in-progress" })
     deliver!(response)
