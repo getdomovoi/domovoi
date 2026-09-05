@@ -19,7 +19,7 @@ import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
-import { readServiceConfiguration, serviceEnvironment } from "./service/configuration.js"
+import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration } from "./service/configuration.js"
 
 async function greetCli(socket: import("ws").WebSocket): Promise<void> {
   const requestId = 1
@@ -291,10 +291,16 @@ async function main() {
     })
     return
   }
-  const serviceConfig = args.length === 2 && args[0] === "--service-config"
-    ? await readServiceConfiguration(args[1]!)
-    : undefined
-  if (args.length > 0 && !serviceConfig) {
+  let serviceConfig: ServiceConfiguration | undefined
+  if (args.length === 2 && args[0] === "--service-config") {
+    try {
+      serviceConfig = await readServiceConfiguration(args[1]!)
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+      process.exitCode = 1
+      return
+    }
+  } else if (args.length > 0) {
     process.stderr.write(`Unknown argument: ${args.join(" ")}\n`)
     process.exitCode = 1
     return

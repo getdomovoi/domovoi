@@ -183,4 +183,35 @@ describe("distributed service CLI", () => {
       }
     }
   }, budget + cleanupBudget + 1_000)
+
+  it.each([
+    { configuration: "unparseable", prepare: (path: string) => writeFile(path, "{ not json\n") },
+    { configuration: "missing", prepare: async () => {} },
+  ])("refuses a $configuration service configuration without a stack trace", async ({ prepare }) => {
+    const deadline = OperationDeadline.start(budget)
+    const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
+    const home = await within(() => mkdtemp(join(tmpdir(), "domovoi-service-config-")))
+    try {
+      const configPath = join(home, "service.json")
+      await within(() => prepare(configPath))
+      const refusal = await within(() => run(process.execPath, [cliPath, "--service-config", configPath], {
+        env: { ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1" },
+        signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()),
+      })).catch((error: unknown) => error as { code?: unknown; stdout: string; stderr: string })
+      expect(refusal).toMatchObject({
+        code: 1,
+        stdout: "",
+        stderr: `Could not load service configuration at ${configPath}. Reinstall the service before restarting.\n`,
+      })
+      expect(refusal.stderr).not.toMatch(/^\s+at /m)
+    } finally {
+      deadline.clear()
+      const cleanup = OperationDeadline.start(cleanupBudget)
+      try {
+        await withinServiceDeadline(cleanup, () => rm(home, { recursive: true, force: true }))
+      } finally {
+        cleanup.clear()
+      }
+    }
+  }, budget + cleanupBudget + 1_000)
 })
