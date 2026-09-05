@@ -23,6 +23,9 @@ vi.mock("node:timers/promises", () => ({
 function taskManager() {
   const task = { registered: true, enabled: true, running: true }
   const effects: ServiceEffects = {
+    claimProfile: vi.fn(() => ({ release: vi.fn() })),
+    removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
+    writeRemovalReceipt: vi.fn(),
     write: vi.fn(async () => {}),
     exists: vi.fn(async () => true),
     remove: vi.fn(async () => {}),
@@ -132,7 +135,11 @@ describe("Windows service removal", () => {
       if (phase === "inspect") vi.mocked(effects.capture).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" })
       if (phase === "remove") vi.mocked(effects.capture).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:1" })
       vi.mocked(effects.capture).mockResolvedValue({ code: 1, stdout: "", stderr: "Access denied" })
-      const pending = expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow("Access denied")
+      const pending = expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow(
+        expect.objectContaining({ message: expect.stringMatching(
+          /Access denied.*task "Domovoi daemon" may now be disabled.*registration and saved configuration are kept.*schtasks \/change \/tn "Domovoi daemon" \/enable.*domovoid service install/s,
+        ) }),
+      )
       await vi.advanceTimersByTimeAsync(100)
       await pending
       expect(effects.remove).not.toHaveBeenCalled()
@@ -204,6 +211,7 @@ describe("Task Scheduler command boundary", () => {
       vi.stubEnv("SystemRoot", root)
       const { effects } = taskManager()
       await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow("SystemRoot")
+      await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.not.toThrow("/enable")
       expect(effects.capture).not.toHaveBeenCalled()
       expect(effects.run).not.toHaveBeenCalled()
       expect(effects.remove).not.toHaveBeenCalled()

@@ -14,9 +14,15 @@ export type WindowsTaskRemovalPlan = {
 }
 
 export class WindowsTaskRemovalError extends Error {
-  constructor(name: string, cause: unknown) {
+  constructor(name: string, cause: unknown, options: { stopIssued?: boolean } = {}) {
     const detail = cause instanceof Error ? cause.message : String(cause)
-    super(`Could not confirm removal of Windows task "${name}". Inspect Task Scheduler and the saved service configuration before retrying: ${detail}`, { cause })
+    // The stop script disables the task before stopping it. Once issued, a
+    // later failure leaves that disabled registration behind; nothing here
+    // re-enables it, so the operator must choose to restore or retry.
+    const disabled = options.stopIssued
+      ? ` The task "${name}" may now be disabled while its registration and saved configuration are kept. To keep the service, re-enable it with schtasks /change /tn "${name}" /enable or reinstall it with domovoid service install. Otherwise retry domovoid service remove.`
+      : ""
+    super(`Could not confirm removal of Windows task "${name}". Inspect Task Scheduler and the saved service configuration before retrying: ${detail}.${disabled}`, { cause })
     this.name = "WindowsTaskRemovalError"
   }
 }
@@ -89,12 +95,12 @@ async function taskResult(command: ServiceCommand, effects: Pick<ServiceEffects,
   return match[1]!
 }
 
-export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<void> {
+export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"removed" | "already-missing"> {
   try {
     let state = await taskResult(plan.stop, effects, deadline)
     // Absence before any stop attempt is idempotent. Once an instance may have
     // been running, disappearance of its registration does not prove it died.
-    if (state === "missing") return
+    if (state === "missing") return "already-missing"
     while (state === "2" || state === "4") {
       await withinServiceDeadline(deadline, () => delay(100, undefined, { signal: deadline.signal }))
       state = await taskResult(plan.inspect, effects, deadline)
@@ -103,7 +109,10 @@ export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: P
     if (await taskResult(plan.remove, effects, deadline) !== "deleted") {
       throw new Error("Task registration disappeared before removal could be confirmed")
     }
+    return "removed"
   } catch (cause) {
-    throw new WindowsTaskRemovalError(plan.name, cause)
+    // Every failure here follows the stop attempt; earlier refusals are
+    // wrapped by the caller without this warning.
+    throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true })
   }
 }
