@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
@@ -550,6 +550,15 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.rotateDevice(params, options)
   }, [])
 
+  const renameDevice = useCallback(async (
+    params: DeviceRenameParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<DeviceRenameResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.renameDevice(params, options)
+  }, [])
+
   // Pairing is one request to this daemon, which claims, greets and stores on
   // its own connection. The budget is the pairing's whole allowance, so a
   // target that accepts the code and then stalls cannot hold the dialog open.
@@ -766,6 +775,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     snapshot,
     revokeDevice,
     rotateDevice,
+    renameDevice,
     transferSession,
     previewTransfer,
     releaseSession,

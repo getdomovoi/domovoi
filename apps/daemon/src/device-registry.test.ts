@@ -250,6 +250,62 @@ describe("SqliteDeviceRegistry", () => {
     expect(() => devices.rotate(paired.device.id)).toThrow(DeviceNotFoundError)
   })
 
+  it("renames a device and changes nothing but its label", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({
+      label: "studio-ipad",
+      binding: { kind: "machine", machineId: `machine-${"c".repeat(32)}` },
+    })
+    devices.markSeen(paired.device.id, "2026-09-04T08:00:00.000Z")
+    const before = devices.list()[0]!
+
+    const renamed = devices.rename(paired.device.id, "  kitchen-ipad  ")
+
+    expect(renamed).toEqual({ ...before, label: "kitchen-ipad" })
+    expect(devices.list()).toEqual([{ ...before, label: "kitchen-ipad" }])
+    expect(devices.verify(paired.token)).toEqual({
+      device: { ...before, label: "kitchen-ipad" },
+      binding: { kind: "machine", machineId: `machine-${"c".repeat(32)}` },
+    })
+  })
+
+  it("keeps a renamed label across a store reload", () => {
+    const database = new DatabaseSync(":memory:")
+    const first = new SqliteDeviceRegistry(database)
+    const paired = first.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    first.rename(paired.device.id, "kitchen-ipad")
+
+    const restarted = new SqliteDeviceRegistry(database)
+
+    expect(restarted.list()).toEqual([{ ...paired.device, label: "kitchen-ipad" }])
+  })
+
+  it("keeps the label of a revoked device editable for the record", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    const revoked = devices.revoke(paired.device.id)
+
+    expect(devices.rename(paired.device.id, "old ipad")).toEqual({ ...revoked, label: "old ipad" })
+    expect(devices.verify(paired.token)).toBeUndefined()
+  })
+
+  it("refuses to rename an unknown device", () => {
+    const { registry: devices } = registry()
+
+    expect(() => devices.rename("device-missing", "kitchen-ipad")).toThrow(DeviceNotFoundError)
+  })
+
+  it.each(["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad"])(
+    "refuses an unusable rename label: %s",
+    (label) => {
+      const { registry: devices } = registry()
+      const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+
+      expect(() => devices.rename(paired.device.id, label)).toThrow("Device label is invalid")
+      expect(devices.list()).toEqual([paired.device])
+    },
+  )
+
   it("keeps credentials usable across daemon restarts", () => {
     const database = new DatabaseSync(":memory:")
     const paired = new SqliteDeviceRegistry(database).pair({

@@ -14,7 +14,7 @@ import {
 } from "./use-workspace"
 
 function FleetActionProbe() {
-  const { transferSession, listDevices, revokeDevice, rotateDevice } = useWorkspace(
+  const { transferSession, listDevices, revokeDevice, rotateDevice, renameDevice } = useWorkspace(
     "ws://127.0.0.1:47831/rpc",
     "web",
   )
@@ -24,6 +24,7 @@ function FleetActionProbe() {
       {typeof listDevices === "function" ? " · can list devices" : ""}
       {typeof revokeDevice === "function" ? " · can revoke a device" : ""}
       {typeof rotateDevice === "function" ? " · can rotate a device" : ""}
+      {typeof renameDevice === "function" ? " · can rename a device" : ""}
     </span>
   )
 }
@@ -79,6 +80,7 @@ describe("useWorkspace", () => {
     expect(markup).toContain("can list devices")
     expect(markup).toContain("can revoke a device")
     expect(markup).toContain("can rotate a device")
+    expect(markup).toContain("can rename a device")
   })
 
   it("does not expose a snapshot owned by another connection target", () => {

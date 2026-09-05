@@ -1886,6 +1886,25 @@ describe("DomovoiClient session transfer and devices", () => {
     client.disconnect()
   })
 
+  it("renames a paired device with only its id and new label", async () => {
+    const { client, socket } = await connected()
+    const device = {
+      id: `device-${"d".repeat(32)}`,
+      label: "kitchen-ipad",
+      pairedAt: "2026-08-31T12:00:00.000Z",
+      binding: { kind: "client", client: "tablet" },
+    }
+
+    const renaming = client.renameDevice({ deviceId: device.id, label: "kitchen-ipad" })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { device } })
+
+    await expect(renaming).resolves.toEqual({ device })
+    expect(sent.method).toBe("device.rename")
+    expect(sent.params).toEqual({ deviceId: device.id, label: "kitchen-ipad" })
+    client.disconnect()
+  })
+
   it("rotates a paired device credential through the daemon", async () => {
     const { client, socket } = await connected()
     const device = {
