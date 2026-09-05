@@ -7,6 +7,7 @@ declare global {
     domovoiDesktop: DesktopWindowBridge & DesktopDaemonBridge
     domovoiLaunchSmoke?: {
       ready(): void
+      failed(message: string): void
     }
   }
 }

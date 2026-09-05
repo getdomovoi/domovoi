@@ -79,6 +79,7 @@ const channels: readonly ChannelSpec[] = [
     unauthorized: { ignored: true },
   },
   { channel: "domovoi:launch-smoke-ready", via: "on", guard: "authorized", unauthorized: { exits: true } },
+  { channel: "domovoi:launch-smoke-failed", via: "on", guard: "authorized", unauthorized: { exits: true } },
 ]
 
 function capturedImage() {
@@ -142,6 +143,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "rendererDeepLinkSink.set": vi.fn((next: DesktopDeepLinkSink | undefined) => { sink = next }),
     "launchSmoke.preloadReady": vi.fn(),
     "launchSmoke.ready": vi.fn(),
+    "launchSmoke.failed": vi.fn(),
     "launchSmoke.unauthorized": vi.fn(),
   } satisfies Record<string, Mock>
   const authorize = vi.fn((_event: DesktopIpcEvent) => authorized)
@@ -170,6 +172,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
       enabled: options.launchSmoke ?? true,
       preloadReady: effects["launchSmoke.preloadReady"],
       ready: effects["launchSmoke.ready"],
+      failed: effects["launchSmoke.failed"],
       unauthorized: effects["launchSmoke.unauthorized"],
     },
   }

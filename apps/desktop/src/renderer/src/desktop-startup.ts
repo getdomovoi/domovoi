@@ -10,7 +10,6 @@ export type DesktopDaemonConnection =
   | { kind: "attached"; owner: DaemonOwner }
 
 export type DesktopStartup =
-  | { kind: "launch-smoke" }
   | { kind: "workspace"; rpcUrl: string; rpcToken: string; daemon: DesktopDaemonConnection }
   | { kind: "refused"; reason: DaemonRefusalReason; message: string }
 
@@ -31,11 +30,9 @@ export function startupFromAcquisition(acquisition: DesktopDaemonAcquisition): D
   }
 }
 
-// The launch smoke only proves the packaged app reaches its renderer, so it is
-// settled before any credential is requested from the main process.
+// Smoke and normal startup resolve the same main-process acquisition.
 export async function resolveDesktopStartup(window: DesktopStartupWindow): Promise<DesktopStartup> {
   if (!window.domovoiDesktop) throw new Error("Desktop bridge is unavailable")
-  if (window.domovoiLaunchSmoke) return { kind: "launch-smoke" }
   return startupFromAcquisition(await window.domovoiDesktop.acquireDaemon())
 }
 

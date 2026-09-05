@@ -22,5 +22,6 @@ if (process.argv.includes("--domovoi-launch-smoke")) {
   ipcRenderer.send("domovoi:launch-smoke-preload-ready")
   contextBridge.exposeInMainWorld("domovoiLaunchSmoke", {
     ready: () => ipcRenderer.send("domovoi:launch-smoke-ready"),
+    failed: (message: string) => ipcRenderer.send("domovoi:launch-smoke-failed", message),
   })
 }

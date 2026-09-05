@@ -67,6 +67,7 @@ export type DesktopIpcDependencies = {
     enabled: boolean
     preloadReady(): void
     ready(): void
+    failed(message: string): void
     unauthorized(): void
   }
 }
@@ -84,11 +85,9 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.on("window:close", (event) => {
     if (deps.authorized(event)) deps.mainWindow()?.close()
   })
-  // The smoke proves the packaged app starts; it must never acquire a daemon
-  // or mint a credential on the machine running the packaging test.
+  // Smoke and normal startup cross the same authenticated IPC boundary.
   const daemonRequest = (event: DesktopIpcEvent): void => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
-    if (deps.launchSmoke.enabled) throw new Error("Daemon credentials are unavailable during the launch smoke")
   }
   ipcMain.handle("domovoi:rpc-endpoint", (event) => {
     daemonRequest(event)
@@ -176,5 +175,10 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
       return
     }
     deps.launchSmoke.ready()
+  })
+  ipcMain.on("domovoi:launch-smoke-failed", (event, message) => {
+    if (!deps.launchSmoke.enabled) return
+    if (!deps.authorized(event)) { deps.launchSmoke.unauthorized(); return }
+    deps.launchSmoke.failed(typeof message === "string" ? message.slice(0, 1_000) : "Renderer smoke failed")
   })
 }
