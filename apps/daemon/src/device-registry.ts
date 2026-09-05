@@ -11,6 +11,7 @@ import {
   type DeviceCredentialBinding as PublicDeviceCredentialBinding,
   type DeviceLabelMismatch,
   type PairedDeviceSummary,
+  type PendingDeviceClaim,
 } from "@getdomovoi/protocol"
 
 export type PairedDevice = PairedDeviceSummary
@@ -31,9 +32,14 @@ export type VerifiedDeviceCredential = {
 
 export const maximumPairedDevices = 128
 export const maximumPairedDeviceLabelLength = 128
+export const pendingDeviceClaimTtlMs = 300_000
+
+export type DeviceClaim = { claim: PendingDeviceClaim; token: string }
 
 export interface DeviceRegistry {
   pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing
+  claim(input: { label: string; machineId: string }, nowMs: number): DeviceClaim
+  confirmClaim(token: string, machineId: string, nowMs: number): PairedDevice | undefined
   verify(token: string): VerifiedDeviceCredential | undefined
   markSeen(deviceId: string, seenAt: string): void
   isActive(token: string): boolean
@@ -152,6 +158,13 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         machine_id TEXT
       );
       CREATE INDEX IF NOT EXISTS paired_devices_revoked_at ON paired_devices (revoked_at);
+      CREATE TABLE IF NOT EXISTS pending_device_claims (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        machine_id TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL
+      );
     `)
     const columns = this.#database.prepare("PRAGMA table_info(paired_devices)").all() as Array<{ name: string }>
     if (!columns.some((column) => column.name === "credential_role")) {
@@ -204,6 +217,7 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       // Labels are presentation only; no other machine or client is affected.
       // Revoke and insert are atomic, including a failed insert at capacity.
       if (input.binding.kind === "machine") {
+        this.#database.prepare("DELETE FROM pending_device_claims WHERE machine_id = ?").run(input.binding.machineId)
         this.#database.prepare(`
           UPDATE paired_devices SET revoked_at = ?
           WHERE credential_role = 'machine' AND machine_id = ? AND revoked_at IS NULL
@@ -234,6 +248,59 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       this.#database.exec("ROLLBACK")
       throw error
     }
+  }
+
+  claim(input: { label: string; machineId: string }, nowMs: number): DeviceClaim {
+    const label = validateLabel(input.label)
+    const machineId = machineIdSchema.parse(input.machineId)
+    const token = randomBytes(32).toString("base64url")
+    const claim: PendingDeviceClaim = {
+      state: "pending", deviceId: `device-${randomBytes(16).toString("hex")}`, machineId,
+      expiresAt: new Date(nowMs + pendingDeviceClaimTtlMs).toISOString(),
+    }
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#database.prepare("DELETE FROM pending_device_claims WHERE expires_at <= ? OR machine_id = ?").run(nowMs, machineId)
+      const pending = this.#database.prepare("SELECT COUNT(*) AS total FROM pending_device_claims").get() as { total: number }
+      const active = this.#database.prepare(`SELECT COUNT(*) AS total FROM paired_devices
+        WHERE revoked_at IS NULL AND NOT (credential_role = 'machine' AND machine_id = ?)`)
+        .get(machineId) as { total: number }
+      if (pending.total >= maximumPairedDevices || active.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
+      this.#database.prepare("INSERT INTO pending_device_claims (id, label, token_hash, machine_id, expires_at) VALUES (?, ?, ?, ?, ?)")
+        .run(claim.deviceId, label, hashDeviceToken(token), machineId, nowMs + pendingDeviceClaimTtlMs)
+      this.#database.exec("COMMIT")
+      return { claim, token }
+    } catch (error) { this.#database.exec("ROLLBACK"); throw error }
+  }
+
+  // Confirmation is idempotent across a lost reply or either daemon restarting.
+  // It is the sole pending-token capability, not authentication. Expiry is
+  // checked at use, never entrusted to a timer that stops when the daemon does.
+  confirmClaim(token: string, machineId: string, nowMs: number): PairedDevice | undefined {
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#database.prepare("DELETE FROM pending_device_claims WHERE expires_at <= ?").run(nowMs)
+      const active = this.verify(token)
+      if (active?.binding.kind === "machine" && active.binding.machineId === machineId) {
+        this.#database.exec("COMMIT")
+        return active.device
+      }
+      const pending = this.#database.prepare("SELECT * FROM pending_device_claims WHERE token_hash = ? AND machine_id = ?")
+        .get(hashDeviceToken(token), machineId) as { id: string; label: string; token_hash: string; machine_id: string } | undefined
+      if (!pending) { this.#database.exec("COMMIT"); return undefined }
+      const pairedAt = new Date(nowMs).toISOString()
+      // An unfinished re-pair must not revoke working authority. Replacement
+      // happens atomically here, after the source's durable token readback.
+      this.#database.prepare("UPDATE paired_devices SET revoked_at = ? WHERE credential_role = 'machine' AND machine_id = ? AND revoked_at IS NULL")
+        .run(pairedAt, machineId)
+      const count = this.#database.prepare("SELECT COUNT(*) AS total FROM paired_devices WHERE revoked_at IS NULL").get() as { total: number }
+      if (count.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
+      this.#database.prepare("INSERT INTO paired_devices (id, label, token_hash, paired_at, credential_role, machine_id) VALUES (?, ?, ?, ?, 'machine', ?)")
+        .run(pending.id, pending.label, pending.token_hash, pairedAt, machineId)
+      this.#database.prepare("DELETE FROM pending_device_claims WHERE id = ?").run(pending.id)
+      this.#database.exec("COMMIT")
+      return { id: pending.id, label: pending.label, pairedAt, binding: { kind: "machine", machineId } }
+    } catch (error) { this.#database.exec("ROLLBACK"); throw error }
   }
 
   verify(token: string): VerifiedDeviceCredential | undefined {
