@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
-    "@react-native/jest-preset": "0.86.3",
+    "@react-native/jest-preset": "0.87.1",
     "@testing-library/react-native": "^14.0.1",
     "@types/node": "^26.4.0",
     "@types/react": "~19.2.2",
