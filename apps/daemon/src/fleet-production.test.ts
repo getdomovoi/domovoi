@@ -139,15 +139,14 @@ describe("production fleet assembly", () => {
     expect(JSON.stringify(reply)).not.toContain("n".repeat(43))
   })
 
-  it("refreshes an enrolled peer after restart and revocation without leaking fleet broadcasts to machines or unauthed sockets", async () => {
+  it("delivers a deliberate fleet change to a client but not fresh machine or unauthed observers", async () => {
     const source = await machine("source studio")
     const target = await machine("target studio")
-    const unauthed = await connect(source.address.url)
-    const pairedClient = await connect(source.address.url)
     const paired = devicePairResultSchema.parse(await source.root.ok("device.pair", { label: "paired observer", client: "cli" }))
+    const machineCode = await source.root.ok("device.issueCode", {}) as { code: string }
+    const pairedClient = await connect(source.address.url)
     await pairedClient.ok("system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: paired.token })
     const observer = await connect(source.address.url)
-    const machineCode = await source.root.ok("device.issueCode", {}) as { code: string }
     const machinePair = devicePairResultSchema.parse(await observer.ok("device.claim", {
       code: machineCode.code, label: "observer", machineId: `machine-${"e".repeat(32)}`, protocolVersion,
     }))
@@ -158,12 +157,28 @@ describe("production fleet assembly", () => {
       .toBe(daemonAuthenticationErrorCode)
     expect((await pairedClient.call("fleet.forget", { machineId: target.id, client: "cli" })).error?.code)
       .toBe(daemonAuthenticationErrorCode)
-    await enroll(source, target)
-    await vi.waitFor(async () => {
-      expect(pairedClient.notifications.some((notice) => notice.method === "fleet.changed"
-        && fleetSnapshotSchema.parse(notice.params).entries.some((entry) => entry.kind === "machine" && entry.machine.id === target.id))).toBe(true)
-    }, { timeout: 3_000 })
 
+    // Open the unauthenticated observer only at the event under test. It must
+    // not spend its authentication budget waiting for restart/health polling.
+    const unauthed = await connect(source.address.url)
+    pairedClient.notifications.length = 0
+    observer.notifications.length = 0
+    await enroll(source, target)
+    // Replies on each socket drain preceding broadcasts. The positive witness
+    // pins a real enrollment broadcast, not an absence during an idle interval.
+    await pairedClient.ok("workspace.get", {})
+    await observer.ok("fleet.heartbeat", {})
+    expect((await unauthed.call("workspace.get", {})).error?.code).toBe(daemonAuthenticationErrorCode)
+    expect(pairedClient.notifications.some((notice) => notice.method === "fleet.changed"
+      && fleetSnapshotSchema.parse(notice.params).entries.some((entry) => entry.kind === "machine" && entry.machine.id === target.id))).toBe(true)
+    expect(observer.notifications.filter((notice) => notice.method === "fleet.changed")).toEqual([])
+    expect(unauthed.notifications.filter((notice) => notice.method === "fleet.changed")).toEqual([])
+  })
+
+  it("refreshes an enrolled peer after restart and revocation", async () => {
+    const source = await machine("source studio")
+    const target = await machine("target studio")
+    await enroll(source, target)
     const before = remote(fleetSnapshotSchema.parse(await source.root.ok("fleet.list", {})), target.id)
     target.root.socket.close()
     await target.handle.stop()
@@ -192,12 +207,6 @@ describe("production fleet assembly", () => {
     await vi.waitFor(async () => {
       expect(remote(fleetSnapshotSchema.parse(await source.root.ok("fleet.list", {})), target.id).health).toBe("pairing-required")
     }, { timeout: 3_000 })
-    // Barrier replies on the same sockets prove all preceding broadcasts were
-    // received; no timing sleep is used to assert an absence of leaked data.
-    await observer.ok("fleet.heartbeat", {})
-    await unauthed.call("workspace.get", {})
-    expect(observer.notifications.filter((notice) => notice.method === "fleet.changed")).toEqual([])
-    expect(unauthed.notifications.filter((notice) => notice.method === "fleet.changed")).toEqual([])
   })
 
   it.each(["normal", "overflow", "forgetting"] as const)("checks real transfer eligibility independently of fleet display: %s", async (scenario) => {
