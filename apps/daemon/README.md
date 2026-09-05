@@ -263,6 +263,15 @@ remove only the named claim file. Keep the session worktree, repository and Git 
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
 
+## Loaded fixture checks
+
+The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
+keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
+short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
+delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
+child stays under its parent's kill deadline. Normal runs inject no delay.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed

@@ -33,6 +33,9 @@ const sourceMachineId = `machine-${"a".repeat(32)}`
 const targetMachineId = `machine-${"b".repeat(32)}`
 const baseCommit = "c".repeat(40)
 const checkpointCommit = "d".repeat(40)
+// This fixture journals and rereads three real file chunks. It proves durable
+// delivery, not throughput; retain the Windows headroom without raising the suite.
+const journalFixtureBudget = process.platform === "win32" ? 30_000 : 20_000
 
 afterEach(async () => {
   await Promise.all(scratchDirectories.splice(0).map((path) => (
@@ -532,7 +535,7 @@ describe("prepared source transfer delivery", () => {
       { sequence: 2, final: true },
     ])
     expect(Buffer.concat(chunks.map(({ bytes }) => bytes))).toEqual(repositoryBytes)
-  })
+  }, journalFixtureBudget)
 
   it("reports durable recovery instead of competing with a target already committing", async () => {
     const { packaged } = await transferFixture()
