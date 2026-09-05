@@ -1,14 +1,10 @@
-export type ServiceEnvironment = Readonly<Record<string, string>>
-
 export type ServiceUnitInput = {
   execPath: string
-  environment?: ServiceEnvironment
+  args?: readonly string[]
 }
 
 const label = "sh.domovoi.domovoid"
 const description = "Domovoi execution daemon"
-const secretName = /TOKEN|SECRET|KEY|PASSWORD|PASSPHRASE|CREDENTIAL/i
-const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 // Both service files this writes are read by a unix service manager, so an
 // absolute path here is a posix one.
@@ -30,26 +26,17 @@ function assertExecutable(execPath: string): string {
   return execPath
 }
 
-function assertNoSecrets(
-  environment: ServiceEnvironment,
-  { names = false }: { names?: boolean } = {},
-): ServiceEnvironment {
-  for (const [key, value] of Object.entries(environment)) {
-    if (names && !environmentName.test(key)) {
-      throw new Error(`${JSON.stringify(key)} is not an environment name systemd would pass on`)
-    }
-    if (secretName.test(key)) {
-      throw new Error(`${key} looks like a secret, and a service file is not where a secret is kept`)
-    }
-    if (hasForbiddenCharacter(key) || hasForbiddenCharacter(String(value))) {
-      throw new Error("a service environment value cannot contain quotes, newlines, or control characters")
-    }
+function assertArguments(args: readonly string[]): void {
+  for (const argument of args) {
+    if (!argument || hasForbiddenCharacter(argument)) throw new Error("a service argument cannot contain quotes, newlines, or control characters")
   }
-  return environment
 }
 
 function systemdArgument(value: string): string {
-  return /\s/.test(value) ? `"${value}"` : value
+  // systemd performs its own specifier, variable and backslash expansion.
+  // No shell is involved. Double the expansion introducers for literal paths.
+  const escaped = value.replaceAll("\\", "\\\\").replaceAll("%", "%%").replaceAll("$", () => "$$")
+  return /[\s'"\\]/.test(value) ? `"${escaped}"` : escaped
 }
 
 const escapes: Record<string, string> = { "<": "&lt;", ">": "&gt;", "&": "&amp;" }
@@ -58,11 +45,10 @@ function escapeXml(value: string): string {
   return value.replace(/[<>&]/g, (character) => escapes[character] ?? character)
 }
 
-export function systemdUnit({ execPath, environment = {} }: ServiceUnitInput): string {
+export function systemdUnit({ execPath, args = [] }: ServiceUnitInput): string {
   assertExecutable(execPath)
-  assertNoSecrets(environment, { names: true })
+  assertArguments(args)
 
-  const settings = Object.entries(environment).map(([key, value]) => `Environment="${key}=${value}"`)
   return [
     "[Unit]",
     `Description=${description}`,
@@ -70,8 +56,7 @@ export function systemdUnit({ execPath, environment = {} }: ServiceUnitInput): s
     "",
     "[Service]",
     "Type=simple",
-    `ExecStart=${systemdArgument(execPath)}`,
-    ...settings,
+    `ExecStart=${[execPath, ...args].map(systemdArgument).join(" ")}`,
     "Restart=on-failure",
     "RestartSec=5",
     "",
@@ -81,17 +66,9 @@ export function systemdUnit({ execPath, environment = {} }: ServiceUnitInput): s
   ].join("\n")
 }
 
-export function launchdPlist({ execPath, environment = {} }: ServiceUnitInput): string {
+export function launchdPlist({ execPath, args = [] }: ServiceUnitInput): string {
   assertExecutable(execPath)
-  assertNoSecrets(environment)
-
-  const settings = Object.entries(environment).flatMap(([key, value]) => [
-    `      <key>${escapeXml(key)}</key>`,
-    `      <string>${escapeXml(String(value))}</string>`,
-  ])
-  const variables = settings.length === 0
-    ? []
-    : ["    <key>EnvironmentVariables</key>", "    <dict>", ...settings, "    </dict>"]
+  assertArguments(args)
 
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -103,8 +80,8 @@ export function launchdPlist({ execPath, environment = {} }: ServiceUnitInput): 
     "    <key>ProgramArguments</key>",
     "    <array>",
     `      <string>${escapeXml(execPath)}</string>`,
+    ...args.map((argument) => `      <string>${escapeXml(argument)}</string>`),
     "    </array>",
-    ...variables,
     "    <key>RunAtLoad</key>",
     "    <true/>",
     "    <key>KeepAlive</key>",

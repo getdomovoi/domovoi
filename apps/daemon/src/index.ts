@@ -19,6 +19,7 @@ import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration } from "./service/configuration.js"
 
 async function greetCli(socket: import("ws").WebSocket): Promise<void> {
   const requestId = 1
@@ -202,6 +203,7 @@ const help = `Usage: domovoid [options]
 Options:
   -h, --help       Show this help
   -v, --version    Show the installed version
+  --service-config <path>  Run with the installed non-secret service configuration
 
 Environment:
   DOMOVOI_HOST                    Listener host (default: 127.0.0.1)
@@ -260,6 +262,8 @@ async function main() {
       home: homedir(),
       uid,
       user: username,
+      environment: process.env,
+      workingDirectory: process.cwd(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -287,15 +291,24 @@ async function main() {
     })
     return
   }
-  if (args.length > 0) {
+  let serviceConfig: ServiceConfiguration | undefined
+  if (args.length === 2 && args[0] === "--service-config") {
+    try {
+      serviceConfig = await readServiceConfiguration(args[1]!)
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+      process.exitCode = 1
+      return
+    }
+  } else if (args.length > 0) {
     process.stderr.write(`Unknown argument: ${args.join(" ")}\n`)
     process.exitCode = 1
     return
   }
 
   const daemon = await createProductionDaemon({
-    environment: process.env,
-    homeDirectory: homedir(),
+    environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
+    homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
     machineLabel: hostname(),
   })
 
@@ -311,10 +324,11 @@ async function main() {
   const published = isLoopbackListener(address.host)
     ? { host: address.host, port: address.port, token: daemon.authToken }
     : undefined
-  if (published) await publishEndpointFile({ home: homedir(), ...published })
+  const daemonHome = serviceConfig?.homeDirectory ?? homedir()
+  if (published) await publishEndpointFile({ home: daemonHome, ...published })
 
   installShutdownHandlers({
-    removeEndpointFile: () => removeEndpointFile(homedir(), published),
+    removeEndpointFile: () => removeEndpointFile(daemonHome, published),
     stopDaemon: () => daemon.stop(),
     exit: (code) => process.exit(code),
     writeStderr: (text) => process.stderr.write(text),
