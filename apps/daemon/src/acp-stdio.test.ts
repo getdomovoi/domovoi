@@ -10,6 +10,11 @@ import { CURSOR_ACP_PROVIDER } from "./acp-providers.js"
 import { mapAcpSessionSetup, mapAcpUpdate, StdioAcpPeer } from "./acp-stdio.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
+
 function fakeAcpProcess(response: (id: number) => object) {
   const child = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(),
@@ -55,6 +60,20 @@ async function initializePeer(child: ReturnType<typeof fakeAcpProcess>) {
 }
 
 describe("ACP stdio mapping", () => {
+  it("identifies the running build to the provider", async () => {
+    const child = fakeAcpProcess((id) => ({
+      jsonrpc: "2.0", id, result: { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} },
+    }))
+    const requests: unknown[] = []
+    child.stdin.on("data", (bytes: Buffer) => { requests.push(JSON.parse(bytes.toString())) })
+    const { peer } = await initializePeer(child)
+    try {
+      expect(requests[0]).toMatchObject({
+        method: "initialize", params: { clientInfo: { name: "Domovoi", version: "9.8.7-test" } },
+      })
+    } finally { await peer.close() }
+  })
+
   it("consumes each parsed fake-process request line", () => {
     const response = vi.fn((id: number) => ({ jsonrpc: "2.0", id, result: {} }))
     const child = fakeAcpProcess(response)
