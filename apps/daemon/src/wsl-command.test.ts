@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { runWslCommand, type WslCommandDependencies } from "./wsl-command.js"
-import type { WslMachineFact } from "./wsl-discovery.js"
+import { discoverWslMachines, type WslMachineFact } from "./wsl-discovery.js"
+import { listWslDistributions, type WslListInput } from "./wsl-list.js"
 
 const discovered: WslMachineFact[] = [
   {
@@ -9,8 +10,19 @@ const discovered: WslMachineFact[] = [
     daemon: "present", endpoint: "ws://127.0.0.1:47832/rpc",
   },
   { distribution: "parked", version: 2, state: "stopped", default: false, daemon: "absent" },
-  { distribution: "Legacy", version: 1, state: "running", default: false, daemon: "unknown" },
+  { distribution: "Legacy", version: 1, state: "running", default: false, daemon: "unknown", failure: "timed-out" },
+  { distribution: "torn", version: 2, state: "running", default: false, daemon: "unknown", failure: "corrupt" },
+  { distribution: "locked", version: 2, state: "running", default: false, daemon: "unknown", failure: "denied" },
 ]
+
+// Discovery driven by a wsl.exe that fails a given way, so the command is
+// tested with the classification the real modules produce.
+function discoveryWith(run: NonNullable<WslListInput["run"]>) {
+  return vi.fn<WslCommandDependencies["discover"]>(() => discoverWslMachines({
+    platform: "win32",
+    distributions: () => listWslDistributions({ platform: "win32", run }),
+  }))
+}
 
 function dependencies(overrides: Partial<WslCommandDependencies> = {}) {
   const base = {
@@ -28,16 +40,51 @@ describe("runWslCommand", () => {
     expect(await runWslCommand(["wsl", "list"], deps)).toBe(0)
     const output = deps.stdout.mock.calls.join("")
     const lines = output.trim().split("\n")
-    expect(lines).toHaveLength(3)
+    expect(lines).toHaveLength(5)
     expect(lines[0]).toMatch(/Ubuntu-24\.04.*WSL 2.*running.*daemon at ws:\/\/127\.0\.0\.1:47832\/rpc.*default/)
     expect(lines[1]).toMatch(/parked.*WSL 2.*stopped.*no daemon/)
-    expect(lines[2]).toMatch(/Legacy.*WSL 1.*running.*could not be asked/)
+    expect(lines[2]).toMatch(/Legacy.*WSL 1.*running.*could not be asked.*timed out/)
+    expect(lines[3]).toMatch(/torn.*could not be asked.*endpoint file unreadable/)
+    expect(lines[4]).toMatch(/locked.*could not be asked.*denied/)
   })
 
   it("says when no distribution is installed", async () => {
     const deps = dependencies({ discover: vi.fn(async () => []) })
     expect(await runWslCommand(["wsl", "list"], deps)).toBe(0)
     expect(deps.stdout.mock.calls.join("")).toMatch(/No WSL distribution/)
+  })
+
+  it("says WSL is not installed, as an answer rather than a failure", async () => {
+    const deps = dependencies({
+      discover: discoveryWith(async () => {
+        throw Object.assign(new Error("spawn wsl.exe ENOENT"), { code: "ENOENT" })
+      }),
+    })
+    expect(await runWslCommand(["wsl", "list"], deps)).toBe(0)
+    expect(deps.stdout.mock.calls.join("")).toMatch(/not installed/)
+    expect(deps.stderr).not.toHaveBeenCalled()
+  })
+
+  it("reports a denied wsl.exe as denied, not as no distribution", async () => {
+    const deps = dependencies({
+      discover: discoveryWith(async () => {
+        throw Object.assign(new Error("spawn wsl.exe EACCES"), { code: "EACCES" })
+      }),
+    })
+    expect(await runWslCommand(["wsl", "list"], deps)).toBe(1)
+    expect(deps.stderr.mock.calls.join("")).toMatch(/denied/i)
+    expect(deps.stdout).not.toHaveBeenCalled()
+  })
+
+  it("reports a wsl.exe that never answers as timed out", async () => {
+    const deps = dependencies({
+      discover: vi.fn(() => discoverWslMachines({
+        platform: "win32",
+        distributions: () => listWslDistributions({ platform: "win32", timeoutMs: 1, run: () => new Promise(() => {}) }),
+      })),
+    })
+    expect(await runWslCommand(["wsl", "list"], deps)).toBe(1)
+    expect(deps.stderr.mock.calls.join("")).toMatch(/did not answer/)
   })
 
   it("refuses off Windows, where there is no wsl.exe to ask", async () => {

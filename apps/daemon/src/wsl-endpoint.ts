@@ -1,5 +1,15 @@
-import { assertDistributionName } from "./wsl-git.js"
-import { runWslText, withWslDeadline, wslTimeoutMs, type WslRunner } from "./wsl-run.js"
+import {
+  assertDistributionName,
+  classifyWslFailure,
+  firstSaid,
+  runWslText,
+  withWslDeadline,
+  WslError,
+  wslSeconds,
+  wslTimeoutMs,
+  type WslCallFailure,
+  type WslRunner,
+} from "./wsl-run.js"
 
 export type DistroEndpoint = {
   host: string
@@ -28,24 +38,59 @@ function isMissingEndpointFile(error: unknown): boolean {
   return typeof stderr === "string" && isMissingEndpointStderr(stderr)
 }
 
+// Only stderr is read for the reason: stdout is the file, and the file is a
+// credential.
+function readFailure(distribution: string, failure: WslCallFailure, timeoutMs: number): WslError {
+  switch (failure.kind) {
+    case "absent":
+      return new WslError(
+        "absent",
+        `WSL is not installed on this machine (${failure.detail}), so nothing inside ${distribution} can be asked.`,
+      )
+    case "denied":
+      return new WslError(
+        "denied",
+        `${distribution} would not read its endpoint file: ${failure.detail}. Check who owns ~/${endpointFile} inside ${distribution} and try again.`,
+      )
+    case "timed-out":
+      return new WslError(
+        "timed-out",
+        `wsl.exe did not answer within ${wslSeconds(timeoutMs)} when asked to read the endpoint file in ${distribution}, so whether a daemon runs there is unknown. Check "wsl.exe --status" and try again.`,
+      )
+    case "unavailable":
+      return new WslError(
+        "unavailable",
+        `${distribution} could not be asked for its endpoint file: ${failure.detail}. Check that "wsl.exe -d ${distribution}" starts and try again.`,
+      )
+  }
+}
+
+// A file that is not an endpoint is not a missing daemon: a daemon may well be
+// running behind a file that was cut short. Nothing read from it is repeated.
+function corruptEndpoint(distribution: string): WslError {
+  return new WslError(
+    "corrupt",
+    `the endpoint file in ${distribution} is not one a daemon published, so whether a daemon runs there is unknown. Restart domovoid inside ${distribution} so it publishes a fresh one.`,
+  )
+}
+
 // The endpoint file carries the distro daemon's credential, so nothing read out
 // of it is ever repeated in an error. The host is checked first: a credential
 // belongs on loopback inside this machine and nowhere else.
-function readEndpoint(document: unknown): DistroEndpoint {
-  const record = document as Record<string, unknown>
-  const host = record["host"]
+function readEndpoint(document: Record<string, unknown>): DistroEndpoint {
+  const host = document["host"]
   if (typeof host !== "string" || !loopbackHosts.has(host)) {
-    throw new Error("the distribution's endpoint is not on loopback, so no credential is sent to it")
+    throw new WslError("corrupt", "the distribution's endpoint is not on loopback, so no credential is sent to it")
   }
 
-  const port = record["port"]
+  const port = document["port"]
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("the distribution's endpoint names no port to connect to")
+    throw new WslError("corrupt", "the distribution's endpoint names no port to connect to")
   }
 
-  const token = record["token"]
+  const token = document["token"]
   if (typeof token !== "string" || token === "") {
-    throw new Error("the distribution's endpoint carries no credential to authenticate with")
+    throw new WslError("corrupt", "the distribution's endpoint carries no credential to authenticate with")
   }
 
   return { host, port, token }
@@ -56,7 +101,7 @@ function readEndpoint(document: unknown): DistroEndpoint {
 export async function readDistroEndpoint(
   input: DistroEndpointInput,
 ): Promise<DistroEndpoint | undefined> {
-  assertDistributionName(input.distribution)
+  const distribution = assertDistributionName(input.distribution)
   const run = input.run ?? runWslText
   const timeoutMs = wslTimeoutMs(input.timeoutMs)
   let contents: string
@@ -64,7 +109,7 @@ export async function readDistroEndpoint(
     contents = await withWslDeadline(
       run("wsl.exe", [
         "-d",
-        input.distribution,
+        distribution,
         "--cd",
         "~",
         "--",
@@ -77,16 +122,19 @@ export async function readDistroEndpoint(
     // A distribution with no daemon has no endpoint file, which is an answer
     // rather than a failure. Everything else is a failure and is reported.
     if (isMissingEndpointFile(error)) return undefined
-    throw error
+    const failure = error as { stderr?: unknown }
+    throw readFailure(distribution, classifyWslFailure(error, firstSaid(failure.stderr)), timeoutMs)
   }
 
   let document: unknown
   try {
     document = JSON.parse(contents)
   } catch {
-    return undefined
+    throw corruptEndpoint(distribution)
   }
-  if (typeof document !== "object" || document === null) return undefined
+  if (typeof document !== "object" || document === null || Array.isArray(document)) {
+    throw corruptEndpoint(distribution)
+  }
 
-  return readEndpoint(document)
+  return readEndpoint(document as Record<string, unknown>)
 }
