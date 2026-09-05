@@ -468,3 +468,23 @@ describe("useWorkspace endpoint resolution", () => {
     expect(view.result.current.endpointUrl).toBe(daemonUrl)
   })
 })
+
+describe("useWorkspace skill catalog requests", () => {
+  it("cancels a skill catalog refresh through the signal it was given", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+    const controller = new AbortController()
+    const outcomes: string[] = []
+
+    const listing = view.result.current.listSkills({ signal: controller.signal })
+    const inventory = view.result.current.getSkillInventory({ signal: controller.signal })
+    void listing.catch((cause: unknown) => outcomes.push(cause instanceof Error ? cause.name : "unknown"))
+    void inventory.catch((cause: unknown) => outcomes.push(cause instanceof Error ? cause.name : "unknown"))
+    expect(sentRequests(socket, "skill.list")).toHaveLength(1)
+    expect(sentRequests(socket, "skill.inventory")).toHaveLength(1)
+
+    await drive(() => controller.abort())
+    expect(outcomes).toEqual(["AbortError", "AbortError"])
+  })
+})
