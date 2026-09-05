@@ -67,6 +67,32 @@ Forget reports whether the target confirmed revocation; unconfirmed removal requ
 this machine in the target's Devices list. Enrollment does not grant a client credential for
 remote Use or Terminal; that is a separate admission step.
 
+Native machine-keyring construction, reads, writes, deletion and index repair run on one
+serialized worker, not the daemon event loop. Calls require the caller's existing operation
+deadline and have a five-second phase limit, including queue time. Admission is bounded to
+256 active or queued operations. Expiry refuses the caller but does not release the native
+slot: later calls cannot overtake a still-running OS operation. The worker checks cancellation
+and monotonic time between native steps. A native write already entered can still complete
+after expiry; its pending fleet journal stays authoritative until readback resolves it.
+
+Fleet rendering caches only the last successfully observed machine IDs. A list refreshes those
+IDs; a failed read retains known recovery rows and reports credential-store-unavailable for
+enrolled peers. Credentials are never cached for dialing. Index repair and guarded deletion
+check the journal's digest inside a single worker operation, and dialing rechecks current fleet
+eligibility after the credential wait. A failed worker is not replaced in the same daemon
+instance. Unlock the keychain and retry after slow operations settle; restart Domovoi if its
+worker failed. Shutdown waits up to five seconds for worker exit and reports failure if exit
+cannot be confirmed.
+
+The local recovery CLI also bounds shutdown. If native work will not acknowledge termination,
+it prints the shutdown failure and exits nonzero instead of leaving the terminal waiting.
+
+This does not change the installed native library's missing-value semantics. Its
+[1.3.0 synchronous getter](https://github.com/Brooooooklyn/keyring-node/blob/v1.3.0/src/entry.rs)
+converts native read errors into a missing result, so not every OS failure can
+be distinguished from an absent credential. The worker isolates blocking and exceptions; it
+does not claim to repair that upstream distinction.
+
 Admission is limited to 128 machine entries, including the local machine and pending enrollment
 reservations. At capacity, re-pairing an existing row requires its `expectedMachineId`; an unnamed
 target is refused before consuming the pairing code. Recovery rows remain visible beyond the
