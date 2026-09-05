@@ -1,4 +1,4 @@
-import type { TransportCandidate } from "@getdomovoi/protocol"
+import { isTransportLoopbackHost, transportCandidatesSchema, type TransportCandidate } from "@getdomovoi/protocol"
 
 import { endpointHost } from "./transport-config.js"
 
@@ -18,11 +18,11 @@ export type AdvertisedTransportInput = {
 // a name it is reachable by. A wildcard bind address is not such a name.
 export function advertisedTransports(input: AdvertisedTransportInput): TransportCandidate[] {
   if (loopbackHosts.has(input.host)) {
-    return [{
+    return transportCandidatesSchema.parse([{
       kind: "local",
       endpoint: `${input.tls ? "wss" : "ws"}://${endpointHost(input.host)}:${input.port}/rpc`,
       authenticated: true,
-    }]
+    }])
   }
 
   if (!input.tls) return []
@@ -38,7 +38,7 @@ export function advertisedTransports(input: AdvertisedTransportInput): Transport
     // An explicit classification outranks the inferred default for that same
     // endpoint. Do not insert a preferred LAN duplicate ahead of a tailnet.
     if (!tailnetEndpoint || new URL(endpoint).href !== new URL(tailnetEndpoint).href) {
-      candidates.push({ kind: "lan", endpoint, authenticated: true })
+      candidates.push({ kind: isTransportLoopbackHost(new URL(endpoint).hostname) ? "local" : "lan", endpoint, authenticated: true })
     }
   }
   if (tailnetEndpoint) candidates.push({
@@ -46,5 +46,5 @@ export function advertisedTransports(input: AdvertisedTransportInput): Transport
     endpoint: tailnetEndpoint,
     authenticated: true,
   })
-  return candidates
+  return transportCandidatesSchema.parse(candidates)
 }
