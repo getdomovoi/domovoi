@@ -78,6 +78,7 @@ import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
+import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
@@ -1072,7 +1073,7 @@ export class DomovoiDaemon {
       operationTimeoutMs: options.fleetOperationTimeoutMs ?? defaultFleetOperationTimeoutMs,
       heartbeatIntervalMs: options.fleetHeartbeatIntervalMs ?? defaultFleetHeartbeatIntervalMs,
       recordLocal: () => this.#recordThisMachine(),
-      changed: (fleet) => this.#broadcastNotification("fleet.changed", fleet),
+      changed: (fleet) => this.#broadcastNotification("fleet.changed", fleetClientSnapshot(fleet)),
       reportFailure: (context) => this.#reportError(context, new Error("Fleet lifecycle recovery will retry")),
     })
     const usagePath = options.store || statePath === ":memory:"
@@ -4660,7 +4661,10 @@ export class DomovoiDaemon {
         try {
           this.#send(socket, {
             jsonrpc: "2.0", id: request.id,
-            result: rpcMethods[method].result.parse(await this.#fleetEnrollment.list()),
+            result: rpcMethods[method].result.parse(fleetClientSnapshot(
+              await this.#fleetEnrollment.list(),
+              (paramsResult.data as RpcParams<"fleet.list">).includeQuarantined,
+            )),
           })
         } catch (error) {
           if (!(error instanceof FleetSnapshotOverflowError)) throw error
@@ -4683,7 +4687,8 @@ export class DomovoiDaemon {
           detail: result.outcome === "pending" ? `pending=${result.operation.id}`
             : "remoteRevocation" in result ? `remoteRevocation=${result.remoteRevocation}` : "authenticated-enrollment",
         })
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        const clientResult = result.outcome === "refused" ? result : { ...result, fleet: fleetClientSnapshot(result.fleet) }
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(clientResult) })
         return
       }
 
