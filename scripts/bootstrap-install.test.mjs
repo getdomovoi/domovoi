@@ -94,7 +94,7 @@ async function fixture(t) {
   }
 }
 
-async function nativeFixture(t, source = "module.exports = {}\n") {
+async function nativeFixture(t, source = "module.exports = {}\n", bindingSource = "module.exports = {}\n") {
   const setup = await fixture(t)
   const { lock, packageRoot, options, afterInstall, pack } = setup
   lock.packages[""].dependencies["node-pty"] = "1.0.0"
@@ -112,6 +112,9 @@ async function nativeFixture(t, source = "module.exports = {}\n") {
     await fs.mkdir(native, { recursive: true })
     await fs.writeFile(join(native, "package.json"), JSON.stringify({ name: "node-pty", version: "1.0.0", main: "index.js" }))
     await fs.writeFile(join(native, "index.js"), source)
+    await fs.mkdir(join(native, "lib"))
+    await fs.writeFile(join(native, "lib/utils.js"), 'exports.loadNativeModule = () => ({ module: require("../binding.js") })\n')
+    await fs.writeFile(join(native, "binding.js"), bindingSource)
   })
   return setup
 }
@@ -156,6 +159,12 @@ test("a failed native build cannot publish a runnable receipt", { timeout: testT
   const { options, afterBuild } = await nativeFixture(t)
   afterBuild(() => { throw new Error("node-gyp: missing C++ compiler") })
   await assert.rejects(installer(options), /node-gyp: missing C\+\+ compiler/)
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
+})
+
+test("does not publish when the entry loads but the lazy native binding is broken", { timeout: testTimeout }, async (t) => {
+  const { options } = await nativeFixture(t, "module.exports = {}\n", 'throw new Error("ConPTY native binding cannot load")\n')
+  await assert.rejects(installer(options), /native terminal.*load/i)
   await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
 })
 
