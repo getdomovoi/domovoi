@@ -82,7 +82,9 @@ function skillSecurityCopy(skill: SkillSummary): {
     }
   }
   return {
-    label: skill.signature.state === "unverified" ? "Signature present, not verified" : "Unsigned",
+    label: skill.signature.state === "unverified"
+      ? `Signed by untrusted key ${skill.signature.keyId}`
+      : "Unsigned",
     buildAuto: "Excluded from Build auto",
     variant: "warning",
   }

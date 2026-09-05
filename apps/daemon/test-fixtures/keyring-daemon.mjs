@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises"
+
 import { createProductionDaemonWithDependencies, productionDaemonDependencies } from "../src/production-daemon.ts"
 
 // No daemon constructor substitution. Port zero is the same narrow test
@@ -18,5 +20,8 @@ process.once("SIGTERM", () => {
     process.exitCode = 1
   })
 })
+// Keep this finite and opt-in. The parent owns a kill deadline; this simulates
+// a child that cannot reach its listening phase promptly on a loaded runner.
+if (process.env.DOMOVOI_TEST_SLOW_FIXTURES === "1") await delay(3_500)
 const address = await daemon.start()
 process.stdout.write(`${JSON.stringify({ url: address.url })}\n`)

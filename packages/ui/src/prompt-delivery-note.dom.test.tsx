@@ -56,6 +56,35 @@ it("names what was sent without claiming the provider used it", () => {
   expect(note.textContent).not.toMatch(/used|followed|applied/iu)
 })
 
+it("says whether each sent skill was trusted when the record knows", () => {
+  render(<PromptDeliveryNote
+    delivery={delivery({
+      delivered: [
+        {
+          id: "skill-aaaaaaaaaaaa",
+          name: "plan-preview",
+          contentDigest: digest,
+          contentTruncated: false,
+          trust: { state: "trusted", reason: "verified-signature", authority: "signature · ed25519:0123456789abcdef" },
+        },
+        {
+          id: "skill-bbbbbbbbbbbb",
+          name: "replay-audit",
+          contentDigest: digest,
+          contentTruncated: false,
+          trust: { state: "untrusted", reason: "unverified-signature" },
+        },
+        { id: "skill-cccccccccccc", name: "older", contentDigest: digest, contentTruncated: false },
+      ],
+    })}
+    skillNames={{ ...names, "skill-cccccccccccc": "older" }}
+  />)
+
+  const note = screen.getByRole("note", { name: "Prompt delivery" })
+  expect(note.textContent).toContain("Sent with plan-preview (trusted), replay-audit (untrusted key), older")
+  expect(note.textContent).not.toMatch(/used|followed|applied/iu)
+})
+
 it("separates a skill cut for space from one whose review changed", () => {
   render(<PromptDeliveryNote
     delivery={delivery({

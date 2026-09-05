@@ -156,6 +156,7 @@ import {
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
 import type { SkillReviews } from "./skill-reviews.js"
+import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -177,6 +178,7 @@ import {
   DeviceLimitReachedError,
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
+import type { ConfiguredSshTunnel } from "./transport-config.js"
 import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
@@ -769,6 +771,7 @@ export type DaemonServerOptions = {
   usageLedger?: DaemonUsageLedger
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
+  skillTrustPath?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
@@ -776,6 +779,8 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
+  tailnetHost?: string
+  sshTunnels?: readonly ConfiguredSshTunnel[]
   // The distribution this daemon runs in, when it runs inside WSL. It is a
   // fact about the executable's host, so it is supplied at construction like
   // the platform rather than read back from stored state.
@@ -890,6 +895,7 @@ export class DomovoiDaemon {
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
+  #skillTrustPath: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
@@ -904,6 +910,7 @@ export class DomovoiDaemon {
   #tls: TlsMaterial | undefined
   #localOwner: DaemonServerOptions["localOwner"]
   #advertiseHost: string | undefined
+  #tailnetHost: string | undefined
   #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
@@ -946,6 +953,7 @@ export class DomovoiDaemon {
     this.#tls = options.tls
     this.#localOwner = options.localOwner
     this.#advertiseHost = options.advertiseHost
+    this.#tailnetHost = options.tailnetHost
     this.#wsl = options.wsl
     this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
     if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
@@ -968,6 +976,7 @@ export class DomovoiDaemon {
         return target
       },
       credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
       dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
       open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
         endpoint,
@@ -1048,6 +1057,7 @@ export class DomovoiDaemon {
     this.#localMachine = structuredClone(this.#snapshot.machine)
     this.#fleetEnrollment = new FleetEnrollmentService({
       selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
       operationTimeoutMs: options.fleetOperationTimeoutMs ?? defaultFleetOperationTimeoutMs,
       heartbeatIntervalMs: options.fleetHeartbeatIntervalMs ?? defaultFleetHeartbeatIntervalMs,
       recordLocal: () => this.#recordThisMachine(),
@@ -1084,6 +1094,7 @@ export class DomovoiDaemon {
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
+    this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath(homedir())
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -1118,6 +1129,7 @@ export class DomovoiDaemon {
         host: this.host, port: this.address?.port ?? this.requestedPort,
         ...(this.#tls ? { tls: true } : {}),
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
+        ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
       }),
       ...(this.#wsl ? { wsl: this.#wsl } : {}),
     })
@@ -2901,7 +2913,10 @@ export class DomovoiDaemon {
     if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
       this.#fileSkillCatalog = {
         projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews),
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews, {
+          trustPath: this.#skillTrustPath,
+          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+        }),
       }
     }
     return this.#fileSkillCatalog.catalog

@@ -119,6 +119,34 @@ describe("agentPromptWithSkills", () => {
     })
   })
 
+  it("records the trust state each delivered skill carried when it was sent", async () => {
+    const trusted = {
+      ...skill("skill-aaaaaaaaaaaa", "signed"),
+      trust: {
+        state: "trusted" as const,
+        reason: "verified-signature" as const,
+        authority: "signature · ed25519:0123456789abcdef",
+      },
+    }
+    const unsigned = skill("skill-bbbbbbbbbbbb", "unsigned", digest("b"))
+    const skillCatalog = catalog([
+      { skill: trusted, content: "Use signed." },
+      { skill: unsigned, content: "Use unsigned." },
+    ])
+    const snapshot = {
+      project: { id: "project-one" },
+      skillEnablements: [review("project-one", trusted), review("project-one", unsigned)],
+    } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+
+    const prepared = await prepareProjectSkillContext(skillCatalog, snapshot)
+    const { delivery } = renderProjectSkillContext(prepared, prepared.deliverable.length, "Run tests")
+
+    expect(delivery.delivered).toEqual([
+      expect.objectContaining({ id: trusted.id, trust: trusted.trust }),
+      expect.objectContaining({ id: unsigned.id, trust: { state: "untrusted", reason: "unsigned" } }),
+    ])
+  })
+
   it("uses an explicit empty selection instead of project defaults", async () => {
     const current = skill("skill-aaaaaaaaaaaa", "alpha")
     const skillCatalog = catalog([{ skill: current, content: "Use alpha." }])

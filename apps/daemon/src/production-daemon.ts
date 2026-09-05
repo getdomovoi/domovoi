@@ -19,6 +19,7 @@ import {
   type DaemonErrorSink,
   type DaemonServerOptions,
 } from "./server.js"
+import { skillTrustPath } from "./skill-signing.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
 
@@ -143,10 +144,13 @@ export async function createProductionDaemonWithDependencies(
       machineIdentity,
       ...(tls ? { tls } : {}),
       ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
+      ...(config.tailnetHost ? { tailnetHost: config.tailnetHost } : {}),
+      ...(config.sshTunnels ? { sshTunnels: config.sshTunnels } : {}),
       ...(wsl ? { wsl } : {}),
       machineCredentials: dependencies.createMachineCredentials(),
       statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
       worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
+      skillTrustPath: skillTrustPath(homeDirectory),
       manageStateDirectoryPermissions: true,
       ...(options.errorSink ? { errorSink: options.errorSink } : {}),
     })
@@ -176,7 +180,7 @@ export async function createProductionDaemonWithDependencies(
           starting = daemon.start(startDeadline.signal).then((address) => {
             startDeadline!.throwIfExpired()
             if (stopping) throw new Error("Daemon stopped during startup")
-            const reachableHost = config.advertiseHost ?? address.host
+            const reachableHost = config.advertiseHost ?? config.tailnetHost ?? address.host
             const endpoint = { ...address, url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc` }
             writeLocalOwnerRecord(homeDirectory, { ...record, state: "ready", url: endpoint.url })
             return endpoint

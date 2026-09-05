@@ -13,8 +13,12 @@ pnpm install
 pnpm --filter @getdomovoi/daemon build
 ```
 
-The package is standard ESM, but npm, pnpm, and Bun registry installation will only be supported
-after publication.
+The package is standard ESM. After publication, the supported frozen installation is the
+verified bootstrap described in [the distribution contract](https://github.com/getdomovoi/domovoi/blob/main/docs/distribution.md).
+It requires Node 22 with bundled npm 10.0.0 or newer and installs the archive's integrity-locked
+runtime before publishing its receipt. Manual npm, pnpm, or Bun adds of the daemon are not frozen.
+Native compilation and the external toolchain remain reproducibility limits; provider SDKs are
+downloaded under their existing terms, not bundled in this package.
 
 ## Run
 
@@ -34,6 +38,8 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_TLS_CERT_PATH` | TLS certificate chain, required for a non-loopback listener |
 | `DOMOVOI_TLS_KEY_PATH` | TLS private key, required for a non-loopback listener |
 | `DOMOVOI_ADVERTISE_HOST` | Name an encrypted listener is advertised as reachable by |
+| `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
+| `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
@@ -117,6 +123,120 @@ and leaves unrelated credentials and fleet facts intact. It does not prove revoc
 target: revoke this machine in the target's Devices list as well. Restart Domovoi and use ordinary
 Fleet Forget for remaining recorded facts once the list fits. These commands require the OS
 keychain to be available. Pagination of larger legacy fleets is not implemented.
+
+## Configured fleet routes
+
+`DOMOVOI_TAILNET_HOST=studio.example.ts.net` explicitly classifies a listener endpoint as
+`tailnet`. It requires a non-loopback listener, remote opt-in and loaded TLS material. It accepts
+one host or IP address, not a URL, port, wildcard or loopback address. The advertised endpoint uses
+the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` still supplies an independent LAN route;
+when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
+The factory's returned URL uses the LAN name when configured, otherwise the tailnet name, otherwise
+the bound address, so a tailnet-only setup does not hand clients a wildcard address.
+Names and address ranges are never treated as proof of tailnet membership or transport protection.
+Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
+
+For an already enrolled peer, configure an existing SSH local forward on the source daemon:
+
+```bash
+DOMOVOI_SSH_TUNNELS='[{"machineId":"machine-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","endpoint":"ws://127.0.0.1:47900/rpc"}]' domovoid
+```
+
+Replace the example ID with the enrolled target's machine ID. Domovoi does not launch SSH,
+establish host-key trust, manage SSH credentials or verify which program created the forward.
+The operator must keep a loopback-only forward running to that peer's daemon. `ws://` is suitable
+only when the SSH channel terminates at the target's plaintext loopback listener; for a TLS target
+use `wss://` with a trusted certificate valid for the configured endpoint. Certificate verification
+is not disabled. Anyone able to replace the local forward is inside this trust boundary.
+
+SSH configuration is bounded to 32 KiB of JSON, 128 unique machine IDs, and one endpoint per ID.
+Endpoints use `localhost`, `127.0.0.1` or `::1` after URL normalization, at most 2,048 characters,
+with no credentials, query or fragment. It is source-local configuration, not fleet fact: it never
+appears in a peer descriptor. A target cannot enable SSH by advertising `configured: true`.
+Remote loopback advertisements are ignored even with TLS; only a source-verified direct route
+or source-local SSH configuration can authorize a remote peer's loopback endpoint here.
+Enrollment still requires a code and a successful authenticated descriptor exchange. Adding a
+route never enrolls a peer, supplies a missing credential or unmasks a pending forget.
+
+Dialing tries the source-verified direct endpoint first, target-advertised direct candidates in
+protocol order next, then the configured SSH forward. Duplicate endpoint strings are tried once.
+All candidates share the original monotonic deadline. A silent candidate can spend the remaining
+budget, in which case no later candidate starts. Credential, identity or protocol rejection stops
+fallback. This does not promise reachability across disjoint tailnets.
+
+Heartbeat and transfer use the same route configuration. Successful SSH heartbeats refresh peer
+facts and last contact but do not replace or refresh the timestamp of the remembered direct route.
+Otherwise a removed setting would quietly survive as a preferred route. Remove the SSH entry and
+restart with the updated configuration to remove this fallback. A separately enrolled direct route
+is independent and remains until re-enrollment or Forget. Service installation saves both settings
+in its non-secret `service.json`, and a supervised daemon started with `--service-config` reads
+that file instead of the supervisor's environment. Removing `DOMOVOI_SSH_TUNNELS` from the
+supervisor and restarting leaves the saved fallback active. Rerun `domovoid service install` with
+the intended environment, or edit `service.json`, before restarting the service.
+
+These producers do not add WSL transport discovery, remote client admission for Use or Terminal,
+or a relay. WSL facts and its open shim remain separate from a WSL transport producer.
+
+## Skill signatures and trust
+
+A skill is a `SKILL.md` file with YAML frontmatter. Its content digest is `sha256:` followed by
+the hex SHA-256 of the file's UTF-8 text, and that digest is what enablement reviews, turn
+selections, and signatures pin. The signed unit is exactly that digest: the signer signs the UTF-8
+bytes of `domovoi-skill-signature-v1:<content digest>` with an Ed25519 key, and the detached
+signature sits beside the skill as `SKILL.md.sig`:
+
+```json
+{
+  "version": 1,
+  "contentDigest": "sha256:<hex>",
+  "algorithm": "ed25519",
+  "keyId": "ed25519:0123456789abcdef",
+  "value": "<base64 signature>"
+}
+```
+
+The key id is `ed25519:` plus the first sixteen hex characters of the SHA-256 of the raw 32-byte
+public key. Sibling files in a skill directory are not covered: only `SKILL.md` reaches a provider
+and only its digest is pinned anywhere, so widening the unit would change every pinned digest.
+
+Trust roots are local. The daemon reads `~/.domovoi/skill-trusted-keys.json`, a JSON list of
+public keys that only `domovoid skill trust` writes; the daemon never creates or populates it. On
+POSIX the file must be owner-only. A trust file the group or others can read is refused, reported
+through the daemon error sink, and treated as holding no keys. There is no signer registry and no
+revocation source yet: removing a key means editing that file, and a key it does not list is
+untrusted on this machine.
+
+Every catalog entry carries a `signature` state and a `trust` state, computed when the catalog is
+listed and again whenever a skill file, its `.sig`, or the trust file changes, not on every turn:
+
+| `signature` | `trust` | Meaning |
+| --- | --- | --- |
+| `unsigned` | `untrusted`, `unsigned` | No `SKILL.md.sig` beside the skill |
+| `unverified` | `untrusted`, `unverified-signature` | Signed by a key the trust file does not list; `keyId` names it |
+| `verified` | `trusted`, `verified-signature` | Verifies against a listed key; `authority` is `signature · <key id>` |
+| `invalid`, `verification-failed` | `blocked`, `invalid-signature` | Content changed since signing, or the signature does not verify |
+| `invalid`, `malformed` | `blocked`, `invalid-signature` | The `.sig` is unreadable, oversized, a symlink, or not a declaration |
+
+A manual review can still trust an `unsigned` or `unverified` skill against its exact digest; it
+never unblocks an `invalid` one. What the composer sends is unchanged: Build auto still requires
+`trusted`, every other mode still refuses `blocked`, and the delivery record on a sent turn now
+names the trust state each delivered skill carried.
+
+The commands are local file operations that contact no daemon:
+
+```bash
+domovoid skill keygen ~/.domovoi/skill-signing.pem
+domovoid skill sign path/to/skill --key ~/.domovoi/skill-signing.pem
+domovoid skill trust <public-key>
+domovoid skill trust <public-key> --trust-file /path/to/skill-trusted-keys.json
+```
+
+`keygen` writes a PKCS8 PEM Ed25519 private key to the named file, `0600`, refuses to overwrite an
+existing file, and prints the key id and base64 public key, never the private half. `sign` accepts
+the skill directory or its `SKILL.md`, refuses a private key others can read, and writes or replaces
+`SKILL.md.sig`; run it again after every edit, since a stale signature blocks the skill. `trust` adds
+the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
+the change up on its next catalog read.
 
 ## Pairing admission and audit retention
 
@@ -332,6 +452,15 @@ Domovoi process using that worktree root and its supervisor, confirm no restore 
 remove only the named claim file. Keep the session worktree, repository and Git refs intact. The
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
+
+## Loaded fixture checks
+
+The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
+keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
+short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
+delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
+child stays under its parent's kill deadline. Normal runs inject no delay.
 
 ## Terminal dependency
 

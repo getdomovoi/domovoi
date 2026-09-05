@@ -19,6 +19,12 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { SkillReviews } from "./skill-reviews.js"
+import {
+  loadTrustedSkillKeys,
+  skillContentDigest,
+  verifySkillSignature,
+  type TrustedSkillKeys,
+} from "./skill-signing.js"
 
 const maxSkillFileBytes = 128 * 1_024
 const maxSignatureFileBytes = 4 * 1_024
@@ -47,14 +53,37 @@ export function manualReviewAuthority(review: { reviewedBy: { client: string } }
   return `manual review · ${review.reviewedBy.client}`
 }
 
+export function signatureAuthority(keyId: string): string {
+  return `signature · ${keyId}`
+}
+
+export type SkillCatalogOptions = {
+  trustPath?: string
+  report?: (detail: string) => void
+}
+
+type SkillListing = {
+  key: string
+  trust: Promise<TrustedSkillKeys>
+  skills: Promise<SkillSummary[]>
+}
+
 export class FileSkillCatalog implements SkillCatalog {
   readonly #roots: readonly SkillRoot[]
   readonly #reviews: Pick<SkillReviews, "find"> | undefined
-  #listing: { key: string; skills: Promise<SkillSummary[]> } | undefined
+  readonly #trustPath: string | undefined
+  readonly #report: ((detail: string) => void) | undefined
+  #listing: SkillListing | undefined
 
-  constructor(roots: readonly SkillRoot[], reviews?: Pick<SkillReviews, "find">) {
+  constructor(
+    roots: readonly SkillRoot[],
+    reviews?: Pick<SkillReviews, "find">,
+    options: SkillCatalogOptions = {},
+  ) {
     this.#roots = roots
     this.#reviews = reviews
+    this.#trustPath = options.trustPath
+    this.#report = options.report
   }
 
   invalidate(): void {
@@ -62,11 +91,12 @@ export class FileSkillCatalog implements SkillCatalog {
   }
 
   async list(): Promise<SkillSummary[]> {
-    return this.#cachedList()
+    return (await this.#cachedListing()).skills
   }
 
   async read(id: string): Promise<SkillDocument> {
-    const skill = (await this.#cachedList()).find((candidate) => candidate.id === id)
+    const listing = await this.#cachedListing()
+    const skill = (await listing.skills).find((candidate) => candidate.id === id)
     if (!skill) throw new SkillNotFoundError()
     let handle
     try {
@@ -76,13 +106,13 @@ export class FileSkillCatalog implements SkillCatalog {
       const file = await handle.stat()
       if (!file.isFile() || file.size > maxSkillFileBytes) throw new SkillNotFoundError()
       const content = await handle.readFile("utf8")
-      const contentDigest = digest(content)
+      const contentDigest = skillContentDigest(content)
       const currentSkill = skillFromContent(content, {
         id,
         path: skill.path,
         scope: skill.scope,
         source: skill.source,
-      }, contentDigest, await skillSignatureMetadata(skill.path, contentDigest))
+      }, contentDigest, await skillSignatureMetadata(skill.path, contentDigest, await listing.trust))
       if (!currentSkill) throw new SkillNotFoundError()
       return skillDocumentSchema.parse({
         skill: this.#withManualReview(currentSkill),
@@ -97,19 +127,41 @@ export class FileSkillCatalog implements SkillCatalog {
     }
   }
 
-  async #cachedList(): Promise<SkillSummary[]> {
+  async #cachedListing(): Promise<SkillListing> {
     const key = await this.#listingKey()
-    if (this.#listing?.key === key) return this.#listing.skills
-    const entry = { key, skills: this.#walk() }
+    if (this.#listing?.key === key) return this.#listing
+    const trust = this.#loadTrust()
+    const entry = { key, trust, skills: this.#walk(trust) }
     this.#listing = entry
     entry.skills.catch(() => {
       if (this.#listing === entry) this.#listing = undefined
     })
-    return entry.skills
+    return entry
+  }
+
+  async #loadTrust(): Promise<TrustedSkillKeys> {
+    const loadedAt = new Date().toISOString()
+    if (!this.#trustPath) return { path: undefined, loadedAt, keys: new Map() }
+    try {
+      return await loadTrustedSkillKeys(this.#trustPath)
+    } catch (error) {
+      this.#report?.(error instanceof Error ? error.message : String(error))
+      return { path: this.#trustPath, loadedAt, keys: new Map() }
+    }
   }
 
   async #listingKey(): Promise<string> {
     const parts: string[] = []
+    if (this.#trustPath) {
+      try {
+        const metadata = await stat(this.#trustPath, { bigint: true })
+        parts.push(
+          `${this.#trustPath}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}:${metadata.mode}`,
+        )
+      } catch {
+        parts.push(`${this.#trustPath}:missing`)
+      }
+    }
     for (const root of this.#roots) {
       const rootPath = await canonicalDirectory(root.path)
       if (!rootPath) {
@@ -134,7 +186,8 @@ export class FileSkillCatalog implements SkillCatalog {
     return parts.join("|")
   }
 
-  async #walk(): Promise<SkillSummary[]> {
+  async #walk(trust: Promise<TrustedSkillKeys>): Promise<SkillSummary[]> {
+    const trustedKeys = await trust
     const skills: SkillSummary[] = []
     const seenFiles = new Set<string>()
     for (const root of this.#roots) {
@@ -152,7 +205,7 @@ export class FileSkillCatalog implements SkillCatalog {
         }
         if (seenFiles.has(canonicalPath)) continue
         seenFiles.add(canonicalPath)
-        const skill = await readSkill(path, root)
+        const skill = await readSkill(path, root, trustedKeys)
         if (skill) skills.push(this.#withManualReview(skill))
       }
     }
@@ -249,12 +302,16 @@ async function skillFiles(root: string, scope: SkillScope): Promise<string[]> {
   return files
 }
 
-async function readSkill(path: string, root: SkillRoot): Promise<SkillSummary | undefined> {
+async function readSkill(
+  path: string,
+  root: SkillRoot,
+  trust: TrustedSkillKeys,
+): Promise<SkillSummary | undefined> {
   try {
     const file = await stat(path)
     if (!file.isFile() || file.size > maxSkillFileBytes) return undefined
     const content = await readFile(path, "utf8")
-    const contentDigest = digest(content)
+    const contentDigest = skillContentDigest(content)
     const canonicalPath = await realpath(path)
     const canonicalRoot = await realpath(root.path)
     if (root.scope !== "user" && escapesRoot(canonicalRoot, canonicalPath)) {
@@ -265,7 +322,7 @@ async function readSkill(path: string, root: SkillRoot): Promise<SkillSummary | 
       path: resolve(path),
       scope: root.scope,
       source: root.source,
-    }, contentDigest, await skillSignatureMetadata(path, contentDigest))
+    }, contentDigest, await skillSignatureMetadata(path, contentDigest, trust))
   } catch {
     return undefined
   }
@@ -303,6 +360,7 @@ function skillFromContent(
 async function skillSignatureMetadata(
   skillPath: string,
   contentDigest: string,
+  trust: TrustedSkillKeys,
 ): Promise<{ signature: SkillSignature; trust: SkillTrust }> {
   try {
     const signaturePath = `${skillPath}.sig`
@@ -318,9 +376,26 @@ async function skillSignatureMetadata(
       return blockedSignature("verification-failed")
     }
     const { algorithm, keyId, value } = declaration.data
+    const publicKey = trust.keys.get(keyId)
+    if (!publicKey || trust.path === undefined) {
+      return {
+        signature: { state: "unverified", algorithm, keyId, value },
+        trust: { state: "untrusted", reason: "unverified-signature" },
+      }
+    }
+    if (!verifySkillSignature(contentDigest, value, publicKey)) {
+      return blockedSignature("verification-failed")
+    }
     return {
-      signature: { state: "unverified", algorithm, keyId, value },
-      trust: { state: "untrusted", reason: "unverified-signature" },
+      signature: {
+        state: "verified",
+        algorithm,
+        keyId,
+        value,
+        verifiedBy: trust.path,
+        verifiedAt: trust.loadedAt,
+      },
+      trust: { state: "trusted", reason: "verified-signature", authority: signatureAuthority(keyId) },
     }
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
@@ -341,10 +416,6 @@ function blockedSignature(reason: "malformed" | "verification-failed"): {
     signature: { state: "invalid", reason },
     trust: { state: "blocked", reason: "invalid-signature" },
   }
-}
-
-function digest(content: string): string {
-  return `sha256:${createHash("sha256").update(content).digest("hex")}`
 }
 
 function skillId(canonicalPath: string): string {

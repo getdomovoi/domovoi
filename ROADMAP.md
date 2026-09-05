@@ -256,12 +256,17 @@ Every ledger entry is now merged.
 - [x] Define capability manifests, content digests, signature state, and trust state
 - [x] Add a manual-review trust path that binds trust to the reviewed content digest and records
   the reviewing client in the audit log
-- [ ] Verify skill signatures and produce a trusted state
-  - Cryptographic signatures are still only `unverified`, `unsigned`, or `invalid`; trust currently
-    comes only from manual review of an exact content digest.
-  - Deferred past the alpha on 2026-09-03. Verification needs a signer registry, trust roots,
-    revocation, and key custody decided first. The alpha position is manual digest-bound review
-    plus exclusion from Build auto.
+- [x] Verify skill signatures and produce a trusted state
+  - A `SKILL.md.sig` is an Ed25519 signature over the skill's content digest. The daemon verifies
+    it when the catalog loads, and again when a skill file, its `.sig`, or the trust file changes,
+    against `~/.domovoi/skill-trusted-keys.json`, an owner-only file that only
+    `domovoid skill trust` writes. A signature from a listed key yields `trusted`; a key the file
+    does not list stays `unverified`; a signature that fails, or content changed since signing, is
+    `invalid` and blocked. `domovoid skill keygen` and `domovoid skill sign` make and apply keys.
+  - Selection is unchanged: Build auto still requires `trusted` and other modes still refuse
+    `blocked`. The delivery record on a sent turn now names the trust state each skill carried.
+  - Still open under unresolved decision 2: a signer registry, a revocation source, and key
+    custody beyond a local file. Trust is per machine and per trust file until those are decided.
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
@@ -466,9 +471,15 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open
     items below replace the earlier assumption that relay had to wait for the hosted Goal 3
     service.
-  - The union-like base schema, preference order, and UI loop exist. Production produces only local
-    and LAN candidates, the daemon tries only the first candidate, the UI can wait forever on a
-    silent first candidate, and no WSL, tailnet, or SSH producer exists. Relay stays deferred.
+  - The base schema, preference order, and bounded client/daemon fallback loops exist. Production
+    now produces local, LAN and explicitly configured TLS tailnet advertisements. Source-local
+    configured SSH forwards follow direct candidates without becoming target-authored facts or
+    permanent remembered routes. Production socket tests cover TLS descriptor publication,
+    transfer over a configured loopback endpoint, forget masking and configuration removal.
+    They do not prove an external tailnet or an SSH process. WSL transport production remains
+    open in its own lane; WSL facts and the open shim are not a transport producer. Relay stays
+    deferred under Goal 3. A silent route can still spend the shared attempt deadline before
+    fallback begins.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
   rendezvous in `docs/encrypted-relay.md`
@@ -490,9 +501,16 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
   a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
-  - The downloader verifies the caller SHA-256 and the release `SHA256SUMS` and stores a bounded
-    archive. It does not extract, install dependencies, expose a binary, configure state, or
-    install supervision. Call it a verified downloader until a clean-machine lifecycle passes.
+  - Bootstrap streams and verifies the archive, stages it privately, materialises its embedded
+    integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`, and
+    verifies the installed graph before publishing a runnable receipt. Same-release protocol
+    bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
+    installation, native build, verification, publication, and cleanup share five minutes.
+  - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
+    external toolchain remain reproducibility limits. The protocol library keeps all three
+    package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
+    a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not
+    performed by bootstrap. See `docs/distribution.md`.
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is
@@ -694,6 +712,12 @@ before any public package or application publish.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
+  - E2 completeness fix: membership and SHA-512 component hashes come from the packed
+    all-platform runtime lock, including optional non-host binaries and the embedded protocol.
+    The separate protocol artifact is byte-bound to that lock and reports only its closure.
+    Offline pinned CycloneDX 1.6 validation and a real-archive completeness regression cover
+    generation. Host license observations annotate exact versions only; missing observations
+    remain empty. External toolchains and unfrozen manual installs are outside this inventory.
   - The release workflow attaches them to each published package's GitHub release once enabled.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set
@@ -752,15 +776,16 @@ dependent work starts.
 1. **Provider handoff disclosure:** required pre-switch loss disclosure, safe-boundary behavior,
    and the warning difference between switch and fork.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
-   custody model. Current `.sig` declarations are content-digest-bound but are not
-   cryptographically verified, so a signature alone never grants trust. Manual review is the
-   interim trust path: a person reviews an exact content digest on one machine, the daemon records
-   that decision with the reviewing client, and the skill becomes trusted only while its content
-   digest still matches. Any content change drops it back to untrusted. Cryptographic verification
-   is still blocked on this decision, and an invalid signature stays blocked regardless of review.
-   Deferred past the alpha on 2026-09-03: manual digest-bound review plus exclusion from Build auto
-   is the alpha position, so the registry, revocation source, and custody model can be settled
-   after it.
+   custody model. Since 2026-09-04 a `.sig` declaration is verified as an Ed25519 signature over
+   the content digest against the local trust file, so a signature from a key a person added to
+   that file grants trust on that machine alone. Manual review remains the other trust path: a
+   person reviews an exact content digest on one machine, the daemon records that decision with
+   the reviewing client, and the skill stays trusted only while its content digest still matches.
+   Any content change drops it back to untrusted, and an invalid signature stays blocked
+   regardless of review. Still undecided: where trusted keys come from beyond a person adding them
+   by hand, how a key is revoked, and who holds signing keys. Deferred past the alpha on
+   2026-09-03; the local trust file is the interim position, so the registry, revocation source,
+   and custody model can be settled after it.
 3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
    run unattended inside a containment boundary. An allowlisted runner executes files the
    repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits
