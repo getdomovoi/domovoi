@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  fleetDirectEndpointSchema,
   fleetMachineFactsSchema,
   fleetMachineSchema,
   fleetSnapshotSchema,
@@ -28,6 +29,20 @@ const machine = {
   self: true,
 }
 const described = <T>(value: T) => ({ kind: "machine" as const, machine: value })
+
+describe("fleet direct endpoint normalization", () => {
+  it.each(["127.0.0.1", "localhost", "[::1]", "127%2e0%2e0%2e1", "[0:0:0:0:0:0:0:1]"])(
+    "accepts plaintext loopback after URL normalization: %s", (host) => {
+      expect(fleetDirectEndpointSchema.safeParse(`ws://${host}:47831/rpc`).success).toBe(true)
+    },
+  )
+
+  it.each(["[::ffff:127.0.0.1]", "127.0.0.1%2eexample.com"])(
+    "refuses plaintext outside the normalized loopback allowlist: %s", (host) => {
+      expect(fleetDirectEndpointSchema.safeParse(`ws://${host}:47831/rpc`).success).toBe(false)
+    },
+  )
+})
 
 describe("fleetMachineSchema", () => {
   it("accepts a described machine", () => {
