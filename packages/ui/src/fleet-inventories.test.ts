@@ -4,6 +4,7 @@ import type { FleetMachine, SkillInventory } from "@getdomovoi/protocol"
 
 import {
   collectFleetInventories,
+  defaultFleetInventoryConcurrency,
   fleetInventoryTargets,
   inventoryMachineFor,
 } from "./fleet-inventories.js"
@@ -35,6 +36,18 @@ function inventory(name: string): SkillInventory {
 }
 
 const local = inventory("studio-arch")
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((complete) => {
+    resolve = complete
+  })
+  return { promise, resolve }
+}
+
+const settle = async () => {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve()
+}
 
 describe("fleetInventoryTargets", () => {
   it("skips this machine and any machine that does not run skills", () => {
@@ -140,5 +153,106 @@ describe("collectFleetInventories", () => {
       { state: "available", inventory: local },
     ])
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it("dials only a few machines at a time and reports every one of them", async () => {
+    const fleet = Array.from({ length: 6 }, (_, index) =>
+      machine({ id: `machine-${index}`, label: `member-${index}` }))
+    const answers: Array<ReturnType<typeof deferred<SkillInventory>>> = []
+    let inFlight = 0
+    let peak = 0
+    const collecting = collectFleetInventories({
+      local,
+      fleet,
+      open: async (candidate) => {
+        const answer = deferred<SkillInventory>()
+        answers.push(answer)
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        return {
+          inventory: () => answer.promise,
+          close: () => { inFlight -= 1 },
+        }
+      },
+    })
+    await settle()
+    expect(answers).toHaveLength(defaultFleetInventoryConcurrency)
+    expect(defaultFleetInventoryConcurrency).toBeLessThan(fleet.length)
+
+    for (let index = 0; index < defaultFleetInventoryConcurrency; index += 1) {
+      answers[index]!.resolve(inventory(`member-${index}`))
+    }
+    await settle()
+    expect(answers).toHaveLength(fleet.length)
+    for (let index = defaultFleetInventoryConcurrency; index < fleet.length; index += 1) {
+      answers[index]!.resolve(inventory(`member-${index}`))
+    }
+
+    const sources = await collecting
+    expect(peak).toBe(defaultFleetInventoryConcurrency)
+    expect(sources.map((source) => source.state)).toEqual(Array(fleet.length + 1).fill("available"))
+  })
+
+  it("asks online machines before ones that are still reconnecting", async () => {
+    const dialed: string[] = []
+    const sources = await collectFleetInventories({
+      local,
+      fleet: [
+        machine({ id: "machine-a", label: "alpha", health: "reconnecting" }),
+        machine({ id: "machine-b", label: "beta" }),
+        machine({ id: "machine-c", label: "gamma", health: "reconnecting" }),
+        machine({ id: "machine-d", label: "delta" }),
+      ],
+      concurrency: 1,
+      open: async (candidate) => {
+        dialed.push(candidate.id)
+        return { inventory: async () => inventory(candidate.label), close: () => {} }
+      },
+    })
+    expect(dialed).toEqual(["machine-b", "machine-d", "machine-a", "machine-c"])
+    expect(sources.slice(1).map((source) => (
+      source.state === "available" ? source.inventory.machine.name : source.state
+    ))).toEqual(["alpha", "beta", "gamma", "delta"])
+  })
+
+  it("stops dialing once the refresh is cancelled and hands the dial the same signal", async () => {
+    const controller = new AbortController()
+    const close = vi.fn()
+    const answer = deferred<SkillInventory>()
+    const open = vi.fn(async (_candidate: FleetMachine, signal: AbortSignal) => {
+      expect(signal.aborted).toBe(false)
+      return { inventory: () => answer.promise, close }
+    })
+    const collecting = collectFleetInventories({
+      local,
+      fleet: [
+        machine({ id: "machine-a", label: "alpha" }),
+        machine({ id: "machine-b", label: "beta" }),
+      ],
+      concurrency: 1,
+      signal: controller.signal,
+      open,
+    })
+    const outcome = collecting.catch((cause: unknown) => cause)
+    await settle()
+    expect(open).toHaveBeenCalledOnce()
+
+    controller.abort()
+    answer.resolve(inventory("alpha"))
+    await expect(outcome).resolves.toMatchObject({ name: "AbortError" })
+    expect(open).toHaveBeenCalledOnce()
+    expect(close).toHaveBeenCalledOnce()
+    expect(open.mock.calls[0]![1].aborted).toBe(true)
+  })
+
+  it("refuses a concurrency that is not a positive whole number", async () => {
+    for (const concurrency of [0, 1.5, -1, Number.NaN]) {
+      await expect(collectFleetInventories({
+        local,
+        fleet: [machine()],
+        concurrency,
+        open: async () => { throw new Error("must not dial") },
+      })).rejects.toBeInstanceOf(RangeError)
+    }
   })
 })
