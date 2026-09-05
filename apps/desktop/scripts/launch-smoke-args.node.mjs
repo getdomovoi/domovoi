@@ -50,10 +50,12 @@ test("isolates production paths and listener settings from the parent environmen
     profileRoot: "/smoke", timeoutMs: 60_000,
     env: {
       PATH: "/bin", DISPLAY: ":1", USERPROFILE: "/real-user", HOME: "/real-user",
+      home: "/case-variant-user", userprofile: "/case-variant-user", appdata: "/case-variant-data",
       DOMOVOI_AUTH_TOKEN: "real-token", DOMOVOI_CREDENTIAL_PATH: "/real-token-file",
       domovoi_machine_identity_path: "/real-machine", DOMOVOI_HOST: "0.0.0.0",
       DOMOVOI_TLS_KEY_PATH: "/real-key", DOMOVOI_TAILNET_HOST: "real-peer",
       ELECTRON_RENDERER_URL: "https://untrusted.invalid", ELECTRON_RUN_AS_NODE: "1",
+      NODE_OPTIONS: "--require=/real-startup.cjs",
     },
   })
   assert.equal(env.PATH, "/bin")
@@ -64,7 +66,8 @@ test("isolates production paths and listener settings from the parent environmen
   assert.equal(env.DOMOVOI_PORT, "0")
   assert.equal(env.DOMOVOI_LAUNCH_SMOKE_TIMEOUT_MS, "60000")
   for (const key of ["DOMOVOI_AUTH_TOKEN", "DOMOVOI_CREDENTIAL_PATH", "domovoi_machine_identity_path",
-    "DOMOVOI_TLS_KEY_PATH", "DOMOVOI_TAILNET_HOST", "ELECTRON_RENDERER_URL", "ELECTRON_RUN_AS_NODE"]) {
+    "DOMOVOI_TLS_KEY_PATH", "DOMOVOI_TAILNET_HOST", "ELECTRON_RENDERER_URL", "ELECTRON_RUN_AS_NODE",
+    "NODE_OPTIONS", "home", "userprofile", "appdata"]) {
     assert.equal(env[key], undefined, key)
   }
 })

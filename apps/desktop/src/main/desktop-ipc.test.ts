@@ -374,4 +374,19 @@ describe("registerDesktopIpc", () => {
     expect(disabled.calledEffects()).toEqual([])
     expect(disabled.authorize).not.toHaveBeenCalled()
   })
+
+  it("reports bounded renderer failures only in an authorized smoke", () => {
+    const target = harness()
+    const failed = target.listener("on", "domovoi:launch-smoke-failed")
+    failed(target.event, "x".repeat(2_000))
+    expect(target.effects["launchSmoke.failed"]).toHaveBeenLastCalledWith("x".repeat(1_000))
+    failed(target.event, { message: "not a string" })
+    expect(target.effects["launchSmoke.failed"]).toHaveBeenLastCalledWith("Renderer smoke failed")
+    expect(target.effects["launchSmoke.ready"]).not.toHaveBeenCalled()
+
+    const disabled = harness({ authorized: false, launchSmoke: false })
+    disabled.listener("on", "domovoi:launch-smoke-failed")(disabled.event, "failure")
+    expect(disabled.calledEffects()).toEqual([])
+    expect(disabled.authorize).not.toHaveBeenCalled()
+  })
 })

@@ -20,9 +20,13 @@ export function launchSmokeTimeoutMs({ platform, env }) {
 }
 
 export function launchSmokeEnvironment({ env, profileRoot, timeoutMs }) {
+  // Windows treats environment names case-insensitively. Remove aliases of
+  // every isolated path before adding the canonical keys below.
+  const replaced = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+    "ELECTRON_RENDERER_URL", "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS"]
   const inherited = Object.fromEntries(Object.entries(env).filter(([key]) =>
     !key.toUpperCase().startsWith("DOMOVOI_")
-    && !["ELECTRON_RENDERER_URL", "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS"].includes(key.toUpperCase()),
+    && !replaced.includes(key.toUpperCase()),
   ))
   return {
     ...inherited,

@@ -1,5 +1,5 @@
 import { homedir, hostname } from "node:os"
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
@@ -7,6 +7,7 @@ import { acquireLocalDaemon } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
+import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
@@ -50,10 +51,7 @@ let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
 if (launchSmoke) {
-  const profile = process.env.DOMOVOI_LAUNCH_SMOKE_PROFILE
-  if (!profile || resolve(profile) !== resolve(homedir()) || existsSync(join(profile, ".domovoi"))) {
-    throw new Error("Desktop launch smoke requires its own empty profile from scripts/launch-smoke.mjs")
-  }
+  configureLaunchSmokeProfile(app, process.env.DOMOVOI_LAUNCH_SMOKE_PROFILE, homedir())
 }
 let launchSmokeStage = "main"
 let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
