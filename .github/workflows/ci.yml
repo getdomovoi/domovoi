@@ -40,6 +40,10 @@ jobs:
       - run: pnpm test:install
       - run: pnpm release:artifacts
         if: matrix.os == 'ubuntu-latest'
+      - name: Verify packed daemon on musl
+        run: pnpm test:musl
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 10
   audit:
     runs-on: ubuntu-latest
     steps:
