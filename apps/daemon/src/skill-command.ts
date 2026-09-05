@@ -88,7 +88,7 @@ async function readSigningKey(path: string): Promise<KeyObject> {
   try {
     pem = await readFile(path, "utf8")
   } catch (error) {
-    throw new Error(`Could not read the signing key at ${path}: ${errorCode(error)}`)
+    throw new Error(`Could not read the signing key at ${path}: ${errorCode(error)}`, { cause: error })
   }
   if (process.platform !== "win32" && ((await stat(path)).mode & 0o077) !== 0) {
     throw new Error(`Signing key must not be readable by other users: ${path}`)
@@ -96,8 +96,8 @@ async function readSigningKey(path: string): Promise<KeyObject> {
   let key: KeyObject
   try {
     key = createPrivateKey(pem)
-  } catch {
-    throw new Error(`Signing key is not a PEM encoded private key: ${path}`)
+  } catch (error) {
+    throw new Error(`Signing key is not a PEM encoded private key: ${path}`, { cause: error })
   }
   if (key.asymmetricKeyType !== "ed25519") {
     throw new Error(`Signing key is not an Ed25519 key: ${path}`)
