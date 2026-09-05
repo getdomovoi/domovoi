@@ -15,6 +15,8 @@ describe("service configuration", () => {
       DOMOVOI_CREDENTIAL_PATH: "state/daemon.token",
       DOMOVOI_MACHINE_IDENTITY_PATH: "state/machine.json",
       DOMOVOI_ADVERTISE_HOST: "studio.example.com",
+      DOMOVOI_TAILNET_HOST: "studio.tailnet.example",
+      DOMOVOI_SSH_TUNNELS: JSON.stringify([{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]),
       DOMOVOI_ALLOWED_ORIGINS: "https://app.example.com,file://",
       ANTHROPIC_API_KEY: "not-a-daemon-setting",
       NODE_OPTIONS: "not-a-daemon-setting",
@@ -23,6 +25,8 @@ describe("service configuration", () => {
     const decoded = parseServiceConfiguration(text)
     const { version: _version, homeDirectory, ...settings } = config
     expect(decoded).toEqual(config)
+    expect(decoded).toMatchObject({ tailnetHost: "studio.tailnet.example",
+      sshTunnels: [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }] })
     // Same parser the production factory uses, not a test-only environment mapper.
     expect(parseDaemonEnvironment(serviceEnvironment(decoded), homeDirectory)).toEqual(settings)
     expect(config.tls?.keyPath).toBe(platform === "win32"
@@ -38,7 +42,7 @@ describe("service configuration", () => {
     { authToken: "s".repeat(43) },
     { environment: { DOMOVOI_AUTH_TOKEN: "s".repeat(43) } },
     { version: 2 },
-    { port: 0 },
+    { port: -1 },
     { host: "0.0.0.0", allowRemoteTransport: true },
     { tls: { certPath: "/cert.pem" } },
     { credentialPath: "relative/daemon.token" },

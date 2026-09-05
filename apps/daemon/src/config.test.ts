@@ -5,6 +5,63 @@ import { describe, expect, it } from "vitest"
 import { DaemonConfigurationError, parseDaemonEnvironment } from "./config.js"
 
 describe("parseDaemonEnvironment", () => {
+  const encryptedRemote = {
+    DOMOVOI_HOST: "0.0.0.0", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+    DOMOVOI_TLS_CERT_PATH: "/cert.pem", DOMOVOI_TLS_KEY_PATH: "/key.pem",
+  }
+  const sshTunnel = { machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }
+
+  it("keeps explicit tailnet and source-local SSH configuration separate", () => {
+    expect(parseDaemonEnvironment({ ...encryptedRemote,
+      DOMOVOI_TAILNET_HOST: "studio.tailnet.example",
+      DOMOVOI_SSH_TUNNELS: JSON.stringify([sshTunnel]),
+    }, "/home/tester")).toMatchObject({ tailnetHost: "studio.tailnet.example", sshTunnels: [sshTunnel] })
+  })
+
+  it.each(["", "0.0.0.0", "::", "[::]", "localhost", "localhost.", "127.1", "::1", "[::ffff:127.0.0.1]", "127%2e0%2e0%2e1",
+    "studio/rpc", "studio?secret", "studio#fragment", "user@studio", "studio:443", " studio", "x".repeat(254),
+  ])("refuses invalid or non-routable tailnet hosts: %s", (tailnetHost) => {
+    expect(() => parseDaemonEnvironment({ ...encryptedRemote, DOMOVOI_TAILNET_HOST: tailnetHost }, "/home/tester"))
+      .toThrow("DOMOVOI_TAILNET_HOST")
+  })
+
+  it("requires a TLS listener reachable off this machine for tailnet advertisements", () => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_TAILNET_HOST: "studio.tailnet.example" }, "/home/tester"))
+      .toThrow("DOMOVOI_TAILNET_HOST")
+    expect(() => parseDaemonEnvironment({ ...encryptedRemote, DOMOVOI_HOST: "127.0.0.1",
+      DOMOVOI_TAILNET_HOST: "studio.tailnet.example" }, "/home/tester")).toThrow("DOMOVOI_TAILNET_HOST")
+  })
+
+  it.each(["", "{", "{}", JSON.stringify([sshTunnel, sshTunnel]), JSON.stringify([{ ...sshTunnel, machineId: "studio" }]),
+    ...["ws://studio.example/rpc", "wss://studio.example/rpc", "ws://[::ffff:127.0.0.1]/rpc",
+      "ws://user:secret@localhost/rpc", "ws://localhost/rpc?secret", "ws://localhost/rpc#fragment",
+    ].map((endpoint) => JSON.stringify([{ ...sshTunnel, endpoint }])),
+    JSON.stringify([{ ...sshTunnel, configured: true }]),
+  ])("refuses malformed, ambiguous or non-local SSH settings: %s", (sshTunnels) => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_SSH_TUNNELS: sshTunnels }, "/home/tester"))
+      .toThrow("DOMOVOI_SSH_TUNNELS")
+  })
+
+  it("bounds both the SSH JSON input and number of configured machines", () => {
+    expect(() => parseDaemonEnvironment({ DOMOVOI_SSH_TUNNELS: `[]${" ".repeat(32 * 1024)}` }, "/home/tester"))
+      .toThrow("DOMOVOI_SSH_TUNNELS")
+    const tunnels = Array.from({ length: 129 }, (_, index) => ({ ...sshTunnel,
+      machineId: `machine-${index.toString(16).padStart(32, "0")}` }))
+    expect(() => parseDaemonEnvironment({ DOMOVOI_SSH_TUNNELS: JSON.stringify(tunnels) }, "/home/tester"))
+      .toThrow("DOMOVOI_SSH_TUNNELS")
+  })
+
+  it.each(["ws://127%2e0%2e0%2e1:47900/rpc", "ws://[0:0:0:0:0:0:0:1]:47900/rpc", "wss://localhost:47900/rpc"])(
+    "accepts source-local endpoint forms already accepted by the dial boundary: %s", (endpoint) => {
+      const tunnel = { ...sshTunnel, endpoint }
+      expect(parseDaemonEnvironment({ DOMOVOI_SSH_TUNNELS: JSON.stringify([tunnel]) }, "/home/tester"))
+        .toMatchObject({ sshTunnels: [tunnel] })
+    },
+  )
+
+  it("accepts port zero as a request for a kernel-assigned port", () => {
+    expect(parseDaemonEnvironment({ DOMOVOI_PORT: "0" }, "/home/tester").port).toBe(0)
+  })
   it("returns bounded local defaults", () => {
     expect(parseDaemonEnvironment({}, "/home/tester")).toEqual({
       host: "127.0.0.1",
@@ -15,7 +72,7 @@ describe("parseDaemonEnvironment", () => {
     })
   })
 
-  it.each(["", "0", "65536", "47831garbage", "1.5", "-1"])(
+  it.each(["", "00", "65536", "47831garbage", "1.5", "-1"])(
     "rejects invalid ports: %s",
     (port) => {
       expect(() => parseDaemonEnvironment({ DOMOVOI_PORT: port }, "/home/tester"))

@@ -126,7 +126,7 @@ each chunk reaches disk before the next read.
 
 One five-minute deadline starts before the npm version probe and covers connection setup,
 redirects, body reads, staging, fsync, extraction, npm installation, the native build, graph
-and native-load verification, receipt publication, and cleanup. Archive publication gets at most
+and native-load verification, and receipt publication. Archive publication gets at most
 30 seconds and only the remainder of that original budget. Embedded calls
 can set initial budgets with positive integer `timeoutMs` and `publicationTimeoutMs`;
 redirects, trickling bodies, and phase changes never renew the total. Both deadlines reach fetch
@@ -136,8 +136,11 @@ finish closing.
 A timed-out filesystem request may still complete at the OS. The error therefore says to inspect
 the destination before retrying, not that no file was written. npm receives the abort signal and
 its process is killed on expiry; a toolchain child may outlive it, but cannot cause a later
-bootstrap step or receipt publication. No additional cleanup budget is granted after expiry;
-the current private staging directory may remain and is named when known.
+bootstrap step or receipt publication. Removing the current unpublished `.runtime-*` staging,
+including its `node_modules` and `.npm-cache`, runs after any failure or expiry under its own
+fresh 30-second budget, never the exhausted one, so retries do not accumulate staging trees.
+Embedded calls can set it with `cleanupTimeoutMs`. A removal that outlives that budget is not
+awaited further; the error names the retained directory.
 File flush is not a guarantee of directory-entry durability across a power loss.
 
 Each HTTPS download also has a 30-second inactivity allowance, configurable for embedded callers
@@ -190,6 +193,56 @@ package graph. Neither are separately installed provider CLIs or provider servic
 a bit-for-bit reproducible binary, an offline installation, or an authenticity guarantee for
 third-party code. Registry unavailability, native build failures, and verification failures
 refuse publication rather than choosing substitute dependencies.
+
+### Verified bootstrap download
+
+The download phase of the CLI above is exported separately as `bootstrapDaemon` from
+`scripts/bootstrap-download.mjs`, re-exported by `scripts/bootstrap-daemon.mjs` for embedding
+callers. It takes the same `version`, `baseUrl`, `destination`, and `expectedSha256` inputs and
+downloads an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256
+supplied by the caller must agree with the downloaded bytes. On its own it is a downloader, not an
+installer: it does not unpack the archive, resolve dependencies, configure PATH, or install a
+service. The CLI continues from its result into the private `.runtime-*` installation described
+under Verified bootstrap installation.
+
+Each invocation streams the archive into a unique private `.bootstrap-*` directory beside the
+destination, hashing and enforcing the byte ceiling as chunks arrive. Staging contains unverified
+bytes until both checksums pass. It is fsynced and closed before publication, then published with a
+hard link that cannot replace an existing path. POSIX staging directories and files are owner-only;
+Windows inherits the destination's access controls, so choose a destination writable only by the
+installing user. Concurrent
+invocations with the same digest may both succeed. Different digests refuse
+without replacing the first archive. An existing archive is accepted only after a bounded,
+streamed read verifies its length and digest; a symlink or other non-file destination is refused.
+The filesystem must support hard links. Unsupported publication fails rather than falling back to
+a replacing rename or a copy that another process could read while incomplete.
+
+The archive ceiling remains 256 MiB by default. `SHA256SUMS` has its own 256 KiB byte ceiling and
+is the only accumulated download. Archive memory follows individual network chunks and the file
+writer, not the total archive size; final verification reads in 64 KiB chunks. This is not a fixed
+RSS limit on Node or its transport buffers. The regression measures retained download buffers in
+an isolated process, including the staging-to-publication boundary, and separately checks that
+each chunk reaches disk before the next read.
+
+One five-minute deadline starts before fetching the manifest and covers connection setup,
+redirects, body reads, staging, fsync, publication, verification, and cleanup. After staging,
+publication gets at most 30 seconds and only the remainder of that original budget. Embedded calls
+can set initial budgets with positive integer `timeoutMs` and `publicationTimeoutMs`;
+redirects, trickling bodies, and phase changes never renew the total. Fetch receives the same abort
+signal, abandoned bodies are cancelled, and late results cannot begin another step. Cancellation
+notifications do not wait beyond expiry for an uncooperative transport to finish closing.
+A timed-out filesystem request may still complete at the OS. The error therefore says to inspect
+the archive before retrying, not that no file was written. No additional cleanup budget is granted
+after expiry; the current private staging directory may remain and is named when known.
+File flush is not a guarantee of directory-entry durability across a power loss.
+
+Cleanup removes only the current invocation's staging file and directory, never the published
+archive or an older shared `.partial` file. If cleanup fails after verification, the error names
+the verified archive separately from the retained staging. An interrupted process may leave a
+`.bootstrap-*` directory. Stop all bootstrap invocations before inspecting or removing that exact
+directory by hand. No age-based or recursive cleanup runs automatically. A conflicting archive
+also requires an explicit operator decision or a different destination; bootstrap never replaces
+it for the caller.
 
 ## Release artifacts
 

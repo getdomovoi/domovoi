@@ -327,3 +327,27 @@ for (const mutation of ["version", "integrity", "extra", "missing", "lifecycle"]
     assert.deepEqual(await fs.readFile(join(options.destination, `v${version}`, "runtime.json")), receipt)
   })
 }
+
+test("removes unpublished staging under a fresh budget after the total deadline expires", { timeout: testTimeout }, async (t) => {
+  const { options, afterInstall } = await fixture(t)
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  afterInstall(() => { now = 1_000 })
+  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), /Bootstrap.*1000 ms/)
+  const entries = await fs.readdir(join(options.destination, `v${version}`))
+  assert.deepEqual(entries.filter((name) => name.startsWith(".runtime-")), [], "expired installs must not accumulate staging trees")
+})
+
+test("names retained staging when cleanup exceeds its own bound instead of hanging", { timeout: testTimeout }, async (t) => {
+  const { options, fail } = await fixture(t)
+  fail(new Error("npm fixture failed"))
+  const started = performance.now()
+  await assert.rejects(installer({ ...options, remove: () => new Promise(() => {}), cleanupTimeoutMs: 200 }), (error) => {
+    assert.ok(error instanceof AggregateError, "both the install failure and the cleanup failure must surface")
+    assert.match(error.errors[0].message, /npm fixture failed/)
+    assert.match(error.errors[1].message, /200 ms/)
+    assert.match(error.message, /npm fixture failed.*\.runtime-[A-Za-z0-9_-]+/)
+    return true
+  })
+  assert.ok(performance.now() - started < 5_000, "the run must end within the cleanup bound")
+})

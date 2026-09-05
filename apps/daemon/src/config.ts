@@ -2,6 +2,8 @@ import { join } from "node:path"
 
 import { credentialSchema } from "@getdomovoi/protocol"
 
+import { configuredSshTunnelsSchema, isLoopbackHost, maximumSshConfigurationBytes, tailnetHostSchema, type ConfiguredSshTunnel } from "./transport-config.js"
+
 export type DaemonEnvironment = Readonly<Record<string, string | undefined>>
 
 export type DaemonTlsMaterial = {
@@ -14,6 +16,8 @@ export type DaemonEnvironmentConfig = {
   port: number
   tls?: DaemonTlsMaterial
   advertiseHost?: string
+  tailnetHost?: string
+  sshTunnels?: ConfiguredSshTunnel[]
   credentialPath: string
   machineIdentityPath: string
   authToken?: string
@@ -66,17 +70,35 @@ export function parseDaemonEnvironment(
     : parseStatePath(environment.DOMOVOI_ADVERTISE_HOST, "DOMOVOI_ADVERTISE_HOST", "")
   const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
   const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
+  const tailnetHost = environment.DOMOVOI_TAILNET_HOST
+  if (tailnetHost !== undefined && (!tailnetHostSchema.safeParse(tailnetHost).success || !tls || isLoopbackHost(host))) {
+    throw new DaemonConfigurationError("DOMOVOI_TAILNET_HOST requires a routable host without a port or URL components and a non-loopback TLS listener")
+  }
+  const sshTunnels = parseSshTunnels(environment.DOMOVOI_SSH_TUNNELS)
 
   return {
     host,
     port,
     ...(tls ? { tls } : {}),
     ...(advertiseHost ? { advertiseHost } : {}),
+    ...(tailnetHost !== undefined ? { tailnetHost } : {}),
+    ...(sshTunnels !== undefined ? { sshTunnels } : {}),
     credentialPath,
     machineIdentityPath,
     ...(authToken !== undefined ? { authToken } : {}),
     ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
     allowRemoteTransport,
+  }
+}
+
+function parseSshTunnels(value: string | undefined): ConfiguredSshTunnel[] | undefined {
+  if (value === undefined) return undefined
+  try {
+    if (Buffer.byteLength(value, "utf8") > maximumSshConfigurationBytes) throw new Error("oversized")
+    return configuredSshTunnelsSchema.parse(JSON.parse(value))
+  } catch {
+    // Do not echo malformed URLs, which might contain credentials.
+    throw new DaemonConfigurationError("DOMOVOI_SSH_TUNNELS must be at most 32 KiB of JSON with up to 128 unique {machineId, endpoint} entries using credential-free loopback WebSocket endpoints")
   }
 }
 
@@ -90,12 +112,13 @@ function parseHost(value: string | undefined): string {
 
 function parsePort(value: string | undefined): number {
   if (value === undefined) return 47831
+  if (value === "0") return 0
   if (!/^[1-9]\d{0,4}$/u.test(value)) {
-    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 1 through 65535")
+    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 0 through 65535")
   }
   const port = Number(value)
   if (port > 65_535) {
-    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 1 through 65535")
+    throw new DaemonConfigurationError("DOMOVOI_PORT must be an integer from 0 through 65535")
   }
   return port
 }
