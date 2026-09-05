@@ -18,7 +18,9 @@ import {
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
+  deviceLabelMismatchErrorCode,
   devicePairingLimitErrorCode,
+  type DeviceLabelMismatch,
   sourcePreflight,
   transferPreflight,
   type TransferReceipt,
@@ -165,6 +167,7 @@ import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
 import {
+  DeviceLabelMismatchError,
   DeviceLimitReachedError,
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
@@ -1540,7 +1543,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -4516,34 +4519,41 @@ export class DomovoiDaemon {
           )
           return
         }
-        const result = method === "device.pair"
-          ? devices.pair({
-              label: (params as { label: string }).label,
-              binding: {
-                kind: "client",
-                client: (params as RpcParams<"device.pair">).client,
-              },
-            })
-          : method === "device.list"
-            ? { devices: devices.list() }
-            : method === "device.revoke"
-              ? { device: devices.revoke((params as { deviceId: string }).deviceId) }
-              : method === "device.rename"
-                ? {
-                    device: devices.rename(
-                      (params as RpcParams<"device.rename">).deviceId,
-                      (params as RpcParams<"device.rename">).label,
-                    ),
-                  }
-                : devices.rotate((params as { deviceId: string }).deviceId)
-        if (method === "device.revoke" || method === "device.rotate") {
-          this.#disconnectInactiveDevices()
+        try {
+          const result = method === "device.pair"
+            ? devices.pair({
+                label: (params as { label: string }).label,
+                binding: {
+                  kind: "client",
+                  client: (params as RpcParams<"device.pair">).client,
+                },
+              })
+            : method === "device.list"
+              ? { devices: devices.list() }
+              : method === "device.revoke"
+                ? { device: devices.revoke((params as { deviceId: string }).deviceId) }
+                : method === "device.rename"
+                  ? {
+                      device: devices.rename(
+                        (params as RpcParams<"device.rename">).deviceId,
+                        (params as RpcParams<"device.rename">).label,
+                        (params as RpcParams<"device.rename">).expectedLabel,
+                      ),
+                    }
+                  : devices.rotate((params as { deviceId: string }).deviceId)
+          if (method === "device.revoke" || method === "device.rotate") {
+            this.#disconnectInactiveDevices()
+          }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(result),
+          })
+        } catch (error) {
+          if (!(error instanceof DeviceLabelMismatchError)) throw error
+          this.#amendPendingAudit(socket, request.id, { detail: "reason=label-mismatch" })
+          this.#error(socket, request.id, deviceLabelMismatchErrorCode, error.message, error.mismatch)
         }
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse(result),
-        })
         return
       }
 

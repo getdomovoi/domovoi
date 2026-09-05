@@ -15,6 +15,7 @@ import {
   createEmptyWorkspace,
   daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
+  deviceLabelMismatchErrorCode,
   devicePairingLimitErrorCode,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
@@ -3736,6 +3737,39 @@ describe("DomovoiDaemon", () => {
     expect(store.devices.verify((paired.result as { token: string }).token)?.device.label).toBe("kitchen-ipad")
     const entries = store.auditLog.query({ limit: 50 }).entries
     expect(entries.some((entry) => entry.action === "device.rename" && entry.target === device.id)).toBe(true)
+    socket.close()
+  })
+
+  it("refuses a rename whose expected label is stale and returns the current row", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+    const device = (paired.result as { device: { id: string } }).device
+
+    const matched = await call(3, "device.rename", { deviceId: device.id, label: "kitchen-ipad", expectedLabel: "studio-ipad" })
+    const stale = await call(4, "device.rename", { deviceId: device.id, label: "studio-ipad", expectedLabel: "studio-ipad" })
+
+    expect(matched).toEqual({ jsonrpc: "2.0", id: 3, result: { device: { ...device, label: "kitchen-ipad" } } })
+    expect(stale).toEqual({
+      jsonrpc: "2.0",
+      id: 4,
+      error: {
+        code: deviceLabelMismatchErrorCode,
+        message: expect.any(String),
+        data: { kind: "device-label-mismatch", device: { ...device, label: "kitchen-ipad" } },
+      },
+    })
+    expect(store.devices.list()).toEqual([{ ...device, label: "kitchen-ipad" }])
+    const entries = store.auditLog.query({ limit: 50 }).entries
+    expect(entries).toContainEqual(expect.objectContaining({
+      action: "device.rename",
+      target: device.id,
+      outcome: "failed",
+      detail: "reason=label-mismatch",
+    }))
     socket.close()
   })
 

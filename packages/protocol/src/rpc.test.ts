@@ -8,6 +8,7 @@ import {
   auditQueryParamsSchema,
   daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
+  deviceLabelMismatchErrorCode,
   helloParamsSchema,
   isMutatingRpcMethod,
   isRefusedWithoutPersistence,
@@ -1082,6 +1083,13 @@ describe("device rename RPC contract", () => {
       token: "n".repeat(43),
     }).success).toBe(false)
     expect(rpcMethodMutations["device.rename"]).toBe("mutating")
+  })
+
+  it("reserves a structured error for a rename whose expected label is stale", () => {
+    const deviceId = `device-${"a".repeat(32)}`
+    expect(deviceLabelMismatchErrorCode).toBe(-32017)
+    expect(rpcMethods["device.rename"].params.parse({ deviceId, label: "studio-ipad", expectedLabel: "kitchen-ipad" }))
+      .toEqual({ deviceId, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
   })
 })
 

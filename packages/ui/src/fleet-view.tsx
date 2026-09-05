@@ -41,6 +41,7 @@ import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { fleetUpdateAvailable } from "./fleet-updates.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
+import { deviceLabelMismatch, renamedElsewhereNotice } from "./rename-device.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   AlertDialog,
@@ -988,7 +989,7 @@ export function FleetView({
   ) => Promise<{ devices: PairedDeviceSummary[] }>
   onRevokeDevice: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice: (params: { deviceId: string }) => Promise<DevicePairResult>
-  onRenameDevice: (params: { deviceId: string; label: string }) => Promise<{ device: PairedDeviceSummary }>
+  onRenameDevice: (params: { deviceId: string; label: string; expectedLabel?: string }) => Promise<{ device: PairedDeviceSummary }>
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onForgetMachine?: ((machineId: string) => Promise<FleetForgetResult>) | undefined
   onUseMachine?: ((machineId: string) => void) | undefined
@@ -1000,7 +1001,7 @@ export function FleetView({
   const [pendingDeviceId, setPendingDeviceId] = useState("")
   const [revoking, setRevoking] = useState<PairedDeviceSummary | null>(null)
   const [receipt, setReceipt] = useState<{ device: PairedDeviceSummary; token: string } | null>(null)
-  const [undo, setUndo] = useState<{ deviceId: string; label: string } | null>(null)
+  const [undo, setUndo] = useState<{ deviceId: string; label: string; expectedLabel: string } | null>(null)
   const [pairing, setPairing] = useState(false)
   const [forgetting, setForgetting] = useState<FleetMachine | null>(null)
   const [forgetPending, setForgetPending] = useState(false)
@@ -1048,7 +1049,7 @@ export function FleetView({
     try {
       const result = await onRenameDevice({ deviceId: device.id, label })
       replaceDevice(result.device)
-      setUndo({ deviceId: device.id, label: device.label })
+      setUndo({ deviceId: device.id, label: device.label, expectedLabel: result.device.label })
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : "That device could not be renamed")
       throw cause
@@ -1057,8 +1058,11 @@ export function FleetView({
     }
   }
 
-  // Undo is one more rename, back to the word the row had. It does not offer
-  // an undo of its own: the row is back where it started.
+  // Undo is one more rename, back to the word the row had, on the condition
+  // that the row still shows the word this rename gave it. It does not offer
+  // an undo of its own: the row is back where it started. When another client
+  // renamed the row in between, the daemon refuses and sends the row as it
+  // stands, which replaces the stale one here instead of being overwritten.
   const undoRename = async () => {
     if (!undo) return
     setPendingDeviceId(undo.deviceId)
@@ -1068,7 +1072,14 @@ export function FleetView({
       replaceDevice(result.device)
       setUndo(null)
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "That device could not be renamed")
+      const mismatch = deviceLabelMismatch(cause)
+      if (mismatch) {
+        replaceDevice(mismatch.device)
+        setUndo(null)
+        setActionError(renamedElsewhereNotice(undo.expectedLabel, mismatch.device))
+      } else {
+        setActionError(cause instanceof Error ? cause.message : "That device could not be renamed")
+      }
     } finally {
       setPendingDeviceId("")
     }

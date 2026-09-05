@@ -2,8 +2,9 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
+import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
 
+import { DaemonRpcError } from "./client.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { FleetView, orderedMachineTransports } from "./fleet-view.js"
 import { forgetRefusalMessage } from "./forget-machine.js"
@@ -103,7 +104,7 @@ function renderFleet(overrides: {
   onForgetMachine?: (machineId: string) => Promise<FleetForgetResult>
   onRevokeDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary; token: string }>
-  onRenameDevice?: (params: { deviceId: string; label: string }) => Promise<{ device: PairedDeviceSummary }>
+  onRenameDevice?: (params: { deviceId: string; label: string; expectedLabel?: string }) => Promise<{ device: PairedDeviceSummary }>
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(() => Promise.resolve({ devices }))
@@ -546,10 +547,40 @@ it("renames a device in place and offers Undo after committing", async () => {
 
   await user.click(within(renamed).getByRole("button", { name: "Undo" }))
 
-  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "studio-ipad" })
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
   const restored = await screen.findByRole("row", { name: /studio-ipad/ })
   expect(within(restored).queryByRole("button", { name: "Undo" })).toBeNull()
   expect(within(restored).getByRole("button", { name: "Rename studio-ipad" })).toBeTruthy()
+})
+
+it("keeps a rename made elsewhere instead of undoing over it", async () => {
+  const onRenameDevice = vi.fn()
+    .mockImplementationOnce((params: { deviceId: string; label: string }) =>
+      Promise.resolve({ device: { ...device, label: params.label } }))
+    .mockRejectedValueOnce(new DaemonRpcError(
+      deviceLabelMismatchErrorCode,
+      "Paired device is called desk-ipad, not the label this rename expected",
+      { kind: "device-label-mismatch", device: { ...device, label: "desk-ipad" } },
+    ))
+  const { user } = renderFleet({ onRenameDevice })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("kitchen-ipad{Enter}")
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+
+  await user.click(within(renamed).getByRole("button", { name: "Undo" }))
+
+  const current = await screen.findByRole("row", { name: /desk-ipad/ })
+  expect(within(current).queryByRole("button", { name: "Undo" })).toBeNull()
+  expect(within(current).getByRole("button", { name: "Rename desk-ipad" })).toBeTruthy()
+  expect(screen.queryByRole("row", { name: /studio-ipad/ })).toBeNull()
+  expect(onRenameDevice).toHaveBeenCalledTimes(2)
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
+  const alert = await screen.findByRole("alert")
+  expect(alert.textContent).toContain("changed elsewhere")
+  expect(alert.textContent).toContain("desk-ipad")
 })
 
 it("commits a rename with Enter and abandons one with Escape", async () => {
