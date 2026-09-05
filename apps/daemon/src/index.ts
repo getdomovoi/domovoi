@@ -20,7 +20,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { buildVersion, protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -57,7 +57,7 @@ async function greetCli(socket: import("ws").WebSocket): Promise<void> {
       jsonrpc: "2.0",
       id: requestId,
       method: "system.hello",
-      params: { client: "cli", clientVersion: "0.0.1", protocolVersion },
+      params: { client: "cli", clientVersion: buildVersion, protocolVersion },
     }))
   })
 }

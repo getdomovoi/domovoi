@@ -6,6 +6,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
+
 import {
   CodexAppServerAdapter,
   StdioCodexTransport,
@@ -658,7 +663,7 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.sent[0]).toMatchObject({
       id: 1,
       method: "initialize",
-      params: { clientInfo: { name: "domovoi", title: "Domovoi", version: "0.0.1" } },
+      params: { clientInfo: { name: "domovoi", title: "Domovoi", version: "9.8.7-test" } },
     })
     transport.receive({ id: 1, result: {} })
     await connecting

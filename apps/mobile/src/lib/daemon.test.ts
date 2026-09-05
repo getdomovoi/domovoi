@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { DaemonConnection } from "./daemon"
 
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
+
 type FakeSocket = {
   readyState: number
   send: (payload: string) => void
@@ -38,6 +43,19 @@ afterEach(() => {
 })
 
 describe("DaemonConnection.call", () => {
+  it("greets with the build version supplied by this release", () => {
+    const send = vi.fn()
+    const socket = withSocket(send)
+    const daemon = connection()
+    daemon.connect()
+    try {
+      socket.onopen?.()
+      expect(JSON.parse(send.mock.calls[0]?.[0] as string)).toMatchObject({
+        method: "system.hello", params: { client: "phone", clientVersion: "9.8.7-test" },
+      })
+    } finally { daemon.close() }
+  })
+
   it("holds one pending request per call that was sent", async () => {
     withSocket(() => {})
     const daemon = connection()

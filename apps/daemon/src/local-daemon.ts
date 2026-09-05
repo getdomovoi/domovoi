@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { resolve } from "node:path"
 
-import { protocolCompatibility, protocolVersion, protocolVersionMismatchErrorCode, rpcMethods } from "@getdomovoi/protocol"
+import { buildVersion, protocolCompatibility, protocolVersion, protocolVersionMismatchErrorCode, rpcMethods } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 
 import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
@@ -97,7 +97,7 @@ async function attach(
       if (!proved) return fail("owner-unverified")
       if (protocolCompatibility(protocolVersion, record.protocolVersion) !== "compatible") return fail("owner-incompatible")
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.hello", params: {
-        client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: token,
+        client: "desktop", clientVersion: buildVersion, protocolVersion, authToken: token,
       } }), (error) => { if (error) fail("owner-unreachable") })
     }
     const message = (data: WebSocket.RawData) => {

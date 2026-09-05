@@ -114,7 +114,8 @@ widths. Describe keyboard, touch, loading, empty, and failure states when they a
 Every workspace package shares one version and is released as one compatibility unit. Record the
 release intent of a change with `pnpm changeset` and commit the generated file alongside the
 change. `pnpm release:status` lists changed packages that still lack metadata, and
-`pnpm release:invariants` fails when package versions drift apart, a workflow references an
+`pnpm release:invariants` fails when package versions drift apart, the built protocol's
+`buildVersion` differs from its manifest (rebuild after versioning), a workflow references an
 action by a mutable tag, `ROADMAP.html` is stale relative to `ROADMAP.md`, or the phone's
 generated design tokens are stale relative to `packages/ui/src/styles.css`.
 
