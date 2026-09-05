@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto"
 import { homedir, hostname } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+
+import { protocolVersion } from "@getdomovoi/protocol"
 
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
@@ -9,7 +12,9 @@ import {
   type MachineCredentials,
 } from "./machine-credentials.js"
 import { CliProviderProbe, type ProviderProbe } from "./providers.js"
-import { claimProfile } from "./profile-lease.js"
+import { claimProfile, type ProfileLease } from "./profile-lease.js"
+import { createLocalOwnerSecret, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import {
   DomovoiDaemon,
   type DaemonErrorSink,
@@ -22,6 +27,7 @@ export type ProductionDaemonOptions = {
   homeDirectory?: string
   machineLabel?: string
   errorSink?: DaemonErrorSink
+  owner?: "daemon" | "desktop"
 }
 
 export type ProductionDaemonCredential =
@@ -50,7 +56,7 @@ export type ProductionDaemonRuntime = {
   readonly host: string
   readonly requestedPort: number
   readonly authToken: string
-  start(): Promise<{ host: string; port: number }>
+  start(signal?: AbortSignal): Promise<{ host: string; port: number }>
   stop(): Promise<void>
 }
 
@@ -84,28 +90,42 @@ function urlHost(host: string): string {
 export async function createProductionDaemonWithDependencies(
   options: ProductionDaemonOptions,
   dependencies: ProductionDaemonDependencies,
+  ownership?: { lease: ProfileLease; deadline: OperationDeadline },
 ): Promise<ProductionDaemonHandle> {
+  const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
   const environment = options.environment ?? process.env
-  const homeDirectory = options.homeDirectory ?? homedir()
+  const homeDirectory = resolve(options.homeDirectory ?? homedir())
   const machineLabel = options.machineLabel ?? hostname()
-  const config = dependencies.parseEnvironment(environment, homeDirectory)
-
-  // Validate and load transport protection before creating credentials or a
-  // server. A rejected remote listener must have no socket or secret side effect.
-  const tls = config.tls ? await dependencies.loadTls(config.tls) : undefined
-  const [authToken, machineIdentity] = await Promise.all([
-    config.authToken
-      ? Promise.resolve(config.authToken)
-      : dependencies.loadOrCreateToken(config.credentialPath),
-    dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
-  ])
-  const stateDirectory = join(homeDirectory, ".domovoi")
-  // Store construction itself loads and mutates durable state. Waiting until
-  // listen() loses the ownership race even if both callers use different ports.
-  const lease = claimProfile(homeDirectory)
-  let daemon: ProductionDaemonRuntime
+  let lease = ownership?.lease
+  let published = false
   try {
-    daemon = dependencies.createDaemon({
+    const config = dependencies.parseEnvironment(environment, homeDirectory)
+    // Validate transport before any secret or listener side effect. Store
+    // construction itself writes state, so ownership precedes its constructor.
+    const tls = config.tls ? await beforeDeadline(dependencies.loadTls(config.tls), deadline) : undefined
+    deadline.throwIfExpired()
+    lease ??= claimProfile(homeDirectory)
+    const ownedLease = lease
+    const [authToken, machineIdentity] = await beforeDeadline(Promise.all([
+      config.authToken
+        ? Promise.resolve(config.authToken)
+        : dependencies.loadOrCreateToken(config.credentialPath),
+      dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
+    ]), deadline)
+    const secret = await beforeDeadline(createLocalOwnerSecret(homeDirectory, authToken), deadline)
+    deadline.throwIfExpired()
+    const identity = { instanceId: randomUUID(), machineId: machineIdentity.id, protocolVersion }
+    const credential: ProductionDaemonCredential = config.authToken
+      ? { source: "environment" } : { source: "file", path: resolve(config.credentialPath) }
+    const record: Extract<LocalOwnerRecord, { state: "starting" }> = {
+      version: 1, state: "starting", ...identity, owner: options.owner ?? "daemon", credential,
+      ...(config.tls ? { certificatePath: resolve(config.tls.certPath) } : {}),
+    }
+    writeLocalOwnerRecord(homeDirectory, record)
+    published = true
+    deadline.throwIfExpired()
+    const daemon = dependencies.createDaemon({
+      localOwner: { secret, identity },
       host: config.host,
       port: config.port,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
@@ -116,41 +136,60 @@ export async function createProductionDaemonWithDependencies(
       ...(tls ? { tls } : {}),
       ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
       machineCredentials: dependencies.createMachineCredentials(),
-      statePath: join(stateDirectory, "state.sqlite"),
-      worktreeRoot: join(stateDirectory, "worktrees"),
+      statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
+      worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
       manageStateDirectoryPermissions: true,
       ...(options.errorSink ? { errorSink: options.errorSink } : {}),
     })
-  } catch (error) {
-    lease.release()
-    throw error
-  }
-  const secureTransport = tls !== undefined
-  let stopping: Promise<void> | undefined
-  const stop = (): Promise<void> => {
-    // Only a fully stopped runtime relinquishes the profile. A failed stop
-    // must not authorize a second writer while the first might still run.
-    stopping ??= daemon.stop().then(() => lease.release())
-    return stopping
-  }
-
-  return {
-    host: daemon.host,
-    requestedPort: daemon.requestedPort,
-    authToken: daemon.authToken,
-    secureTransport,
-    credential: config.authToken
-      ? { source: "environment" }
-      : { source: "file", path: config.credentialPath },
-    start: async () => {
-      const address = await daemon.start()
-      const reachableHost = config.advertiseHost ?? address.host
-      return {
-        ...address,
-        url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc`,
+    const secureTransport = tls !== undefined
+    let starting: Promise<ProductionDaemonEndpoint> | undefined
+    let startDeadline: OperationDeadline | undefined
+    let stopping: Promise<void> | undefined
+    const shutdown = (): Promise<void> => {
+      if (!stopping) {
+        writeLocalOwnerRecord(homeDirectory, { ...record, state: "stopping" })
+        // A late start must settle before closing its stores. A hung or failed
+        // stop retains the lease. Expiring a caller never authorizes a writer.
+        stopping = Promise.resolve(starting).catch(() => {}).then(() => daemon.stop()).then(() => {
+          writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
+          ownedLease.release()
+        })
       }
-    },
-    stop,
+      return stopping
+    }
+    return {
+      host: daemon.host, requestedPort: daemon.requestedPort, authToken: daemon.authToken,
+      secureTransport, credential,
+      start: () => {
+        if (stopping) return Promise.reject(new Error("Daemon cannot restart after shutdown"))
+        if (!starting) {
+          startDeadline = ownership?.deadline ?? OperationDeadline.start(30_000)
+          starting = daemon.start(startDeadline.signal).then((address) => {
+            startDeadline!.throwIfExpired()
+            if (stopping) throw new Error("Daemon stopped during startup")
+            const reachableHost = config.advertiseHost ?? address.host
+            const endpoint = { ...address, url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc` }
+            writeLocalOwnerRecord(homeDirectory, { ...record, state: "ready", url: endpoint.url })
+            return endpoint
+          })
+        }
+        return beforeDeadline(starting, startDeadline!).catch((error: unknown) => {
+          void shutdown().catch(() => {})
+          throw error
+        }).finally(() => { if (!ownership) startDeadline!.clear() })
+      },
+      stop: async () => {
+        const stopDeadline = OperationDeadline.start(30_000)
+        try { await beforeDeadline(shutdown(), stopDeadline) } finally { stopDeadline.clear() }
+      },
+    }
+  } catch (error) {
+    try {
+      if (published) writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
+    } finally { lease?.release() }
+    throw error
+  } finally {
+    if (!ownership) deadline.clear()
   }
 }
 
