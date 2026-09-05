@@ -30,6 +30,7 @@ import {
   sessionHistoryEntrySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
+  skillInstallErrorCode,
   workspaceSnapshotSchema,
 } from "./index.js"
 
@@ -86,11 +87,57 @@ describe("audit RPC contracts", () => {
       unknown: true,
     }).success).toBe(false)
   })
-  it("exposes skill inventory without a distribution RPC", () => {
+  it("exposes skill inventory without a copy, sync, or distribution RPC", () => {
     expect(rpcMethods["skill.inventory"].params.parse({})).toEqual({})
     expect(Object.keys(rpcMethods).filter((method) => (
-      method.startsWith("skill.") && /install|copy|sync|distribut/i.test(method)
+      method.startsWith("skill.") && /copy|sync|distribut/i.test(method)
     ))).toEqual([])
+  })
+
+  it("reserves a structured error for refused skill installs", () => {
+    expect(skillInstallErrorCode).toBe(-32018)
+    expect(rpcMethodMutations["skill.installPreview"]).toBe("read-only")
+    expect(rpcMethodMutations["skill.install"]).toBe("mutating")
+  })
+
+  it("previews a skill install from an absolute local path only", () => {
+    const source = { kind: "path", path: "/home/dev/work/skills/pr-triage" } as const
+    expect(rpcMethods["skill.installPreview"].params.parse({ source })).toEqual({ source })
+    expect(rpcMethods["skill.installPreview"].params.safeParse({
+      source: { kind: "path", path: "skills/pr-triage" },
+    }).success).toBe(false)
+    expect(rpcMethods["skill.installPreview"].params.safeParse({
+      source: { kind: "url", url: "https://example.invalid/skill" },
+    }).success).toBe(false)
+    expect(rpcMethods["skill.installPreview"].params.safeParse({ source, scope: "user" }).success)
+      .toBe(false)
+  })
+
+  it("pins a skill install to the previewed source digest and a catalog scope", () => {
+    const params = {
+      source: { kind: "path", path: "/home/dev/work/skills/pr-triage" },
+      scope: "user",
+      sourceDigest: `sha256:${"c".repeat(64)}`,
+    } as const
+    expect(rpcMethods["skill.install"].params.parse(params)).toEqual(params)
+    expect(rpcMethods["skill.install"].params.safeParse({ ...params, scope: "system" }).success)
+      .toBe(false)
+    expect(rpcMethods["skill.install"].params.safeParse({ ...params, sourceDigest: undefined }).success)
+      .toBe(false)
+    expect(rpcMethods["skill.install"].params.safeParse({ ...params, force: true }).success)
+      .toBe(false)
+    expect(rpcMethods["skill.install"].result.safeParse({
+      id: "skill-111111111111",
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      path: "/home/dev/.domovoi/skills/pr-triage/SKILL.md",
+      scope: "user",
+      source: "domovoi",
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+    }).success).toBe(true)
   })
 
   it("does not expose pre-transactional transfer endpoints", () => {

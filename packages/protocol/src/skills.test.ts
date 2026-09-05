@@ -4,6 +4,8 @@ import {
   maximumTurnSkillSelections,
   skillCapabilityManifestSchema,
   skillEnablementReviewSchema,
+  skillInstallPreviewSchema,
+  skillInstallRefusalSchema,
   skillInventorySchema,
   skillSignatureSchema,
   skillSummarySchema,
@@ -193,6 +195,40 @@ describe("skill security metadata", () => {
       path: "/skills/plain/SKILL.md",
       scope: "user",
       source: "domovoi",
+    }).success).toBe(false)
+  })
+
+  it("describes a reviewed install with its trust, digests, files, and refusals", () => {
+    const preview = {
+      source: { kind: "path", path: "/home/dev/work/skills/pr-triage" },
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      manifest: { version: 1, capabilities: ["filesystem.read", "process.execute"] },
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      sourceDigest: `sha256:${"b".repeat(64)}`,
+      signature: { state: "unverified", algorithm: "ed25519", keyId: "ed25519:0123456789abcdef", value: "ZGVjbGFyZWQtc2lnbmF0dXJl" },
+      trust: { state: "untrusted", reason: "unverified-signature" },
+      files: [{ path: "SKILL.md", bytes: 2_100 }, { path: "scripts/triage.ts", bytes: 6_400 }],
+      targets: [
+        { scope: "project", path: "/repo/.domovoi/skills/pr-triage", state: "available" },
+        { scope: "user", path: "/home/dev/.domovoi/skills/pr-triage", state: "conflict" },
+      ],
+      refusals: [{ kind: "skill-install-refused", reason: "symlink-escapes-source", path: "scripts/link" }],
+    } as const
+
+    expect(skillInstallPreviewSchema.parse(preview)).toEqual(preview)
+    expect(skillInstallPreviewSchema.safeParse({ ...preview, installed: true }).success).toBe(false)
+    expect(skillInstallPreviewSchema.safeParse({
+      ...preview,
+      targets: [{ scope: "system", path: "/etc/domovoi/skills/pr-triage", state: "available" }],
+    }).success).toBe(false)
+    expect(skillInstallRefusalSchema.safeParse({
+      kind: "skill-install-refused",
+      reason: "source-changed",
+    }).success).toBe(true)
+    expect(skillInstallRefusalSchema.safeParse({
+      kind: "skill-install-refused",
+      reason: "overwrite",
     }).success).toBe(false)
   })
 })
