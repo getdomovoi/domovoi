@@ -132,7 +132,29 @@ describe("connectMachineClient", () => {
       await expect(connectMachineClient({
         candidates: [lan, tailnet], credential, kind: "desktop", budgets, deadline,
         createClient: createClient as never,
-      })).rejects.toThrow("No transport reached that machine")
+      })).rejects.toMatchObject({
+        name: "TransportDialTimeoutError", stage: "route-setup", target: "wss://workshop.tailnet:47831", budgetMs: 1_000,
+      })
+      expect(createClient).not.toHaveBeenCalled()
+    } finally { deadline.clear() }
+  })
+
+  it("keeps expiry between child allocation and socket creation typed", async () => {
+    const deadline = Deadline.start(1_000)
+    const { createClient } = fakeClients()
+    const limit = deadline.limit.bind(deadline)
+    vi.spyOn(deadline, "limit").mockImplementationOnce((budgetMs) => {
+      const attempt = limit(budgetMs)
+      vi.setSystemTime(Date.now() + budgetMs)
+      return attempt
+    })
+    try {
+      await expect(connectMachineClient({
+        candidates: [lan], credential, kind: "desktop", budgets, deadline,
+        createClient: createClient as never,
+      })).rejects.toMatchObject({
+        name: "TransportDialTimeoutError", stage: "route-setup", target: "wss://workshop.local:47831", budgetMs: 1_000,
+      })
       expect(createClient).not.toHaveBeenCalled()
     } finally { deadline.clear() }
   })

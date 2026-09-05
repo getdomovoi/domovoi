@@ -43,11 +43,15 @@ export async function connectMachineClient(input: {
     ...(input.relayAvailable === undefined ? {} : { relayAvailable: input.relayAvailable }),
     connect: async ({ endpoint, credential, remainingCandidates }) => {
       const remaining = input.deadline.remainingMs()
-      if (remaining === 0) throw new Error("The connection deadline has passed")
+      if (remaining === 0) {
+        throw new DeadlineExceededError("route setup", describeTarget(endpoint), input.deadline.budgetMs)
+      }
       const attempt = input.deadline.limit(Math.max(1, remaining / remainingCandidates))
       let client: DomovoiClient | undefined
       try {
-        if (attempt.remainingMs() === 0) throw new Error("The connection deadline has passed")
+        if (attempt.remainingMs() === 0) {
+          throw new DeadlineExceededError("route setup", describeTarget(endpoint), attempt.budgetMs)
+        }
         client = createClient(endpoint, input.kind, {
           ...input.options,
           budgets: input.budgets,
