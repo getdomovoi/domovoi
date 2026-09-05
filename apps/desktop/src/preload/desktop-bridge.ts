@@ -5,6 +5,15 @@ import type {
   WorkspaceWindowDecoration,
 } from "@getdomovoi/ui"
 
+import {
+  daemonRefusalReasons,
+  type DaemonRefusalReason,
+  type DesktopDaemonAcquisition,
+  type DesktopDaemonBridge,
+} from "../shared/daemon-acquisition.js"
+
+export type DesktopBridge = DesktopWindowBridge & DesktopDaemonBridge
+
 export type IpcRendererAdapter = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
   send(channel: string, ...args: unknown[]): void
@@ -85,24 +94,40 @@ function isWindowDecoration(value: unknown): value is WorkspaceWindowDecoration 
 type DesktopRpcEndpoint = Awaited<ReturnType<DesktopWindowBridge["getRpcEndpoint"]>>
 
 const maximumTokenLength = 4_096
+const maximumRefusalMessageLength = 1_000
 
-function rpcEndpointResult(value: unknown): DesktopRpcEndpoint {
+function boundedString(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum
+}
+
+function websocketUrl(value: unknown): value is string {
+  return typeof value === "string" && URL.canParse(value) && ["ws:", "wss:"].includes(new URL(value).protocol)
+}
+
+function isRefusalReason(value: unknown): value is DaemonRefusalReason {
+  return typeof value === "string" && (daemonRefusalReasons as readonly string[]).includes(value)
+}
+
+function daemonAcquisitionResult(value: unknown): DesktopDaemonAcquisition {
+  const result = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>
+  const shape = Object.keys(result).sort().join(",")
+  const endpoint: DesktopRpcEndpoint | undefined = websocketUrl(result.url) && boundedString(result.token, maximumTokenLength)
+    ? { url: result.url, token: result.token }
+    : undefined
+  if (endpoint && result.kind === "owned" && shape === "kind,token,url") return { kind: "owned", ...endpoint }
   if (
-    !value
-    || typeof value !== "object"
-    || Array.isArray(value)
-    || Object.keys(value).sort().join(",") !== "token,url"
-  ) throw new Error("Desktop returned an invalid daemon endpoint")
-  const result = value as Record<string, unknown>
+    endpoint
+    && result.kind === "attached"
+    && shape === "kind,owner,token,url"
+    && (result.owner === "daemon" || result.owner === "desktop")
+  ) return { kind: "attached", owner: result.owner, ...endpoint }
   if (
-    typeof result.url !== "string"
-    || typeof result.token !== "string"
-    || result.token.length === 0
-    || result.token.length > maximumTokenLength
-    || !URL.canParse(result.url)
-    || !["ws:", "wss:"].includes(new URL(result.url).protocol)
-  ) throw new Error("Desktop returned an invalid daemon endpoint")
-  return { url: result.url, token: result.token }
+    result.kind === "refused"
+    && shape === "kind,message,reason"
+    && isRefusalReason(result.reason)
+    && boundedString(result.message, maximumRefusalMessageLength)
+  ) return { kind: "refused", reason: result.reason, message: result.message }
+  throw new Error("Desktop returned an invalid daemon endpoint")
 }
 
 function booleanResult(value: unknown, action: string): boolean {
@@ -113,10 +138,17 @@ function booleanResult(value: unknown, action: string): boolean {
 export function createDesktopWindowBridge(
   ipc: IpcRendererAdapter,
   platform: DesktopPlatform,
-): DesktopWindowBridge {
+): DesktopBridge {
+  const acquireDaemon = async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint"))
   return {
     platform,
-    getRpcEndpoint: async () => rpcEndpointResult(await ipc.invoke("domovoi:rpc-endpoint")),
+    acquireDaemon,
+    reacquireDaemon: async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint-reconnect")),
+    getRpcEndpoint: async () => {
+      const acquisition = await acquireDaemon()
+      if (acquisition.kind === "refused") throw new Error(acquisition.message)
+      return { url: acquisition.url, token: acquisition.token }
+    },
     captureAnnotation: async (rect) => captureResult(await ipc.invoke("domovoi:capture-annotation", rect)),
     notify: async (request) => booleanResult(await ipc.invoke("domovoi:notify", request), "notification"),
     onNotificationActivate: (listener) => {

@@ -1,7 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { once } from "node:events"
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { fsyncSync } from "node:fs"
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -11,12 +12,18 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, type ReadyLocalOwner } from "./local-owner-record.js"
+import { writeLocalOwnerRemovalReceipt, type LocalOwnerRemovalReceipt } from "./local-owner-removal.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { CliProviderProbe } from "./providers.js"
 import { claimProfile } from "./profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./service/configuration.js"
 import { installService, nodeServiceEffects, removeService } from "./service/install.js"
 import { waitForDaemon } from "./test-wait-for.js"
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync) }
+})
 
 const cli = fileURLToPath(new URL("../dist/index.js", import.meta.url))
 const run = promisify(execFile)
@@ -168,7 +175,7 @@ async function acquire(homeDirectory: string, deadline: OperationDeadline) {
 }
 
 function receiptPath(home: string) { return join(home, ".domovoi", "local-owner-removal.json") }
-function receipt(record: ReadyLocalOwner) {
+function receipt(record: ReadyLocalOwner): LocalOwnerRemovalReceipt {
   return {
     version: 1, instanceId: record.instanceId, machineId: record.machineId,
     completedAt: "2026-09-05T12:00:00.000Z",
@@ -252,4 +259,30 @@ it("requires the literal confirmation before opening a profile or writing a rece
     expect(await recover(home, deadline, false)).toMatchObject({ code: 1, stderr: expect.stringContaining("--confirm-no-supervisor") })
     await expect(stat(join(home, ".domovoi"))).rejects.toMatchObject({ code: "ENOENT" })
   } finally { deadline.clear() }
+}, operationBudget + 1_000)
+
+it.skipIf(process.platform === "win32")("reports a published receipt when only the directory flush after rename fails", async () => {
+  const deadline = OperationDeadline.start(operationBudget)
+  const home = await setup(deadline)
+  await mkdir(join(home, ".domovoi"), { mode: 0o700 })
+  const lease = claimProfile(home)
+  try {
+    const record: ReadyLocalOwner = {
+      version: 1, state: "ready", instanceId: randomUUID(), machineId: `machine-${"a".repeat(32)}`,
+      protocolVersion: "0.4.0", owner: "daemon", credential: { source: "environment" }, url: "ws://127.0.0.1:47831/rpc",
+    }
+    const actual = vi.mocked(fsyncSync).getMockImplementation()!
+    vi.mocked(fsyncSync).mockImplementationOnce(actual).mockImplementationOnce(() => {
+      throw Object.assign(new Error("EIO: i/o error, fsync"), { code: "EIO" })
+    })
+    expect(() => writeLocalOwnerRemovalReceipt(home, lease, receipt(record), deadline)).toThrow(
+      expect.objectContaining({ message: expect.stringMatching(/receipt is published at .*local-owner-removal\.json.*after publication.*EIO/s) }),
+    )
+    expect(() => writeLocalOwnerRemovalReceipt(home, lease, receipt(record), deadline)).not.toThrow()
+    expect(JSON.parse(await readFile(receiptPath(home), "utf8"))).toMatchObject({ instanceId: record.instanceId })
+    expect((await readdir(join(home, ".domovoi"))).filter((name) => name.endsWith(".partial"))).toEqual([])
+  } finally {
+    lease.release()
+    deadline.clear()
+  }
 }, operationBudget + 1_000)

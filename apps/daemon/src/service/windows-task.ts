@@ -14,9 +14,15 @@ export type WindowsTaskRemovalPlan = {
 }
 
 export class WindowsTaskRemovalError extends Error {
-  constructor(name: string, cause: unknown) {
+  constructor(name: string, cause: unknown, options: { stopIssued?: boolean } = {}) {
     const detail = cause instanceof Error ? cause.message : String(cause)
-    super(`Could not confirm removal of Windows task "${name}". Inspect Task Scheduler and the saved service configuration before retrying: ${detail}`, { cause })
+    // The stop script disables the task before stopping it. Once issued, a
+    // later failure leaves that disabled registration behind; nothing here
+    // re-enables it, so the operator must choose to restore or retry.
+    const disabled = options.stopIssued
+      ? ` The task "${name}" may now be disabled while its registration and saved configuration are kept. To keep the service, re-enable it with schtasks /change /tn "${name}" /enable or reinstall it with domovoid service install. Otherwise retry domovoid service remove.`
+      : ""
+    super(`Could not confirm removal of Windows task "${name}". Inspect Task Scheduler and the saved service configuration before retrying: ${detail}.${disabled}`, { cause })
     this.name = "WindowsTaskRemovalError"
   }
 }
@@ -105,6 +111,8 @@ export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: P
     }
     return "removed"
   } catch (cause) {
-    throw new WindowsTaskRemovalError(plan.name, cause)
+    // Every failure here follows the stop attempt; earlier refusals are
+    // wrapped by the caller without this warning.
+    throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true })
   }
 }

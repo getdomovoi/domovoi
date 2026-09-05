@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto"
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
-import type { ReadyLocalOwner } from "../local-owner-record.js"
+import { localOwnerRecordPath, type ReadyLocalOwner } from "../local-owner-record.js"
+import { serviceConfigurationPath } from "./configuration.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
-import { serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
+import { readServiceRemovalSnapshot, serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
 
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs() })
+const homes: string[] = []
+afterEach(async () => {
+  vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs()
+  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })))
+})
 function snapshots() {
   const registrationId = randomUUID()
   const owner: ReadyLocalOwner = {
@@ -133,4 +141,38 @@ it("never writes a receipt for a timed-out removal, even if the last deletion su
   // until process exit. A timeout is not a safe handoff to another writer.
   expect(release).not.toHaveBeenCalled()
   expect(vi.getTimerCount()).toBe(0)
+})
+
+const cannotDenyRead = process.platform === "win32" || process.getuid?.() === 0
+it.each([
+  ["truncated owner record", false, async (home: string) => {
+    await writeFile(localOwnerRecordPath(home), '{"version":1,"state":"rea', { mode: 0o600 })
+  }, /owner record could not be read/],
+  ["unreadable owner record", cannotDenyRead, async (home: string) => {
+    await writeFile(localOwnerRecordPath(home), '{"version":1,"state":"none"}', { mode: 0o600 })
+    await chmod(localOwnerRecordPath(home), 0o000)
+  }, /owner record could not be read/],
+  ["oversized service configuration", false, async (home: string) => {
+    await writeFile(serviceConfigurationPath(home, "linux"), `{"padding":"${"x".repeat(64 * 1_024)}"}`, { mode: 0o600 })
+  }, /service configuration .*could not be read/],
+] as const)("removes the job without a receipt when the %s blocks proof", async (_name, skip, corrupt, cause) => {
+  if (skip) return
+  const home = await mkdtemp(join(tmpdir(), "domovoi-removal-snapshot-"))
+  homes.push(home)
+  await mkdir(join(home, ".domovoi"), { mode: 0o700 })
+  await corrupt(home)
+  const { effects, release } = manager("linux")
+  vi.mocked(effects.removalSnapshot).mockReset().mockImplementation(readServiceRemovalSnapshot)
+  const stdout = vi.fn()
+  const stderr = vi.fn()
+  expect(await runServiceCommand(["service", "remove"], { ...effects, platform: "linux", home, execPath: "/bin/domovoid", stdout, stderr })).toBe(0)
+  expect(stderr).not.toHaveBeenCalled()
+  expect(effects.run).toHaveBeenCalledWith("systemctl", ["--user", "disable", "--now", "domovoid.service"], expect.anything())
+  expect(effects.remove).toHaveBeenCalledWith(serviceConfigurationPath(home, "linux"), expect.anything())
+  expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+  expect(release).toHaveBeenCalledOnce()
+  const printed = vi.mocked(stdout).mock.calls.map(([text]) => text).join("")
+  expect(printed).toMatch(cause)
+  expect(printed).toContain("No recovery receipt was written")
+  expect(printed).toContain("domovoid profile recover --confirm-no-supervisor")
 })

@@ -58,6 +58,7 @@ export function writeLocalOwnerRemovalReceipt(
   const path = localOwnerRemovalReceiptPath(homeDirectory)
   const staging = `${path}.${randomUUID()}.partial`
   let descriptor: number | undefined
+  let published = false
   const failures: unknown[] = []
   const closeFile = () => {
     if (descriptor === undefined) return
@@ -74,6 +75,7 @@ export function writeLocalOwnerRemovalReceipt(
     closeFile()
     deadline.throwIfExpired()
     renameSync(staging, path)
+    published = true
     // Windows does not expose directory fsync through Node. Receipt contents
     // are flushed before rename on every platform; POSIX also flushes the name.
     if (process.platform !== "win32") {
@@ -87,9 +89,15 @@ export function writeLocalOwnerRemovalReceipt(
     try { closeFile() } catch (error) { failures.push(error) }
     try { rmSync(staging, { force: true }) } catch (error) { failures.push(error) }
   }
-  if (failures.length > 0) throw new Error(`Owner removal receipt publication did not complete at ${path}. A staging file may remain at ${staging}. No ownership recovery was performed.`, {
-    cause: new AggregateError(failures, "Receipt publication and cleanup failures"),
-  })
+  if (failures.length === 0) return
+  const cause = new AggregateError(failures, "Receipt publication and cleanup failures")
+  if (published) {
+    const detail = failures.map((failure) => failure instanceof Error ? failure.message : String(failure)).join("; ")
+    // The rename already made the receipt visible. Only the durability flush
+    // or a descriptor close failed after publication.
+    throw new Error(`Owner removal receipt is published at ${path}, but a step after publication failed: ${detail}. The receipt may not be durable until its directory is flushed; verify it before relying on it.`, { cause })
+  }
+  throw new Error(`Owner removal receipt publication did not complete at ${path}. A staging file may remain at ${staging}. No ownership recovery was performed.`, { cause })
 }
 
 export function retireRemovedLocalOwner(

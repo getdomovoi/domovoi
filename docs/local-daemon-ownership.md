@@ -94,18 +94,23 @@ into the owner record. Removal observes the registration and instance before sto
 then takes the free lease and re-reads both. Changed configuration or a different owner refuses
 before deleting launch files. A missing manager job is not a stop proof.
 
-When a verified manager stop leaves that same bound owner record behind, removal writes
-`local-owner-removal.json` only after deleting its launch files. A graceful shutdown that already
-published `none` needs no recovery receipt. Removal holds the lease through publication. If a
-filesystem operation expires, the CLI retains the lease until exit rather than let late deletion
-erase a new installation. This does not provide a live owner handoff or a transaction with the OS
-service manager.
+An owner record or saved configuration that exists but cannot be read (corrupt, oversized or
+inaccessible) is no proof at all. Removal still stops and unregisters the manager job and deletes
+its launch files, but writes no receipt and reports which file could not be read. Repair that file,
+then use the explicit operator command below. When a verified manager stop leaves that same bound
+owner record behind, removal writes `local-owner-removal.json` only after deleting its launch
+files. A graceful shutdown that already published `none` needs no recovery receipt. Removal holds
+the lease through publication. If a filesystem operation expires, the CLI retains the lease until
+exit rather than let late deletion erase a new installation. This does not provide a live owner
+handoff or a transaction with the OS service manager.
 
 The owner-only receipt is bounded to 4 KiB. It names the machine, exact owner instance, completion
 time and authorization: either manager plus registration UUID, or an explicit operator confirmation
 plus the local OS username. Completion time is audit information, never a liveness threshold.
 Publication flushes the private staging file before atomic rename; POSIX also flushes the parent
-directory. Node does not provide the equivalent directory flush on Windows. All reads enforce
+directory. Node does not provide the equivalent directory flush on Windows. A flush or close that
+fails after the rename is reported as a published receipt whose durability is unconfirmed, not as
+an incomplete publication. All reads enforce
 regular-file size; POSIX also checks owner and mode under the existing profile policy. Receipt publication and cleanup errors
 name the file and preserve both failure causes.
 
