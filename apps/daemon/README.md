@@ -132,7 +132,7 @@ one host or IP address, not a URL, port, wildcard or loopback address. The adver
 the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` supplies an independent route, local
 for a loopback host and otherwise LAN;
 when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
-The factory's returned URL uses the LAN name when configured, otherwise the tailnet name, otherwise
+The factory's returned URL uses the configured advertise host, otherwise the tailnet name, otherwise
 the bound address, so a tailnet-only setup does not hand clients a wildcard address.
 Names and address ranges are never treated as proof of tailnet membership or transport protection.
 Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
