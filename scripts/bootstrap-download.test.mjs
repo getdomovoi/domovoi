@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { getEventListeners } from "node:events"
 import test from "node:test"
 
 import { downloadOverHttps as downloadChunksOverHttps } from "./bootstrap-daemon.mjs"
@@ -129,12 +130,14 @@ test("redirects spend the original deadline and cancel a late response without r
   let now = 0
   let cancelled = 0
   let read = 0
+  let transportSignal
   const requested = []
   t.mock.method(performance, "now", () => now)
   const deadline = bootstrapDeadline(1_000, "Original download budget expired")
   try {
     const fetchImpl = async (url, options) => {
-      assert.equal(options.signal, deadline.signal)
+      transportSignal ??= options.signal
+      assert.equal(options.signal, transportSignal, "redirects must share one transport cancellation signal")
       requested.push(url)
       now += 500
       return new Response(new ReadableStream({
@@ -150,6 +153,8 @@ test("redirects spend the original deadline and cancel a late response without r
     assert.deepEqual(requested, [start, "https://objects.test/archive"])
     assert.equal(cancelled, 2)
     assert.equal(read, 0)
+    assert.equal(transportSignal.aborted, true)
+    assert.equal(transportSignal.reason, deadline.signal.reason, "the linked signal must preserve the total deadline refusal")
   } finally { deadline.clear() }
 })
 
@@ -252,5 +257,84 @@ for (const phase of ["fetch", "body read"]) {
       assert.equal(signal.reason.code, "BOOTSTRAP_DOWNLOAD_INACTIVE")
       if (phase === "body read") assert.equal(cancelled, 1)
     } finally { deadline.clear() }
+  })
+}
+
+test("body bytes replenish inactivity without charging local consumer backpressure", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  let reads = 0
+  t.mock.method(performance, "now", () => now)
+  const deadline = bootstrapDeadline(2_000, "Original total expired")
+  const iterator = downloadChunksOverHttps(start, { maximumBytes: 8, inactivityTimeoutMs: 100, deadline,
+    fetch: async () => new Response(new ReadableStream({
+      pull(controller) {
+        now += 80
+        if (++reads < 4) controller.enqueue(new Uint8Array([reads]))
+        else controller.close()
+      },
+    }, { highWaterMark: 0 })),
+  })
+  try {
+    for (const expected of [1, 2, 3]) {
+      assert.deepEqual((await iterator.next()).value, new Uint8Array([expected]))
+      now += 500 // Time spent by the disk consumer, not a new network wait.
+    }
+    assert.equal((await iterator.next()).done, true)
+    assert.equal(getEventListeners(deadline.signal, "abort").length, 0)
+  } finally { deadline.clear() }
+})
+
+test("the original total still aborts fetch while the consumer pauses", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  let signal
+  let cancelled = 0
+  t.mock.method(performance, "now", () => now)
+  const deadline = bootstrapDeadline(1_000, "Original total expired")
+  const iterator = downloadChunksOverHttps(start, { maximumBytes: 8, inactivityTimeoutMs: 100, deadline,
+    fetch: async (_url, options) => {
+      signal = options.signal
+      return new Response(new ReadableStream({
+        pull(controller) { controller.enqueue(new Uint8Array([1])) },
+        cancel() { cancelled += 1 },
+      }, { highWaterMark: 0 }))
+    },
+  })
+  try {
+    assert.equal((await iterator.next()).done, false)
+    now = 1_000
+    assert.throws(() => deadline.check(), /Original total expired/)
+    assert.equal(signal.aborted, true, "the total must reach fetch even when no inactivity phase runs")
+    assert.equal(cancelled, 1)
+    await assert.rejects(iterator.next(), /Original total expired/)
+    assert.equal(getEventListeners(deadline.signal, "abort").length, 0)
+  } finally { deadline.clear() }
+})
+
+test("finishing or abandoning a download clears inactivity timers and parent listeners", { timeout: 5_000 }, async (t) => {
+  const pending = new Set()
+  const schedule = globalThis.setTimeout
+  const clear = globalThis.clearTimeout
+  const deadline = bootstrapDeadline(1_000, "Original total expired")
+  t.mock.method(globalThis, "setTimeout", (...args) => { const timer = schedule(...args); pending.add(timer); return timer })
+  t.mock.method(globalThis, "clearTimeout", (timer) => { pending.delete(timer); return clear(timer) })
+  try {
+    for (const abandon of [true, false]) {
+      const iterator = downloadChunksOverHttps(start, { maximumBytes: 8, inactivityTimeoutMs: 100, deadline,
+        fetch: async () => new Response(new Uint8Array([1])),
+      })
+      assert.equal((await iterator.next()).done, false)
+      if (abandon) await iterator.return()
+      else assert.equal((await iterator.next()).done, true)
+      assert.equal(pending.size, 0)
+      assert.equal(getEventListeners(deadline.signal, "abort").length, 0)
+    }
+  } finally { deadline.clear() }
+})
+
+for (const inactivityTimeoutMs of [0, -1, Infinity, NaN, 0.5, 2_147_483_648, null, "100"]) {
+  test(`refuses invalid inactivity before fetch: ${inactivityTimeoutMs}`, { timeout: 5_000 }, async () => {
+    await assert.rejects(downloadOverHttps(start, { maximumBytes: 8, inactivityTimeoutMs,
+      fetch: async () => assert.fail("Invalid inactivity must not create a request"),
+    }), /timeout must be a positive integer/)
   })
 }
