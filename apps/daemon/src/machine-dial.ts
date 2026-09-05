@@ -3,6 +3,7 @@ import { fleetDirectEndpointSchema, orderedTransports, type FleetMachineFacts } 
 import type { MachineCredentials } from "./machine-credentials.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
+import { configuredSshTunnelsSchema, type ConfiguredSshTunnel } from "./transport-config.js"
 
 export type MachineConnection = {
   call: (
@@ -14,7 +15,10 @@ export type MachineConnection = {
   close: () => void
 }
 
-export type MachineRouteConnection = MachineConnection & { endpoint: string }
+export type MachineRouteConnection = MachineConnection & {
+  endpoint: string
+  routeSource: "verified" | "advertised" | "ssh"
+}
 
 const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
 
@@ -33,6 +37,7 @@ function leavesThisMachine(endpoint: string): boolean {
 export function createMachineDialer(input: {
   machine: (machineId: string) => Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute"> | undefined
   credentials: MachineCredentials | undefined
+  sshTunnels?: readonly ConfiguredSshTunnel[]
   dialTimeoutMs: number
   open: (input: {
     endpoint: string
@@ -43,6 +48,7 @@ export function createMachineDialer(input: {
   }) => Promise<MachineConnection>
 }): (machineId: string, signal?: AbortSignal, deadline?: OperationDeadline) => Promise<MachineRouteConnection> {
   validateOperationDeadlineBudget(input.dialTimeoutMs)
+  const sshTunnels = configuredSshTunnelsSchema.parse(input.sshTunnels ?? [])
   return async (machineId: string, signal?: AbortSignal, parentDeadline?: OperationDeadline) => {
     const deadline = parentDeadline?.limit(input.dialTimeoutMs)
       ?? OperationDeadline.start(input.dialTimeoutMs, signal ? { signal } : {})
@@ -55,15 +61,19 @@ export function createMachineDialer(input: {
       const credential = input.credentials?.forMachine(machineId)
       if (!credential) throw new Error("That machine has to be paired again")
 
-      const endpoints: string[] = []
+      const routes: Array<Pick<MachineRouteConnection, "endpoint" | "routeSource">> = []
+      const addRoute = (endpoint: string, routeSource: MachineRouteConnection["routeSource"]) => {
+        if (!routes.some((route) => route.endpoint === endpoint)) routes.push({ endpoint, routeSource })
+      }
       if (machine.verifiedRoute && fleetDirectEndpointSchema.safeParse(machine.verifiedRoute.endpoint).success) {
-        endpoints.push(machine.verifiedRoute.endpoint)
+        addRoute(machine.verifiedRoute.endpoint, "verified")
       }
       let refusedPlaintext = false
       for (const transport of orderedTransports(machine.transports)) {
         // No relay can carry this plaintext RPC codec. A future encrypted relay
         // is a separate capability, not a caller-controlled availability flag.
-        if (transport.kind === "relay" || (transport.kind === "ssh" && transport.configured !== true)) continue
+        // A peer cannot assert that its loopback SSH forward is configured here.
+        if (transport.kind === "relay" || transport.kind === "ssh") continue
         const staysHere = transport.kind === "local"
           && machine.connection === "local"
           && !leavesThisMachine(transport.endpoint)
@@ -72,13 +82,17 @@ export function createMachineDialer(input: {
           refusedPlaintext = true
           continue
         }
-        if (!endpoints.includes(transport.endpoint)) endpoints.push(transport.endpoint)
+        addRoute(transport.endpoint, "advertised")
       }
-      if (endpoints.length === 0) throw new Error(refusedPlaintext
+      // Source-local forwards follow the direct candidates in protocol order.
+      // Eligibility and credentials were checked before adding any of them.
+      const ssh = sshTunnels.find((tunnel) => tunnel.machineId === machineId)
+      if (ssh) addRoute(ssh.endpoint, "ssh")
+      if (routes.length === 0) throw new Error(refusedPlaintext
         ? "Refusing to authenticate over an unencrypted connection"
         : "That machine advertises no usable transport")
       let lastError: unknown
-      for (const endpoint of endpoints) {
+      for (const { endpoint, routeSource } of routes) {
         deadline.throwIfExpired()
         if (signal?.aborted) throw new Error("The transfer was cancelled")
         try {
@@ -86,7 +100,7 @@ export function createMachineDialer(input: {
             endpoint, expectedMachineId: machine.id, credential, deadline,
             ...(signal ? { signal } : {}),
           }), deadline, signal)
-          return { ...connection, endpoint }
+          return { ...connection, endpoint, routeSource }
         } catch (error) {
           // Failed identity/authority is not evidence to keep trying elsewhere.
           if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
