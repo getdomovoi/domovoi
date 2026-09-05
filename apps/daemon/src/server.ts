@@ -76,7 +76,7 @@ import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
 import { validateOperationDeadlineBudget } from "./operation-deadline.js"
-import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
+import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
@@ -768,6 +768,10 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
+  // Below the production factory only. The version this daemon advertises and
+  // admits peers by, so a test peer can stand in for another release. Its own
+  // dials keep the build's version.
+  advertisedProtocolVersion?: string
   machineCredentials?: MachineCredentials
   fleetOperationTimeoutMs?: number
   fleetHeartbeatIntervalMs?: number
@@ -886,6 +890,7 @@ export class DomovoiDaemon {
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
   #advertiseHost: string | undefined
+  #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
   #machineCredentials: MachineCredentials | undefined
   #fleetEnrollment: FleetEnrollmentService
@@ -922,6 +927,10 @@ export class DomovoiDaemon {
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
     this.#advertiseHost = options.advertiseHost
+    this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
+    if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
+      throw new RangeError("Advertised protocol version must be a three-part semver")
+    }
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
@@ -1084,7 +1093,7 @@ export class DomovoiDaemon {
     const machine = this.#localMachine
     return fleetMachineDescriptorSchema.parse({
       id: machine.id, label: machine.name, platform: machine.platform,
-      arch: machine.arch, version: machine.version, capabilities: [...localMachineCapabilities], protocolVersion,
+      arch: machine.arch, version: machine.version, capabilities: [...localMachineCapabilities], protocolVersion: this.#advertisedProtocolVersion,
       transports: advertisedTransports({
         host: this.host, port: this.address?.port ?? this.requestedPort,
         ...(this.#tls ? { tls: true } : {}),
@@ -1162,7 +1171,7 @@ export class DomovoiDaemon {
     this.#http = listen((request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
-        response.end(JSON.stringify({ status: "ok", protocolVersion }))
+        response.end(JSON.stringify({ status: "ok", protocolVersion: this.#advertisedProtocolVersion }))
         return
       }
 
@@ -3147,7 +3156,7 @@ export class DomovoiDaemon {
       // versionless client is correctly judged incompatible rather than being
       // waved through as whatever the daemon happens to speak.
       const { clientProtocol, compatibility } = helloProtocolCompatibility(
-        protocolVersion,
+        this.#advertisedProtocolVersion,
         hello.protocolVersion,
       )
       if (compatibility !== "compatible") {
@@ -3158,7 +3167,7 @@ export class DomovoiDaemon {
           socket,
           request.id,
           protocolVersionMismatchErrorCode,
-          `This daemon speaks protocol ${protocolVersion}; the client speaks ${clientProtocol}`,
+          protocolMismatchRefusal(this.#advertisedProtocolVersion, clientProtocol),
         )
         return
       }
@@ -3217,7 +3226,7 @@ export class DomovoiDaemon {
       // The one method a machine may reach before it has a credential, because
       // presenting the pairing code is how it gets one. It grants nothing else.
       const params = paramsResult.data as RpcParams<"device.claim">
-      if (protocolCompatibility(protocolVersion, params.protocolVersion) !== "compatible") {
+      if (protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion) !== "compatible") {
         // The wire must be compatible before spending a short-lived code or a
         // guessing attempt. No credential exists until the claim succeeds.
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
