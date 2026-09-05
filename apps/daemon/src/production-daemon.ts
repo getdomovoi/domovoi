@@ -9,6 +9,7 @@ import {
   type MachineCredentials,
 } from "./machine-credentials.js"
 import { CliProviderProbe, type ProviderProbe } from "./providers.js"
+import { claimProfile } from "./profile-lease.js"
 import {
   DomovoiDaemon,
   type DaemonErrorSink,
@@ -99,23 +100,39 @@ export async function createProductionDaemonWithDependencies(
     dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
   ])
   const stateDirectory = join(homeDirectory, ".domovoi")
-  const daemon = dependencies.createDaemon({
-    host: config.host,
-    port: config.port,
-    ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
-    authToken,
-    ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
-    providerProbe: dependencies.createProviderProbe(),
-    machineIdentity,
-    ...(tls ? { tls } : {}),
-    ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
-    machineCredentials: dependencies.createMachineCredentials(),
-    statePath: join(stateDirectory, "state.sqlite"),
-    worktreeRoot: join(stateDirectory, "worktrees"),
-    manageStateDirectoryPermissions: true,
-    ...(options.errorSink ? { errorSink: options.errorSink } : {}),
-  })
+  // Store construction itself loads and mutates durable state. Waiting until
+  // listen() loses the ownership race even if both callers use different ports.
+  const lease = claimProfile(homeDirectory)
+  let daemon: ProductionDaemonRuntime
+  try {
+    daemon = dependencies.createDaemon({
+      host: config.host,
+      port: config.port,
+      ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
+      authToken,
+      ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
+      providerProbe: dependencies.createProviderProbe(),
+      machineIdentity,
+      ...(tls ? { tls } : {}),
+      ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
+      machineCredentials: dependencies.createMachineCredentials(),
+      statePath: join(stateDirectory, "state.sqlite"),
+      worktreeRoot: join(stateDirectory, "worktrees"),
+      manageStateDirectoryPermissions: true,
+      ...(options.errorSink ? { errorSink: options.errorSink } : {}),
+    })
+  } catch (error) {
+    lease.release()
+    throw error
+  }
   const secureTransport = tls !== undefined
+  let stopping: Promise<void> | undefined
+  const stop = (): Promise<void> => {
+    // Only a fully stopped runtime relinquishes the profile. A failed stop
+    // must not authorize a second writer while the first might still run.
+    stopping ??= daemon.stop().then(() => lease.release())
+    return stopping
+  }
 
   return {
     host: daemon.host,
@@ -133,7 +150,7 @@ export async function createProductionDaemonWithDependencies(
         url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc`,
       }
     },
-    stop: () => daemon.stop(),
+    stop,
   }
 }
 
