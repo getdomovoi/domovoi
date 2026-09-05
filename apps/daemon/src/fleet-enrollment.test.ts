@@ -62,6 +62,20 @@ function fixture() {
 }
 
 describe("fleet enrollment coordinator", () => {
+  it("can forget quarantine without guessing a route or claiming remote revocation", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    f.database.prepare("UPDATE fleet_machines SET transports = '{' WHERE id = ?").run(targetId)
+    const snapshot = await f.service.list()
+    expect(snapshot.registry?.quarantined).toHaveLength(1)
+    f.open.mockClear()
+    expect(await f.service.forget({ machineId: targetId, client: "cli" })).toMatchObject({
+      outcome: "forgotten", remoteRevocation: "unconfirmed",
+    })
+    expect(f.open).not.toHaveBeenCalled()
+    expect(f.credentials.forMachine(targetId)).toBeUndefined()
+  })
+
   it("uses SSH for heartbeat and forget without turning a removable forward into a remembered route", async () => {
     const f = fixture()
     await f.service.enroll(params)

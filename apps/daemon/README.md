@@ -124,17 +124,59 @@ target: revoke this machine in the target's Devices list as well. Restart Domovo
 Fleet Forget for remaining recorded facts once the list fits. These commands require the OS
 keychain to be available. Pagination of larger legacy fleets is not implemented.
 
+### Damaged fleet records
+
+Each stored machine is decoded independently. Malformed JSON or invalid machine facts quarantine
+that row without hiding healthy peers. The daemon retains the original row bytes in the existing
+owner-only state database. Quarantine and a `fleet.quarantine` audit receipt commit together. The
+receipt contains an opaque quarantine ID and a fixed reason, never the damaged value or parser
+message. Relisting and restarting do not create another receipt for the same quarantine.
+
+Quarantined machines are excluded from dialing and heartbeats. Late heartbeat results cannot
+clear quarantine. Pending enrollment or forget operations still mask their retained machine
+facts. Corrupt operation journals and database access failures remain explicit errors, not absent
+authority; this recovery applies to machine rows, not arbitrary SQLite corruption.
+
+For inspection, an authenticated client calls `fleet.list` with `{ "includeQuarantined": true }`.
+A degraded result adds optional `registry: { state: "degraded", quarantined: [...] }` metadata.
+Each record has `kind: "quarantined"`, an opaque `id`, `detectedAt`, a fixed `reason`, and a
+`recoveryAction`. It includes `machineId` only when that stored identity is valid. These records
+share the 512-entry wire bound and do not consume active machine admission slots.
+
+The actions name these operator procedures:
+
+- `forget-and-enroll`: use the existing local-root `fleet.forget` call with the supplied machine
+  ID and client kind. Damaged routing facts are not used for revocation, so an unconfirmed result
+  requires revoking this machine in the target's Devices list. Then enroll again with a fresh
+  pairing code. Successful explicit re-enrollment can also replace the damaged facts.
+- `repair-registry-offline`: the stored identity cannot safely address a machine. Stop Domovoi
+  and its supervisor, take a consistent SQLite backup, and have an operator repair or remove
+  only the `fleet_machines` row whose `quarantine_id` matches the reported opaque ID. Do not
+  delete the whole profile or match by label. Retain the backup for recovery, inspect any
+  remaining keychain IDs using the recovery CLI above, and enroll the peer again. There is no
+  automatic repair, expiry, or online deletion by an untrusted identity.
+
+The current UI is unchanged. Existing clients still receive only valid ordinary lifecycle rows;
+they do not render quarantine diagnostics yet. The new field is emitted only for that explicit
+inspection request, since older parsers reject unknown fields even when a new parser calls them
+optional. Ordinary `fleet.list`, enrollment and forget results, and `fleet.changed` retain their
+previous shape. Inspection clients must request diagnostics again after a change notification.
+Quarantine is never described as a machine that was never enrolled.
+
 ## Configured fleet routes
 
 `DOMOVOI_TAILNET_HOST=studio.example.ts.net` explicitly classifies a listener endpoint as
 `tailnet`. It requires a non-loopback listener, remote opt-in and loaded TLS material. It accepts
 one host or IP address, not a URL, port, wildcard or loopback address. The advertised endpoint uses
-the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` still supplies an independent LAN route;
+the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` supplies an independent route, local
+for a loopback host and otherwise LAN;
 when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
-The factory's returned URL uses the LAN name when configured, otherwise the tailnet name, otherwise
+The factory's returned URL uses the configured advertise host, otherwise the tailnet name, otherwise
 the bound address, so a tailnet-only setup does not hand clients a wildcard address.
 Names and address ranges are never treated as proof of tailnet membership or transport protection.
 Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
+The [transport contract](../../docs/transport-contract.md) validates each route's locality,
+protection and configuration before selection. Relay records remain unavailable.
 
 For an already enrolled peer, configure an existing SSH local forward on the source daemon:
 
@@ -237,6 +279,49 @@ the skill directory or its `SKILL.md`, refuses a private key others can read, an
 `SKILL.md.sig`; run it again after every edit, since a stale signature blocks the skill. `trust` adds
 the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
 the change up on its next catalog read.
+
+## Adding a skill
+
+A skill is added from a folder on the execution machine in two steps: a review, then an install
+pinned to what was reviewed. `skill.installPreview` takes `{ source: { kind: "path", path } }`,
+where `path` is absolute, and returns the parsed name and description, the declared capability
+manifest, the `SKILL.md` content digest, a `sourceDigest` over every regular file in the folder
+(relative path and SHA-256 of each file, `SKILL.md.sig` included), the signature and trust state
+computed exactly as the catalog computes them, the file list with sizes, one target per install
+scope, and any refusals. It reads the folder and writes nothing.
+
+`skill.install` takes the same `source`, a `scope`, and the previewed `sourceDigest`, and answers
+with the installed catalog entry. The scopes and their roots are the Domovoi-owned catalog roots:
+`user` is `~/.domovoi/skills` and `project` is `<project>/.domovoi/skills`, so a project install
+needs an open project and a user install does not. `system` (`/etc/domovoi/skills`) is not an
+install target. The install is refused with error code `-32018` and a
+`{ kind: "skill-install-refused", reason }` payload when:
+
+| `reason` | Condition |
+| --- | --- |
+| `source-changed` | The folder's `sourceDigest` no longer matches the previewed one, checked again over the bytes actually copied |
+| `blocked` | The trust state is `blocked`, so the signature is invalid |
+| `name-conflict` | `<root>/<name>` already exists with different files; identical files return the existing entry |
+| `symlink-escapes-source` | A link inside the folder resolves outside it; `path` names the link |
+| `source-too-large` | More than 256 files, 8 MiB, or eight directory levels |
+
+The copy never follows a link out of the source, writes only under the chosen root, and is
+atomic: files land in a `.domovoi-install-<random>` staging directory inside the root, which the
+catalog walk ignores, and one rename moves the finished directory to `<root>/<name>`. A failed
+copy removes its staging directory. Each `skill.install` is audited like every other mutation,
+with the scope, both digests, the source path, and on success the installed skill id and path.
+Installing grants nothing: the skill still needs a project enablement review before a turn carries
+it, and Build auto still requires a trusted state.
+
+```bash
+domovoid skill add path/to/skill --scope user
+domovoid skill add path/to/skill --scope project --yes
+```
+
+`add` prints the same review facts and installs only with `--yes`; without it nothing is written
+and the exit code is `0`. The project scope is the working directory. A refusal prints as
+`refused: <reason>` with exit code `1`. Like the other skill commands it contacts no daemon, so it
+writes no audit entry; the daemon lists the new entry on its next catalog read.
 
 ## Pairing admission and audit retention
 
@@ -360,8 +445,12 @@ domovoid open .
 its endpoint file. It prints one line per distribution: the name, `WSL 1` or `WSL 2`, `running`
 or `stopped`, and `daemon at ws://127.0.0.1:<port>/rpc`, `no daemon`, or `could not be asked`.
 The credential in the endpoint file is never printed. A stopped distribution is not asked, since
-asking would start it. The command runs only on Windows, and prints an empty list when `wsl.exe`
-is missing or does not answer in time.
+asking would start it. The command runs only on Windows. A machine without WSL is told so and the
+command exits 0. A `wsl.exe` that this session may not run, that does not answer within the
+deadline, that fails, or that answers with something other than a listing is reported as that,
+with the remedy, and the command exits 1. A running distribution that could not be asked is listed
+as `could not be asked` with the reason: `timed out`, `denied`, `wsl.exe failed`, or `endpoint
+file unreadable`. None of these is ever reported as a missing distribution or a missing daemon.
 
 `open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
 separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
@@ -369,12 +458,25 @@ path that is, and then sends `project.open` to the daemon inside the distributio
 distribution's credential. This machine's credential never travels into a distribution. The
 command refuses, naming the distribution and the remedy, when the distribution is not installed,
 is stopped, runs under WSL 1, has no daemon endpoint, or when the path reads back as a Windows
-drive the distribution mounts, wherever it mounts it. A plain Windows path opens through this
-machine's daemon as before, without asking `wsl.exe` anything.
+drive the distribution mounts, wherever it mounts it. When `wsl.exe` itself cannot answer, the
+refusal says whether WSL is not installed, the call was denied, it timed out, or the service
+failed, rather than that the distribution does not exist. An endpoint file that is not one a daemon
+published is refused as unreadable rather than reported as no daemon, and nothing read from it is
+repeated. A plain Windows path opens through this machine's daemon as before, without asking
+`wsl.exe` anything.
 
 Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
 work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
-inside the distribution.
+inside the distribution. The runner that starts `git` inside a distribution asks the same
+`wslpath` question before running anything, so a repository on a Windows drive is refused
+wherever the distribution mounts it, not only under `/mnt`.
+
+What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
+the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
+the listing answers or refuses within its deadline and that a distribution that does not exist is
+refused; the path round trip and the drive refusal need a running distribution and skip there.
+Discovery, open, authentication, repository ownership, Git, and restart against a running
+distribution are not verified by CI.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.

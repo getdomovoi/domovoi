@@ -272,9 +272,17 @@ Every ledger entry is now merged.
 - [x] Gate terminal-based skill installs through the normal permission system
 - [x] Define safe behavior for unsigned skills in Build auto
 - [x] Define the skill inventory contract and comparison model without distributing executables
-- [x] Fetch inventories from every reachable fleet member and compare them
-  - The skills surface dials each paired machine that reports the skills capability and asks for
-    its inventory. Metadata only: no skill file crosses a machine boundary.
+- [ ] Fetch inventories from every reachable fleet member and compare them
+  - The fan-out exists and is unit tested. `collectFleetInventories` in
+    `packages/ui/src/fleet-inventories.ts` selects the paired machines that report the skills
+    capability, dials each one, and reports `unreachable` or `unknown` rather than dropping a
+    machine that does not answer. Metadata only stays the contract: no skill file crosses a
+    machine boundary.
+  - Production never calls it. `packages/ui/src/workspace-shell.tsx` sets a single local source,
+    because asking a fleet member for its inventory is a client dial with a client credential
+    that no remote machine grants until client admission lands, so the comparison covers this
+    machine rather than guessing at the others. Close with client admission, then a comparison
+    across two real daemons.
 
 ### Desktop quality
 
@@ -310,10 +318,16 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
     so a client shows the readout only when the provider reported the pair. No adapter populates
     them and no client reads them yet.
-- [ ] Add-skill flow with declared-capability review and install scope
-  - Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol
-    has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
-    code before the trust model exists is the wrong order.
+- [x] Add-skill flow with declared-capability review and install scope
+  - `skill.installPreview` reads a folder on the execution machine and returns its manifest,
+    digests, signature and trust state, files, and per-scope targets; `skill.install` copies it
+    into `~/.domovoi/skills` or `<project>/.domovoi/skills` only when the folder's digest still
+    matches the preview, refusing a blocked skill, a link that leaves the folder, and a name that
+    already exists with different files. The copy is staged and renamed inside the root, and every
+    install is audited. The Skills surface reviews the capabilities, trust, and scope before
+    Install, and `domovoid skill add` does the same from a terminal.
+  - Still local only: no bundle, URL, installer command, or other-machine source, and no fleet
+    push. Installing grants nothing; enablement review and trust are unchanged.
 - [x] Editable working plan with per-step state in the Plan tab
   - Protocol, daemon, and client all ship. Codex, Claude, and ACP report plan structure and
     progress; the daemon owns canonical state, binds a blocked step to its approval, delivers the
@@ -436,11 +450,20 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
   - The schemas, `machine.json` identity, and local facts exist, and since #244 the daemon keeps
-    one authenticated socket per remote row with a fifteen-second heartbeat. Desktop uses a
-    different fallback identity and an existing `state.sqlite` can override `machine.json` and
-    current facts. Close with one production daemon factory plus startup reconciliation and
-    restart tests.
+    one authenticated socket per remote row with a fifteen-second heartbeat. One production
+    factory now serves both entry points: Desktop reaches a daemon only through
+    `acquireLocalDaemon`, which builds the same runtime from the same `machine.json`, so no
+    separate Desktop fallback identity remains. Startup reconciliation refuses to start when the
+    stored workspace names a different machine, and on a match it replaces the stored name,
+    platform, architecture, and version with this executable's current facts while keeping
+    provider readiness. Close with a production-boundary restart over one real profile that
+    asserts those refreshed facts.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+  - Audit item F3. `domovoid pair` and `domovoid open` spend one 15-second deadline across
+    connect, `system.hello`, and the call, so a listener that accepts the socket and then says
+    nothing is refused with the address waited on and a remedy rather than holding the terminal.
+    Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's:
+    a connection stalled inside a TLS handshake can outlive the refusal.
 - [x] Bound pairing claim admission and keep pre-auth noise out of authenticated audit history
   - Audit item A2, closed by #247. Claims are admitted before code validation: 3 per TCP source
     and 30 per listener within 60 seconds, and reconnects, forwarding headers, new codes, and
@@ -523,15 +546,38 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is
-    written to a system-wide location. Nondefault listener and TLS configuration is lost, Desktop
-    contends for the same port instead of consuming the service, Windows lacks crash restart, and
-    CI never invokes a real manager.
+    written to a system-wide location. Since #256 installation records the validated non-secret
+    settings in `~/.domovoi/service.json` and replays them as the supervised environment: host,
+    port, credential and identity paths, TLS material, advertised and tailnet hosts, SSH
+    forwards, allowed origins, and the remote-transport opt-in. It refuses to retain
+    `DOMOVOI_AUTH_TOKEN` rather than silently changing authority. Since #261 Desktop no longer
+    contends for the port: it attaches to the verified local owner, and it refuses to start a
+    fallback daemon at all when a service configuration is present.
+  - The Windows logon task still has no crash restart, where the systemd unit has
+    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager only on
+    the Windows runner, where `apps/daemon/src/service/windows-task.native.test.ts` registers,
+    stops, and removes a real scheduled task under a throwaway name. No test invokes a real
+    systemd or launchd.
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
-  - Discovery, endpoint, and `domovoid open` helpers exist and unit tests stub `wsl.exe`. No real
-    Windows-to-WSL test exists, no `domovoi` alias exists, and WSL is not a fleet candidate.
+  - Since #262 `domovoid wsl list` discovers each distribution and whether a daemon answers there,
+    the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
+    Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
+    denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
+    daemon. Unit tests drive them with a fake `wsl.exe`. A real Windows-to-WSL test now exists:
+    `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
+    by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
+    running WSL 2 distribution, four of them prove that the listing answers or refuses within its
+    deadline and that a distribution that does not exist is refused, and the two that need a
+    running distribution skip. Discovery, open, authentication, repository ownership, Git, and
+    restart against a running distribution remain unverified. No `domovoi` alias exists, and WSL
+    is still neither a transport nor a fleet candidate: nothing but the CLI and `domovoid open`
+    consumes the discovery.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-  - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
-    automount roots, and no real mount-boundary test exists.
+  - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
+    a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
+    it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
+    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
+    which CI does not have.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and

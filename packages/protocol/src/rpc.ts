@@ -84,6 +84,9 @@ import {
   skillContentDigestSchema,
   skillDocumentSchema,
   skillIdSchema,
+  skillInstallPreviewSchema,
+  skillInstallScopeSchema,
+  skillInstallSourceSchema,
   skillInventorySchema,
   skillReviewDecisionSchema,
   skillSummariesSchema,
@@ -105,6 +108,7 @@ export const daemonPersistenceUnavailableErrorCode = -32014 as const
 export const turnSkillSelectionErrorCode = -32015 as const
 export const fleetSnapshotOverflowErrorCode = -32016 as const
 export const deviceLabelMismatchErrorCode = -32017 as const
+export const skillInstallErrorCode = -32018 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -829,7 +833,7 @@ export const systemPauseAllParamsSchema = z.object({
   client: clientKindSchema,
 })
 
-export const fleetListParamsSchema = z.object({}).strict()
+export const fleetListParamsSchema = z.object({ includeQuarantined: z.boolean().optional() }).strict()
 
 export const systemEmergencyStopParamsSchema = z.object({
   client: clientKindSchema,
@@ -1169,7 +1173,7 @@ export const rpcMethods = {
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
   "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
   "fleet.forget": { params: fleetForgetParamsSchema, result: fleetForgetResultSchema },
-  "fleet.heartbeat": { params: fleetListParamsSchema, result: fleetMachineDescriptorSchema },
+  "fleet.heartbeat": { params: z.object({}).strict(), result: fleetMachineDescriptorSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
   // Reachable before authentication: a machine being paired has no credential
   // yet. Check protocol compatibility before consuming its one-time code.
@@ -1269,6 +1273,18 @@ export const rpcMethods = {
       id: skillIdSchema,
       contentDigest: skillContentDigestSchema,
       decision: skillReviewDecisionSchema,
+    }).strict(),
+    result: skillSummarySchema,
+  },
+  "skill.installPreview": {
+    params: z.object({ source: skillInstallSourceSchema }).strict(),
+    result: skillInstallPreviewSchema,
+  },
+  "skill.install": {
+    params: z.object({
+      source: skillInstallSourceSchema,
+      scope: skillInstallScopeSchema,
+      sourceDigest: skillContentDigestSchema,
     }).strict(),
     result: skillSummarySchema,
   },
@@ -1375,6 +1391,7 @@ export const rpcMethodMutations = {
   "skill.list": "read-only",
   "skill.inventory": "read-only",
   "skill.read": "read-only",
+  "skill.installPreview": "read-only",
   "runtime.models": "read-only",
   "provider.secret.list": "read-only",
   "device.pair": "mutating",
@@ -1397,6 +1414,7 @@ export const rpcMethodMutations = {
   "system.emergencyStop": "mutating",
   "skill.setEnabled": "mutating",
   "skill.review": "mutating",
+  "skill.install": "mutating",
   "provider.refresh": "mutating",
   "annotation.create": "mutating",
   "annotation.reply": "mutating",
