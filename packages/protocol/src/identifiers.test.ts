@@ -27,13 +27,17 @@ import {
   sessionHistoryEntrySchema,
   workspaceEvidenceSchema,
 } from "./rpc.js"
+import { demoWorkspace } from "./fixtures.js"
 import {
   annotationSchema,
   clientIdentityIdSchema as schemaClientIdentityIdSchema,
   clientKindSchema as schemaClientKindSchema,
+  machineSchema,
+  projectSchema,
   sessionForkOriginSchema,
   sessionSummarySchema,
   threadItemSchema,
+  workspaceSnapshotSchema,
 } from "./schema.js"
 import { skillEnablementReviewSchema } from "./skills.js"
 import { transferReceiptSchema } from "./transfer.js"
@@ -122,6 +126,25 @@ describe("machine id", () => {
     expect(machineIdSchema.safeParse(`machine-${"a".repeat(32)}`).success).toBe(true)
     expect(machineIdSchema.safeParse(`machine-${"A".repeat(32)}`).success).toBe(false)
     expect(machineIdSchema.safeParse("laptop").success).toBe(false)
+  })
+
+  it("names canonical workspace identity with machineIdSchema", () => {
+    expect(machineSchema.shape.id).toBe(machineIdSchema)
+    expect(projectSchema.shape.machineId).toBe(machineIdSchema)
+  })
+
+  it("refuses a workspace machine the fleet cannot record", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.machine.id = "machine-local"
+    if (snapshot.project) snapshot.project.machineId = "machine-local"
+    expect(workspaceSnapshotSchema.safeParse(snapshot).success).toBe(false)
+    expect(fleetMachineIdSchema.safeParse(demoWorkspace.machine.id).success).toBe(true)
+  })
+
+  it("refuses a project that names another machine", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    if (snapshot.project) snapshot.project.machineId = `machine-${"b".repeat(32)}`
+    expect(workspaceSnapshotSchema.safeParse(snapshot).success).toBe(false)
   })
 })
 

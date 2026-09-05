@@ -111,7 +111,7 @@ export const providerRuntimeSchema = z.object({
 })
 
 export const machineSchema = z.object({
-  id: z.string().min(1),
+  id: machineIdSchema,
   name: z.string().min(1),
   platform: z.string().min(1),
   arch: z.string().min(1),
@@ -123,7 +123,7 @@ export const machineSchema = z.object({
 
 export const projectSchema = z.object({
   id: z.string().min(1),
-  machineId: z.string().min(1),
+  machineId: machineIdSchema,
   name: z.string().min(1),
   path: z.string().min(1),
   branch: z.string().min(1),
