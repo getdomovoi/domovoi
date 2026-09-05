@@ -167,6 +167,20 @@ describe("DesktopDaemon", () => {
     expect(seam).toHaveBeenCalledOnce()
   })
 
+  it("reports the acquisition it currently holds without touching the seam", async () => {
+    const { seam } = scriptedSeam([attached("daemon"), refused("owner-unreachable")])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+
+    expect(daemon.current()).toBeUndefined()
+    await daemon.acquire()
+    expect(daemon.current()).toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    const reacquiring = daemon.reacquire()
+    expect(daemon.current()).toEqual({ kind: "attached", owner: "daemon", ...endpoint })
+    await reacquiring
+    expect(daemon.current()).toEqual({ kind: "refused", reason: "owner-unreachable", message: "daemon says owner-unreachable" })
+    expect(seam).toHaveBeenCalledTimes(2)
+  })
+
   it("reads the factory options when it acquires, not when it is constructed", async () => {
     const options = vi.fn(() => factoryOptions)
     const { seam } = scriptedSeam([owned()])

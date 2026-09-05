@@ -6,8 +6,93 @@ import { describe, expect, it } from "vitest"
 import {
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
+  rendererContentSecurityPolicy,
   resolveRendererTarget,
 } from "./renderer-security.js"
+
+function connectSources(policy: string): string[] {
+  const directive = policy.split(";").map((part) => part.trim()).find((part) => part.startsWith("connect-src "))
+  if (!directive) throw new Error("connect-src is missing")
+  return directive.slice("connect-src ".length).split(/\s+/u)
+}
+
+function allowsConnection(policy: string, url: string): boolean {
+  const target = new URL(url)
+  const scheme = target.protocol.replace(":", "")
+  const port = target.port || (scheme === "wss" ? "443" : "80")
+  return connectSources(policy).some((source) => {
+    const match = /^(ws|wss):\/\/([^:/]+)(?::(\*|\d+))?$/u.exec(source)
+    if (!match) return false
+    const [, sourceScheme, host, sourcePort] = match
+    if (sourceScheme !== scheme || host !== target.hostname) return false
+    if (sourcePort === "*") return true
+    return (sourcePort ?? (sourceScheme === "wss" ? "443" : "80")) === port
+  })
+}
+
+describe("rendererContentSecurityPolicy", () => {
+  it("does not block an attached endpoint on another loopback port", () => {
+    const policy = rendererContentSecurityPolicy("ws://127.0.0.1:50999/rpc")
+
+    expect(allowsConnection(policy, "ws://127.0.0.1:50999/rpc")).toBe(true)
+    expect(allowsConnection(policy, "wss://localhost:47831/rpc")).toBe(true)
+    expect(allowsConnection(policy, "ws://10.0.0.2:47831/rpc")).toBe(false)
+  })
+
+  it("allows exactly the acquired origin off loopback and nothing wider", () => {
+    const policy = rendererContentSecurityPolicy("wss://build-box.tail.net:47831/rpc")
+
+    expect(connectSources(policy)).toContain("wss://build-box.tail.net:47831")
+    expect(allowsConnection(policy, "wss://build-box.tail.net:47831/rpc")).toBe(true)
+    expect(allowsConnection(policy, "wss://build-box.tail.net:47832/rpc")).toBe(false)
+    expect(allowsConnection(policy, "ws://build-box.tail.net:47831/rpc")).toBe(false)
+    expect(allowsConnection(policy, "wss://other.tail.net:47831/rpc")).toBe(false)
+  })
+
+  it("never widens to a wildcard host, a bare scheme, or a bracketed host", () => {
+    for (const endpoint of [
+      undefined,
+      "ws://127.0.0.1:47831/rpc",
+      "wss://build-box.tail.net:47831/rpc",
+      "wss://[::1]:50123/rpc",
+      "http://127.0.0.1:47831/rpc",
+      "not a url",
+    ]) {
+      const sources = connectSources(rendererContentSecurityPolicy(endpoint))
+      expect(sources).toContain("'self'")
+      for (const source of sources) {
+        expect(source).not.toMatch(/^\*|\/\/\*|^wss?:$|\[/u)
+      }
+    }
+  })
+
+  it("keeps the loopback forms the daemon can publish when no endpoint is known", () => {
+    const policy = rendererContentSecurityPolicy(undefined)
+
+    expect(allowsConnection(policy, "ws://127.0.0.1:47831/rpc")).toBe(true)
+    expect(allowsConnection(policy, "wss://127.0.0.1:47831/rpc")).toBe(true)
+    expect(allowsConnection(policy, "ws://localhost:47831/rpc")).toBe(true)
+    expect(allowsConnection(policy, "ws://192.168.1.10:47831/rpc")).toBe(false)
+  })
+
+  it("ignores an endpoint that is not a websocket URL or that CSP cannot name", () => {
+    const baseline = rendererContentSecurityPolicy(undefined)
+
+    expect(rendererContentSecurityPolicy("http://build-box.tail.net:47831/rpc")).toBe(baseline)
+    expect(rendererContentSecurityPolicy("wss://[::1]:50123/rpc")).toBe(baseline)
+    expect(rendererContentSecurityPolicy("not a url")).toBe(baseline)
+  })
+
+  it("carries the rest of the renderer policy", () => {
+    const policy = rendererContentSecurityPolicy(undefined)
+
+    expect(policy).toContain("default-src 'self'")
+    expect(policy).toContain("script-src 'self'")
+    expect(policy).toContain("style-src 'self' 'unsafe-inline'")
+    expect(policy).toContain("font-src 'self' data:")
+    expect(policy).toContain("img-src 'self' data:")
+  })
+})
 
 const bundledRendererPath = "/opt/domovoi/out/renderer/index.html"
 const expectedBundledRendererPath = resolve(bundledRendererPath)
