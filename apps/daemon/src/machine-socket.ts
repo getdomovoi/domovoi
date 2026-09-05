@@ -35,13 +35,28 @@ export class MachineIdentityMismatchError extends Error {
 }
 
 export class MachineProtocolMismatchError extends Error {
+  readonly remoteVersion: string | undefined
   constructor(remoteVersion?: string) {
     const safeVersion = remoteVersion !== undefined && remoteVersion.length <= 64 && /^\d+\.\d+\.\d+$/.test(remoteVersion)
       ? remoteVersion : undefined
     super(safeVersion === undefined ? "That machine speaks an incompatible protocol"
       : `That machine speaks protocol ${safeVersion}, this daemon speaks ${protocolVersion}`)
     this.name = "MachineProtocolMismatchError"
+    this.remoteVersion = safeVersion
   }
+}
+
+// A daemon refuses a hello on another protocol with a sentence that names its
+// own version first. Clients show that sentence, and the dialer reads the
+// version back so the fleet can say which side has to move.
+export function protocolMismatchRefusal(daemonProtocol: string, clientProtocol: string): string {
+  return `This daemon speaks protocol ${daemonProtocol}; the client speaks ${clientProtocol}`
+}
+
+const protocolMismatchRefusalPattern = /^This daemon speaks protocol (\d+\.\d+\.\d+); the client speaks /
+
+function refusedDaemonProtocol(message: string): string | undefined {
+  return protocolMismatchRefusalPattern.exec(message)?.[1]
 }
 
 export class MachineDescriptorError extends Error {
@@ -164,7 +179,7 @@ function openMachineChannel(input: SocketInput): Promise<MachineChannel> {
       if (response.data.error) {
         const error = response.data.error
         if (error.code === daemonAuthenticationErrorCode) call.reject(new MachinePairingRequiredError())
-        else if (error.code === protocolVersionMismatchErrorCode) call.reject(new MachineProtocolMismatchError())
+        else if (error.code === protocolVersionMismatchErrorCode) call.reject(new MachineProtocolMismatchError(refusedDaemonProtocol(error.message)))
         else {
           let message = error.message
           for (const secret of secrets) message = message.replaceAll(secret, "[REDACTED]")

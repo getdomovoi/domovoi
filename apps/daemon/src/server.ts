@@ -74,7 +74,7 @@ import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
 import { validateOperationDeadlineBudget } from "./operation-deadline.js"
-import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
+import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
@@ -3164,7 +3164,7 @@ export class DomovoiDaemon {
           socket,
           request.id,
           protocolVersionMismatchErrorCode,
-          `This daemon speaks protocol ${this.#advertisedProtocolVersion}; the client speaks ${clientProtocol}`,
+          protocolMismatchRefusal(this.#advertisedProtocolVersion, clientProtocol),
         )
         return
       }
