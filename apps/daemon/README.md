@@ -38,6 +38,8 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_TLS_CERT_PATH` | TLS certificate chain, required for a non-loopback listener |
 | `DOMOVOI_TLS_KEY_PATH` | TLS private key, required for a non-loopback listener |
 | `DOMOVOI_ADVERTISE_HOST` | Name an encrypted listener is advertised as reachable by |
+| `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
+| `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
@@ -121,6 +123,59 @@ and leaves unrelated credentials and fleet facts intact. It does not prove revoc
 target: revoke this machine in the target's Devices list as well. Restart Domovoi and use ordinary
 Fleet Forget for remaining recorded facts once the list fits. These commands require the OS
 keychain to be available. Pagination of larger legacy fleets is not implemented.
+
+## Configured fleet routes
+
+`DOMOVOI_TAILNET_HOST=studio.example.ts.net` explicitly classifies a listener endpoint as
+`tailnet`. It requires a non-loopback listener, remote opt-in and loaded TLS material. It accepts
+one host or IP address, not a URL, port, wildcard or loopback address. The advertised endpoint uses
+the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` still supplies an independent LAN route;
+when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
+The factory's returned URL uses the LAN name when configured, otherwise the tailnet name, otherwise
+the bound address, so a tailnet-only setup does not hand clients a wildcard address.
+Names and address ranges are never treated as proof of tailnet membership or transport protection.
+Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
+
+For an already enrolled peer, configure an existing SSH local forward on the source daemon:
+
+```bash
+DOMOVOI_SSH_TUNNELS='[{"machineId":"machine-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","endpoint":"ws://127.0.0.1:47900/rpc"}]' domovoid
+```
+
+Replace the example ID with the enrolled target's machine ID. Domovoi does not launch SSH,
+establish host-key trust, manage SSH credentials or verify which program created the forward.
+The operator must keep a loopback-only forward running to that peer's daemon. `ws://` is suitable
+only when the SSH channel terminates at the target's plaintext loopback listener; for a TLS target
+use `wss://` with a trusted certificate valid for the configured endpoint. Certificate verification
+is not disabled. Anyone able to replace the local forward is inside this trust boundary.
+
+SSH configuration is bounded to 32 KiB of JSON, 128 unique machine IDs, and one endpoint per ID.
+Endpoints use `localhost`, `127.0.0.1` or `::1` after URL normalization, at most 2,048 characters,
+with no credentials, query or fragment. It is source-local configuration, not fleet fact: it never
+appears in a peer descriptor. A target cannot enable SSH by advertising `configured: true`.
+Remote loopback advertisements are ignored even with TLS; only a source-verified direct route
+or source-local SSH configuration can authorize a remote peer's loopback endpoint here.
+Enrollment still requires a code and a successful authenticated descriptor exchange. Adding a
+route never enrolls a peer, supplies a missing credential or unmasks a pending forget.
+
+Dialing tries the source-verified direct endpoint first, target-advertised direct candidates in
+protocol order next, then the configured SSH forward. Duplicate endpoint strings are tried once.
+All candidates share the original monotonic deadline. A silent candidate can spend the remaining
+budget, in which case no later candidate starts. Credential, identity or protocol rejection stops
+fallback. This does not promise reachability across disjoint tailnets.
+
+Heartbeat and transfer use the same route configuration. Successful SSH heartbeats refresh peer
+facts and last contact but do not replace or refresh the timestamp of the remembered direct route.
+Otherwise a removed setting would quietly survive as a preferred route. Remove the SSH entry and
+restart with the updated configuration to remove this fallback. A separately enrolled direct route
+is independent and remains until re-enrollment or Forget. Service installation saves both settings
+in its non-secret `service.json`, and a supervised daemon started with `--service-config` reads
+that file instead of the supervisor's environment. Removing `DOMOVOI_SSH_TUNNELS` from the
+supervisor and restarting leaves the saved fallback active. Rerun `domovoid service install` with
+the intended environment, or edit `service.json`, before restarting the service.
+
+These producers do not add WSL transport discovery, remote client admission for Use or Terminal,
+or a relay. WSL facts and its open shim remain separate from a WSL transport producer.
 
 ## Skill signatures and trust
 

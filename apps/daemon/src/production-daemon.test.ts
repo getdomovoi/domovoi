@@ -88,6 +88,40 @@ async function openRpc(handle: ProductionDaemonHandle) {
 }
 
 describe("createProductionDaemon", () => {
+  it.each([
+    { DOMOVOI_TAILNET_HOST: "studio.tailnet.example" },
+    { DOMOVOI_SSH_TUNNELS: JSON.stringify([{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://not-local/rpc" }]) },
+  ])("refuses invalid route configuration before creating secrets or a server: %j", async (environment) => {
+    const loadOrCreateToken = vi.fn(async () => testToken("unused"))
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    await expect(createProductionDaemonWithDependencies({ environment, homeDirectory: await temporaryHome() }, {
+      ...productionDaemonDependencies, loadOrCreateToken, createDaemon,
+    })).rejects.toThrow(/DOMOVOI_(TAILNET_HOST|SSH_TUNNELS)/)
+    expect(loadOrCreateToken).not.toHaveBeenCalled()
+    expect(createDaemon).not.toHaveBeenCalled()
+  })
+
+  it("passes validated routes from the production environment to the server", async () => {
+    const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    const handle = await createProductionDaemonWithDependencies({
+      environment: {
+        DOMOVOI_HOST: "0.0.0.0", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+        DOMOVOI_TLS_CERT_PATH: "/cert.pem", DOMOVOI_TLS_KEY_PATH: "/key.pem",
+        DOMOVOI_TAILNET_HOST: "studio.tailnet.example", DOMOVOI_SSH_TUNNELS: JSON.stringify(sshTunnels),
+      },
+      homeDirectory: await temporaryHome(),
+    }, {
+      ...productionDaemonDependencies,
+      loadTls: async () => ({ cert: Buffer.from("test certificate"), key: Buffer.from("test private key") }),
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      createDaemon,
+    })
+    running.push(handle)
+    expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({ tailnetHost: "studio.tailnet.example", sshTunnels }))
+    expect(await handle.start()).toMatchObject({ url: "wss://studio.tailnet.example:49200/rpc" })
+  })
+
   it("assembles every mandatory production dependency", async () => {
     const homeDirectory = await temporaryHome()
     const authToken = testToken("production-factory")

@@ -21,6 +21,7 @@ import {
   MachineProtocolMismatchError, MachineSelfEnrollmentError, openMachineSocket, readMachineDescriptor,
 } from "./machine-socket.js"
 import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import type { ConfiguredSshTunnel } from "./transport-config.js"
 
 export const defaultFleetOperationTimeoutMs = 30_000
 export const defaultFleetHeartbeatIntervalMs = 15_000
@@ -29,6 +30,7 @@ type Options = {
   selfId: string
   registry: FleetRegistry | undefined
   credentials: AsyncMachineCredentials | undefined
+  sshTunnels?: readonly ConfiguredSshTunnel[]
   operationTimeoutMs: number
   heartbeatIntervalMs: number
   changed: (snapshot: FleetSnapshot) => void
@@ -362,8 +364,17 @@ export class FleetEnrollmentService {
       if (!held || machineCredentialDigest(id, held) !== entry.credentialDigest) throw new MachinePairingRequiredError()
       deadline.throwIfExpired()
       this.#input.registry!.refreshAuthenticated({
-        ...descriptor, connection: "direct",
-        verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() },
+        ...descriptor,
+        // SSH belongs to this source's configuration. Remembering it here
+        // would keep dialing it after the operator removed that configuration.
+        // Refresh peer facts/contact without claiming the old direct route
+        // authenticated now, and never put a local forward in advertisements.
+        // A row that never stored a direct route stays an SSH observation.
+        ...(connection.routeSource !== "ssh"
+          ? { connection: "direct", verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() } }
+          : entry.facts.verifiedRoute
+            ? { connection: "direct", verifiedRoute: entry.facts.verifiedRoute }
+            : { connection: "ssh" }),
       }, entry.credentialDigest, receivedAt)
     } catch (error) {
       if (this.#heartbeats.get(id) === controller && !this.#stopped) {
@@ -386,6 +397,7 @@ export class FleetEnrollmentService {
   #dial(machines: FleetMachineFacts[], machineId: string, deadline: OperationDeadline, signal?: AbortSignal): Promise<MachineRouteConnection> {
     return createMachineDialer({
       machine: (id) => machines.find((machine) => machine.id === id), credentials: this.#input.credentials, dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
+      ...(this.#input.sshTunnels ? { sshTunnels: this.#input.sshTunnels } : {}),
       open: (input) => (this.#input.open ?? openMachineSocket)({ ...input, callTimeoutMs: defaultMachineCallTimeoutMs }),
     })(machineId, signal, deadline)
   }

@@ -11,9 +11,10 @@ import {
   type FleetSnapshot, type RpcMethod, type RpcParams,
 } from "@getdomovoi/protocol"
 import { expect } from "vitest"
-import { WebSocket } from "ws"
+import { WebSocket, type ClientOptions } from "ws"
 
 import type { AgentAdapter } from "./agents.js"
+import type { DaemonEnvironment } from "./config.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
@@ -29,6 +30,8 @@ export type FleetDaemonStart = {
   advertisedHost?: string
   // Stands in for another daemon release; see DaemonServerOptions.
   protocolVersion?: string
+  environment?: DaemonEnvironment
+  clientOptions?: ClientOptions
 }
 
 // A provider boundary that can create a session without any real agent.
@@ -86,8 +89,8 @@ export function fleetProductionHarness() {
     return path
   }
 
-  async function connect(url: string) {
-    const socket = new WebSocket(url, { handshakeTimeout: 2_000 })
+  async function connect(url: string, options: ClientOptions = {}) {
+    const socket = new WebSocket(url, { ...options, handshakeTimeout: 2_000 })
     sockets.push(socket)
     await once(socket, "open")
     const notifications: Array<{ method: string; params: unknown }> = []
@@ -121,14 +124,14 @@ export function fleetProductionHarness() {
     }
   }
 
-  async function machine(label: string, agent?: AgentAdapter) {
+  async function machine(label: string, agent?: AgentAdapter, initialStart: FleetDaemonStart = {}) {
     const homeDirectory = await scratch()
     const values = new Map<string, string>()
     const credentials = new MachineCredentialStore({
       get: (id) => values.get(id), set: (id, value) => { values.set(id, value) }, delete: (id) => values.delete(id),
     })
-    const start = async ({ port = 0, advertisedHost, protocolVersion: advertisedProtocolVersion }: FleetDaemonStart = {}) => {
-      const handle = await createProductionDaemonWithDependencies({ environment: {}, homeDirectory, machineLabel: label }, {
+    const start = async ({ port = 0, advertisedHost, protocolVersion: advertisedProtocolVersion, environment = {}, clientOptions }: FleetDaemonStart = {}) => {
+      const handle = await createProductionDaemonWithDependencies({ environment, homeDirectory, machineLabel: label }, {
         ...productionDaemonDependencies,
         createProviderProbe: () => ({ inspect: async () => [] }),
         createMachineCredentials: () => asyncTestCredentials(credentials),
@@ -142,13 +145,13 @@ export function fleetProductionHarness() {
       })
       daemons.push(handle)
       const address = await handle.start()
-      const root = await connect(address.url)
+      const root = await connect(address.url, clientOptions)
       const workspace = workspaceSnapshotSchema.parse(await root.ok("system.hello", {
         client: "cli", clientVersion: "0.0.1", protocolVersion: advertisedProtocolVersion ?? protocolVersion, authToken: handle.authToken,
       }))
       return { handle, root, address, id: workspace.machine.id }
     }
-    return { start, homeDirectory, credentials, ...await start() }
+    return { start, homeDirectory, credentials, ...await start(initialStart) }
   }
 
   async function enroll(source: Awaited<ReturnType<typeof machine>>, target: Awaited<ReturnType<typeof machine>>) {
