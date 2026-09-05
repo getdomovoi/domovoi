@@ -114,6 +114,25 @@ describe("provider prompt delivery", () => {
     }).success).toBe(false)
   })
 
+  it("records the trust state a delivered skill carried when it was sent", () => {
+    const sent = delivery().skills.delivered[0]!
+    const trusted = {
+      state: "trusted" as const,
+      reason: "verified-signature" as const,
+      authority: "signature · ed25519:0123456789abcdef",
+    }
+    expect(providerPromptDeliverySchema.parse({
+      ...delivery(),
+      skills: { ...delivery().skills, delivered: [{ ...sent, trust: trusted }] },
+    }).skills.delivered[0]).toMatchObject({ trust: trusted })
+    expect(providerPromptDeliverySchema.parse(delivery()).skills.delivered[0])
+      .not.toHaveProperty("trust")
+    expect(providerPromptDeliverySchema.safeParse({
+      ...delivery(),
+      skills: { ...delivery().skills, delivered: [{ ...sent, trust: { state: "trusted" } }] },
+    }).success).toBe(false)
+  })
+
   it("stores facts only, never provider-bound context text", () => {
     expect(providerPromptDeliverySchema.safeParse({
       ...delivery(),

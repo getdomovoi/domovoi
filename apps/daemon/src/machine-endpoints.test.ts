@@ -1,3 +1,4 @@
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { once } from "node:events"
 
 import { createEmptyWorkspace, demoWorkspace } from "@getdomovoi/protocol"
@@ -57,7 +58,7 @@ async function open(endpoint: string, route: "socket" | "advertised" | "verified
         transports: route === "verified" ? [] : [{ kind: "local", endpoint, authenticated: true }],
         ...(route === "verified" ? { verifiedRoute: { endpoint, lastAuthenticatedAt: new Date(0).toISOString() } } : {}),
       }),
-      credentials: { machines: () => [machineId], forMachine: () => credential, save: () => {}, forget: () => {} },
+      credentials: asyncTestCredentials({ machines: () => [machineId], forMachine: () => credential, save: () => {}, forget: () => {} }),
       dialTimeoutMs: 2_000,
       open: (input) => connect({ ...input, callTimeoutMs: 2_000 }),
     })

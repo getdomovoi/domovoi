@@ -1,10 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
+import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 
 afterEach(() => vi.useRealTimers())
 
 describe("OperationDeadline", () => {
+  it("bounds an unanswered operation and refuses a late result even before the timer runs", async () => {
+    vi.useFakeTimers()
+    let now = 0
+    const deadline = OperationDeadline.start(100, { now: () => now })
+    const pending = beforeDeadline(new Promise(() => {}), deadline)
+    const expired = expect(pending).rejects.toThrow(OperationDeadlineExceededError)
+    await vi.advanceTimersByTimeAsync(100)
+    await expired
+    const second = OperationDeadline.start(100, { now: () => now })
+    now = 101
+    await expect(beforeDeadline(Promise.resolve("late"), second)).rejects.toThrow(OperationDeadlineExceededError)
+    expect(vi.getTimerCount()).toBe(0)
+  })
   it.each([0, -1, Infinity, NaN, 2_147_483_648])("refuses an unbounded or invalid budget %s", (budget) => {
     expect(() => OperationDeadline.start(budget)).toThrow(RangeError)
   })

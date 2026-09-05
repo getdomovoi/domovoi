@@ -1,3 +1,8 @@
+// Removing a failed invocation's own unpublished staging gets this fresh
+// budget, never the exhausted main deadline, so retries do not accumulate
+// node_modules and caches. A removal that outlives it names the leftover path.
+export const defaultCleanupTimeoutMs = 30_000
+
 export function validateBootstrapTimeout(timeoutMs) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
     throw new Error("Bootstrap timeout must be a positive integer at most 2147483647 ms")

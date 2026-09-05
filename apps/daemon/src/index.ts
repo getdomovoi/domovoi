@@ -5,8 +5,11 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
+import { exitAfterStderr } from "./flushed-exit.js"
+import { MachineCredentialWorker } from "./machine-credential-worker.js"
+import { OperationDeadline } from "./operation-deadline.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -14,11 +17,15 @@ import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
+import { distributionPath } from "./wsl-path.js"
+import { discoverWslMachines } from "./wsl-discovery.js"
+import { runWslCommand } from "./wsl-command.js"
 import { protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+import { runSkillCommand } from "./skill-command.js"
 import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration } from "./service/configuration.js"
 
 async function greetCli(socket: import("ws").WebSocket): Promise<void> {
@@ -193,12 +200,21 @@ const help = `Usage: domovoid [options]
        domovoid fleet-keychain list
        domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
        domovoid open [path]
+       domovoid wsl list
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
        domovoid secret delete <anthropic|openai|openrouter>
        domovoid service install
        domovoid service status
        domovoid service remove
+       domovoid skill keygen <private-key-path>
+       domovoid skill sign <skill-path> --key <private-key-path>
+       domovoid skill trust <public-key> [--trust-file <path>]
+       domovoid profile recover --confirm-no-supervisor
+
+Profile recovery:
+  --confirm-no-supervisor asserts that no supervisor will restart this profile.
+  Stop and remove those supervisors before making this confirmation.
 
 Options:
   -h, --help       Show this help
@@ -216,6 +232,8 @@ Environment:
   DOMOVOI_TLS_CERT_PATH           TLS certificate chain, required off loopback
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
+  DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
+  DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
 `
 
 async function main() {
@@ -243,8 +261,27 @@ async function main() {
   if (args[0] === "fleet-keychain") {
     // Exceptional local recovery, not enrollment or an unversioned RPC path.
     // The user must stop the daemon before removing an indexed credential.
-    process.exitCode = runFleetKeychainCommand(args, {
-      credentials: new MachineCredentialStore(),
+    const credentials = new MachineCredentialWorker()
+    try {
+      process.exitCode = await runFleetKeychainCommand(args, {
+        credentials,
+        stdout: (text) => process.stdout.write(text),
+        stderr: (text) => process.stderr.write(text),
+      })
+    } finally {
+      const cleanup = OperationDeadline.start(5_000)
+      try { await credentials.close(cleanup) }
+      catch {
+        // A native call can ignore Worker.terminate until it returns to JS.
+        // This short-lived CLI must not leave the terminal waiting forever.
+        await exitAfterStderr("Native keyring worker exit could not be confirmed. Stopping this CLI process.\n", 1, 1_000)
+      } finally { cleanup.clear() }
+    }
+    return
+  }
+  if (args[0] === "profile") {
+    process.exitCode = runProfileCommand(args, {
+      homeDirectory: homedir(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -275,7 +312,29 @@ async function main() {
     process.exitCode = await runOpenCommand(args, {
       cwd: () => process.cwd(),
       distributions: () => listWslDistributions(),
+      translate: (distribution, path) => distributionPath({ distribution, path }),
       open: (target) => openWorkspace(target),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "skill") {
+    // Signing and trust are local file operations; no daemon is contacted and
+    // the private key never leaves the file the person named.
+    process.exitCode = await runSkillCommand(args, {
+      home: homedir(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "wsl") {
+    // Discovery asks wsl.exe and each running distribution, never the share,
+    // and reports endpoints without the credential the endpoint file carries.
+    process.exitCode = await runWslCommand(args, {
+      platform: process.platform,
+      discover: () => discoverWslMachines(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -309,6 +368,7 @@ async function main() {
   const daemon = await createProductionDaemon({
     environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
     homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
     machineLabel: hostname(),
   })
 

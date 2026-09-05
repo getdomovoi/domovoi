@@ -1,5 +1,6 @@
 import {
   daemonAuthenticationErrorCode,
+  protocolMismatchSchema,
   protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
 
@@ -38,12 +39,16 @@ export function connectionFault(cause: unknown): ConnectionFault {
   // The person's answer is the same for all three.
   if (cause.code === daemonAuthenticationErrorCode) return credential
   if (cause.code === protocolVersionMismatchErrorCode) {
+    // The refusal's data names both versions. A daemon from before it carried
+    // data names them in its sentence, which stays the fallback.
+    const mismatch = protocolMismatchSchema.safeParse(cause.data)
+    const versions = mismatch.success
+      ? `This daemon speaks protocol ${mismatch.data.daemonProtocolVersion}; the client speaks ${mismatch.data.clientProtocolVersion}`
+      : cause.message
     return {
       retriable: false,
       headline: "The phone and the daemon speak different protocols",
-      // The daemon names both versions, so its own sentence is more use here
-      // than anything this app could say about it.
-      detail: `${cause.message}. Update whichever of the two is older.`,
+      detail: `${versions}. Update whichever of the two is older.`,
     }
   }
   if (cause.code === invalidParamsErrorCode) {

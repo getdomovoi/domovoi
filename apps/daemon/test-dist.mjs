@@ -10,7 +10,7 @@ const internal = await import("./dist/server.js")
 
 // Published entry points cannot bypass production assembly. The internal path
 // remains as a package-artifact compatibility surface, not a construction API.
-assert.deepEqual(Object.keys(publicApi).sort(), ["createProductionDaemon"])
+assert.deepEqual(Object.keys(publicApi).sort(), ["acquireLocalDaemon", "createProductionDaemon"])
 assert.equal("DomovoiDaemon" in internal, false)
 
 const publicTypes = readFileSync(new URL("./dist/public.d.ts", import.meta.url), "utf8")
@@ -34,6 +34,7 @@ try {
 }
 
 const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+assert.equal(manifest.engines.node, ">=22.13.0", "The daemon requires unflagged node:sqlite")
 
 function runCli(...args) {
   return spawnSync(process.execPath, ["./dist/index.js", ...args], {
@@ -50,8 +51,11 @@ assert.equal(runCli("-v").stdout.trim(), manifest.version)
 const help = runCli("--help")
 assert.equal(help.status, 0, help.error?.message || help.stderr)
 assert.match(help.stdout, /^Usage: domovoid/m)
+assert.match(help.stdout, /domovoid profile recover --confirm-no-supervisor/)
+assert.match(help.stdout, /asserts that no supervisor will restart this profile/)
 assert.match(help.stdout, /DOMOVOI_AUTH_TOKEN/)
 assert.match(help.stdout, /DOMOVOI_CREDENTIAL_PATH/)
+assert.match(help.stdout, /domovoid skill sign <skill-path> --key <private-key-path>/)
 assert.match(runCli("-h").stdout, /^Usage: domovoid/m)
 
 const unknown = runCli("--unknown")
@@ -67,3 +71,18 @@ const invalidRecovery = runCli("fleet-keychain", "forget", "token=must-not-be-ec
 assert.equal(invalidRecovery.status, 1)
 assert.match(invalidRecovery.stderr, /Invalid machine identity/)
 assert.doesNotMatch(invalidRecovery.stderr, /must-not-be-echoed/)
+
+// The real packaged CLI must find and shut down its packaged worker. Substitute
+// only the native binding, never open the operator's real OS keychain.
+const keyringHome = mkdtempSync(join(tmpdir(), "domovoi-dist-keyring-"))
+try {
+  const listing = spawnSync(process.execPath, [
+    "--import", new URL("./test-fixtures/blocked-keyring.mjs", import.meta.url).href,
+    "./dist/index.js", "fleet-keychain", "list",
+  ], { encoding: "utf8", timeout: 15_000, env: { ...process.env, DOMOVOI_TEST_KEYRING_DIRECTORY: keyringHome } })
+  assert.equal(listing.status, 0, listing.error?.message || listing.stderr)
+  assert.equal(listing.stdout, "")
+  const events = readFileSync(join(keyringHome, "events"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+  assert.ok(events.some((event) => event.kind === "get"))
+  assert.ok(events.every((event) => event.isMainThread === false))
+} finally { rmSync(keyringHome, { recursive: true, force: true }) }

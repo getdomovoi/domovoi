@@ -1,9 +1,12 @@
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { describe, expect, it, vi } from "vitest"
 
 import type { FleetMachine } from "@getdomovoi/protocol"
 
 import { createMachineDialer } from "./machine-dial.js"
 import { OperationDeadline } from "./operation-deadline.js"
+import { MachineIdentityMismatchError } from "./machine-socket.js"
+import { waitForDaemon } from "./test-wait-for.js"
 
 const credential = "n".repeat(43)
 const machineId = `machine-${"b".repeat(32)}`
@@ -54,12 +57,12 @@ function dialer(overrides: {
     opened,
     dial: createMachineDialer({
       machine: (id) => (overrides.machines ?? [machine()]).find((candidate) => candidate.id === id),
-      credentials: {
+      credentials: asyncTestCredentials({
         save: () => {},
         forMachine: overrides.forMachine ?? (() => credential),
         forget: () => {},
         machines: () => [machineId],
-      },
+      }),
       open,
       dialTimeoutMs: 1_000,
     }),
@@ -67,6 +70,129 @@ function dialer(overrides: {
 }
 
 describe("createMachineDialer", () => {
+  it.each(["ineligible", "missing-credential", "different-machine"] as const)("cannot enable an SSH route past %s", async (scenario) => {
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    const dial = createMachineDialer({
+      machine: () => scenario === "ineligible" ? undefined : machine({ transports: [] }),
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId],
+        forMachine: () => scenario === "missing-credential" ? undefined : credential }),
+      sshTunnels: [{ machineId: scenario === "different-machine" ? `machine-${"c".repeat(32)}` : machineId,
+        endpoint: "ws://127.0.0.1:47900/rpc" }],
+      dialTimeoutMs: 1000, open,
+    })
+    await expect(dial(machineId)).rejects.toThrow()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it("does not try SSH after a direct route fails verified identity", async () => {
+    const open = vi.fn(async () => { throw new MachineIdentityMismatchError() })
+    const dial = createMachineDialer({
+      machine: () => machine(),
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47900/rpc" }],
+      dialTimeoutMs: 1000, open,
+    })
+    await expect(dial(machineId)).rejects.toBeInstanceOf(MachineIdentityMismatchError)
+    expect(open).toHaveBeenCalledOnce()
+  })
+
+  it("never opens a socket for invalid source-local configuration", () => {
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    expect(() => createMachineDialer({ machine: () => machine(), credentials: undefined, dialTimeoutMs: 1000, open,
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1.example.com/rpc" }],
+    })).toThrow()
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it("produces a configured local SSH fallback within the original route deadline", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(100, { now: () => now })
+    const seen: Array<{ endpoint: string; remaining: number; deadline: OperationDeadline }> = []
+    const input = {
+      machine: () => machine(),
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47900/rpc" }],
+      dialTimeoutMs: 1000,
+      open: async (options: { endpoint: string; expectedMachineId: string; credential: string; deadline: OperationDeadline }) => {
+        expect(options.expectedMachineId).toBe(machineId)
+        expect(options.credential).toBe(credential)
+        seen.push({ endpoint: options.endpoint, remaining: options.deadline.remainingMs(), deadline: options.deadline })
+        if (seen.length === 1) { now = 75; throw new Error("direct route is down") }
+        return { call: async () => ({}), close: () => {} }
+      },
+    }
+    try {
+      expect(await createMachineDialer(input)(machineId, undefined, deadline)).toMatchObject({
+        endpoint: "ws://127.0.0.1:47900/rpc", routeSource: "ssh",
+      })
+      expect(seen.map(({ endpoint, remaining }) => ({ endpoint, remaining }))).toEqual([
+        { endpoint: "wss://studio.tailnet:47831/rpc", remaining: 100 },
+        { endpoint: "ws://127.0.0.1:47900/rpc", remaining: 25 },
+      ])
+      expect(seen[0]?.deadline).toBe(seen[1]?.deadline)
+    } finally { deadline.clear() }
+  })
+
+  it("never accepts the target's assertion that an SSH forward is configured here", async () => {
+    const io = dialer({ machines: [machine({ transports: [
+      { kind: "ssh", endpoint: "wss://localhost:47900/rpc", authenticated: true, configured: true },
+    ] })] })
+    await expect(io.dial(machineId)).rejects.toThrow("no usable transport")
+    expect(io.opened).toEqual([])
+  })
+
+  it("does not mistake a peer's TLS loopback advertisement for a configured source route", async () => {
+    const forward = "wss://localhost:47900/rpc"
+    const input = {
+      machine: () => machine({ connection: "direct", transports: [
+        { kind: "local" as const, endpoint: forward, authenticated: true as const },
+      ] }),
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
+      dialTimeoutMs: 1000,
+      open: vi.fn(async () => ({ call: async () => ({}), close: () => {} })),
+    }
+    await expect(createMachineDialer(input)(machineId)).rejects.toThrow()
+    expect(input.open).not.toHaveBeenCalled()
+    expect(await createMachineDialer({ ...input, sshTunnels: [{ machineId, endpoint: forward }] })(machineId))
+      .toMatchObject({ endpoint: forward, routeSource: "ssh" })
+  })
+
+  it("rechecks eligibility after the credential await so a forgetting peer cannot dial", async () => {
+    const deadline = OperationDeadline.start(1_000)
+    const credentials = asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential })
+    let release: (value: string) => void = () => {}
+    const read = vi.spyOn(credentials, "forMachine").mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    let eligible = true
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    const dial = createMachineDialer({ machine: () => eligible ? machine() : undefined, credentials, dialTimeoutMs: 1_000, open })
+    try {
+      const pending = dial(machineId, undefined, deadline)
+      const refused = expect(pending).rejects.toThrow("cannot be reached")
+      expect(read).toHaveBeenCalledOnce()
+      eligible = false
+      release(credential)
+      await refused
+      expect(open).not.toHaveBeenCalled()
+    } finally { deadline.clear() }
+  })
+
+  it("never opens after an expired credential read settles late", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(1_000, { now: () => now })
+    const credentials = asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential })
+    let release: (value: string) => void = () => {}
+    vi.spyOn(credentials, "forMachine").mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    const dial = createMachineDialer({ machine: () => machine(), credentials, dialTimeoutMs: 1_000, open })
+    try {
+      const refused = expect(dial(machineId, undefined, deadline)).rejects.toThrow(/deadline/)
+      now = 1_001
+      release(credential)
+      await refused
+      expect(open).not.toHaveBeenCalled()
+    } finally { deadline.clear() }
+  })
+
   it("dials a machine with the credential kept for it", async () => {
     const io = dialer()
 
@@ -117,7 +243,7 @@ describe("createMachineDialer", () => {
           { kind: "lan", endpoint: "wss://studio.old/rpc", authenticated: true },
         ],
       }),
-      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
       dialTimeoutMs: 1_000,
       open: async (input) => {
         seen.push({ endpoint: input.endpoint, remaining: input.deadline.remainingMs(), deadline: input.deadline })
@@ -145,8 +271,9 @@ describe("createMachineDialer", () => {
         { kind: "lan", endpoint: "wss://studio.lan/rpc", authenticated: true },
         { kind: "tailnet", endpoint: "wss://studio.tailnet/rpc", authenticated: true },
       ] }),
-      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
       dialTimeoutMs: 1_000, open,
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47900/rpc" }],
     })
     try {
       await expect(dial(machineId, undefined, deadline)).rejects.toThrow(/deadline/)
@@ -159,14 +286,18 @@ describe("createMachineDialer", () => {
     const deadline = OperationDeadline.start(100, { now: () => now })
     const close = vi.fn()
     let complete: (connection: { call: () => Promise<unknown>; close: () => void }) => void = () => {}
+    const open = vi.fn(() => new Promise<{ call: () => Promise<unknown>; close: () => void }>((resolve) => { complete = resolve }))
     const dial = createMachineDialer({
       machine: () => machine(),
-      credentials: { save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential },
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
       dialTimeoutMs: 1_000,
-      open: () => new Promise((resolve) => { complete = resolve }),
+      open,
     })
     const opening = dial(machineId, undefined, deadline)
     const refused = expect(opening).rejects.toThrow(/deadline/)
+    // Credential access is async too. Expire the opener after it actually
+    // starts, not while the credential phase is still pending.
+    await waitForDaemon(() => expect(open).toHaveBeenCalledOnce())
     now = 101
     deadline.remainingMs()
     await refused

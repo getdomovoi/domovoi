@@ -5,6 +5,7 @@ import { join } from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
+import { createProductionDaemon } from "../production-daemon.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 
@@ -42,6 +43,10 @@ const windowsScript = {
 
 function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   return {
+    claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
+    claimProfile: vi.fn(() => ({ release: vi.fn() })),
+    removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
+    writeRemovalReceipt: vi.fn(),
     write: vi.fn(async () => {}),
     run: vi.fn(async () => {}),
     capture: vi.fn(async () => ({ code: 0, stdout: "" })),
@@ -143,6 +148,21 @@ describe("servicePlan", () => {
 })
 
 describe("installService", () => {
+  it("refuses before installing anything while Desktop owns the canonical profile", async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-install-owned-"))
+    const desktop = await createProductionDaemon({ homeDirectory, environment: {}, owner: "desktop" })
+    const dependencies = { ...nodeServiceEffects({ userHomeDirectory: homeDirectory }), write: vi.fn(async () => {}), run: vi.fn(async () => {}) }
+    try {
+      await expect(installService({
+        ...linux, home: homeDirectory, configuration: configuration(homeDirectory, process.platform),
+      }, dependencies)).rejects.toThrow(/Close Desktop.*start the service.*reopen Desktop/)
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(dependencies.run).not.toHaveBeenCalled()
+    } finally {
+      await desktop.stop()
+      await rm(homeDirectory, { recursive: true, force: true })
+    }
+  })
   it("keeps the last complete configuration when a replacement write fails partway", async () => {
     const deadline = OperationDeadline.start(5_000)
     const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
@@ -208,7 +228,7 @@ describe("installService", () => {
     try {
       const write = vi.fn(() => new Promise<void>((resolve) => { finishWrite = resolve }))
       const run = vi.fn(async () => {})
-      const installing = installService(linux, { write, run })
+      const installing = installService(linux, { ...effects(), write, run })
       const rejection = expect(installing).rejects.toThrow(/deadline/)
       await vi.advanceTimersByTimeAsync(30_000)
       await rejection
@@ -226,17 +246,93 @@ describe("installService", () => {
     const order: string[] = []
     const written = vi.fn(async () => { order.push("write") })
     const ran = vi.fn(async () => { order.push("run") })
-    await installService(linux, { write: written, run: ran })
+    await installService(linux, { ...effects(), write: written, run: ran })
     expect(order).toEqual(["write", "write", "run", "run"])
   })
 
   it("does not run the manager when the unit cannot be written", async () => {
     const ran = vi.fn(async () => {})
     await expect(installService(linux, {
+      ...effects(),
       write: async () => { throw new Error("read-only file system") },
       run: ran,
     })).rejects.toThrow("read-only file system")
     expect(ran).not.toHaveBeenCalled()
+  })
+})
+
+describe("service operation lease lifecycle", () => {
+  const invoke = (verb: "install" | "remove" | "status", dependencies: ServiceEffects): Promise<unknown> =>
+    verb === "install" ? installService(linux, dependencies)
+      : verb === "remove" ? removeService(linux, dependencies) : serviceStatus(linux, dependencies)
+
+  it.each(["install", "remove", "status"] as const)("releases %s exclusion after success or a settled error", async (verb) => {
+    const release = vi.fn()
+    const dependencies = effects({ claimServiceOperation: vi.fn(() => ({ release })) })
+    await invoke(verb, dependencies)
+    expect(release).toHaveBeenCalledOnce()
+    vi.mocked(dependencies.run).mockRejectedValue(new Error("manager refused"))
+    vi.mocked(dependencies.capture).mockRejectedValue(new Error("manager refused"))
+    await expect(invoke(verb, dependencies)).rejects.toThrow("manager refused")
+    expect(release).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(["install", "remove", "status"] as const)("retains %s exclusion after expiry and ignores late completion", async (verb) => {
+    vi.useFakeTimers()
+    try {
+      let finish = () => {}
+      const pending = new Promise<void>((resolve) => { finish = resolve })
+      const release = vi.fn()
+      const dependencies = effects({
+        claimServiceOperation: vi.fn(() => ({ release })),
+        run: vi.fn(() => pending),
+        capture: vi.fn(async () => { await pending; return { code: 0, stdout: "active" } }),
+      })
+      const rejected = expect(invoke(verb, dependencies)).rejects.toThrow(/deadline/)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await rejected
+      expect(release).not.toHaveBeenCalled()
+      const calls = [dependencies.run, dependencies.capture, dependencies.write, dependencies.remove]
+        .map((operation) => vi.mocked(operation).mock.calls.length)
+      finish()
+      await vi.advanceTimersByTimeAsync(0)
+      expect([dependencies.run, dependencies.capture, dependencies.write, dependencies.remove]
+        .map((operation) => vi.mocked(operation).mock.calls.length)).toEqual(calls)
+      expect(release).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it("starts the deadline before acquisition and rejects a late claim before any work", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(30_000, { now: () => now })
+    const start = vi.spyOn(OperationDeadline, "start").mockReturnValue(deadline)
+    const release = vi.fn()
+    try {
+      const dependencies = effects({ claimServiceOperation: vi.fn(() => { now = 30_000; return { release } }) })
+      await expect(installService(linux, dependencies)).rejects.toThrow(/deadline/)
+      expect(start).toHaveBeenCalledOnce()
+      expect(dependencies.claimProfile).not.toHaveBeenCalled()
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(dependencies.remove).not.toHaveBeenCalled()
+      expect(dependencies.run).not.toHaveBeenCalled()
+    } finally { start.mockRestore(); deadline.clear() }
+  })
+
+  it("checks elapsed time when a manager rejects before the timer callback runs", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(30_000, { now: () => now })
+    const start = vi.spyOn(OperationDeadline, "start").mockReturnValue(deadline)
+    const release = vi.fn()
+    try {
+      const dependencies = effects({
+        claimServiceOperation: vi.fn(() => ({ release })),
+        run: vi.fn(async () => { now = 30_000; throw new Error("manager rejected late") }),
+      })
+      await expect(installService(linux, dependencies)).rejects.toThrow("manager rejected late")
+      expect(release).not.toHaveBeenCalled()
+      expect(deadline.signal.aborted).toBe(true)
+    } finally { start.mockRestore(); deadline.clear() }
   })
 })
 
@@ -254,16 +350,23 @@ describe("serviceRemovalPlan", () => {
   })
 
   it("boots the launch agent out by label", () => {
-    expect(serviceRemovalPlan({ platform: "darwin", home: "/Users/dl", uid: 501 }).commands).toEqual([
+    expect(serviceRemovalPlan({ platform: "darwin", home: "/Users/dl", uid: 501 })).toMatchObject({ commands: [
       { command: "launchctl", args: ["bootout", "gui/501/sh.domovoi.domovoid"] },
-    ])
+    ] })
   })
 
-  it("deletes the Windows logon task", () => {
-    expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
-      kind: "task",
-      commands: [{ command: "schtasks", args: ["/delete", "/tn", "Domovoi daemon", "/f"] }],
-    })
+  it("requires a Windows task stop and observation before removal", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows")
+    try {
+      const command = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
+        kind: "task",
+        name: "Domovoi daemon",
+        stop: { command, args: expect.any(Array) },
+        inspect: { command, args: expect.any(Array) },
+        remove: { command, args: expect.any(Array) },
+      })
+    } finally { vi.unstubAllEnvs() }
   })
 })
 
@@ -401,6 +504,7 @@ describe("runServiceCommand", () => {
     expect(configuration, "the supervised launch must carry a configuration file").toBeDefined()
     expect(JSON.parse(configuration![1])).toEqual({
       version: 1,
+      registrationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       homeDirectory: root,
       host: "0.0.0.0",
       port: 7717,

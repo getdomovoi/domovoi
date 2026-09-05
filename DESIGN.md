@@ -271,10 +271,10 @@ needs an upgrade, a target that does not run sessions, and the machine already h
 No pending-transfer state is built.
 
 **Open question 3 is partly resolved.** Terminal skill installs are gated as hard gates through the
-normal permission system, capability manifests and content digests are defined, and unsigned or
-unverified skills are excluded from Build auto. Still open: the signer registry and key custody
-model that would let a skill reach a trusted state, and fetching skill inventories from every
-reachable fleet member.
+normal permission system, capability manifests and content digests are defined, unsigned or
+unverified skills are excluded from Build auto, and a signature that verifies against a key in the
+machine's local trust file yields a trusted state. Still open: the signer registry, revocation
+source, and key custody model beyond that file.
 
 **Superseded copy in the desktop prototype.** `Domovoi Desktop.dc.html` predates the copy
 constraint in `OPEN-QUESTIONS.md` #5, so treat these regions as work in progress and do not
