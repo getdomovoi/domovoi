@@ -119,11 +119,11 @@ try {
   if (!stdout.split(/\r?\n/u).includes(successMarker)) {
     throw new Error(`desktop launch smoke did not emit ${successMarker}`)
   }
-  // Starting is all the smoke proves. A daemon state directory in its
-  // throwaway home means the app built a daemon and minted credentials to do it.
-  const daemonState = join(profileRoot, ".domovoi")
-  if (await access(daemonState).then(() => true, () => false)) {
-    throw new Error(`desktop launch smoke created daemon state at ${daemonState}`)
+  // Renderer readiness alone is not daemon assembly. The production factory
+  // must have opened its persistent store in this isolated profile.
+  const daemonState = join(profileRoot, ".domovoi", "state.sqlite")
+  if (!await access(daemonState).then(() => true, () => false)) {
+    throw new Error("desktop launch smoke never started the production daemon: state.sqlite is missing")
   }
 
   process.stdout.write(`${successMarker}\n`)

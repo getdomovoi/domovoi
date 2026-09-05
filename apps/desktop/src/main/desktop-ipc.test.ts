@@ -250,14 +250,12 @@ describe("registerDesktopIpc", () => {
     expect(target.calledEffects()).toEqual(["reconnectRpcEndpoint"])
   })
 
-  it("refuses daemon credentials during the launch smoke without acquiring a daemon", async () => {
+  it("acquires daemon credentials through the real IPC path during the launch smoke", async () => {
     const target = harness({ launchSmoke: true })
 
-    for (const channel of ["domovoi:rpc-endpoint", "domovoi:rpc-endpoint-reconnect"]) {
-      await expect(async () => target.listener("handle", channel)(target.event))
-        .rejects.toThrow("Daemon credentials are unavailable during the launch smoke")
-    }
-    expect(target.calledEffects()).toEqual([])
+    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(acquisition)
+    await expect(target.listener("handle", "domovoi:rpc-endpoint-reconnect")(target.event)).resolves.toBe(reacquisition)
+    expect(target.calledEffects()).toEqual(["rpcEndpoint", "reconnectRpcEndpoint"])
   })
 
   it("serves the authorized renderer", async () => {

@@ -87,7 +87,7 @@ describe("resolveDesktopStartup", () => {
     })
   })
 
-  it("finishes the launch smoke before asking for daemon credentials", async () => {
+  it("resolves the real daemon endpoint even when the launch smoke bridge exists", async () => {
     const acquireDaemon = vi.fn(async () => ({
       kind: "owned" as const,
       url: "ws://127.0.0.1:47831/rpc",
@@ -97,8 +97,10 @@ describe("resolveDesktopStartup", () => {
     await expect(resolveDesktopStartup({
       domovoiDesktop: { acquireDaemon },
       domovoiLaunchSmoke: { ready: () => {} },
-    })).resolves.toEqual({ kind: "launch-smoke" })
-    expect(acquireDaemon).not.toHaveBeenCalled()
+    })).resolves.toEqual({
+      kind: "workspace", rpcUrl: "ws://127.0.0.1:47831/rpc", rpcToken: "factory-token", daemon: { kind: "owned" },
+    })
+    expect(acquireDaemon).toHaveBeenCalledOnce()
   })
 
   it("fails without the preload bridge", async () => {
