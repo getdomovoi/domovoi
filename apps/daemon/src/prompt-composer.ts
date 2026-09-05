@@ -17,7 +17,12 @@ import {
   renderAnnotationContext,
 } from "./annotation-context.js"
 import { prepareAnnotationVisuals } from "./annotation-visual-turn.js"
-import { prepareHandoffPrompt } from "./handoff-context.js"
+import {
+  handoffInclusion,
+  prepareHandoffContext,
+  renderHandoffContext,
+  type HandoffInclusion,
+} from "./handoff-context.js"
 import {
   prepareTurnSkillContext,
   renderProjectSkillContext,
@@ -72,7 +77,12 @@ type PromptSectionRetention = "required" | "elastic"
 export const elasticPromptDropOrder = [
   "skills",
   "annotations",
-] as const satisfies readonly ProviderPromptSection[]
+  "handoff-history",
+  "handoff-annotations",
+  "handoff-artifacts",
+] as const
+
+type PromptDropStep = (typeof elasticPromptDropOrder)[number]
 
 function promptSectionRetention(skillRetention: PromptSectionRetention): Record<
   ProviderPromptSection,
@@ -176,16 +186,19 @@ export async function composeProviderPrompt(
 ): Promise<ComposedProviderPrompt> {
   const budgetCodeUnits = input.budgetCodeUnits ?? maximumProviderPromptCodeUnits
   validateProviderPromptBudget(budgetCodeUnits)
-  const handoff = prepareHandoffPrompt(
-    input.snapshot,
-    input.sessionId,
-    input.userPrompt,
-  )
-  const planPrompt = input.workingPlan
-    ? agentPromptWithWorkingPlan(input.workingPlan, handoff.prompt)
-    : handoff.prompt
-  if (planPrompt.length > budgetCodeUnits) {
-    throw requiredContextError(input, handoff.delivery, budgetCodeUnits)
+  const handoff = prepareHandoffContext(input.snapshot, input.sessionId)
+  const renderRequired = (inclusion: HandoffInclusion) => {
+    const handoffTurn = renderHandoffContext(handoff, inclusion, input.userPrompt)
+    return {
+      prompt: input.workingPlan
+        ? agentPromptWithWorkingPlan(input.workingPlan, handoffTurn.prompt)
+        : handoffTurn.prompt,
+      delivery: handoffTurn.delivery,
+    }
+  }
+  const floor = renderRequired({ history: 0, annotations: 0, artifacts: 0 })
+  if (floor.prompt.length > budgetCodeUnits) {
+    throw requiredContextError(input, floor.delivery, budgetCodeUnits)
   }
   const annotationVisuals = await prepareAnnotationVisuals(
     input.snapshot,
@@ -207,7 +220,8 @@ export async function composeProviderPrompt(
   const retention = promptSectionRetention(skills.retention)
   let includedSkills = skills.deliverable.length
   let includedAnnotations = annotations.candidates.length
-  const droppers: Record<(typeof elasticPromptDropOrder)[number], () => boolean> = {
+  const includedHandoff = handoffInclusion(handoff)
+  const droppers: Record<PromptDropStep, () => boolean> = {
     skills: () => {
       if (retention.skills !== "elastic") return false
       if (includedSkills === 0) return false
@@ -220,13 +234,29 @@ export async function composeProviderPrompt(
       includedAnnotations -= 1
       return true
     },
+    "handoff-history": () => {
+      if (includedHandoff.history === 0) return false
+      includedHandoff.history -= 1
+      return true
+    },
+    "handoff-annotations": () => {
+      if (includedHandoff.annotations === 0) return false
+      includedHandoff.annotations -= 1
+      return true
+    },
+    "handoff-artifacts": () => {
+      if (includedHandoff.artifacts === 0) return false
+      includedHandoff.artifacts -= 1
+      return true
+    },
   }
 
   while (true) {
+    const requiredTurn = renderRequired(includedHandoff)
     const annotationTurn = renderAnnotationContext(
       annotations,
       includedAnnotations,
-      planPrompt,
+      requiredTurn.prompt,
     )
     const skillTurn = renderProjectSkillContext(
       skills,
@@ -235,7 +265,7 @@ export async function composeProviderPrompt(
     )
     const prompt = contextDeliveryMarker(
       skillTurn.prompt,
-      handoff.delivery,
+      requiredTurn.delivery,
       annotationTurn.delivery,
       skillTurn.delivery,
     )
@@ -247,7 +277,7 @@ export async function composeProviderPrompt(
           limit: budgetCodeUnits,
           used: prompt.length,
         },
-        handoff: handoff.delivery,
+        handoff: requiredTurn.delivery,
         workingPlan: input.workingPlan
           ? {
               status: "delivered",
@@ -269,7 +299,7 @@ export async function composeProviderPrompt(
     }
 
     // Retention order is separate from semantic prompt precedence.
-    const dropped = elasticPromptDropOrder.some((section) => droppers[section]())
-    if (!dropped) throw requiredContextError(input, handoff.delivery, budgetCodeUnits)
+    const dropped = elasticPromptDropOrder.some((step) => droppers[step]())
+    if (!dropped) throw requiredContextError(input, requiredTurn.delivery, budgetCodeUnits)
   }
 }
