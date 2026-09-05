@@ -67,6 +67,21 @@ describe("runOpenCommand", () => {
     expect(deps.open).not.toHaveBeenCalled()
   })
 
+  it("does not call an unreadable distribution row a missing distribution", async () => {
+    const deps = dependencies({
+      distributions: vi.fn(() => listWslDistributions({
+        platform: "win32",
+        run: async () => Buffer.from("  NAME  STATE  VERSION\r\n  Ubuntu Running broken\r\n", "utf16le"),
+      })),
+    })
+    expect(await runOpenCommand(["open", "\\\\wsl$\\Ubuntu\\home\\me"], deps)).toBe(1)
+    const stderr = deps.stderr.mock.calls.join("")
+    expect(stderr).toMatch(/corrupt.*Run "wsl\.exe --list --verbose"/s)
+    expect(stderr).not.toMatch(/no WSL distribution called/)
+    expect(deps.translate).not.toHaveBeenCalled()
+    expect(deps.open).not.toHaveBeenCalled()
+  })
+
   it("opens a directory inside a distribution through that distribution, at the path it answered", async () => {
     const deps = dependencies()
     expect(await runOpenCommand(["open", "\\\\wsl$\\debian\\srv\\app"], deps)).toBe(0)

@@ -113,6 +113,20 @@ describe("listWslDistributions when wsl.exe cannot answer", () => {
     }
   })
 
+  it.each([
+    "  Ubuntu Running broken\r\n",
+    "  Ubuntu Running\r\n",
+    "  debian Stopped 2\r\n  Ubuntu Running broken\r\n",
+    "  Ubuntu Running broken\r\n  debian Stopped 2\r\n",
+    "  Ubuntu Running broken WSL_E_DEFAULT_DISTRO_NOT_FOUND\r\n",
+  ])("rejects the whole listing when a row is unreadable: %j", async (rows) => {
+    const run = vi.fn<Runner>(async () => Buffer.from(`  NAME  STATE  VERSION\r\n${rows}`, "utf16le"))
+    const refused = listWslDistributions({ run, platform: "win32" })
+    await expect(refused).rejects.toMatchObject({ kind: "corrupt" })
+    await expect(refused).rejects.toThrow(/Run "wsl\.exe --list --verbose"/)
+    await expect(refused).rejects.not.toThrow(/Ubuntu Running/)
+  })
+
   it("gives up on a wsl.exe that never returns, and says it timed out", async () => {
     const run = vi.fn(async (_command: string, _args: readonly string[]) => {
       await new Promise((resolve) => setTimeout(resolve, 50))
