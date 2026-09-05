@@ -3,7 +3,6 @@ import { z } from "zod"
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 
 export const maximumPairedDeviceLabelLength = 128
-export const maximumDeviceRenameLabelLength = 64
 export const maximumListedDevices = 256
 
 export const deviceIdSchema = z.string().regex(/^device-[0-9a-f]{32}$/)
@@ -102,7 +101,7 @@ export const deviceRotateParamsSchema = deviceRevokeParamsSchema
 export const deviceRenameLabelSchema = z.string()
   .trim()
   .min(1)
-  .max(maximumDeviceRenameLabelLength)
+  .max(maximumPairedDeviceLabelLength)
   .regex(/^\P{Cc}*$/u, "A device label cannot contain control characters")
 
 export const deviceRenameParamsSchema = z.object({

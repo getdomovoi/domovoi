@@ -5,7 +5,6 @@ import {
   clientKindSchema,
   deviceRenameLabelSchema,
   machineIdSchema,
-  maximumDeviceRenameLabelLength,
   pairedDeviceSchema,
   type ClientKind,
   type DeviceCredentialBinding as PublicDeviceCredentialBinding,
@@ -30,7 +29,6 @@ export type VerifiedDeviceCredential = {
 
 export const maximumPairedDevices = 128
 export const maximumPairedDeviceLabelLength = 128
-export { maximumDeviceRenameLabelLength }
 
 export interface DeviceRegistry {
   pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing

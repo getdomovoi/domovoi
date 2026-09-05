@@ -9,7 +9,7 @@ import {
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
-  maximumDeviceRenameLabelLength,
+  maximumPairedDeviceLabelLength,
   pairedDeviceSchema,
 } from "./devices.js"
 
@@ -179,9 +179,9 @@ describe("deviceRenameParamsSchema", () => {
   it("bounds the label and refuses control characters", () => {
     expect(deviceRenameParamsSchema.parse({
       deviceId: device.id,
-      label: "n".repeat(maximumDeviceRenameLabelLength),
-    }).label).toBe("n".repeat(maximumDeviceRenameLabelLength))
-    for (const label of ["", "   ", "n".repeat(maximumDeviceRenameLabelLength + 1), "kitchen\u0000ipad", "line\nbreak"]) {
+      label: "n".repeat(maximumPairedDeviceLabelLength),
+    }).label).toBe("n".repeat(maximumPairedDeviceLabelLength))
+    for (const label of ["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad", "line\nbreak"]) {
       expect(deviceRenameParamsSchema.safeParse({ deviceId: device.id, label }).success).toBe(false)
     }
   })

@@ -7,7 +7,6 @@ import {
   DeviceLimitReachedError,
   DeviceNotFoundError,
   SqliteDeviceRegistry,
-  maximumDeviceRenameLabelLength,
   maximumPairedDeviceLabelLength,
   maximumPairedDevices,
 } from "./device-registry.js"
@@ -264,7 +263,7 @@ describe("SqliteDeviceRegistry", () => {
     expect(() => devices.rename("device-missing", "kitchen-ipad")).toThrow(DeviceNotFoundError)
   })
 
-  it.each(["", "   ", "n".repeat(maximumDeviceRenameLabelLength + 1), "kitchen\u0000ipad"])(
+  it.each(["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad"])(
     "refuses an unusable rename label: %s",
     (label) => {
       const { registry: devices } = registry()

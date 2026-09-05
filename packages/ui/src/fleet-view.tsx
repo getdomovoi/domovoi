@@ -17,7 +17,7 @@ import {
 
 import {
   deviceRenameLabelSchema,
-  maximumDeviceRenameLabelLength,
+  maximumPairedDeviceLabelLength,
   transportPreference,
   type ClientKind,
   type DeviceCredentialBinding,
@@ -457,7 +457,7 @@ function LabelCell({
             autoFocus
             aria-label={`Name for ${device.label}`}
             aria-invalid={invalid || undefined}
-            maxLength={maximumDeviceRenameLabelLength}
+            maxLength={maximumPairedDeviceLabelLength}
             className="h-7 px-2 text-[12.5px] font-medium text-strong md:text-[12.5px]"
             disabled={disabled}
             value={draft}
