@@ -318,6 +318,22 @@ describe("service operation lease lifecycle", () => {
       expect(dependencies.run).not.toHaveBeenCalled()
     } finally { start.mockRestore(); deadline.clear() }
   })
+
+  it("checks elapsed time when a manager rejects before the timer callback runs", async () => {
+    let now = 0
+    const deadline = OperationDeadline.start(30_000, { now: () => now })
+    const start = vi.spyOn(OperationDeadline, "start").mockReturnValue(deadline)
+    const release = vi.fn()
+    try {
+      const dependencies = effects({
+        claimServiceOperation: vi.fn(() => ({ release })),
+        run: vi.fn(async () => { now = 30_000; throw new Error("manager rejected late") }),
+      })
+      await expect(installService(linux, dependencies)).rejects.toThrow("manager rejected late")
+      expect(release).not.toHaveBeenCalled()
+      expect(deadline.signal.aborted).toBe(true)
+    } finally { start.mockRestore(); deadline.clear() }
+  })
 })
 
 describe("serviceRemovalPlan", () => {

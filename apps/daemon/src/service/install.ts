@@ -297,7 +297,12 @@ async function serviceOperation<T>(effects: Pick<ServiceEffects, "claimServiceOp
     // An expired OS call can still settle. Keep exclusion until this CLI exits,
     // matching the profile lease rule, rather than exposing a second writer.
     // Process exit does not prove a previously submitted native job stopped.
-    try { if (!deadline.signal.aborted) lease?.release() } finally { deadline.clear() }
+    try {
+      // Rejections bypass the successful-settlement clock check. An overdue
+      // timer callback must not make a late error release exclusion early.
+      deadline.remainingMs()
+      if (!deadline.signal.aborted) lease?.release()
+    } finally { deadline.clear() }
   }
 }
 
