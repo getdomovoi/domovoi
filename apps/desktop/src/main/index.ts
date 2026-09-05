@@ -8,6 +8,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, 
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
+import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
@@ -55,7 +56,6 @@ if (launchSmoke) {
 }
 let launchSmokeStage = "main"
 let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
-let launchSmokeFinishing = false
 const deepLinks = new DesktopDeepLinkQueue()
 const startupMetrics = new DesktopStartupMetrics({
   enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
@@ -104,6 +104,16 @@ const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
+const launchSmokeExit = new LaunchSmokeExit(() => desktopDaemon.release(), (code) => {
+  if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
+  if (code === 0) console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
+  app.exit(code)
+}, (error) => { console.error("Desktop launch smoke could not release its daemon", error) })
+
+function finishLaunchSmoke(code: 0 | 1): void {
+  launchSmokeStage = "shutdown"
+  void launchSmokeExit.finish(code)
+}
 
 function windowDecorationPath(): string {
   return join(app.getPath("userData"), windowDecorationFileName)
@@ -264,30 +274,20 @@ registerDesktopIpc(ipcMain, {
     enabled: launchSmoke,
     preloadReady: () => { launchSmokeStage = "preload" },
     ready: () => {
-      if (launchSmokeFinishing) return
-      launchSmokeFinishing = true
       if (desktopDaemon.current()?.kind !== "owned") {
         console.error("Desktop launch smoke did not acquire its own production daemon")
-        app.exit(1)
+        finishLaunchSmoke(1)
         return
       }
-      launchSmokeStage = "shutdown"
-      void desktopDaemon.release().then(() => {
-        if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
-        console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
-        app.exit(0)
-      }, (error: unknown) => {
-        console.error("Desktop launch smoke could not release its daemon", error)
-        app.exit(1)
-      })
+      finishLaunchSmoke(0)
     },
     failed: (message) => {
       console.error(`Desktop launch smoke renderer failed: ${message}`)
-      app.exit(1)
+      finishLaunchSmoke(1)
     },
     unauthorized: () => {
       console.error("Domovoi desktop launch smoke renderer sender was not authorized")
-      app.exit(1)
+      finishLaunchSmoke(1)
     },
   },
 })
@@ -327,7 +327,7 @@ if (!hasSingleInstanceLock) {
       }
       launchSmokeTimeout = setTimeout(() => {
         console.error(`Domovoi desktop launch smoke stopped after ${launchSmokeStage} readiness`)
-        app.exit(1)
+        finishLaunchSmoke(1)
       }, budget)
     }
     await startDesktop(createWindow, async () => {
@@ -343,7 +343,7 @@ if (!hasSingleInstanceLock) {
   }).catch((error: unknown) => {
     if (launchSmoke) {
       console.error("Desktop launch smoke could not start", error)
-      app.exit(1)
+      finishLaunchSmoke(1)
       return
     }
     const detail = recordStartupFailure({

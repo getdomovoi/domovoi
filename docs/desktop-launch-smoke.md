@@ -19,6 +19,8 @@ The main process waits for successful daemon shutdown before emitting
 `DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK`. After Electron exits, the runner independently opens
 `state.sqlite` read-only and requires the used, revoked pairing. It also requires a cleared
 owner record. A renderer that skips RPC and claims success still fails this check.
+Failure exits also attempt daemon release, under a separate 10-second cleanup bound. Failure
+stays sticky if a success message races it; failed or late cleanup cannot emit success.
 
 ## Isolation and bounds
 
