@@ -788,7 +788,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Keep all WSL filesystem and Git work inside the distro daemon, never through <code>\\wsl$</code>
 <ul>
-<li>The intended guard exists, but it assumes Windows drives are under <code>/mnt</code>. WSL supports custom automount roots, and no real mount-boundary test exists.
+<li>The open shim and the git runner both ask the distribution's own <code>wslpath</code> which Windows path a placed path reads back as, so a Windows drive is refused wherever the distribution mounts it, with a fake <code>wsl.exe</code> covering a custom automount root and a drive mounted by hand. The real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution, which CI does not have.
 </li>
 </ul>
 </li>

@@ -232,7 +232,9 @@ repeated. A plain Windows path opens through this machine's daemon as before, wi
 
 Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
 work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
-inside the distribution.
+inside the distribution. The runner that starts `git` inside a distribution asks the same
+`wslpath` question before running anything, so a repository on a Windows drive is refused
+wherever the distribution mounts it, not only under `/mnt`.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.

@@ -503,8 +503,11 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - Discovery, endpoint, and `domovoid open` helpers exist and unit tests stub `wsl.exe`. No real
     Windows-to-WSL test exists, no `domovoi` alias exists, and WSL is not a fleet candidate.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-  - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
-    automount roots, and no real mount-boundary test exists.
+  - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
+    a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
+    it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
+    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
+    which CI does not have.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
