@@ -11,6 +11,7 @@ import { WebSocket } from "ws"
 
 import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
+import { fixtureAddress } from "./test-fixture-address.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
 const budget = process.platform === "win32" ? 40_000 : 20_000
@@ -41,11 +42,10 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
     let stderr = ""
     child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
     child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
-    await beforeDeadline(waitForDaemon(() => {
+    const { url } = await beforeDeadline(waitForDaemon(() => {
       expect(child!.exitCode, stderr).toBeNull()
-      expect(stdout).toContain('"url":')
+      return fixtureAddress(stdout)
     }), deadline)
-    const { url } = JSON.parse(stdout.trim()) as { url: string }
     deadline.throwIfExpired()
     socket = new WebSocket(url, { handshakeTimeout: Math.ceil(deadline.remainingMs()) })
     await once(socket, "open", { signal: deadline.signal })
