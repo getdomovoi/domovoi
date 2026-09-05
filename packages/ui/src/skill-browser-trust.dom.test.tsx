@@ -34,6 +34,8 @@ function props(overrides: Partial<Parameters<typeof SkillBrowser>[0]> = {}) {
     enablements: [],
     onSetSkillEnabled: vi.fn(async () => {}),
     onReviewSkill: vi.fn(async () => skill),
+    onPreviewSkillInstall: vi.fn(),
+    onInstallSkill: vi.fn(),
     onRetry: vi.fn(),
     ...overrides,
   }
