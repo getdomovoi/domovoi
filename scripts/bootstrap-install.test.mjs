@@ -148,6 +148,31 @@ test("rejects an old unusable native runtime receipt without replacing it", { ti
   await assert.rejects(installer(options), /native terminal.*load/i)
   assert.deepEqual(await fs.readFile(receiptPath), receipt)
   assert.equal(calls.filter(({ args }) => args.includes("ci")).length, 1)
+  assert.ok(calls.every(({ deadline }) => deadline === calls.find(({ args }) => args.includes("ci")).deadline ||
+    deadline === calls.at(-1).deadline), "native probes stay within their install or reuse deadline")
+})
+
+test("a failed native build cannot publish a runnable receipt", { timeout: testTimeout }, async (t) => {
+  const { options, afterBuild } = await nativeFixture(t)
+  afterBuild(() => { throw new Error("node-gyp: missing C++ compiler") })
+  await assert.rejects(installer(options), /node-gyp: missing C\+\+ compiler/)
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
+})
+
+test("native load verification cannot extend the installation deadline", { timeout: testTimeout }, async (t) => {
+  const { options, calls } = await nativeFixture(t)
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const run = options.run
+  options.run = async (command, args, context) => {
+    const result = await run(command, args, context)
+    if (args.includes("--eval")) now = 1_000
+    return result
+  }
+  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), /Bootstrap.*1000 ms/)
+  assert.equal(calls.filter(({ args }) => args.includes("--eval")).length, 1)
+  assert.ok(calls.every(({ deadline }) => deadline === calls[0].deadline))
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
 })
 
 test("installs and verifies the frozen tree before publishing a runnable receipt", { timeout: testTimeout }, async (t) => {
