@@ -536,6 +536,8 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - Discovery, endpoint, `domovoid wsl list`, and `domovoid open` exist, and a `wsl.exe` that
     cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than
     reported as a missing distribution or daemon. Unit tests drive them with a fake `wsl.exe`.
+    A corrupt listing returns no partial discovery: unreadable rows after a valid header and
+    torn UTF-16 bytes propagate a corrupt classification and remedy through both CLI commands.
     Six tests run the real `wsl.exe` on the Windows CI job, which has no running WSL 2
     distribution: four prove that the listing answers or refuses within its deadline and that a
     distribution that does not exist is refused, and the two that need a running distribution
