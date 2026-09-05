@@ -333,7 +333,8 @@ export class SqliteFleetRegistry implements FleetRegistry {
     const machine = durableFacts(facts)
     return this.#transaction(() => {
       const current = this.#database.prepare(`
-        SELECT 1 FROM fleet_machines WHERE id = ? AND credential_digest = ? AND quarantine_id IS NULL
+        SELECT 1 FROM fleet_machines WHERE id = ? AND credential_digest = ?
+        AND quarantine_id IS NULL AND quarantined_at IS NULL AND quarantine_reason IS NULL
         AND NOT EXISTS (SELECT 1 FROM fleet_operations WHERE machine_id = ?)
       `).get(machine.id, credentialDigest, machine.id)
       if (!current) return false
@@ -347,7 +348,8 @@ export class SqliteFleetRegistry implements FleetRegistry {
   recordFailure(machineId: string, credentialDigest: string, failure: FleetConnectionFailure): boolean {
     const health = fleetConnectionFailureSchema.parse(failure)
     const result = this.#database.prepare(`
-      UPDATE fleet_machines SET health_override = ? WHERE id = ? AND credential_digest = ? AND quarantine_id IS NULL
+      UPDATE fleet_machines SET health_override = ? WHERE id = ? AND credential_digest = ?
+      AND quarantine_id IS NULL AND quarantined_at IS NULL AND quarantine_reason IS NULL
       AND NOT EXISTS (SELECT 1 FROM fleet_operations WHERE machine_id = ?)
     `).run(health, machineId, credentialDigest, machineId)
     return Number(result.changes) > 0
@@ -394,11 +396,17 @@ export class SqliteFleetRegistry implements FleetRegistry {
     return this.#transaction(() => {
       const rows = this.#database.prepare(`
         SELECT rowid AS storage_key, * FROM fleet_machines m
-        WHERE quarantine_id IS NULL ${predicate} ORDER BY id ASC
+        WHERE 1 = 1 ${predicate} ORDER BY id ASC
       `).all(...params) as StoredFleetMachine[]
       return rows.filter((row) => {
         let reason: FleetQuarantinedEntry["reason"]
         try {
+          if (row.quarantine_id !== null || row.quarantined_at !== null || row.quarantine_reason !== null) {
+            // Damage to the diagnostic itself must not recreate the original
+            // whole-list failure, or turn a partial marker into live authority.
+            quarantinedEntry(row)
+            return false
+          }
           // Validate every durable field regardless of which reader discovered
           // it. Only pure decoding is caught, never database or audit failures.
           readMachine(row, selfId, nowMs)

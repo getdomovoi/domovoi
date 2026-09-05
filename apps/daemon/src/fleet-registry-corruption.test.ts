@@ -149,6 +149,26 @@ it("does not let a late heartbeat resurrect quarantine but allows explicit re-en
   } finally { database.close() }
 })
 
+it.each([
+  ["quarantine_id", null], ["quarantine_id", "invalid-secret-id"],
+  ["quarantined_at", "not-a-time"], ["quarantine_reason", "secret-error"],
+] as const)("repairs damaged quarantine metadata in %s without losing the original row", (column, value) => {
+  const { database, registry } = fixture()
+  try {
+    database.prepare("UPDATE fleet_machines SET capabilities = '{' WHERE id = ?").run(corruptId)
+    const initial = registry.snapshot(selfId, receivedAt)
+    database.prepare(`UPDATE fleet_machines SET ${column} = ? WHERE id = ?`).run(value, corruptId)
+    expect(registry.refreshAuthenticated(facts(corruptId), credentialDigest, receivedAt + 1)).toBe(false)
+    const repaired = registry.snapshot(selfId, receivedAt)
+    expect(repaired.entries).toEqual(initial.entries)
+    expect(repaired.registry?.quarantined[0]).toMatchObject({ reason: "invalid-facts", machineId: corruptId })
+    expect(repaired.registry?.quarantined[0]?.id).not.toBe(initial.registry?.quarantined[0]?.id)
+    expect(registry.snapshot(selfId, receivedAt)).toEqual(repaired)
+    expect(database.prepare("SELECT capabilities FROM fleet_machines WHERE id = ?").get(corruptId)).toMatchObject({ capabilities: "{" })
+    expect(JSON.stringify(repaired)).not.toContain("secret")
+  } finally { database.close() }
+})
+
 it("counts quarantined records against the display bound without truncation", () => {
   const { database, registry } = fixture()
   try {
