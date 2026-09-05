@@ -96,16 +96,12 @@ type DesktopRpcEndpoint = Awaited<ReturnType<DesktopWindowBridge["getRpcEndpoint
 const maximumTokenLength = 4_096
 const maximumRefusalMessageLength = 1_000
 
-function rpcEndpoint(result: Record<string, unknown>): DesktopRpcEndpoint | undefined {
-  if (
-    typeof result.url !== "string"
-    || typeof result.token !== "string"
-    || result.token.length === 0
-    || result.token.length > maximumTokenLength
-    || !URL.canParse(result.url)
-    || !["ws:", "wss:"].includes(new URL(result.url).protocol)
-  ) return undefined
-  return { url: result.url, token: result.token }
+function boundedString(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum
+}
+
+function websocketUrl(value: unknown): value is string {
+  return typeof value === "string" && URL.canParse(value) && ["ws:", "wss:"].includes(new URL(value).protocol)
 }
 
 function isRefusalReason(value: unknown): value is DaemonRefusalReason {
@@ -113,27 +109,25 @@ function isRefusalReason(value: unknown): value is DaemonRefusalReason {
 }
 
 function daemonAcquisitionResult(value: unknown): DesktopDaemonAcquisition {
-  const invalid = new Error("Desktop returned an invalid daemon endpoint")
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid
-  const result = value as Record<string, unknown>
+  const result = (value && typeof value === "object" && !Array.isArray(value) ? value : {}) as Record<string, unknown>
   const shape = Object.keys(result).sort().join(",")
-  if (result.kind === "owned" && shape === "kind,token,url") {
-    const endpoint = rpcEndpoint(result)
-    if (endpoint) return { kind: "owned", ...endpoint }
-  }
-  if (result.kind === "attached" && shape === "kind,owner,token,url" && (result.owner === "daemon" || result.owner === "desktop")) {
-    const endpoint = rpcEndpoint(result)
-    if (endpoint) return { kind: "attached", owner: result.owner, ...endpoint }
-  }
+  const endpoint: DesktopRpcEndpoint | undefined = websocketUrl(result.url) && boundedString(result.token, maximumTokenLength)
+    ? { url: result.url, token: result.token }
+    : undefined
+  if (endpoint && result.kind === "owned" && shape === "kind,token,url") return { kind: "owned", ...endpoint }
+  if (
+    endpoint
+    && result.kind === "attached"
+    && shape === "kind,owner,token,url"
+    && (result.owner === "daemon" || result.owner === "desktop")
+  ) return { kind: "attached", owner: result.owner, ...endpoint }
   if (
     result.kind === "refused"
     && shape === "kind,message,reason"
     && isRefusalReason(result.reason)
-    && typeof result.message === "string"
-    && result.message.length > 0
-    && result.message.length <= maximumRefusalMessageLength
+    && boundedString(result.message, maximumRefusalMessageLength)
   ) return { kind: "refused", reason: result.reason, message: result.message }
-  throw invalid
+  throw new Error("Desktop returned an invalid daemon endpoint")
 }
 
 function booleanResult(value: unknown, action: string): boolean {
