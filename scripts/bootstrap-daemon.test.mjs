@@ -22,6 +22,7 @@ test("root package checks include the publication regressions", { timeout: 10_00
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-publication\.test\.mjs(?: |$)/)
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-install\.test\.mjs(?: |$)/)
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-install-live\.test\.mjs(?: |$)/)
+  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-download-live\.test\.mjs(?: |$)/)
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/runtime-lock\.test\.mjs(?: |$)/)
 })
 

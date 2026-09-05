@@ -260,6 +260,67 @@ for (const phase of ["fetch", "body read"]) {
   })
 }
 
+test("late inactivity headers are cancelled before the body is read", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  let cancelled = 0
+  let reads = 0
+  t.mock.method(performance, "now", () => now)
+  const deadline = bootstrapDeadline(1_000, "Original total expired")
+  try {
+    await assert.rejects(async () => {
+      for await (const chunk of downloadChunksOverHttps(start, { maximumBytes: 8, inactivityTimeoutMs: 100, deadline,
+        fetch: async () => {
+          now = 100
+          return new Response(new ReadableStream({
+            pull() { reads += 1 },
+            cancel() { cancelled += 1 },
+          }, { highWaterMark: 0 }))
+        },
+      })) assert.fail(`Late headers yielded ${chunk.byteLength} bytes`)
+    }, { code: "BOOTSTRAP_DOWNLOAD_INACTIVE" })
+    assert.equal(cancelled, 1)
+    assert.equal(reads, 0)
+  } finally { deadline.clear() }
+})
+
+test("headers and the first body read cannot each claim a fresh inactivity budget", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const deadline = bootstrapDeadline(1_000, "Original total expired")
+  try {
+    await assert.rejects(async () => {
+      for await (const chunk of downloadChunksOverHttps(start, { maximumBytes: 8, inactivityTimeoutMs: 100, deadline,
+        fetch: async () => {
+          now += 60
+          return new Response(new ReadableStream({
+            pull(controller) { now += 60; controller.enqueue(new Uint8Array([1])); controller.close() },
+          }, { highWaterMark: 0 }))
+        },
+      })) assert.fail(`An expired first read yielded ${chunk.byteLength} bytes`)
+    }, { code: "BOOTSTRAP_DOWNLOAD_INACTIVE" })
+  } finally { deadline.clear() }
+})
+
+test("inactivity reports the origin and remedy without echoing URL secrets", { timeout: 5_000 }, async (t) => {
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  const deadline = bootstrapDeadline(1_000, "Original total expired")
+  try {
+    await assert.rejects(async () => {
+      for await (const chunk of downloadChunksOverHttps("https://person:credential@releases.test/private-path?token=secret", {
+        maximumBytes: 8, inactivityTimeoutMs: 100, deadline,
+        fetch: async () => { now = 100; return new Response(null) },
+      })) assert.fail(`An expired request yielded ${chunk.byteLength} bytes`)
+    }, (error) => {
+      assert.equal(error.code, "BOOTSTRAP_DOWNLOAD_INACTIVE")
+      assert.equal(error.inactivityTimeoutMs, 100)
+      assert.match(error.message, /https:\/\/releases\.test.*100 ms.*check the connection and retry/)
+      assert.doesNotMatch(error.message, /person|credential|private-path|secret/)
+      return true
+    })
+  } finally { deadline.clear() }
+})
+
 test("body bytes replenish inactivity without charging local consumer backpressure", { timeout: 5_000 }, async (t) => {
   let now = 0
   let reads = 0
