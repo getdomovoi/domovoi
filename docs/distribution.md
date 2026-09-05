@@ -160,10 +160,14 @@ refuse publication rather than choosing substitute dependencies.
 
 ### Verified bootstrap download
 
-`node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` downloads
-an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256 supplied by the
-caller must agree with the downloaded bytes. This remains a downloader, not an installer: it does
-not unpack the archive, resolve dependencies, configure PATH, or install a service.
+The download phase of the CLI above is exported separately as `bootstrapDaemon` from
+`scripts/bootstrap-download.mjs`, re-exported by `scripts/bootstrap-daemon.mjs` for embedding
+callers. It takes the same `version`, `baseUrl`, `destination`, and `expectedSha256` inputs and
+downloads an archive for an exact version. Both the release's `SHA256SUMS` and the SHA-256
+supplied by the caller must agree with the downloaded bytes. On its own it is a downloader, not an
+installer: it does not unpack the archive, resolve dependencies, configure PATH, or install a
+service. The CLI continues from its result into the private `.runtime-*` installation described
+under Verified bootstrap installation.
 
 Each invocation streams the archive into a unique private `.bootstrap-*` directory beside the
 destination, hashing and enforcing the byte ceiling as chunks arrive. Staging contains unverified
