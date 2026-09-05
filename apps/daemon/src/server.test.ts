@@ -7531,7 +7531,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
-        id: "machine-per-project",
+        id: `machine-${"9".repeat(32)}`,
         name: "per-project-test",
         platform: process.platform,
         arch: process.arch,
@@ -7730,7 +7730,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
-        id: "machine-per-project",
+        id: `machine-${"9".repeat(32)}`,
         name: "per-project-test",
         platform: process.platform,
         arch: process.arch,
@@ -7910,7 +7910,7 @@ describe("DomovoiDaemon", () => {
       })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
-      id: "machine-orchestration",
+      id: `machine-${"8".repeat(32)}`,
       name: "orchestration-test",
       platform: process.platform,
       arch: process.arch,
