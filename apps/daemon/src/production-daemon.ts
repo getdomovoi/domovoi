@@ -19,6 +19,7 @@ import {
   type DaemonErrorSink,
   type DaemonServerOptions,
 } from "./server.js"
+import { skillTrustPath } from "./skill-signing.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
 
@@ -149,6 +150,7 @@ export async function createProductionDaemonWithDependencies(
       machineCredentials: dependencies.createMachineCredentials(),
       statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
       worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
+      skillTrustPath: skillTrustPath(homeDirectory),
       manageStateDirectoryPermissions: true,
       ...(options.errorSink ? { errorSink: options.errorSink } : {}),
     })

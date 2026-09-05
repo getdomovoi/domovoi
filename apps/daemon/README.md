@@ -173,14 +173,76 @@ the intended environment, or edit `service.json`, before restarting the service.
 These producers do not add WSL transport discovery, remote client admission for Use or Terminal,
 or a relay. WSL facts and its open shim remain separate from a WSL transport producer.
 
+## Skill signatures and trust
+
+A skill is a `SKILL.md` file with YAML frontmatter. Its content digest is `sha256:` followed by
+the hex SHA-256 of the file's UTF-8 text, and that digest is what enablement reviews, turn
+selections, and signatures pin. The signed unit is exactly that digest: the signer signs the UTF-8
+bytes of `domovoi-skill-signature-v1:<content digest>` with an Ed25519 key, and the detached
+signature sits beside the skill as `SKILL.md.sig`:
+
+```json
+{
+  "version": 1,
+  "contentDigest": "sha256:<hex>",
+  "algorithm": "ed25519",
+  "keyId": "ed25519:0123456789abcdef",
+  "value": "<base64 signature>"
+}
+```
+
+The key id is `ed25519:` plus the first sixteen hex characters of the SHA-256 of the raw 32-byte
+public key. Sibling files in a skill directory are not covered: only `SKILL.md` reaches a provider
+and only its digest is pinned anywhere, so widening the unit would change every pinned digest.
+
+Trust roots are local. The daemon reads `~/.domovoi/skill-trusted-keys.json`, a JSON list of
+public keys that only `domovoid skill trust` writes; the daemon never creates or populates it. On
+POSIX the file must be owner-only. A trust file the group or others can read is refused, reported
+through the daemon error sink, and treated as holding no keys. There is no signer registry and no
+revocation source yet: removing a key means editing that file, and a key it does not list is
+untrusted on this machine.
+
+Every catalog entry carries a `signature` state and a `trust` state, computed when the catalog is
+listed and again whenever a skill file, its `.sig`, or the trust file changes, not on every turn:
+
+| `signature` | `trust` | Meaning |
+| --- | --- | --- |
+| `unsigned` | `untrusted`, `unsigned` | No `SKILL.md.sig` beside the skill |
+| `unverified` | `untrusted`, `unverified-signature` | Signed by a key the trust file does not list; `keyId` names it |
+| `verified` | `trusted`, `verified-signature` | Verifies against a listed key; `authority` is `signature · <key id>` |
+| `invalid`, `verification-failed` | `blocked`, `invalid-signature` | Content changed since signing, or the signature does not verify |
+| `invalid`, `malformed` | `blocked`, `invalid-signature` | The `.sig` is unreadable, oversized, a symlink, or not a declaration |
+
+A manual review can still trust an `unsigned` or `unverified` skill against its exact digest; it
+never unblocks an `invalid` one. What the composer sends is unchanged: Build auto still requires
+`trusted`, every other mode still refuses `blocked`, and the delivery record on a sent turn now
+names the trust state each delivered skill carried.
+
+The commands are local file operations that contact no daemon:
+
+```bash
+domovoid skill keygen ~/.domovoi/skill-signing.pem
+domovoid skill sign path/to/skill --key ~/.domovoi/skill-signing.pem
+domovoid skill trust <public-key>
+domovoid skill trust <public-key> --trust-file /path/to/skill-trusted-keys.json
+```
+
+`keygen` writes a PKCS8 PEM Ed25519 private key to the named file, `0600`, refuses to overwrite an
+existing file, and prints the key id and base64 public key, never the private half. `sign` accepts
+the skill directory or its `SKILL.md`, refuses a private key others can read, and writes or replaces
+`SKILL.md.sig`; run it again after every edit, since a stale signature blocks the skill. `trust` adds
+the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
+the change up on its next catalog read.
+
 ## Pairing admission and audit retention
 
 Pairing claims are limited to three per source address and thirty across the listener in a rolling
 minute. For a valid JSON-RPC request naming `device.claim`, admission runs before parameter
 validation, protocol compatibility or code verification, so malformed parameters and incompatible
 versions count and a throttled valid code is not consumed. Admitted
-version mismatches return the update-required error without spending a code guess; exhausted
-sources receive the ordinary pairing refusal regardless of the submitted version or shape.
+version mismatches return `protocolVersionMismatchErrorCode` (`-32012`) with a `protocol-mismatch`
+payload naming both protocol versions and which side is behind, without spending a code guess;
+exhausted sources receive the ordinary pairing refusal regardless of the submitted version or shape.
 The source is the TCP peer address, not a forwarding
 header. Reconnecting, greeting with a credential, or issuing another code does not reset these
 budgets. Peers behind the same NAT or proxy share the source budget. A throttled claim receives the
@@ -227,6 +289,35 @@ Read-only methods keep working, including `workspace.get`, so an operator can re
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
+
+## Provider prompt budget
+
+Each `session.send` composes one provider prompt from reviewed skills, open annotations, the
+working plan, the provider handoff, and the person's request. The prompt is measured in UTF-16
+code units (`String.length`) against one total budget. The default is 262,144, the protocol's
+`maximumProviderPromptCodeUnits`, which is also the most a single `session.send` request may
+carry. `DaemonServerOptions.providerPromptBudgetCodeUnits` lowers it. The value must be an
+integer from 1 through 262,144 and is validated before workspace state is opened. The budget
+bounds payload size only; it is not a provider token-window guarantee.
+
+Each section is shaped by its own limit first: skill content is cut at 12,000 code units per
+skill, at most 20 open annotations are offered, and the handoff offers its newest 40 thread items
+inside 24,000 code units. The total budget then applies to the composed prompt. When it does not
+fit, the composer drops one item at a time in this order and stops as soon as the prompt fits:
+
+1. Project-default skills, last by name first. Skills a person selected for the turn are required
+   and are never dropped.
+2. Open annotations, oldest first.
+3. Handoff thread history, oldest item first.
+4. Handoff open annotations, last listed first.
+5. Handoff artifacts, last listed first.
+
+The person's request, the working plan, the handoff summary, and the framing instructions are never
+dropped. If those alone exceed the budget, `session.send` fails with `invalidParams` naming the
+budget and what to shorten, and nothing is sent or recorded. Every drop is recorded on the sent
+user thread item's `providerPromptDelivery`: `budget.limit` and `budget.used`,
+`skills.omitted.budget`, `annotations.omitted.budget`, and `handoff.omitted`. The prompt itself
+opens with a `domovoi_context_delivery` marker whenever context was omitted.
 
 ## Supervise
 
