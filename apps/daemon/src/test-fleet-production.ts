@@ -17,7 +17,6 @@ import type { AgentAdapter } from "./agents.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies, type ProductionDaemonHandle } from "./production-daemon.js"
-import { DomovoiDaemon } from "./server.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const exec = promisify(execFile)
@@ -132,7 +131,8 @@ export function fleetProductionHarness() {
         ...productionDaemonDependencies,
         createProviderProbe: () => ({ inspect: async () => [] }),
         createMachineCredentials: () => credentials,
-        createDaemon: (options) => new DomovoiDaemon({
+        // The production dependency builds the daemon; only its tuning changes.
+        createDaemon: (options) => productionDaemonDependencies.createDaemon({
           ...options, port, fleetHeartbeatIntervalMs: 50, fleetOperationTimeoutMs: 2_000,
           ...(advertisedHost ? { advertiseHost: advertisedHost } : {}),
           ...(advertisedProtocolVersion ? { advertisedProtocolVersion } : {}),
