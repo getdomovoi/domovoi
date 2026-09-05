@@ -101,6 +101,10 @@ export function daemonRuntimeLock({ manifest, protocolManifest, protocolIntegrit
       resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").at(-1)}-${version}.tgz`,
       integrity: integrityFor(metadata.resolution?.integrity, key),
     }
+    // npm rebuild loads package scripts only when the installed lock records
+    // that the package has them. Without this, npm reports success but does not
+    // run node-pty's reviewed native build after the script-free ci phase.
+    if (name === "node-pty") info.hasInstallScript = true
     for (const field of ["os", "cpu", "libc", "engines"]) {
       if (metadata[field] !== undefined) info[field] = metadata[field]
     }
@@ -156,6 +160,8 @@ export function daemonRuntimeLock({ manifest, protocolManifest, protocolIntegrit
     }
     packages[path] = entry
   }
+  const policy = runtimeBuildPolicy(packages)
+  if (Object.keys(policy).length) runtime.allowScripts = policy
   // Checking all edges after layout construction catches a future hoisting
   // change that accidentally redirects an existing consumer to another version.
   for (const [path, key] of placements) {
@@ -165,6 +171,11 @@ export function daemonRuntimeLock({ manifest, protocolManifest, protocolIntegrit
     }
   }
   return { name: runtime.name, version: runtime.version, lockfileVersion: 3, requires: true, packages }
+}
+
+export function runtimeBuildPolicy(packages) {
+  const native = packages["node_modules/node-pty"]
+  return native ? { [`node-pty@${native.version}`]: true } : {}
 }
 
 export function resolveRuntimeDependency(from, name, packages) {

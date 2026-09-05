@@ -4,7 +4,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises"
 import { join, sep } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 
-import { resolveRuntimeDependency } from "./runtime-lock.mjs"
+import { resolveRuntimeDependency, runtimeBuildPolicy } from "./runtime-lock.mjs"
 
 const maximumLockBytes = 8 * 1024 * 1024
 const maximumPackages = 10_000
@@ -62,6 +62,7 @@ export function validateRuntimeLock(lock, manifest, version) {
     }
   }
   if (!lock.packages["node_modules/@getdomovoi/protocol"]) fail("missing same-release protocol")
+  if (!isDeepStrictEqual(manifest.allowScripts ?? {}, runtimeBuildPolicy(lock.packages))) fail("unreviewed native build permission")
   for (const [path, entry] of Object.entries(lock.packages)) {
     for (const field of ["dependencies", "optionalDependencies"]) {
       for (const name of Object.keys(entry[field] ?? {})) {

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, link, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { dirname, join, posix, win32 } from "node:path"
 import { promisify } from "node:util"
 
@@ -38,8 +38,8 @@ async function bundledNpm(deadline, run) {
       throw new Error(`${npmRemedy}. ${error.message}`, { cause: error })
     }
     const match = /^(\d+)\.(\d+)\.(\d+)\s*$/.exec(result.stdout)
-    if (!match || Number(match[1]) < 10) throw new Error(`${npmRemedy}; found ${result.stdout.trim()}`)
-    return { entry, major: Number(match[1]) }
+    if (!match || Number(match[1]) < 10) throw new Error(`${npmRemedy}; reported version ${JSON.stringify(result.stdout.trim())}`)
+    return { entry }
   }
   throw new Error(`${npmRemedy}; npm-cli.js was not found beside ${process.execPath}`)
 }
@@ -135,8 +135,7 @@ export async function installBootstrapDaemon(options) {
     // The reviewed runtime's only build hook is node-pty. Do not grant every
     // downloaded package lifecycle execution because one native module needs it.
     if (lock.packages["node_modules/node-pty"]) {
-      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", "--foreground-scripts", "--ignore-scripts=false",
-        ...(npm.major >= 12 ? ["--allow-scripts=node-pty"] : [])], commandOptions))
+      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", "--foreground-scripts", "--ignore-scripts=false"], commandOptions))
       await verifyInstalledRuntime(directory, lock, deadline)
     }
     const materializedHash = await hashRuntimeFile(join(directory, "package-lock.json"), "sha256", deadline)

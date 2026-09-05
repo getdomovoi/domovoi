@@ -63,19 +63,25 @@ test("identical archives install the reviewed transitive bytes after the registr
   const protocol = await pack(protocolManifest)
   const leaf = await pack({ name: "domovoi-lock-leaf", version: "1.0.0" })
   const parent = await pack({ name: "domovoi-lock-parent", version: "1.0.0", dependencies: { "domovoi-lock-leaf": "^1.0.0" } })
+  const native = await pack({ name: "node-pty", version: "1.0.0", scripts: { install: "node build.cjs" } }, {
+    "build.cjs": 'require("node:fs").writeFileSync("built.txt", "reviewed build ran")\n',
+  })
   const manifest = { name: "@getdomovoi/daemon", version: "1.0.0", type: "module",
-    dependencies: { "@getdomovoi/protocol": "workspace:*", "domovoi-lock-parent": "^1.0.0" } }
+    dependencies: { "@getdomovoi/protocol": "workspace:*", "domovoi-lock-parent": "^1.0.0", "node-pty": "1.0.0" } }
   const lock = daemonRuntimeLock({ manifest, protocolManifest, protocolIntegrity: protocol.integrity,
     lock: { lockfileVersion: "9.0", importers: {
       "apps/daemon": { dependencies: {
         "@getdomovoi/protocol": { specifier: "workspace:*", version: "link:../../packages/protocol" },
         "domovoi-lock-parent": { specifier: "^1.0.0", version: "1.0.0" },
+        "node-pty": { specifier: "1.0.0", version: "1.0.0" },
       } }, "packages/protocol": {},
     }, packages: {
       "domovoi-lock-leaf@1.0.0": { resolution: { integrity: leaf.integrity } },
       "domovoi-lock-parent@1.0.0": { resolution: { integrity: parent.integrity } },
+      "node-pty@1.0.0": { resolution: { integrity: native.integrity } },
     }, snapshots: {
       "domovoi-lock-leaf@1.0.0": {}, "domovoi-lock-parent@1.0.0": { dependencies: { "domovoi-lock-leaf": "1.0.0" } },
+      "node-pty@1.0.0": {},
     } },
   })
   const app = await pack({ ...manifest, dependencies: { ...manifest.dependencies, "@getdomovoi/protocol": "1.0.0" } }, {
@@ -86,11 +92,13 @@ test("identical archives install the reviewed transitive bytes after the registr
   const sha256 = digest(app.bytes, "sha256")
   const npmCalls = []
   const run = async (command, args, options) => {
-    if (args.includes("ci")) {
-      npmCalls.push(args)
+    if (args.includes("ci") || args.includes("rebuild")) {
+      if (args.includes("ci")) npmCalls.push(args)
       // Only replace the registry for this real-process fixture. npm performs
       // resolution, fetching, SRI verification and extraction itself.
-      return await runBootstrapCommand(command, [...args, "--registry", registry, "--fetch-retries=0"], options)
+      const outcome = await runBootstrapCommand(command, [...args, "--registry", registry, "--fetch-retries=0"], options)
+      if (args.includes("rebuild")) t.diagnostic(JSON.stringify(outcome))
+      return outcome
     }
     return await runBootstrapCommand(command, args, options)
   }
@@ -104,6 +112,7 @@ test("identical archives install the reviewed transitive bytes after the registr
   for (const result of [first, second]) {
     const outcome = await execute(process.execPath, [join(result.runtimePath, "dist/index.js")], { timeout: 10_000, killSignal: "SIGKILL" })
     assert.equal(outcome.stdout.trim(), "1.0.0")
+    assert.equal(await readFile(join(result.runtimePath, "node_modules/node-pty/built.txt"), "utf8"), "reviewed build ran")
   }
   assert.equal(npmCalls.length, 2, "both installs must resolve in fresh private trees")
   assert.equal(requests.some((path) => path.includes("1.1.0.tgz")), false)
