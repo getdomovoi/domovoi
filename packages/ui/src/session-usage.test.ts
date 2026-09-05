@@ -10,8 +10,10 @@ import {
   formatUsageCost,
   sessionUsageCostNote,
   sessionUsageReportedCost,
+  maximumTimeoutMs,
   usageTodayDetail,
   usageTodayReadout,
+  usageTodayRefreshDelayMs,
   usageTodayWindow,
   usageWindowFetchKey,
 } from "./session-usage"
@@ -122,6 +124,15 @@ describe("usage today", () => {
     })
     expect(Date.parse(today.start)).toBeLessThanOrEqual(now.getTime())
     expect(Date.parse(today.end)).toBeGreaterThan(now.getTime())
+  })
+
+  it("waits until the next local midnight, never longer than a timer accepts", () => {
+    expect(usageTodayRefreshDelayMs(new Date(2026, 8, 4, 23, 59, 30))).toBe(30_000)
+    expect(usageTodayRefreshDelayMs(new Date(2026, 8, 4, 0, 0, 0))).toBe(
+      new Date(2026, 8, 5).getTime() - new Date(2026, 8, 4).getTime(),
+    )
+    expect(usageTodayRefreshDelayMs(new Date(2026, 8, 4, 12))).toBeLessThanOrEqual(maximumTimeoutMs)
+    expect(maximumTimeoutMs).toBe(2_147_483_647)
   })
 
   it("refetches when any session starts or finishes a turn", () => {

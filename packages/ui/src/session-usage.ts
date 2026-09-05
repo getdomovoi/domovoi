@@ -64,6 +64,12 @@ export function usageTodayWindow(now: Date): UsageWindowParams {
   return { start: start.toISOString(), end: end.toISOString() }
 }
 
+export const maximumTimeoutMs = 2_147_483_647
+
+export function usageTodayRefreshDelayMs(now: Date): number {
+  return Math.min(Date.parse(usageTodayWindow(now).end) - now.getTime(), maximumTimeoutMs)
+}
+
 export function usageTodayReadout(usage: UsageTodayTotals): string | undefined {
   if (usage.turns <= 0) return undefined
   const cost = sessionUsageReportedCost(usage)

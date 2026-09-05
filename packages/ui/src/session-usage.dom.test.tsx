@@ -1,11 +1,11 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, expect, it } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
 
-import type { SessionUsage, UsageWindow } from "@getdomovoi/protocol"
+import type { SessionUsage, UsageWindow, UsageWindowParams } from "@getdomovoi/protocol"
 
 import { TooltipProvider } from "./components/ui/tooltip"
-import { AppBar, SessionUsageFooter, SessionUsageSummary } from "./workspace-shell.js"
+import { AppBar, SessionUsageFooter, SessionUsageSummary, useUsageToday } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -140,6 +140,38 @@ it("leaves the today readout out until a turn is recorded today", () => {
 
   render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday({ sessions: 0, turns: 0, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costMicros: 0, currency: undefined, reportedCostTurns: 0 })} /></TooltipProvider>)
   expect(screen.queryByRole("status", { name: /Usage today/u })).toBeNull()
+})
+
+it("refreshes the today readout at local midnight and stops on unmount", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+  try {
+    vi.setSystemTime(new Date(2026, 8, 4, 23, 59, 30))
+    const fetch = vi.fn((_window: UsageWindowParams) => Promise.resolve(usageToday()))
+    const view = renderHook(() => useUsageToday(true, "idle", fetch))
+    await act(async () => { await Promise.resolve() })
+
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenLastCalledWith({
+      start: new Date(2026, 8, 4).toISOString(),
+      end: new Date(2026, 8, 5).toISOString(),
+    })
+    expect(view.result.current).toEqual(usageToday())
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => { vi.advanceTimersByTime(30_000) })
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenLastCalledWith({
+      start: new Date(2026, 8, 5).toISOString(),
+      end: new Date(2026, 8, 6).toISOString(),
+    })
+    expect(vi.getTimerCount()).toBe(1)
+
+    view.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 it("puts cost and context in the inspector footer", () => {

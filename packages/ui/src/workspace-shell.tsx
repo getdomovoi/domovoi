@@ -56,6 +56,7 @@ import type {
   SessionTransferPreviewParams,
   SessionUsage,
   UsageWindow,
+  UsageWindowParams,
   TurnSkillSelection,
   TurnSkillSelectionRefusal,
   SystemEmergencyStopResult,
@@ -177,6 +178,7 @@ import {
   sessionUsageReportedCost,
   usageTodayDetail,
   usageTodayReadout,
+  usageTodayRefreshDelayMs,
   usageTodayWindow,
   usageWindowFetchKey,
 } from "./session-usage"
@@ -567,6 +569,37 @@ export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
       </Tooltip>
     </span>
   )
+}
+
+export function useUsageToday(
+  connected: boolean,
+  key: string | null,
+  fetch: (window: UsageWindowParams) => Promise<UsageWindow>,
+): UsageWindow | null {
+  const [usage, setUsage] = useState<UsageWindow | null>(null)
+  useEffect(() => {
+    if (!connected || !key) {
+      setUsage(null)
+      return
+    }
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => {
+      const now = new Date()
+      void fetch(usageTodayWindow(now)).then((next) => {
+        if (active) setUsage(next)
+      }, () => {
+        if (active) setUsage(null)
+      })
+      timer = setTimeout(refresh, usageTodayRefreshDelayMs(now))
+    }
+    refresh()
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [connected, fetch, key])
+  return usage
 }
 
 export function SessionUsageFooter({ usage }: { usage: SessionUsage | null }) {
@@ -3460,7 +3493,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
-  const [usageToday, setUsageToday] = useState<UsageWindow | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
   const openDockTab = (next: string) => {
     setDockTab(next)
@@ -3653,7 +3685,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   })
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
-  const usageWindowKey = usageWindowFetchKey(snapshot)
+  const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
@@ -3683,20 +3715,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
     return () => { active = false }
   }, [connected, sessionUsage, usageFetchKey, usageSessionId])
-
-  useEffect(() => {
-    if (!connected || !usageWindowKey) {
-      setUsageToday(null)
-      return
-    }
-    let active = true
-    void usageWindow(usageTodayWindow(new Date())).then((next) => {
-      if (active) setUsageToday(next)
-    }, () => {
-      if (active) setUsageToday(null)
-    })
-    return () => { active = false }
-  }, [connected, usageWindow, usageWindowKey])
 
   useEffect(() => {
     if (!firstRunEnabled || !snapshot) return
