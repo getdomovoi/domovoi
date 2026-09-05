@@ -472,6 +472,13 @@ pnpm. The fix landed in `1.2.0-beta.2` (#858) and `1.2.0-beta.4` (#866). The pin
 prerelease bump is a reviewed change. Move to the next stable release that contains the fix once
 it exists, and verify it on the three CI runners.
 
+Its Linux prebuild selector does not distinguish glibc from musl. The verified bootstrap forces
+the reviewed node-pty source build on musl or unknown Linux libc, then checks that the installed
+module loads before publishing a runnable receipt. Provide Python, make, a C++ compiler, and
+platform headers for that build. Manual package-manager installs do not apply this policy.
+`pnpm test:musl` exercises the real packed daemon and a PTY in a pinned Node 22 Alpine container;
+it is not a promise about every musl version or architecture.
+
 ## License
 
 Apache-2.0 for this package. The Claude Code session adapter has a runtime dependency on
