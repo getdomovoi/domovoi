@@ -13,28 +13,28 @@ export type DesktopDaemonBudgets = {
   readonly releaseMs: number
 }
 
-// Acquiring covers the profile lease, the owner record, and either a daemon
-// start or a verified attachment, so it gets the same 30 seconds the daemon
-// gives its own start. Releasing at quit keeps the desktop's 10 second bound.
+// Acquiring gets the 30 seconds the daemon gives its own start; releasing at
+// quit keeps the desktop's 10 second bound.
 export const desktopDaemonBudgets: DesktopDaemonBudgets = { acquireMs: 30_000, releaseMs: 10_000 }
 
+type AttachedHandle = Extract<LocalDaemonHandle, { kind: "attached" }>
+
 function describeAcquisition(handle: LocalDaemonHandle): DesktopDaemonAcquisition {
-  if (handle.kind === "owned") return { kind: "owned", url: handle.endpoint.url, token: handle.endpoint.token }
-  if (handle.kind === "attached") {
-    return { kind: "attached", owner: handle.owner, url: handle.endpoint.url, token: handle.endpoint.token }
-  }
-  return { kind: "refused", reason: handle.reason, message: handle.message }
+  if (handle.kind === "refused") return { kind: "refused", reason: handle.reason, message: handle.message }
+  const { url, token } = handle.endpoint
+  return handle.kind === "owned" ? { kind: "owned", url, token } : { kind: "attached", owner: handle.owner, url, token }
 }
 
-// Desktop asks the seam to start or attach exactly once. Every acquisition
-// after that rereads the owner record in attach-only mode, so a restart gap
-// or a refusal can never turn into a second daemon owned by this app. The
-// main process, the renderer's request, and the quit handler all share the
-// acquisition that is current, so racing callers never produce two.
+// One start-or-attach per process; everything after rereads the owner record
+// in attach-only mode, so no gap, refusal, or failure starts a second daemon.
+// Racing callers share the current acquisition. An attachment the owner closes
+// triggers one bounded attach-only acquisition, handed to the next reconnect.
 export class DesktopDaemon {
   #attempt: Promise<LocalDaemonHandle> | undefined
   #handle: LocalDaemonHandle | undefined
-  #current: LocalDaemonHandle | undefined
+  #failed = false
+  #fresh = false
+  readonly #detached = new WeakSet<AttachedHandle>()
   #releasing: Promise<void> | undefined
 
   constructor(
@@ -44,17 +44,11 @@ export class DesktopDaemon {
   ) {}
 
   acquire(): Promise<DesktopDaemonAcquisition> {
-    if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
-    if (!this.#attempt) return this.#acquireWith("start-or-attach")
-    if (this.#handle?.kind === "refused") return this.#acquireWith("attach-only")
-    return this.#attempt.then(describeAcquisition)
+    return this.#serve(false)
   }
 
   reacquire(): Promise<DesktopDaemonAcquisition> {
-    if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
-    if (!this.#attempt) return this.#acquireWith("start-or-attach")
-    if (!this.#handle || this.#handle.kind === "owned") return this.#attempt.then(describeAcquisition)
-    return this.#acquireWith("attach-only")
+    return this.#serve(true)
   }
 
   release(): Promise<void> {
@@ -63,25 +57,35 @@ export class DesktopDaemon {
   }
 
   current(): DesktopDaemonAcquisition | undefined {
-    return this.#current ? describeAcquisition(this.#current) : undefined
+    return this.#handle ? describeAcquisition(this.#handle) : undefined
   }
 
-  #acquireWith(mode: AcquireLocalDaemonOptions["mode"]): Promise<DesktopDaemonAcquisition> {
-    const previous = this.#handle
-    this.#handle = undefined
-    let attempt: Promise<LocalDaemonHandle>
-    try {
-      attempt = Promise.resolve(this.seam({ ...this.options(), mode, timeoutMs: this.budgets.acquireMs }))
-    } catch (error) {
-      attempt = Promise.reject(error)
+  #serve(reconnect: boolean): Promise<DesktopDaemonAcquisition> {
+    if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
+    if (this.#attempt) return this.#attempt.then(describeAcquisition)
+    const handle = this.#handle
+    if (!handle) return this.#acquireWith(this.#failed ? "attach-only" : "start-or-attach", false)
+    if (handle.kind === "owned" || this.#fresh || (handle.kind === "attached" && !reconnect)) {
+      this.#fresh = false
+      return Promise.resolve(describeAcquisition(handle))
     }
+    return this.#acquireWith("attach-only", false)
+  }
+
+  #acquireWith(mode: AcquireLocalDaemonOptions["mode"], publish: boolean): Promise<DesktopDaemonAcquisition> {
+    const previous = this.#handle
+    this.#fresh = false
+    const attempt = new Promise<LocalDaemonHandle>((resolve) => {
+      resolve(this.seam({ ...this.options(), mode, timeoutMs: this.budgets.acquireMs }))
+    })
     this.#attempt = attempt
     const settle = (handle?: LocalDaemonHandle): void => {
-      if (previous?.kind === "attached") previous.detach()
-      if (handle) {
-        this.#handle = handle
-        this.#current = handle
-      }
+      this.#attempt = undefined
+      this.#handle = handle
+      this.#failed = !handle
+      this.#fresh = publish && Boolean(handle)
+      if (previous?.kind === "attached") this.#detach(previous)
+      if (handle?.kind === "attached") void handle.closed.then(() => this.#closed(handle))
     }
     return attempt.then(
       (handle) => {
@@ -95,15 +99,20 @@ export class DesktopDaemon {
     )
   }
 
+  #detach(handle: AttachedHandle): void {
+    this.#detached.add(handle)
+    handle.detach()
+  }
+
+  #closed(handle: AttachedHandle): void {
+    if (this.#detached.has(handle) || this.#releasing || this.#attempt || this.#handle !== handle) return
+    void this.#acquireWith("attach-only", true).catch(() => {})
+  }
+
   async #release(): Promise<void> {
-    if (!this.#attempt) return
-    let handle: LocalDaemonHandle
-    try {
-      handle = await this.#attempt
-    } catch {
-      return
-    }
-    if (handle.kind === "owned") await handle.stop()
-    else if (handle.kind === "attached") handle.detach()
+    await this.#attempt?.catch(() => {})
+    const handle = this.#handle
+    if (handle?.kind === "owned") await handle.stop()
+    else if (handle?.kind === "attached") this.#detach(handle)
   }
 }
