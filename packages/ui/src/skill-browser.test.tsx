@@ -136,7 +136,8 @@ describe("skill browser", () => {
       />,
     )
 
-    expect(markup).toContain("Signature present, not verified")
+    expect(markup).toContain("Signed by untrusted key publisher-key")
+    expect(markup).not.toContain("Signature present, not verified")
     expect(markup).toContain("Excluded from Build auto")
     expect(markup).not.toContain("Verified publisher")
   })

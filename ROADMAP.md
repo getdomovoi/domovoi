@@ -256,12 +256,17 @@ Every ledger entry is now merged.
 - [x] Define capability manifests, content digests, signature state, and trust state
 - [x] Add a manual-review trust path that binds trust to the reviewed content digest and records
   the reviewing client in the audit log
-- [ ] Verify skill signatures and produce a trusted state
-  - Cryptographic signatures are still only `unverified`, `unsigned`, or `invalid`; trust currently
-    comes only from manual review of an exact content digest.
-  - Deferred past the alpha on 2026-09-03. Verification needs a signer registry, trust roots,
-    revocation, and key custody decided first. The alpha position is manual digest-bound review
-    plus exclusion from Build auto.
+- [x] Verify skill signatures and produce a trusted state
+  - A `SKILL.md.sig` is an Ed25519 signature over the skill's content digest. The daemon verifies
+    it when the catalog loads, and again when a skill file, its `.sig`, or the trust file changes,
+    against `~/.domovoi/skill-trusted-keys.json`, an owner-only file that only
+    `domovoid skill trust` writes. A signature from a listed key yields `trusted`; a key the file
+    does not list stays `unverified`; a signature that fails, or content changed since signing, is
+    `invalid` and blocked. `domovoid skill keygen` and `domovoid skill sign` make and apply keys.
+  - Selection is unchanged: Build auto still requires `trusted` and other modes still refuse
+    `blocked`. The delivery record on a sent turn now names the trust state each skill carried.
+  - Still open under unresolved decision 2: a signer registry, a revocation source, and key
+    custody beyond a local file. Trust is per machine and per trust file until those are decided.
 - [x] Add reviewed per-project skill enablement
 - [x] Inject only enabled skills into provider session context
 - [x] Gate terminal-based skill installs through the normal permission system
@@ -752,15 +757,16 @@ dependent work starts.
 1. **Provider handoff disclosure:** required pre-switch loss disclosure, safe-boundary behavior,
    and the warning difference between switch and fork.
 2. **Skill signature authority:** choose the trusted signer registry, revocation source, and key
-   custody model. Current `.sig` declarations are content-digest-bound but are not
-   cryptographically verified, so a signature alone never grants trust. Manual review is the
-   interim trust path: a person reviews an exact content digest on one machine, the daemon records
-   that decision with the reviewing client, and the skill becomes trusted only while its content
-   digest still matches. Any content change drops it back to untrusted. Cryptographic verification
-   is still blocked on this decision, and an invalid signature stays blocked regardless of review.
-   Deferred past the alpha on 2026-09-03: manual digest-bound review plus exclusion from Build auto
-   is the alpha position, so the registry, revocation source, and custody model can be settled
-   after it.
+   custody model. Since 2026-09-04 a `.sig` declaration is verified as an Ed25519 signature over
+   the content digest against the local trust file, so a signature from a key a person added to
+   that file grants trust on that machine alone. Manual review remains the other trust path: a
+   person reviews an exact content digest on one machine, the daemon records that decision with
+   the reviewing client, and the skill stays trusted only while its content digest still matches.
+   Any content change drops it back to untrusted, and an invalid signature stays blocked
+   regardless of review. Still undecided: where trusted keys come from beyond a person adding them
+   by hand, how a key is revoked, and who holds signing keys. Deferred past the alpha on
+   2026-09-03; the local trust file is the interim position, so the registry, revocation source,
+   and custody model can be settled after it.
 3. **Build auto execution boundary:** whether Build auto authorizes repository-controlled code to
    run unattended inside a containment boundary. An allowlisted runner executes files the
    repository owns, so a standing rule for `pnpm test` whose body stays `vitest run` still permits

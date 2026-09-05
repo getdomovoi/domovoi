@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -8,6 +8,14 @@ import { DatabaseSync } from "node:sqlite"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { SqliteSkillReviews } from "./skill-reviews.js"
+import {
+  addTrustedSkillKey,
+  exportSkillPublicKey,
+  generateSkillSigningKey,
+  signSkillDigest,
+  skillContentDigest,
+  skillKeyId,
+} from "./skill-signing.js"
 import { FileSkillCatalog, skillRoots } from "./skills.js"
 
 const scratchDirectories: string[] = []
@@ -401,6 +409,132 @@ describe("FileSkillCatalog manual review trust", () => {
       state: "blocked",
       reason: "invalid-signature",
     })
+  })
+})
+
+describe("FileSkillCatalog signature verification", () => {
+  async function signedSkill(prefix: string) {
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    const directory = await skill(root, "signed", "name: signed\ndescription: Signed instructions.")
+    const signer = generateSkillSigningKey()
+    const content = await readFile(join(directory, "SKILL.md"), "utf8")
+    const contentDigest = skillContentDigest(content)
+    const keyId = skillKeyId(signer.publicKey)
+    const declaration = {
+      version: 1,
+      contentDigest,
+      algorithm: "ed25519",
+      keyId,
+      value: signSkillDigest(contentDigest, signer.privateKey),
+    }
+    await writeFile(join(directory, "SKILL.md.sig"), JSON.stringify(declaration))
+    const trustPath = join(scratch, ".domovoi", "skill-trusted-keys.json")
+    const roots = [{ path: root, scope: "user" as const, source: "domovoi" as const }]
+    return { root, directory, roots, signer, keyId, content, contentDigest, declaration, trustPath }
+  }
+
+  it("trusts a skill signed by a key in the local trust file", async () => {
+    const { root, roots, signer, keyId, trustPath } = await signedSkill("domovoi-skills-verified-")
+    await skill(root, "plain", "name: plain\ndescription: Plain instructions.")
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(signer.publicKey))
+
+    const catalog = new FileSkillCatalog(roots, undefined, { trustPath })
+    const [plain, signed] = await catalog.list()
+
+    expect(signed).toMatchObject({
+      name: "signed",
+      signature: {
+        state: "verified",
+        algorithm: "ed25519",
+        keyId,
+        verifiedBy: trustPath,
+        verifiedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      },
+      trust: { state: "trusted", reason: "verified-signature", authority: `signature · ${keyId}` },
+    })
+    expect(plain).toMatchObject({
+      name: "plain",
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+    })
+    expect((await catalog.read(signed!.id)).skill).toEqual(signed)
+  })
+
+  it("leaves a skill signed by a key outside the trust file unverified", async () => {
+    const { roots, keyId, trustPath } = await signedSkill("domovoi-skills-untrusted-key-")
+    const expected = {
+      signature: { state: "unverified", algorithm: "ed25519", keyId },
+      trust: { state: "untrusted", reason: "unverified-signature" },
+    }
+
+    const withoutTrustFile = new FileSkillCatalog(roots, undefined, { trustPath })
+    const [absent] = await withoutTrustFile.list()
+    expect(absent).toMatchObject(expected)
+    expect((await withoutTrustFile.read(absent!.id)).skill).toMatchObject(expected)
+
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(generateSkillSigningKey().publicKey))
+    const [other] = await new FileSkillCatalog(roots, undefined, { trustPath }).list()
+    expect(other).toMatchObject(expected)
+  })
+
+  it("blocks a signed skill once a byte of its content changes", async () => {
+    const { directory, roots, signer, content, declaration, trustPath } =
+      await signedSkill("domovoi-skills-tampered-")
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(signer.publicKey))
+    const catalog = new FileSkillCatalog(roots, undefined, { trustPath })
+    const [trusted] = await catalog.list()
+    expect(trusted?.trust.state).toBe("trusted")
+    const blocked = {
+      signature: { state: "invalid", reason: "verification-failed" },
+      trust: { state: "blocked", reason: "invalid-signature" },
+    }
+
+    const changed = content.replace("Signed instructions.", "Signed instructions,")
+    await writeFile(join(directory, "SKILL.md"), changed)
+    expect((await catalog.list())[0]).toMatchObject(blocked)
+
+    await writeFile(join(directory, "SKILL.md.sig"), JSON.stringify({
+      ...declaration,
+      contentDigest: skillContentDigest(changed),
+    }))
+    expect((await catalog.list())[0]).toMatchObject(blocked)
+    expect((await catalog.read(trusted!.id)).skill).toMatchObject(blocked)
+  })
+
+  it("walks again once the trust file changes and never creates it", async () => {
+    const { roots, signer, trustPath } = await signedSkill("domovoi-skills-trust-change-")
+    const catalog = new FileSkillCatalog(roots, undefined, { trustPath })
+    const first = await catalog.list()
+    expect(first[0]?.signature.state).toBe("unverified")
+    await expect(stat(trustPath)).rejects.toMatchObject({ code: "ENOENT" })
+
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(signer.publicKey))
+    const second = await catalog.list()
+
+    expect(second).not.toBe(first)
+    expect(second[0]?.signature.state).toBe("verified")
+  })
+
+  it.skipIf(process.platform === "win32")("ignores a trust file other users can read and says so", async () => {
+    const { roots, signer, keyId, trustPath } = await signedSkill("domovoi-skills-trust-mode-")
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(signer.publicKey))
+    await chmod(trustPath, 0o644)
+    const reports: string[] = []
+
+    const [discovered] = await new FileSkillCatalog(roots, undefined, {
+      trustPath,
+      report: (detail) => reports.push(detail),
+    }).list()
+
+    expect(discovered).toMatchObject({
+      signature: { state: "unverified", keyId },
+      trust: { state: "untrusted", reason: "unverified-signature" },
+    })
+    expect(reports).toEqual([
+      expect.stringContaining("Skill trust file must not be readable by other users"),
+    ])
   })
 })
 
