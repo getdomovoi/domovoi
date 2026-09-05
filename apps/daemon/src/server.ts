@@ -704,7 +704,7 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
   "capture" | "storeUpload"
 >
 
-type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "close"> & Partial<
+type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "window" | "close"> & Partial<
   Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
 >
 
@@ -2828,6 +2828,7 @@ export class DomovoiDaemon {
         || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
+        || request.method === "usage.window"
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "skill.read"
@@ -3395,6 +3396,17 @@ export class DomovoiDaemon {
           id: request.id,
           result: rpcMethods[method].result.parse(
             this.#usageLedger.session(params.sessionId, activeUsageContext),
+          ),
+        })
+        return
+      }
+      if (method === "usage.window") {
+        const params = paramsResult.data as RpcParams<"usage.window">
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(
+            this.#usageLedger.window(Date.parse(params.start), Date.parse(params.end)),
           ),
         })
         return
