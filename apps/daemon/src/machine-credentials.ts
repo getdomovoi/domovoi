@@ -131,17 +131,31 @@ const require = createRequire(import.meta.url)
 
 export class NativeMachineKeyring implements MachineKeyring {
   #binding: KeyringBinding | undefined
+  readonly #checkpoint: () => void
+
+  constructor(checkpoint: () => void = () => {}) { this.#checkpoint = checkpoint }
+
+  #entry(account: string): KeyringEntry {
+    this.#checkpoint()
+    const entry = new (this.#requireBinding().Entry)(keychainService, account)
+    this.#checkpoint()
+    return entry
+  }
 
   get(account: string): string | undefined {
-    return new (this.#requireBinding().Entry)(keychainService, account).getPassword() ?? undefined
+    const value = this.#entry(account).getPassword() ?? undefined
+    this.#checkpoint()
+    return value
   }
 
   set(account: string, secret: string): void {
-    new (this.#requireBinding().Entry)(keychainService, account).setPassword(secret)
+    this.#entry(account).setPassword(secret)
+    this.#checkpoint()
   }
 
   delete(account: string): void {
-    new (this.#requireBinding().Entry)(keychainService, account).deletePassword()
+    this.#entry(account).deletePassword()
+    this.#checkpoint()
   }
 
   #requireBinding(): KeyringBinding {
