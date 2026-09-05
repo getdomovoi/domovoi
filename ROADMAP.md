@@ -178,12 +178,12 @@ Every ledger entry is now merged.
 - [x] Token and cost telemetry normalized per turn, session, provider, and model
 - [x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown
   and an explicit count of turns the provider reported no cost for
-- [ ] Usage totals across sessions over a time window, such as a today total in the app bar
-  - The daemon usage ledger records no turn timestamp, so a windowed sum needs a schema change
-    before any client can show one honestly.
-  - Deferred past the alpha on 2026-09-03. Per-session totals already ship; a windowed sum adds
-    timestamp migration, window semantics, an aggregation RPC, and client work for an analytics
-    readout rather than for the alpha workflow.
+- [x] Usage totals across sessions over a time window, such as a today total in the app bar
+  - The ledger stamps each row with the time its turn was first recorded, `usage.window` sums
+    tokens, reported cost, turns, and sessions between two instants with one query, and the app
+    bar reads today's total in the viewer's local day. Rows recorded before the stamp existed and
+    rows imported by a transfer carry no time, so they never count toward a window, and a window
+    whose reported costs span more than one currency shows tokens rather than a summed cost.
 - [x] Clear handling for provider rate limits, authentication expiry, quota exhaustion, and missing
   model access
   - The Claude adapter keeps a bounded, redacted tail of provider stderr and preserves the
