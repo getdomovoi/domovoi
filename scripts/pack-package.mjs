@@ -7,13 +7,13 @@ import { promisify } from "node:util"
 import { pnpmInvocation } from "./package-artifact-command.mjs"
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 
-const pnpm = pnpmInvocation()
 const repositoryRoot = new URL("../", import.meta.url)
 const run = promisify(execFile)
 
 export async function packPackage(selector, destination, { deadline: parent } = {}) {
   const deadline = bootstrapDeadline(300_000, `Package packing exceeded 300000 ms for ${selector}`, parent)
   try {
+    const pnpm = pnpmInvocation()
     await deadline.run(() => run(
       pnpm.command,
       ["--filter", selector, "pack", "--json", "--pack-destination", destination],
@@ -22,6 +22,15 @@ export async function packPackage(selector, destination, { deadline: parent } = 
     const archives = readdirSync(destination).filter((file) => file.endsWith(".tgz"))
     assert.equal(archives.length, 1, `${selector} must produce one package archive`)
     return join(destination, archives[0])
+  } finally { deadline.clear() }
+}
+
+export async function readArchiveEntry(archive, entry, { deadline: parent } = {}) {
+  const deadline = bootstrapDeadline(30_000, `Package entry inspection exceeded 30000 ms for ${archive}`, parent)
+  try {
+    return (await deadline.run(() => run("tar", ["-xOf", archive, entry], {
+      encoding: "utf8", maxBuffer: 8 * 1024 * 1024, signal: deadline.signal, killSignal: "SIGKILL",
+    }))).stdout
   } finally { deadline.clear() }
 }
 
