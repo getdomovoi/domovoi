@@ -5,6 +5,7 @@ import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
 import type { ConnectionFault } from "../lib/connection-fault"
 import type { DaemonStatus } from "../lib/daemon"
+import { colors } from "../theme/tokens.generated"
 
 const statusLabel: Record<DaemonStatus, string> = {
   connecting: "Connecting",
@@ -45,8 +46,8 @@ export function SettingsScreen({
             autoCorrect={false}
             inputMode="url"
             placeholder="ws://workshop.tailnet:47831/rpc"
-            placeholderTextColor="#6b6b72"
-            className="min-h-tap rounded border border-border bg-code px-3 font-machine text-[12px] text-foreground"
+            placeholderTextColor={colors.dark.faint}
+            className="min-h-tap rounded-xl border border-border bg-code px-3 font-mono text-[12px] text-foreground"
           />
         </View>
         <View className="gap-1.5">
@@ -61,8 +62,8 @@ export function SettingsScreen({
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
-            placeholderTextColor="#6b6b72"
-            className="min-h-tap rounded border border-border bg-code px-3 font-machine text-[12px] text-foreground"
+            placeholderTextColor={colors.dark.faint}
+            className="min-h-tap rounded-xl border border-border bg-code px-3 font-mono text-[12px] text-foreground"
           />
         </View>
         <Button title="Connect" variant="primary" onPress={onConnect} />
@@ -72,7 +73,7 @@ export function SettingsScreen({
         </Text>
         {fault ? (
           <View className="gap-1">
-            <Text className="text-[12px] font-semibold text-destructive">{fault.headline}</Text>
+            <Text className="text-[12px] font-sans-semibold text-destructive">{fault.headline}</Text>
             <Text variant="meta" className="text-[11px]">{fault.detail}</Text>
           </View>
         ) : null}

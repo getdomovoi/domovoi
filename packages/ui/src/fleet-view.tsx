@@ -20,13 +20,25 @@ import {
   type ClientKind,
   type DeviceCredentialBinding,
   type DevicePairResult,
+  type FleetEntry,
+  type FleetForgetResult,
   type FleetHealth,
   type FleetMachine,
+  type FleetSnapshotOverflow,
   type PairedDeviceSummary,
   type TransportCandidate,
 } from "@getdomovoi/protocol"
 
+import {
+  pendingOperationNote,
+  pendingOperationWord,
+  shortMachineId,
+  unenrolledNote,
+} from "./fleet-entries.js"
+import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { fleetUpdateAvailable } from "./fleet-updates.js"
+import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
+import { machineAttachment } from "./machine-selection.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   AlertDialog,
@@ -54,6 +66,8 @@ const healthLabel: Record<FleetHealth, string> = {
   unreachable: "Unreachable",
   "version-mismatch": "Version mismatch",
   "upgrade-required": "Upgrade required",
+  "pairing-required": "Pair again",
+  "credential-store-unavailable": "Keychain unavailable",
 }
 
 const healthVariant: Record<FleetHealth, "success" | "warning" | "destructive"> = {
@@ -63,7 +77,29 @@ const healthVariant: Record<FleetHealth, "success" | "warning" | "destructive"> 
   unreachable: "destructive",
   "version-mismatch": "destructive",
   "upgrade-required": "warning",
+  "pairing-required": "destructive",
+  "credential-store-unavailable": "warning",
 }
+
+// The two credential states need a sentence, not a badge: one is fixed by
+// pairing again and the other is not, and a bare word cannot tell them apart.
+const healthNote: Record<FleetHealth, ((label: string) => string) | undefined> = {
+  healthy: undefined,
+  reconnecting: undefined,
+  degraded: undefined,
+  unreachable: undefined,
+  "version-mismatch": undefined,
+  "upgrade-required": undefined,
+  "pairing-required": (label) =>
+    `${label} refused the credential this machine holds for it. Pair it again to restore it.`,
+  "credential-store-unavailable": (label) =>
+    `The keychain on this machine could not be read, so nothing was presented to ${label}. Pairing again would not fix it.`,
+}
+
+// Forgetting is destructive on this side and only a request on the other, so
+// the sentence says both before the confirmation opens.
+const forgetConsequence =
+  "Deletes the credential this machine holds for it. Sessions there keep running, and revoking this machine on that side may still be yours to do."
 
 // Transports are shown in the order the dialer would try them. The relay is
 // left out because Domovoi runs no relay, and a listed row would claim one.
@@ -183,10 +219,6 @@ function when(value: string | undefined): string {
   return timestamp.format(new Date(value)).replace(",", "")
 }
 
-function shortMachineId(machineId: string): string {
-  return `${machineId.slice(0, 16)}…`
-}
-
 function sessionSummary(count: number): string {
   return `${count} ${count === 1 ? "session" : "sessions"}`
 }
@@ -199,17 +231,26 @@ function MachineCard({
   connected,
   onUse,
   onOpenTerminal,
+  onForget,
 }: {
   machine: FleetMachine
-  fleet: readonly FleetMachine[]
+  fleet: readonly FleetEntry[]
   sessionCount: number | undefined
   inUse: boolean
   connected: boolean
   onUse?: ((machineId: string) => void) | undefined
   onOpenTerminal?: ((machineId: string) => void) | undefined
+  onForget?: ((machine: FleetMachine) => void) | undefined
 }) {
   const transports = orderedMachineTransports(machine)
   const updateVersion = fleetUpdateAvailable(machine, fleet)
+  const note = healthNote[machine.health]?.(machine.label)
+  // Attaching and a terminal are client dials, and a remote machine has no
+  // client credential to dial with. The controls stay, disabled, with the
+  // reason beside them, so nobody hunts for a setting that does not exist.
+  const attachment = machineAttachment(machine)
+  const canControl = connected && attachment.selectable
+  const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
   return (
     <div role="group" aria-label={machine.label} className="rounded-xl border bg-card p-3.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -225,23 +266,54 @@ function MachineCard({
           {inUse ? (
             <span className="font-machine text-[10px] text-faint">In use</span>
           ) : onUse ? (
-            <Button variant="outline" size="sm" disabled={!connected} aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
+            <Button variant="outline" size="sm" disabled={!canControl} aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
               Use
             </Button>
           ) : null}
-          {onOpenTerminal && machine.capabilities.includes("terminals") ? (
+          {showsTerminal ? (
             <Button
               variant="outline"
               size="sm"
-              disabled={!connected}
+              disabled={!canControl}
               aria-label={`Terminal on ${machine.label}`}
               onClick={() => onOpenTerminal(machine.id)}
             >
               Terminal
             </Button>
           ) : null}
+          {onForget && !machine.self ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className={destructiveControl}
+                  disabled={!connected}
+                  aria-label={`Forget ${machine.label}`}
+                  onClick={() => onForget(machine)}
+                >
+                  Forget
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="max-w-[38ch] text-[11.5px] leading-relaxed">
+                {forgetConsequence}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
         </span>
       </div>
+      {!attachment.selectable && (onUse || showsTerminal) && !inUse ? (
+        <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">
+          {attachment.reason}
+        </p>
+      ) : null}
+      {onForget && !machine.self ? (
+        <p className={`${coarseFallback} mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground`}>
+          {forgetConsequence}
+        </p>
+      ) : null}
+      {note ? (
+        <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{note}</p>
+      ) : null}
       <p className="mt-1.5 m-0 font-machine text-[10px] text-faint">
         {machine.platform} · {machine.arch} · {machine.version} · {machine.connection}
         {sessionCount === undefined ? "" : ` · ${sessionSummary(sessionCount)}`}
@@ -274,6 +346,50 @@ function MachineCard({
   )
 }
 
+// A pending row sits where the machine will be, or was. There is no button:
+// the daemon resumes the operation on its own, and a client cannot.
+function PendingCard({ entry }: { entry: Extract<FleetEntry, { kind: "pending" }> }) {
+  const title = `${pendingOperationWord[entry.operation]} ${shortMachineId(entry.machineId)}`
+  return (
+    <div role="group" aria-label={title} className="rounded-xl border border-dashed bg-card p-3.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] font-semibold text-strong">{pendingOperationWord[entry.operation]}</span>
+        <Badge variant="machine" title={entry.machineId}>{shortMachineId(entry.machineId)}</Badge>
+        <Badge variant="warning">In progress</Badge>
+      </div>
+      <p className="mt-1.5 m-0 text-[11px] leading-relaxed text-muted-foreground">{pendingOperationNote}</p>
+      <p className="mt-1.5 m-0 font-machine text-[10px] text-faint" title={entry.startedAt}>
+        started {when(entry.startedAt)}
+      </p>
+    </div>
+  )
+}
+
+function UnenrolledCard({ entry }: { entry: Extract<FleetEntry, { kind: "unenrolled" }> }) {
+  const title = `Never enrolled ${shortMachineId(entry.machineId)}`
+  return (
+    <div role="group" aria-label={title} className="rounded-xl border border-dashed bg-card p-3.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] font-semibold text-strong">Never enrolled</span>
+        <Badge variant="machine" title={entry.machineId}>{shortMachineId(entry.machineId)}</Badge>
+      </div>
+      <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{unenrolledNote}</p>
+    </div>
+  )
+}
+
+// One card per lifecycle kind. Each case returns, so a kind the protocol adds
+// later fails to compile here instead of rendering nothing.
+function entryCard(entry: FleetEntry, machineCard: (machine: FleetMachine) => ReactNode): ReactNode {
+  switch (entry.kind) {
+    case "machine":
+      return machineCard(entry.machine)
+    case "pending":
+      return <PendingCard key={entry.machineId} entry={entry} />
+    case "unenrolled":
+      return <UnenrolledCard key={entry.machineId} entry={entry} />
+  }
+}
 
 function StatusChip({ tone, children }: { tone: "warning" | "destructive"; children: ReactNode }) {
   const skin =
@@ -637,9 +753,99 @@ function RevokeConfirmation({
   )
 }
 
+function ForgetConfirmation({
+  machine,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  machine: FleetMachine | null
+  busy: boolean
+  onConfirm: (machine: FleetMachine) => void
+  onClose: () => void
+}) {
+  const label = machine?.label ?? "this machine"
+  return (
+    <AlertDialog open={machine !== null} onOpenChange={(next) => { if (!next) onClose() }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <div className="flex w-full items-center gap-2.5">
+            <AlertDialogTitle className="min-w-0 flex-1 break-words text-[13.5px]">
+              Forget {machine?.label}
+            </AlertDialogTitle>
+            {machine ? (
+              <Badge variant="machine" className="shrink-0" title={machine.id}>
+                {shortMachineId(machine.id)}
+              </Badge>
+            ) : null}
+          </div>
+          <AlertDialogDescription asChild>
+            <div className="text-[12px] leading-[1.6] text-muted-foreground [&>p+p]:mt-2.5">
+              <p className="m-0">
+                This machine deletes the credential it holds for {label} and stops reaching it.
+                Sessions running there keep running.
+              </p>
+              <p className="m-0">
+                There is no revocation across machines. {label} is asked to revoke this machine,
+                and if it does not confirm, you revoke this machine in its Devices list yourself.
+              </p>
+            </div>
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className={secondaryControl}>Keep machine</AlertDialogCancel>
+          <AlertDialogAction
+            className={dangerControl}
+            disabled={busy}
+            onClick={(event) => {
+              event.preventDefault()
+              if (machine) onConfirm(machine)
+            }}
+          >
+            Forget machine
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+// A forget answers once, and what it says decides what the operator does next,
+// so the answer stands in the Machines section as a live region until the next one.
+function ForgetReceipt({ notice }: { notice: ForgetMachineNotice }) {
+  return (
+    <div
+      role="status"
+      aria-label={notice.title}
+      className="rounded-xl border border-border bg-card px-[15px] py-[14px]"
+    >
+      <div className="text-[13.5px] font-medium">{notice.title}</div>
+      <p className="mt-1.5 max-w-[72ch] text-[11.5px] leading-[1.6] text-muted-foreground">{notice.detail}</p>
+    </div>
+  )
+}
+
+// The daemon withheld the whole list, so the cards below are this machine
+// alone and must not read as the fleet. The notice says so and names the
+// daemon-side CLI, since nothing on this surface can shrink the keychain.
+function FleetOverflowAlert({ overflow }: { overflow: FleetSnapshotOverflow }) {
+  const notice = fleetOverflowNotice(overflow)
+  return (
+    <Alert variant="destructive">
+      <CircleStopIcon />
+      <AlertTitle>{notice.title}</AlertTitle>
+      <AlertDescription className="[&>p+p]:mt-2">
+        <p className="m-0">{notice.detail}</p>
+        <p className="m-0">{notice.remedy}</p>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 export function FleetView({
   connected,
-  machines,
+  entries,
+  fleetOverflow,
   currentMachineId,
   currentSessionCount,
   onOpenSkills,
@@ -647,11 +853,13 @@ export function FleetView({
   onRevokeDevice,
   onRotateDevice,
   onPairMachine,
+  onForgetMachine,
   onUseMachine,
   onOpenMachineTerminal,
 }: {
   connected: boolean
-  machines: FleetMachine[]
+  entries: FleetEntry[]
+  fleetOverflow: FleetSnapshotOverflow | null
   currentMachineId: string
   currentSessionCount: number
   onOpenSkills: () => void
@@ -661,6 +869,7 @@ export function FleetView({
   onRevokeDevice: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice: (params: { deviceId: string }) => Promise<DevicePairResult>
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
+  onForgetMachine?: ((machineId: string) => Promise<FleetForgetResult>) | undefined
   onUseMachine?: ((machineId: string) => void) | undefined
   onOpenMachineTerminal?: ((machineId: string) => void) | undefined
 }) {
@@ -671,6 +880,9 @@ export function FleetView({
   const [revoking, setRevoking] = useState<PairedDeviceSummary | null>(null)
   const [receipt, setReceipt] = useState<{ device: PairedDeviceSummary; token: string } | null>(null)
   const [pairing, setPairing] = useState(false)
+  const [forgetting, setForgetting] = useState<FleetMachine | null>(null)
+  const [forgetPending, setForgetPending] = useState(false)
+  const [forgetNotice, setForgetNotice] = useState<ForgetMachineNotice | null>(null)
 
   const loadDevices = useCallback(async () => {
     try {
@@ -705,6 +917,24 @@ export function FleetView({
     } finally {
       setPendingDeviceId("")
       setRevoking(null)
+    }
+  }
+
+  const forgetMachine = async (machine: FleetMachine) => {
+    if (!onForgetMachine) return
+    setForgetPending(true)
+    setForgetNotice(null)
+    try {
+      setForgetNotice(forgetMachineNotice(await onForgetMachine(machine.id), machine.label))
+    } catch (cause) {
+      setForgetNotice({
+        outcome: "refused",
+        title: `${machine.label} was not forgotten`,
+        detail: cause instanceof Error ? cause.message : "That machine could not be forgotten",
+      })
+    } finally {
+      setForgetPending(false)
+      setForgetting(null)
     }
   }
 
@@ -755,18 +985,28 @@ export function FleetView({
 
           <section className="mt-5 flex flex-col gap-2.5" aria-label="Machines">
             <h2 className="m-0 text-[13px] font-semibold">Machines</h2>
-            {machines.map((machine) => (
+            {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
+            {forgetNotice?.outcome === "refused" ? (
+              <Alert variant="destructive">
+                <CircleStopIcon />
+                <AlertTitle>{forgetNotice.title}</AlertTitle>
+                <AlertDescription>{forgetNotice.detail}</AlertDescription>
+              </Alert>
+            ) : null}
+            {forgetNotice && forgetNotice.outcome !== "refused" ? <ForgetReceipt notice={forgetNotice} /> : null}
+            {entries.map((entry) => entryCard(entry, (machine) => (
               <MachineCard
                 key={machine.id}
                 machine={machine}
-                fleet={machines}
+                fleet={entries}
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
                 inUse={machine.id === currentMachineId}
                 connected={connected}
                 {...(onUseMachine ? { onUse: onUseMachine } : {})}
                 {...(onOpenMachineTerminal ? { onOpenTerminal: onOpenMachineTerminal } : {})}
+                {...(onForgetMachine ? { onForget: (target: FleetMachine) => setForgetting(target) } : {})}
               />
-            ))}
+            )))}
           </section>
 
           <section className="mt-7" aria-label="Paired devices">
@@ -860,6 +1100,13 @@ export function FleetView({
         busy={pendingDeviceId !== ""}
         onConfirm={(device) => void revokeDevice(device)}
         onClose={() => setRevoking(null)}
+      />
+
+      <ForgetConfirmation
+        machine={forgetting}
+        busy={forgetPending}
+        onConfirm={(machine) => void forgetMachine(machine)}
+        onClose={() => setForgetting(null)}
       />
 
       {onPairMachine ? (

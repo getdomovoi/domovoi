@@ -24,7 +24,7 @@ export function ConfirmSheet({
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={onCancel}>
       <View className="flex-1 justify-end bg-desk/80">
-        <View className="gap-3 rounded-t-xl border-t border-border bg-card p-5 pb-8">
+        <View className="gap-3 rounded-t-2xl border-t border-border bg-card p-5 pb-8">
           <Text variant="title">{title}</Text>
           <Text variant="meta">{detail}</Text>
           <Button title={confirmLabel} variant="destructive" onPress={onConfirm} />

@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { mkdtemp, rm } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
@@ -454,7 +455,7 @@ describe("transactional session transfer RPC", () => {
       ["system.emergencyStop", { client: "desktop" }],
     ] as const) {
       await expect(machineCall(method, params)).resolves.toMatchObject({
-        error: { code: -32001, message: "Machine connections may only use transfer RPCs" },
+        error: { code: -32001, message: "Machine connections may only use machine lifecycle and transfer RPCs" },
       })
     }
     await expect(machineCall("session.transferPreview", request)).resolves.toMatchObject({
@@ -549,7 +550,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("idle"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("idle"))
     expect(transferFingerprint).toHaveBeenCalledWith(
       source.sessions[0]!.workspacePath,
       expect.any(AbortSignal),
@@ -593,7 +594,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
     expect(remoteCall).toHaveBeenCalledTimes(2)
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferred",
@@ -605,7 +606,7 @@ describe("transactional session transfer RPC", () => {
         manifestDigest: packaged.manifestDigest,
       },
     })
-    await vi.waitFor(async () => {
+    await waitForDaemon(async () => {
       await expect(outgoing.status(
         packaged.manifest.transferId,
         packaged.manifestDigest,
@@ -634,7 +635,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("idle"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("idle"))
     expect(remoteCall).toHaveBeenCalledOnce()
     expect(store.load().sessions[0]).toMatchObject({
       state: "idle",
@@ -664,7 +665,7 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
 
     await daemon.start()
-    await vi.waitFor(() => expect(remoteCall).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(remoteCall).toHaveBeenCalledOnce())
 
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferring",
@@ -707,7 +708,7 @@ describe("transactional session transfer RPC", () => {
       running.push(daemon)
 
       await daemon.start()
-      await vi.waitFor(() => expect(remoteCall).toHaveBeenCalledTimes(2))
+      await waitForDaemon(() => expect(remoteCall).toHaveBeenCalledTimes(2))
       expect(store.load().sessions[0]).toMatchObject({
         state: "transferring",
         transfer: { transferId: packaged.manifest.transferId },
@@ -756,7 +757,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
     expect(remoteCall.mock.calls.map(([method]) => method)).toEqual([
       "transfer.status",
       "transfer.status",
@@ -799,7 +800,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("idle"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("idle"))
     expect(remoteCall.mock.calls.map(([method]) => method)).toEqual([
       "transfer.status",
       "transfer.abort",
@@ -844,7 +845,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
     expect(remoteCall.mock.calls.map(([method]) => method)).toEqual([
       "transfer.status",
       "transfer.commit",
@@ -876,7 +877,7 @@ describe("transactional session transfer RPC", () => {
     })
     running.push(daemon)
     await daemon.start()
-    await vi.waitFor(() => expect(connectToMachine).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(connectToMachine).toHaveBeenCalledOnce())
     expect(store.load().sessions[0]).toMatchObject({
       state: "transferring",
       transfer: {
@@ -950,7 +951,7 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
 
     await daemon.start()
-    await vi.waitFor(() => {
+    await waitForDaemon(() => {
       const lifecycle = store.load().sessions[0]?.transfer
       if (lifecycle?.phase !== "transferring" || lifecycle.package.state !== "staged") {
         throw new Error("Expected a staged transfer")
@@ -994,7 +995,7 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
 
     await daemon.start()
-    await vi.waitFor(() => {
+    await waitForDaemon(() => {
       const lifecycle = store.load().sessions[0]?.transfer
       if (lifecycle?.phase !== "transferring" || lifecycle.package.state !== "staged") {
         throw new Error("Expected a staged transfer")
@@ -1029,7 +1030,7 @@ describe("transactional session transfer RPC", () => {
     })
     running.push(daemon)
     await daemon.start()
-    await vi.waitFor(() => expect(calls).toBe(1))
+    await waitForDaemon(() => expect(calls).toBe(1))
     const socket = await openClient(daemon, "studio-mac")
 
     const response = await rpc(socket)("session.transferRecoverSource", {
@@ -1080,7 +1081,7 @@ describe("transactional session transfer RPC", () => {
     })
     running.push(daemon)
     await daemon.start()
-    await vi.waitFor(() => {
+    await waitForDaemon(() => {
       const transfer = store.load().sessions[0]?.transfer
       expect(
         transfer?.phase === "transferring" && transfer.package.state === "staged"
@@ -1173,7 +1174,7 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
 
     await daemon.start()
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
     expect(remoteCall).toHaveBeenCalledTimes(2)
 
     expect(store.load().sessions[0]).toMatchObject({
@@ -1232,7 +1233,7 @@ describe("transactional session transfer RPC", () => {
 
     await daemon.start()
 
-    await vi.waitFor(() => expect(store.load().sessions[0]?.sourceRecovery).toBeUndefined())
+    await waitForDaemon(() => expect(store.load().sessions[0]?.sourceRecovery).toBeUndefined())
     expect(store.load().thread.at(-1)).toMatchObject({
       kind: "system",
       body: "Target confirmed it does not own this session.",
@@ -1288,7 +1289,7 @@ describe("transactional session transfer RPC", () => {
     await daemon.start()
     const socket = await openClient(daemon)
     const call = rpc(socket)
-    await vi.waitFor(async () => {
+    await waitForDaemon(async () => {
       const current = workspaceSnapshotSchema.parse((await call("workspace.get", {})).result)
       expect(current.sessions[0]?.state).toBe("ownership-conflict")
     })
@@ -1501,7 +1502,7 @@ describe("transactional session transfer RPC", () => {
     running.push(daemon)
 
     await daemon.start()
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("ownership-conflict"))
     expect(store.load().sessions[0]).toMatchObject({
       workspacePath: "/source/session",
       ownershipGeneration: 1,
@@ -1610,7 +1611,7 @@ describe("transactional session transfer RPC", () => {
         recoveryAction: "none",
       },
     })
-    await vi.waitFor(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
+    await waitForDaemon(() => expect(store.load().sessions[0]?.state).toBe("transferred"))
     expect(statusCalls).toBe(2)
     socket.close()
   })

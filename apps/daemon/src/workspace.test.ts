@@ -600,7 +600,9 @@ describe("GitWorkspaceService", () => {
     expect(checkpoint.changedFiles).toHaveLength(names.length)
     expect((await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim())
       .toBe(checkpoint.commit)
-  })
+    // The >1 MiB status regression requires these real files. Windows needs time
+    // to stage them all, even with the suite's worker cap.
+  }, 90_000)
 
   it("restores the index when a checkpoint fails after staging", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-rollback-"))

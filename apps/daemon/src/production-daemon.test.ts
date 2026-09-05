@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { protocolVersion } from "@getdomovoi/protocol"
+import { fleetEnrollResultSchema, fleetSnapshotSchema, protocolVersion } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -83,7 +83,7 @@ async function openRpc(handle: ProductionDaemonHandle) {
     return response
   }
 
-  return { socket, call }
+  return { socket, call, endpoint }
 }
 
 describe("createProductionDaemon", () => {
@@ -190,7 +190,7 @@ describe("createProductionDaemon", () => {
       .resolves.toBe(firstIdentity)
   })
 
-  it("keeps a peer credential and identity through a real daemon restart", async () => {
+  it("enrolls two production daemons and keeps peer facts, route, credential and identity through restart", async () => {
     const homeDirectory = await temporaryHome()
     const values = new Map<string, string>()
     const keyring: MachineKeyring = {
@@ -213,8 +213,21 @@ describe("createProductionDaemon", () => {
       }),
     }
     const options = { environment: {}, homeDirectory, machineLabel: "studio" }
-    const peerMachineId = `machine-${"b".repeat(32)}`
-    const peerCredential = testToken("peer-machine")
+
+    const peerValues = new Map<string, string>()
+    const peer = await createProductionDaemonWithDependencies({
+      environment: {}, homeDirectory: await temporaryHome(), machineLabel: "target studio",
+    }, {
+      ...dependencies,
+      createMachineCredentials: () => new MachineCredentialStore({
+        get: (id) => peerValues.get(id), set: (id, value) => { peerValues.set(id, value) }, delete: (id) => peerValues.delete(id),
+      }),
+    })
+    running.push(peer)
+    const peerRpc = await openRpc(peer)
+    const peerHello = await peerRpc.call(1, "system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion })
+    const peerMachineId = (peerHello.result as { machine: { id: string } }).machine.id
+    const code = await peerRpc.call(2, "device.issueCode", {})
 
     const first = await createProductionDaemonWithDependencies(options, dependencies)
     running.push(first)
@@ -224,10 +237,20 @@ describe("createProductionDaemon", () => {
       clientVersion: "0.0.1",
       protocolVersion,
     })
-    await expect(firstRpc.call(2, "device.saveCredential", {
-      machineId: peerMachineId,
-      credential: peerCredential,
-    })).resolves.toMatchObject({ result: { saved: true } })
+    const enrolledResponse = await firstRpc.call(2, "fleet.enroll", {
+      endpoint: peerRpc.endpoint.url, code: (code.result as { code: string }).code,
+      sourceDeviceLabel: "source studio", expectedMachineId: peerMachineId, client: "cli",
+    })
+    const enrolled = fleetEnrollResultSchema.parse(enrolledResponse.result)
+    expect(enrolled).toMatchObject({ outcome: "enrolled", machineId: peerMachineId })
+    const peerCredential = credentialStores[0]!.forMachine(peerMachineId)!
+    expect(peerCredential).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(JSON.stringify(enrolled)).not.toContain(peerCredential)
+    const firstFleet = fleetSnapshotSchema.parse((await firstRpc.call(3, "fleet.list", {})).result)
+    expect(firstFleet.entries).toHaveLength(2)
+    expect(firstFleet.entries).toContainEqual(expect.objectContaining({ kind: "machine", machine: expect.objectContaining({
+      id: peerMachineId, label: "target studio", self: false, connection: "direct", verifiedRoute: expect.objectContaining({ endpoint: peerRpc.endpoint.url }),
+    }) }))
     firstRpc.socket.close()
     await first.stop()
 
@@ -245,6 +268,18 @@ describe("createProductionDaemon", () => {
     })
     expect(credentialStores).toHaveLength(2)
     expect(credentialStores[1]!.forMachine(peerMachineId)).toBe(peerCredential)
+    const restartedFleet = fleetSnapshotSchema.parse((await secondRpc.call(2, "fleet.list", {})).result)
+    expect(restartedFleet.entries).toHaveLength(2)
+    expect(restartedFleet.entries).toContainEqual(expect.objectContaining({ kind: "machine", machine: expect.objectContaining({ id: peerMachineId, label: "target studio" }) }))
+    const forgotten = await secondRpc.call(3, "fleet.forget", { machineId: peerMachineId, client: "cli" })
+    expect(forgotten).toMatchObject({ result: { outcome: "forgotten", machineId: peerMachineId, remoteRevocation: "confirmed" } })
+    expect(credentialStores[1]!.forMachine(peerMachineId)).toBeUndefined()
+    const devices = await peerRpc.call(3, "device.list", {})
+    expect(devices).toMatchObject({ result: { devices: [expect.objectContaining({
+      binding: { kind: "machine", machineId: (firstHello.result as { machine: { id: string } }).machine.id },
+      revokedAt: expect.any(String),
+    })] } })
     secondRpc.socket.close()
+    peerRpc.socket.close()
   })
 })

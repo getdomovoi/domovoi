@@ -5,6 +5,8 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
+import { MachineCredentialStore } from "./machine-credentials.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -187,6 +189,8 @@ async function openWorkspace(target: OpenTarget): Promise<void> {
 
 const help = `Usage: domovoid [options]
        domovoid pair
+       domovoid fleet-keychain list
+       domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
        domovoid open [path]
        domovoid secret status
        domovoid secret set <anthropic|openai|openrouter>
@@ -229,6 +233,16 @@ async function main() {
     process.exitCode = await runProviderSecretCommand(args, {
       manager: new ProviderSecretManager(),
       readSecret: () => readHiddenSecret(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "fleet-keychain") {
+    // Exceptional local recovery, not enrollment or an unversioned RPC path.
+    // The user must stop the daemon before removing an indexed credential.
+    process.exitCode = runFleetKeychainCommand(args, {
+      credentials: new MachineCredentialStore(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

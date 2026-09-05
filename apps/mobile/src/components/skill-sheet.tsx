@@ -30,7 +30,7 @@ export function SkillSheet({
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
       <View className="flex-1 justify-end bg-desk/80">
-        <View className="max-h-[80%] gap-3 rounded-t-xl border-t border-border bg-card p-5 pb-8">
+        <View className="max-h-[80%] gap-3 rounded-t-2xl border-t border-border bg-card p-5 pb-8">
           <View className="flex-row items-center gap-2">
             <Text variant="title" className="flex-1">Skills for this turn</Text>
             <Button title="Done" variant="ghost" onPress={onClose} className="px-2" />
@@ -61,10 +61,10 @@ export function SkillSheet({
                 accessibilityState={{ checked: row.selected }}
                 accessibilityLabel={row.name}
                 onPress={() => onToggle(row.id)}
-                className="min-h-tap flex-row items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5 active:opacity-70"
+                className="min-h-tap flex-row items-center gap-3 rounded-2xl border border-border bg-background px-3 py-2.5 active:opacity-70"
               >
                 <View className={cn(
-                  "h-[18px] w-[18px] items-center justify-center rounded border",
+                  "h-[18px] w-[18px] items-center justify-center rounded-xl border",
                   row.selected ? "border-primary bg-primary" : "border-border",
                 )}>
                   {row.selected

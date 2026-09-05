@@ -34,7 +34,7 @@ export function Button({
       // 44pt is the iOS minimum and the handoff states it, so it is enforced on
       // the control rather than left to each screen to remember.
       className={cn(
-        "min-h-tap min-w-tap items-center justify-center rounded-pill px-4",
+        "min-h-tap min-w-tap items-center justify-center rounded-full px-4",
         surface[variant],
         disabled && "opacity-40",
         className,
