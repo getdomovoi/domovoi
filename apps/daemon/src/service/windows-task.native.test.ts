@@ -86,6 +86,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
     }
     await withinServiceDeadline(deadline, () => removeService({ platform: "win32", home: directory! }, {
       ...effects,
+      claimServiceOperation: nodeServiceEffects({ userHomeDirectory: directory! }).claimServiceOperation,
       capture: (command, args, active) => capture(redirect(command, args), active),
       run: (command, args, active) => {
         const redirected = redirect(command, args)

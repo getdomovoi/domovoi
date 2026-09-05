@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix } from "node:path"
+import { userInfo } from "node:os"
 
 import type { DaemonEnvironment } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
@@ -9,6 +10,7 @@ import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
 
@@ -46,6 +48,7 @@ export type ServiceTarget = {
 export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
+  claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: string) => ProfileLease
   removalSnapshot: typeof readServiceRemovalSnapshot
   writeRemovalReceipt: typeof writeLocalOwnerRemovalReceipt
@@ -283,12 +286,23 @@ async function writeUnit(path: string, contents: string, deadline: OperationDead
   }
 }
 
-async function serviceOperation<T>(operation: (deadline: OperationDeadline) => Promise<T>): Promise<T> {
+async function serviceOperation<T>(effects: Pick<ServiceEffects, "claimServiceOperation">, operation: (deadline: OperationDeadline) => Promise<T>): Promise<T> {
   const deadline = OperationDeadline.start(30_000)
+  let lease: ReturnType<typeof claimServiceOperation> | undefined
   try {
+    deadline.throwIfExpired()
+    lease = effects.claimServiceOperation()
     return await withinServiceDeadline(deadline, () => operation(deadline))
   } finally {
-    deadline.clear()
+    // An expired OS call can still settle. Keep exclusion until this CLI exits,
+    // matching the profile lease rule, rather than exposing a second writer.
+    // Process exit does not prove a previously submitted native job stopped.
+    try {
+      // Rejections bypass the successful-settlement clock check. An overdue
+      // timer callback must not make a late error release exclusion early.
+      deadline.remainingMs()
+      if (!deadline.signal.aborted) lease?.release()
+    } finally { deadline.clear() }
   }
 }
 
@@ -320,22 +334,28 @@ async function installWithDeadline(
   return plan
 }
 
-export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove">): Promise<ServicePlan> {
-  return serviceOperation((deadline) => installWithDeadline(target, effects, deadline))
+export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "claimServiceOperation">): Promise<ServicePlan> {
+  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline))
 }
 
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
-type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt">
+type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation">
 type ServiceRemovalResult = ServiceRemovalPlan & {
   profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
   profileRecoveryDetail?: string
 }
 
+// Only a failure raised while the Task Scheduler adapter holds the deadline is
+// a task removal failure. Refusals before it (exclusion, SystemRoot) and after
+// it (profile ownership) never touched the task and keep their own message.
+type RemovalProgress = { managerHoldsDeadline: boolean }
+
 async function removeWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
   deadline: OperationDeadline,
+  progress: RemovalProgress,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
   const home = assertHome(target.home)
@@ -343,7 +363,9 @@ async function removeWithDeadline(
   const before = effects.removalSnapshot(home, target.platform)
   let managerStopped = true
   if (plan.kind === "task") {
+    progress.managerHoldsDeadline = true
     managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
+    progress.managerHoldsDeadline = false
   }
   for (const { command, args } of plan.kind === "file" ? plan.commands : []) {
     try {
@@ -388,10 +410,11 @@ export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: RemovalEffects,
 ): Promise<ServiceRemovalResult> {
-  return serviceOperation((deadline) => removeWithDeadline(target, effects, deadline)).catch((cause: unknown) => {
+  const progress: RemovalProgress = { managerHoldsDeadline: false }
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
-    if (target.platform === "win32" && !(cause instanceof WindowsTaskRemovalError)) {
+    if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
       throw new WindowsTaskRemovalError(displayName, cause)
     }
     throw cause
@@ -455,9 +478,9 @@ async function statusWithDeadline(
 
 export function serviceStatus(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "capture" | "exists">,
+  effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation">,
 ): Promise<ServiceStatus> {
-  return serviceOperation((deadline) => statusWithDeadline(target, effects, deadline))
+  return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline))
 }
 
 const usage = `Usage: domovoid service install
@@ -544,8 +567,12 @@ export async function runServiceCommand(
   }
 }
 
-export function nodeServiceEffects(): ServiceEffects {
+export function nodeServiceEffects(options: { userHomeDirectory?: string } = {}): ServiceEffects {
   return {
+    // Manager names are per OS user, not per caller-selected HOME or profile.
+    // An alternate shell HOME must not create a second lock for the same job.
+    // The override isolates tests from the operator's actual service lock.
+    claimServiceOperation: () => claimServiceOperation(options.userHomeDirectory ?? userInfo().homedir),
     claimProfile,
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
