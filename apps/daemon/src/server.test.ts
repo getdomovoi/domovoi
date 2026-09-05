@@ -3715,6 +3715,29 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("renames a paired device and records the rename", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+    const device = (paired.result as { device: { id: string } }).device
+
+    const renamed = await call(3, "device.rename", { deviceId: device.id, label: "kitchen-ipad" })
+    const missing = await call(4, "device.rename", { deviceId: `device-${"0".repeat(32)}`, label: "kitchen-ipad" })
+    const blank = await call(5, "device.rename", { deviceId: device.id, label: "   " })
+
+    expect(renamed).toEqual({ jsonrpc: "2.0", id: 3, result: { device: { ...device, label: "kitchen-ipad" } } })
+    expect(missing).toMatchObject({ error: { code: expect.any(Number) } })
+    expect(blank).toMatchObject({ error: { code: -32602 } })
+    expect(store.devices.list()).toEqual([{ ...device, label: "kitchen-ipad" }])
+    expect(store.devices.verify((paired.result as { token: string }).token)?.device.label).toBe("kitchen-ipad")
+    const entries = store.auditLog.query({ limit: 50 }).entries
+    expect(entries.some((entry) => entry.action === "device.rename" && entry.target === device.id)).toBe(true)
+    socket.close()
+  })
+
   it("refuses to manage devices for a client holding only a device credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
@@ -3728,13 +3751,19 @@ describe("DomovoiDaemon", () => {
       deviceId: issued.device.id,
       client: "desktop",
     })
+    const renameAttempt = await call(4, "device.rename", {
+      deviceId: issued.device.id,
+      label: "kitchen-ipad",
+    })
 
-    for (const attempt of [pairAttempt, revokeAttempt]) {
+    for (const attempt of [pairAttempt, revokeAttempt, renameAttempt]) {
       expect(attempt).toMatchObject({
         error: { message: "Managing paired devices requires the daemon credential" },
       })
     }
-    expect(store.devices.list()).toHaveLength(1)
+    expect(store.devices.list()).toEqual([
+      expect.objectContaining({ id: issued.device.id, label: "studio-ipad" }),
+    ])
     socket.close()
   })
 

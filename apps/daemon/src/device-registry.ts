@@ -3,7 +3,9 @@ import type { DatabaseSync } from "node:sqlite"
 
 import {
   clientKindSchema,
+  deviceRenameLabelSchema,
   machineIdSchema,
+  maximumDeviceRenameLabelLength,
   pairedDeviceSchema,
   type ClientKind,
   type DeviceCredentialBinding as PublicDeviceCredentialBinding,
@@ -28,6 +30,7 @@ export type VerifiedDeviceCredential = {
 
 export const maximumPairedDevices = 128
 export const maximumPairedDeviceLabelLength = 128
+export { maximumDeviceRenameLabelLength }
 
 export interface DeviceRegistry {
   pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing
@@ -36,6 +39,7 @@ export interface DeviceRegistry {
   isActive(token: string): boolean
   rotate(deviceId: string): DevicePairing
   revoke(deviceId: string): PairedDevice
+  rename(deviceId: string, label: string): PairedDevice
   list(): PairedDevice[]
 }
 
@@ -75,6 +79,12 @@ function validateLabel(label: string): string {
     throw new Error("Device label is invalid")
   }
   return trimmed
+}
+
+function validateRenameLabel(label: string): string {
+  const parsed = deviceRenameLabelSchema.safeParse(label)
+  if (!parsed.success) throw new Error("Device label is invalid")
+  return parsed.data
 }
 
 function toPairedDevice(row: StoredDevice): PairedDevice {
@@ -251,6 +261,22 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       .prepare("UPDATE paired_devices SET revoked_at = ? WHERE id = ?")
       .run(revokedAt, deviceId)
     return toPairedDevice({ ...row, revoked_at: revokedAt })
+  }
+
+  // Only the label column moves. The row keeps its id, credential hash,
+  // binding, and every timestamp, revoked or not, so the record a person
+  // renamed is still the record the audit log points at.
+  rename(deviceId: string, label: string): PairedDevice {
+    const renamed = validateRenameLabel(label)
+    const row = this.#database
+      .prepare("SELECT * FROM paired_devices WHERE id = ?")
+      .get(deviceId) as StoredDevice | undefined
+    if (!row) throw new DeviceNotFoundError(deviceId)
+
+    this.#database
+      .prepare("UPDATE paired_devices SET label = ? WHERE id = ?")
+      .run(renamed, deviceId)
+    return toPairedDevice({ ...row, label: renamed })
   }
 
   list(): PairedDevice[] {
