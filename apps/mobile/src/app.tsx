@@ -208,10 +208,17 @@ export function App() {
 
   // A failure recorded against a connection that has since dropped says nothing
   // about the fleet, and leaving it up tells the person something that is no
-  // longer true.
+  // longer true. The same goes for a list still out on that connection: its
+  // answer is retired here, and a new daemon passes through connecting before
+  // it is open, so nothing read on the old one can land on the new one.
   useEffect(() => {
-    if (status !== "open") setFleetProblem("")
-  }, [status])
+    if (status === "open") return
+    fleetLoads.invalidate()
+    setFleetLoading(false)
+    setFleetProblem("")
+  }, [fleetLoads, status])
+
+  useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
   const decide = async (decision: ApprovalDecision) => {
     if (!openApproval) return
