@@ -332,6 +332,39 @@ describe("session usage RPC contracts", () => {
   })
 })
 
+describe("usage window RPC contracts", () => {
+  const window = { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" }
+  const totals = {
+    sessions: 2,
+    turns: 3,
+    inputTokens: 30,
+    cachedInputTokens: 4,
+    outputTokens: 12,
+    reasoningTokens: 2,
+    totalTokens: 44,
+    costMicros: 24_000,
+    currency: "USD",
+    reportedCostTurns: 2,
+    unavailableCostTurns: 1,
+  }
+
+  it("reads totals across sessions for one window and nothing else", () => {
+    expect(rpcMethods["usage.window"].params.parse(window)).toEqual(window)
+    expect(rpcMethods["usage.window"].params.safeParse({ ...window, sessionId: "session-1" }).success).toBe(false)
+    expect(rpcMethods["usage.window"].result.parse(totals)).toEqual(totals)
+    expect(rpcMethods["usage.window"].result.safeParse({ ...totals, byRuntime: [] }).success).toBe(false)
+    expect(rpcMethods["usage.window"].result.safeParse({ ...totals, currency: undefined }).success).toBe(true)
+    expect(rpcMethodMutations["usage.window"]).toBe("read-only")
+  })
+
+  it("refuses a window that is not two instants with the end after the start", () => {
+    expect(rpcMethods["usage.window"].params.safeParse({ start: window.end, end: window.start }).success).toBe(false)
+    expect(rpcMethods["usage.window"].params.safeParse({ start: window.start, end: window.start }).success).toBe(false)
+    expect(rpcMethods["usage.window"].params.safeParse({ start: "2026-09-04", end: window.end }).success).toBe(false)
+    expect(rpcMethods["usage.window"].params.safeParse({ start: window.start }).success).toBe(false)
+  })
+})
+
 describe("provider thread restart RPC contracts", () => {
   it("accepts only attributed strict restart requests", () => {
     expect(rpcMethods["session.restartProviderThread"].params.parse({

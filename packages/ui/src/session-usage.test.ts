@@ -10,6 +10,12 @@ import {
   formatUsageCost,
   sessionUsageCostNote,
   sessionUsageReportedCost,
+  maximumTimeoutMs,
+  usageTodayDetail,
+  usageTodayReadout,
+  usageTodayRefreshDelayMs,
+  usageTodayWindow,
+  usageWindowFetchKey,
 } from "./session-usage"
 
 function usage(overrides: Partial<Parameters<typeof sessionUsageCostNote>[0]> = {}) {
@@ -89,4 +95,71 @@ it("names the window the occupancy was measured against", () => {
   expect(sessionContextShare({ contextTokens: 128_000, contextWindowTokens: 200_000 }))
     .toBe("128k of 200k context tokens")
   expect(sessionContextShare({ contextTokens: 128_000 })).toBeUndefined()
+})
+
+describe("usage today", () => {
+  function window(overrides: Partial<Parameters<typeof usageTodayReadout>[0]> = {}) {
+    return {
+      sessions: 2,
+      turns: 3,
+      inputTokens: 900,
+      cachedInputTokens: 100,
+      outputTokens: 300,
+      reasoningTokens: 0,
+      totalTokens: 1200,
+      costMicros: 4_180_000,
+      currency: "USD",
+      reportedCostTurns: 3,
+      unavailableCostTurns: 0,
+      ...overrides,
+    }
+  }
+
+  it("spans the local calendar day the clock is in", () => {
+    const now = new Date(2026, 8, 4, 15, 30)
+    const today = usageTodayWindow(now)
+    expect(today).toEqual({
+      start: new Date(2026, 8, 4).toISOString(),
+      end: new Date(2026, 8, 5).toISOString(),
+    })
+    expect(Date.parse(today.start)).toBeLessThanOrEqual(now.getTime())
+    expect(Date.parse(today.end)).toBeGreaterThan(now.getTime())
+  })
+
+  it("waits until the next local midnight, never longer than a timer accepts", () => {
+    expect(usageTodayRefreshDelayMs(new Date(2026, 8, 4, 23, 59, 30))).toBe(30_000)
+    expect(usageTodayRefreshDelayMs(new Date(2026, 8, 4, 0, 0, 0))).toBe(
+      new Date(2026, 8, 5).getTime() - new Date(2026, 8, 4).getTime(),
+    )
+    expect(usageTodayRefreshDelayMs(new Date(2026, 8, 4, 12))).toBeLessThanOrEqual(maximumTimeoutMs)
+    expect(maximumTimeoutMs).toBe(2_147_483_647)
+  })
+
+  it("refetches when any session starts or finishes a turn", () => {
+    const snapshot = (sessions: Array<{ id: string; activeTurnId: string | null }>) => (
+      { activeSessionId: null, sessions } as unknown as WorkspaceSnapshot
+    )
+    expect(usageWindowFetchKey(null)).toBeNull()
+    expect(usageWindowFetchKey(snapshot([]))).toBe("idle")
+    const idle = usageWindowFetchKey(snapshot([{ id: "a", activeTurnId: null }, { id: "b", activeTurnId: null }]))
+    const busy = usageWindowFetchKey(snapshot([{ id: "a", activeTurnId: null }, { id: "b", activeTurnId: "turn-2" }]))
+    expect(idle).not.toBe(busy)
+    expect(usageWindowFetchKey(snapshot([{ id: "a", activeTurnId: null }, { id: "b", activeTurnId: null }]))).toBe(idle)
+  })
+
+  it("reads the reported cost out and falls back to tokens when no cost was reported", () => {
+    expect(usageTodayReadout(window())).toBe("$4.18 today")
+    expect(usageTodayReadout(window({ reportedCostTurns: 0, unavailableCostTurns: 3, costMicros: 0, currency: undefined })))
+      .toBe("1.2k tokens today")
+    expect(usageTodayReadout(window({ turns: 0, sessions: 0, totalTokens: 0, costMicros: 0, reportedCostTurns: 0 }))).toBeUndefined()
+  })
+
+  it("names the sessions, turns, and any turn without a cost in the detail", () => {
+    expect(usageTodayDetail(window())).toBe("1.2k tokens across 3 turns in 2 sessions today.")
+    expect(usageTodayDetail(window({ sessions: 1, turns: 1, reportedCostTurns: 0, unavailableCostTurns: 1 })))
+      .toBe("1.2k tokens across 1 turn in 1 session today. 1 turn reported no cost, so Domovoi has no cost to show.")
+    expect(usageTodayDetail(window({ reportedCostTurns: 2, unavailableCostTurns: 1 })))
+      .toBe("1.2k tokens across 3 turns in 2 sessions today. 1 turn reported no cost, so this total is partial.")
+    expect(usageTodayDetail(window({ turns: 0, sessions: 0, totalTokens: 0, costMicros: 0, reportedCostTurns: 0 }))).toBeUndefined()
+  })
 })

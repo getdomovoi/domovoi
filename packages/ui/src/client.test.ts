@@ -1377,6 +1377,41 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("asks the daemon for usage totals over a window", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const window = { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" }
+    const usage = client.usageWindow(window)
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "usage.window",
+      params: window,
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessions: 2,
+        turns: 3,
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningTokens: 0,
+        totalTokens: 1200,
+        costMicros: 4500,
+        currency: "USD",
+        reportedCostTurns: 2,
+        unavailableCostTurns: 1,
+      },
+    })
+    await expect(usage).resolves.toMatchObject({ sessions: 2, turns: 3, totalTokens: 1200 })
+    client.disconnect()
+  })
+
   it("reads skill source by discovered ID", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
