@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { describe, expect, it, vi } from "vitest"
 
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
@@ -68,7 +69,7 @@ describe("ResourceMutationQueue", () => {
     }
 
     const aborted = queue.enqueue("session-a", track("first", first.promise))
-    await vi.waitFor(() => expect(order).toEqual(["first:start"]))
+    await waitForDaemon(() => expect(order).toEqual(["first:start"]))
     expect(queue.cancelAll(new Error("Emergency stop requested"))).toEqual({
       active: 1,
       queued: 0,
@@ -113,7 +114,7 @@ describe("ResourceMutationQueue", () => {
     const secondTask = queue.enqueue("session-a", async () => {
       order.push("second")
     })
-    await vi.waitFor(() => expect(order).toEqual(["first:start"]))
+    await waitForDaemon(() => expect(order).toEqual(["first:start"]))
 
     first.resolve()
     await Promise.all([firstTask, secondTask])
@@ -174,10 +175,10 @@ describe("ResourceMutationQueue", () => {
     const afterBarrier = queue.enqueue("session-b", async () => {
       order.push("after")
     })
-    await vi.waitFor(() => expect(order).toEqual(["session:start"]))
+    await waitForDaemon(() => expect(order).toEqual(["session:start"]))
 
     first.resolve()
-    await vi.waitFor(() => expect(order).toEqual([
+    await waitForDaemon(() => expect(order).toEqual([
       "session:start",
       "session:end",
       "exclusive:start",

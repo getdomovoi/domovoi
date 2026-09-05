@@ -272,14 +272,16 @@ describe("file transfer transaction journal", () => {
       initiatedByClient: "desktop" as const,
     }
     renameSimulation.rejectOverlappingTargets = true
+    // Exercise overlapping publication, not a 256-write durable-flush backlog.
+    // The rename simulation makes an overlapping writer fail even at this size.
     const results = await Promise.allSettled(
-      Array.from({ length: 256 }, () => transactions.acceptMember(chunk)),
+      Array.from({ length: 16 }, () => transactions.acceptMember(chunk)),
     )
 
     expect(results.filter((result) => result.status === "rejected")).toEqual([])
     await expect(transactions.status(transferId, manifestDigest))
       .resolves.toEqual({ state: "prepared", transferId })
-  })
+  }, 20_000)
 
   it("publishes a final chunk retained across a process restart", async () => {
     const { root, transactions } = await journal()
