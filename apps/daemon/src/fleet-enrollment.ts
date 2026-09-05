@@ -337,7 +337,7 @@ export class FleetEnrollmentService {
       }, entry.credentialDigest, receivedAt)
     } catch (error) {
       if (this.#heartbeats.get(id) === controller && !this.#stopped) {
-        this.#input.registry!.recordFailure(id, entry.credentialDigest, connectionFailure(error))
+        this.#input.registry!.recordFailure(id, entry.credentialDigest, connectionFailure(error, entry.facts.protocolVersion))
       }
     } finally {
       connection?.close()
@@ -373,9 +373,14 @@ function enrollRefusal(error: unknown): FleetEnrollRefusal {
   return "target-unreachable"
 }
 
-function connectionFailure(error: unknown): FleetConnectionFailure {
+function connectionFailure(error: unknown, lastAdvertisedProtocol: string): FleetConnectionFailure {
   if (error instanceof MachineCredentialUnavailableError) return "credential-store-unavailable"
   if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError) return "pairing-required"
-  if (error instanceof MachineProtocolMismatchError) return "version-mismatch"
+  if (error instanceof MachineProtocolMismatchError) {
+    // A refusal names the peer's version. Without one, the version the peer
+    // last advertised says which side has to move.
+    const remote = error.remoteVersion ?? lastAdvertisedProtocol
+    return protocolCompatibility(remote, protocolVersion) === "machine-behind" ? "upgrade-required" : "version-mismatch"
+  }
   return "reconnecting"
 }

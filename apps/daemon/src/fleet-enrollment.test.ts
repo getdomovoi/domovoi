@@ -7,7 +7,12 @@ import { maximumFleetMachines, protocolVersion, type FleetMachineDescriptor } fr
 import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
-import { MachinePairingRequiredError } from "./machine-socket.js"
+import { MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
+
+function release(minorOffset: number) {
+  const [major, minor] = protocolVersion.split(".").map(Number)
+  return `${major}.${minor! + minorOffset}.0`
+}
 
 const sourceId = `machine-${"a".repeat(32)}`
 const targetId = `machine-${"b".repeat(32)}`
@@ -167,6 +172,22 @@ describe("fleet enrollment coordinator", () => {
     expect(f.service.snapshot().entries[0]).toMatchObject({ machine: {
       health: "credential-store-unavailable", heartbeat: { lastSeenAt: new Date(1_000).toISOString() },
     } })
+  })
+
+  it.each([
+    ["names an older release", release(-1), protocolVersion, "upgrade-required"],
+    ["names a newer release", release(1), protocolVersion, "version-mismatch"],
+    ["names nothing and the peer last advertised an older release", undefined, release(-1), "upgrade-required"],
+    ["names nothing and the peer last advertised this release", undefined, protocolVersion, "version-mismatch"],
+  ])("grades a protocol refusal that %s", async (_case, refusedVersion, lastAdvertised, health) => {
+    const f = fixture()
+    await f.service.enroll(params)
+    // A row this daemon's previous release wrote keeps the version the peer
+    // advertised to it then.
+    f.database.prepare("UPDATE fleet_machines SET protocol_version = ? WHERE id = ?").run(lastAdvertised, targetId)
+    f.open.mockRejectedValueOnce(new MachineProtocolMismatchError(refusedVersion))
+    await f.service.refresh()
+    expect(f.service.snapshot().entries[0]).toMatchObject({ machine: { health, protocolVersion: lastAdvertised } })
   })
 
   it("forgets only after revocation and durable keychain deletion, retaining pending work after deletion failure", async () => {

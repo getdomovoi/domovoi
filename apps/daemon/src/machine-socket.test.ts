@@ -9,13 +9,16 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   protocolVersion,
+  protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
 
 import {
   defaultMachineCallTimeoutMs,
   defaultMachineHandshakeTimeoutMs,
   MachinePairingRequiredError,
+  MachineProtocolMismatchError,
   openMachineSocket as openMachineSocketWithoutDefaults,
+  protocolMismatchRefusal,
 } from "./machine-socket.js"
 import { OperationDeadline } from "./operation-deadline.js"
 
@@ -57,7 +60,8 @@ async function machineServer(handler: (message: Record<string, unknown>) => unkn
       seen.push(message)
       const result = handler(message)
       if (result === undefined) return
-      socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }))
+      const reply = result && typeof result === "object" && "rpcError" in result ? { error: result.rpcError } : { result }
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply }))
     })
   })
   const address = server.address()
@@ -120,6 +124,17 @@ describe("openMachineSocket", () => {
       endpoint: machine.endpoint,
       credential: "n".repeat(43),
     })).rejects.toThrow(`That machine speaks protocol 9.9.9, this daemon speaks ${protocolVersion}`)
+  })
+
+  it.each([
+    ["names the daemon's version", protocolMismatchRefusal("0.3.0", protocolVersion), "0.3.0", `That machine speaks protocol 0.3.0, this daemon speaks ${protocolVersion}`],
+    ["names no version", "Update both daemons to the same protocol before pairing", undefined, "That machine speaks an incompatible protocol"],
+  ])("keeps the version when a protocol refusal %s", async (_case, refusal, remoteVersion, message) => {
+    const machine = await machineServer(() => ({ rpcError: { code: protocolVersionMismatchErrorCode, message: refusal } }))
+    const refused: unknown = await openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43) })
+      .then(() => undefined, (cause: unknown) => cause)
+    expect(refused).toBeInstanceOf(MachineProtocolMismatchError)
+    expect(refused).toMatchObject({ remoteVersion, message })
   })
 
   it("accepts a compatible patch version without skipping workspace or identity validation", async () => {
