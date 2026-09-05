@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { DeviceMachineCredentialParams, DeviceMachineCredentialResult, DeviceRenameParams, DeviceRenameResult, FleetSnapshot, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, SkillDocument, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
@@ -526,6 +526,15 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     return client.rotateDevice(params, options)
   }, [])
 
+  const renameDevice = useCallback(async (
+    params: DeviceRenameParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<DeviceRenameResult> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.renameDevice(params, options)
+  }, [])
+
   // Pairing reaches two machines: the one being paired answers the claim and
   // names itself, and this daemon keeps the credential that came back.
   const pairMachine = useCallback(async (request: PairMachineRequest): Promise<PairedMachine> => {
@@ -744,6 +753,7 @@ export function useWorkspace(url: string, kind: ClientKind, authToken?: string) 
     snapshot,
     revokeDevice,
     rotateDevice,
+    renameDevice,
     transferSession,
     previewTransfer,
     releaseSession,

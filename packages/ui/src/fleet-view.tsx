@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import {
   CheckIcon,
   CircleStopIcon,
@@ -16,6 +16,8 @@ import {
 } from "lucide-react"
 
 import {
+  deviceRenameLabelSchema,
+  maximumDeviceRenameLabelLength,
   transportPreference,
   type ClientKind,
   type DeviceCredentialBinding,
@@ -41,6 +43,7 @@ import {
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "./components/ui/input-group"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
@@ -105,6 +108,21 @@ const secondaryControl =
 // destructive only on hover. Padding gives the hover tint a shape to fill.
 const destructiveControl =
   "h-auto rounded-sm px-[7px] py-[5px] text-[11px] font-normal text-faint hover:bg-[color-mix(in_oklab,var(--destructive)_18%,transparent)] hover:text-destructive dark:hover:bg-[color-mix(in_oklab,var(--destructive)_18%,transparent)]"
+
+// Rename and Undo are quiet like Revoke, but never destructive: they hover
+// one neutral step rather than turning red.
+const quietControl =
+  "h-auto rounded-sm px-[7px] py-[5px] text-[11px] font-normal text-faint hover:bg-accent hover:text-accent-foreground"
+
+// The label row and the label field share one height, so opening or closing
+// the editor never moves the rows around it.
+const labelLine = "flex h-7 items-center gap-2"
+
+// Save and Cancel sit inside the field as pills, so the field is the whole
+// control and the row never grows a second line of buttons.
+const pill = "h-5 rounded-full px-2 text-[10.5px] font-medium"
+const savePill = `${pill} bg-primary text-primary-foreground hover:bg-primary/90`
+const cancelPill = `${pill} text-muted-foreground hover:bg-accent hover:text-accent-foreground`
 
 // The handoff's primary control: 8px 15px, radius-md, 11.5px at 500.
 const primaryControl =
@@ -358,22 +376,107 @@ function KindCell({ binding, dimmed }: { binding: DeviceCredentialBinding; dimme
 // The label is only ever what a person calls this row, so it is set in the sans
 // face. The machine id in the Kind column stays in the machine face and cannot
 // be edited, so a renamed row can never borrow a machine's identity.
-function LabelCell({ device }: { device: PairedDeviceSummary }) {
+function LabelCell({
+  device,
+  disabled,
+  undoable,
+  onRename,
+  onUndo,
+}: {
+  device: PairedDeviceSummary
+  disabled: boolean
+  undoable: boolean
+  onRename: (label: string) => Promise<void>
+  onUndo: () => void
+}) {
   const revoked = device.revokedAt !== undefined
   const revokedByUpgrade = device.revocationReason !== undefined
     && revokedByUpgradeReason[device.revocationReason]
+  const [draft, setDraft] = useState<string | null>(null)
+  const [invalid, setInvalid] = useState(false)
+
+  const close = () => {
+    setDraft(null)
+    setInvalid(false)
+  }
+  const save = async () => {
+    if (draft === null) return
+    const label = deviceRenameLabelSchema.safeParse(draft)
+    if (!label.success) {
+      setInvalid(true)
+      return
+    }
+    if (label.data === device.label) {
+      close()
+      return
+    }
+    await onRename(label.data)
+    close()
+  }
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault()
+      void save()
+    } else if (event.key === "Escape") {
+      event.preventDefault()
+      close()
+    }
+  }
+
   return (
     <th scope="row" className={`${rowCell} pr-3 text-left align-top font-medium`}>
-      {/* The approved design edits this label in place, with Save and Cancel inside
-          the field and Undo after committing. That control needs a device.rename
-          RPC, which the protocol does not have yet; it lands here once it exists. */}
-      <span
-        className={`block max-w-[34ch] text-[12.5px] leading-snug font-medium ${
-          revoked ? "text-muted-foreground" : "text-strong"
-        }`}
-      >
-        {device.label}
-      </span>
+      {draft === null ? (
+        <span className={labelLine}>
+          <span
+            className={`min-w-0 max-w-[34ch] truncate text-[12.5px] leading-snug font-medium ${
+              revoked ? "text-muted-foreground" : "text-strong"
+            }`}
+            title={device.label}
+          >
+            {device.label}
+          </span>
+          {undoable ? (
+            <Button variant="ghost" className={quietControl} disabled={disabled} onClick={onUndo}>
+              Undo
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              className={quietControl}
+              disabled={disabled}
+              aria-label={`Rename ${device.label}`}
+              onClick={() => setDraft(device.label)}
+            >
+              Rename
+            </Button>
+          )}
+        </span>
+      ) : (
+        <InputGroup className={`${labelLine} max-w-[40ch] rounded-md`}>
+          <InputGroupInput
+            autoFocus
+            aria-label={`Name for ${device.label}`}
+            aria-invalid={invalid || undefined}
+            maxLength={maximumDeviceRenameLabelLength}
+            className="h-7 px-2 text-[12.5px] font-medium text-strong md:text-[12.5px]"
+            disabled={disabled}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              setInvalid(false)
+            }}
+            onKeyDown={onKeyDown}
+          />
+          <InputGroupAddon align="inline-end" className="gap-1 pr-1">
+            <InputGroupButton className={savePill} disabled={disabled} onClick={() => void save()}>
+              Save
+            </InputGroupButton>
+            <InputGroupButton className={cancelPill} disabled={disabled} onClick={close}>
+              Cancel
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
+      )}
       {revoked && !revokedByUpgrade ? (
         <span className="mt-2 block">
           <StatusChip tone="destructive">Revoked</StatusChip>
@@ -410,20 +513,32 @@ function LabelCell({ device }: { device: PairedDeviceSummary }) {
 function DeviceRow({
   device,
   disabled,
+  undoable,
   onRotate,
   onRevoke,
+  onRename,
+  onUndoRename,
 }: {
   device: PairedDeviceSummary
   disabled: boolean
+  undoable: boolean
   onRotate: () => void
   onRevoke: () => void
+  onRename: (label: string) => Promise<void>
+  onUndoRename: () => void
 }) {
   const revoked = device.revokedAt !== undefined
   const isMachine = device.binding.kind === "machine"
   return (
     <tr>
       <KindCell binding={device.binding} dimmed={revoked} />
-      <LabelCell device={device} />
+      <LabelCell
+        device={device}
+        disabled={disabled}
+        undoable={undoable}
+        onRename={onRename}
+        onUndo={onUndoRename}
+      />
       <td className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`} title={device.pairedAt}>
         {when(device.pairedAt)}
       </td>
@@ -646,6 +761,7 @@ export function FleetView({
   onListDevices,
   onRevokeDevice,
   onRotateDevice,
+  onRenameDevice,
   onPairMachine,
   onUseMachine,
   onOpenMachineTerminal,
@@ -660,6 +776,7 @@ export function FleetView({
   ) => Promise<{ devices: PairedDeviceSummary[] }>
   onRevokeDevice: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice: (params: { deviceId: string }) => Promise<DevicePairResult>
+  onRenameDevice: (params: { deviceId: string; label: string }) => Promise<{ device: PairedDeviceSummary }>
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onUseMachine?: ((machineId: string) => void) | undefined
   onOpenMachineTerminal?: ((machineId: string) => void) | undefined
@@ -670,6 +787,7 @@ export function FleetView({
   const [pendingDeviceId, setPendingDeviceId] = useState("")
   const [revoking, setRevoking] = useState<PairedDeviceSummary | null>(null)
   const [receipt, setReceipt] = useState<{ device: PairedDeviceSummary; token: string } | null>(null)
+  const [undo, setUndo] = useState<{ deviceId: string; label: string } | null>(null)
   const [pairing, setPairing] = useState(false)
 
   const loadDevices = useCallback(async () => {
@@ -705,6 +823,37 @@ export function FleetView({
     } finally {
       setPendingDeviceId("")
       setRevoking(null)
+    }
+  }
+
+  const renameDevice = async (device: PairedDeviceSummary, label: string) => {
+    setPendingDeviceId(device.id)
+    setActionError("")
+    try {
+      const result = await onRenameDevice({ deviceId: device.id, label })
+      replaceDevice(result.device)
+      setUndo({ deviceId: device.id, label: device.label })
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "That device could not be renamed")
+    } finally {
+      setPendingDeviceId("")
+    }
+  }
+
+  // Undo is one more rename, back to the word the row had. It does not offer
+  // an undo of its own: the row is back where it started.
+  const undoRename = async () => {
+    if (!undo) return
+    setPendingDeviceId(undo.deviceId)
+    setActionError("")
+    try {
+      const result = await onRenameDevice(undo)
+      replaceDevice(result.device)
+      setUndo(null)
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "That device could not be renamed")
+    } finally {
+      setPendingDeviceId("")
     }
   }
 
@@ -808,8 +957,11 @@ export function FleetView({
                         key={paired.id}
                         device={paired}
                         disabled={!connected || pendingDeviceId === paired.id}
+                        undoable={undo?.deviceId === paired.id}
                         onRotate={() => void rotateDevice(paired)}
                         onRevoke={() => setRevoking(paired)}
+                        onRename={(label) => renameDevice(paired, label)}
+                        onUndoRename={() => void undoRename()}
                       />
                     )
                     // Keyed by the credential, so a fresh receipt mounts fresh and

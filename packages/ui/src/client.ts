@@ -23,6 +23,8 @@ import {
   type AuditExportResult,
   type DeviceMachineCredentialParams,
   type DevicePairResult,
+  type DeviceRenameParams,
+  type DeviceRenameResult,
   type DevicesResult,
   type FleetSnapshot,
   type DeviceMachineCredentialResult,
@@ -774,6 +776,13 @@ export class DomovoiClient extends EventTarget {
     options?: DomovoiRequestOptions,
   ): Promise<DevicePairResult> {
     return this.request("device.rotate", { ...params, client: this.kind }, options)
+  }
+
+  renameDevice(
+    params: DeviceRenameParams,
+    options?: DomovoiRequestOptions,
+  ): Promise<DeviceRenameResult> {
+    return this.request("device.rename", params, options)
   }
 
   machineCredential(

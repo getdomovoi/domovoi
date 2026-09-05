@@ -3275,6 +3275,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     replyToAnnotation,
     revokeDevice,
     rotateDevice,
+    renameDevice,
     reviewSkill,
     sendMessage,
     sessionUsage,
@@ -3965,6 +3966,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
             onRotateDevice={rotateDevice}
+            onRenameDevice={renameDevice}
             onPairMachine={pairMachine}
             onUseMachine={(machineId: string) => {
               switchMachine(machineId)
