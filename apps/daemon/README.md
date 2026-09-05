@@ -238,6 +238,49 @@ the skill directory or its `SKILL.md`, refuses a private key others can read, an
 the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
 the change up on its next catalog read.
 
+## Adding a skill
+
+A skill is added from a folder on the execution machine in two steps: a review, then an install
+pinned to what was reviewed. `skill.installPreview` takes `{ source: { kind: "path", path } }`,
+where `path` is absolute, and returns the parsed name and description, the declared capability
+manifest, the `SKILL.md` content digest, a `sourceDigest` over every regular file in the folder
+(relative path and SHA-256 of each file, `SKILL.md.sig` included), the signature and trust state
+computed exactly as the catalog computes them, the file list with sizes, one target per install
+scope, and any refusals. It reads the folder and writes nothing.
+
+`skill.install` takes the same `source`, a `scope`, and the previewed `sourceDigest`, and answers
+with the installed catalog entry. The scopes and their roots are the Domovoi-owned catalog roots:
+`user` is `~/.domovoi/skills` and `project` is `<project>/.domovoi/skills`, so a project install
+needs an open project and a user install does not. `system` (`/etc/domovoi/skills`) is not an
+install target. The install is refused with error code `-32018` and a
+`{ kind: "skill-install-refused", reason }` payload when:
+
+| `reason` | Condition |
+| --- | --- |
+| `source-changed` | The folder's `sourceDigest` no longer matches the previewed one, checked again over the bytes actually copied |
+| `blocked` | The trust state is `blocked`, so the signature is invalid |
+| `name-conflict` | `<root>/<name>` already exists with different files; identical files return the existing entry |
+| `symlink-escapes-source` | A link inside the folder resolves outside it; `path` names the link |
+| `source-too-large` | More than 256 files, 8 MiB, or eight directory levels |
+
+The copy never follows a link out of the source, writes only under the chosen root, and is
+atomic: files land in a `.domovoi-install-<random>` staging directory inside the root, which the
+catalog walk ignores, and one rename moves the finished directory to `<root>/<name>`. A failed
+copy removes its staging directory. Each `skill.install` is audited like every other mutation,
+with the scope, both digests, the source path, and on success the installed skill id and path.
+Installing grants nothing: the skill still needs a project enablement review before a turn carries
+it, and Build auto still requires a trusted state.
+
+```bash
+domovoid skill add path/to/skill --scope user
+domovoid skill add path/to/skill --scope project --yes
+```
+
+`add` prints the same review facts and installs only with `--yes`; without it nothing is written
+and the exit code is `0`. The project scope is the working directory. A refusal prints as
+`refused: <reason>` with exit code `1`. Like the other skill commands it contacts no daemon, so it
+writes no audit entry; the daemon lists the new entry on its next catalog read.
+
 ## Pairing admission and audit retention
 
 Pairing claims are limited to three per source address and thirty across the listener in a rolling
@@ -360,8 +403,12 @@ domovoid open .
 its endpoint file. It prints one line per distribution: the name, `WSL 1` or `WSL 2`, `running`
 or `stopped`, and `daemon at ws://127.0.0.1:<port>/rpc`, `no daemon`, or `could not be asked`.
 The credential in the endpoint file is never printed. A stopped distribution is not asked, since
-asking would start it. The command runs only on Windows, and prints an empty list when `wsl.exe`
-is missing or does not answer in time.
+asking would start it. The command runs only on Windows. A machine without WSL is told so and the
+command exits 0. A `wsl.exe` that this session may not run, that does not answer within the
+deadline, that fails, or that answers with something other than a listing is reported as that,
+with the remedy, and the command exits 1. A running distribution that could not be asked is listed
+as `could not be asked` with the reason: `timed out`, `denied`, `wsl.exe failed`, or `endpoint
+file unreadable`. None of these is ever reported as a missing distribution or a missing daemon.
 
 `open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
 separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
@@ -369,12 +416,25 @@ path that is, and then sends `project.open` to the daemon inside the distributio
 distribution's credential. This machine's credential never travels into a distribution. The
 command refuses, naming the distribution and the remedy, when the distribution is not installed,
 is stopped, runs under WSL 1, has no daemon endpoint, or when the path reads back as a Windows
-drive the distribution mounts, wherever it mounts it. A plain Windows path opens through this
-machine's daemon as before, without asking `wsl.exe` anything.
+drive the distribution mounts, wherever it mounts it. When `wsl.exe` itself cannot answer, the
+refusal says whether WSL is not installed, the call was denied, it timed out, or the service
+failed, rather than that the distribution does not exist. An endpoint file that is not one a daemon
+published is refused as unreadable rather than reported as no daemon, and nothing read from it is
+repeated. A plain Windows path opens through this machine's daemon as before, without asking
+`wsl.exe` anything.
 
 Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
 work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
-inside the distribution.
+inside the distribution. The runner that starts `git` inside a distribution asks the same
+`wslpath` question before running anything, so a repository on a Windows drive is refused
+wherever the distribution mounts it, not only under `/mnt`.
+
+What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
+the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
+the listing answers or refuses within its deadline and that a distribution that does not exist is
+refused; the path round trip and the drive refusal need a running distribution and skip there.
+Discovery, open, authentication, repository ownership, Git, and restart against a running
+distribution are not verified by CI.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
@@ -453,6 +513,15 @@ remove only the named claim file. Keep the session worktree, repository and Git 
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
 
+## Loaded fixture checks
+
+The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
+keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
+short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
+delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
+child stays under its parent's kill deadline. Normal runs inject no delay.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed
@@ -462,6 +531,13 @@ darwin prebuild shipped `spawn-helper` without the execute bit, so `posix_spawnp
 pnpm. The fix landed in `1.2.0-beta.2` (#858) and `1.2.0-beta.4` (#866). The pin is exact so a
 prerelease bump is a reviewed change. Move to the next stable release that contains the fix once
 it exists, and verify it on the three CI runners.
+
+Its Linux prebuild selector does not distinguish glibc from musl. The verified bootstrap forces
+the reviewed node-pty source build on musl or unknown Linux libc, then checks that the installed
+module loads before publishing a runnable receipt. Provide Python, make, a C++ compiler, and
+platform headers for that build. Manual package-manager installs do not apply this policy.
+`pnpm test:musl` exercises the real packed daemon and a PTY in a pinned Node 22 Alpine container;
+it is not a promise about every musl version or architecture.
 
 ## License
 

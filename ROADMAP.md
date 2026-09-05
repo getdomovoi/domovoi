@@ -310,10 +310,16 @@ The desktop handoff specifies these; `main` does not implement them yet.
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
     so a client shows the readout only when the provider reported the pair. No adapter populates
     them and no client reads them yet.
-- [ ] Add-skill flow with declared-capability review and install scope
-  - Deferred past the alpha on 2026-09-03, with the skill trust model it depends on. The protocol
-    has no install, copy, or distribute RPC, and shipping a convenient installer for arbitrary
-    code before the trust model exists is the wrong order.
+- [x] Add-skill flow with declared-capability review and install scope
+  - `skill.installPreview` reads a folder on the execution machine and returns its manifest,
+    digests, signature and trust state, files, and per-scope targets; `skill.install` copies it
+    into `~/.domovoi/skills` or `<project>/.domovoi/skills` only when the folder's digest still
+    matches the preview, refusing a blocked skill, a link that leaves the folder, and a name that
+    already exists with different files. The copy is staged and renamed inside the root, and every
+    install is audited. The Skills surface reviews the capabilities, trust, and scope before
+    Install, and `domovoid skill add` does the same from a terminal.
+  - Still local only: no bundle, URL, installer command, or other-machine source, and no fleet
+    push. Installing grants nothing; enablement review and trust are unchanged.
 - [x] Editable working plan with per-step state in the Plan tab
   - Protocol, daemon, and client all ship. Codex, Claude, and ACP report plan structure and
     progress; the daemon owns canonical state, binds a blocked step to its approval, delivers the
@@ -506,6 +512,15 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     verifies the installed graph before publishing a runnable receipt. Same-release protocol
     bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
     installation, native build, verification, publication, and cleanup share five minutes.
+  - HTTPS downloads add a 30-second byte-progress inactivity allowance within that total.
+    Redirects and empty chunks do not renew it; local disk backpressure spends only the total.
+    Deterministic and real HTTPS regressions reject silent or late responses. Refusal does not
+    promise immediate socket disposal: Node may retain a stalled TLS connection until its own
+    connect timeout, delaying CLI exit. See the transport limits in `docs/distribution.md`.
+  - Fresh musl or unknown-libc Linux installs force the reviewed node-pty source build rather
+    than selecting an unqualified Linux prebuild. Native loading is checked before publication
+    and on reuse. Ubuntu CI's pinned Node 22 Alpine smoke installs the real archive, opens a PTY,
+    and authenticates against the production daemon; other musl architectures remain unproven.
   - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
     external toolchain remain reproducibility limits. The protocol library keeps all three
     package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
@@ -518,11 +533,20 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     contends for the same port instead of consuming the service, Windows lacks crash restart, and
     CI never invokes a real manager.
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
-  - Discovery, endpoint, and `domovoid open` helpers exist and unit tests stub `wsl.exe`. No real
-    Windows-to-WSL test exists, no `domovoi` alias exists, and WSL is not a fleet candidate.
+  - Discovery, endpoint, `domovoid wsl list`, and `domovoid open` exist, and a `wsl.exe` that
+    cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than
+    reported as a missing distribution or daemon. Unit tests drive them with a fake `wsl.exe`.
+    Six tests run the real `wsl.exe` on the Windows CI job, which has no running WSL 2
+    distribution: four prove that the listing answers or refuses within its deadline and that a
+    distribution that does not exist is refused, and the two that need a running distribution
+    skip. Discovery, open, authentication, repository ownership, Git, and restart against a running
+    distribution remain unverified. No `domovoi` alias exists, and WSL is not a fleet candidate.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
-  - The intended guard exists, but it assumes Windows drives are under `/mnt`. WSL supports custom
-    automount roots, and no real mount-boundary test exists.
+  - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
+    a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
+    it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
+    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
+    which CI does not have.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
@@ -712,6 +736,12 @@ before any public package or application publish.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
+  - E2 completeness fix: membership and SHA-512 component hashes come from the packed
+    all-platform runtime lock, including optional non-host binaries and the embedded protocol.
+    The separate protocol artifact is byte-bound to that lock and reports only its closure.
+    Offline pinned CycloneDX 1.6 validation and a real-archive completeness regression cover
+    generation. Host license observations annotate exact versions only; missing observations
+    remain empty. External toolchains and unfrozen manual installs are outside this inventory.
   - The release workflow attaches them to each published package's GitHub release once enabled.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set

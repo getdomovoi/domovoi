@@ -5,9 +5,11 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 import { discoverWslMachines } from "./wsl-discovery.js"
+import type { WslDistribution } from "./wsl-distributions.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
+import { WslError } from "./wsl-run.js"
 
 // These tests run the real wsl.exe, so they exist only where it does. A Linux
 // or macOS runner has nothing to ask and skips them by name, and a Windows
@@ -27,11 +29,25 @@ const skipReason = process.platform !== "win32"
 // A name no machine registers, so wsl.exe has to answer that it does not exist.
 const absentDistribution = `domovoi-absent-${randomBytes(6).toString("hex")}`
 
+// A Windows machine without WSL, such as a CI runner, answers with a
+// classified refusal rather than a listing. Either is an answer; a hang, a
+// crash, or an unclassified error is not.
+async function listedOrRefused(): Promise<WslDistribution[]> {
+  try {
+    return await listWslDistributions({ timeoutMs: 20_000 })
+  } catch (error) {
+    expect(error).toBeInstanceOf(WslError)
+    expect((error as WslError).kind).not.toBe("timed-out")
+    expect((error as WslError).message).toMatch(/wsl\.exe|WSL/)
+    return []
+  }
+}
+
 describe.skipIf(skipReason !== undefined)(
   `the real wsl.exe${skipReason ? ` (skipped: ${skipReason})` : ""}`,
   () => {
-    it("lists the installed distributions, or none, within its deadline", async () => {
-      const distributions = await listWslDistributions({ timeoutMs: 20_000 })
+    it("lists the installed distributions, or says why it cannot, within its deadline", async () => {
+      const distributions = await listedOrRefused()
       for (const distribution of distributions) {
         expect(distribution.name).not.toBe("")
         expect(["Running", "Stopped"]).toContain(distribution.state)
@@ -40,8 +56,11 @@ describe.skipIf(skipReason !== undefined)(
     }, 30_000)
 
     it("discovers each distribution as a machine fact without a credential in it", async () => {
-      const facts = await discoverWslMachines()
-      const listed = await listWslDistributions({ timeoutMs: 20_000 })
+      const listed = await listedOrRefused()
+      const facts = await discoverWslMachines().catch((error: unknown) => {
+        expect(error).toBeInstanceOf(WslError)
+        return []
+      })
       expect(facts.map((fact) => fact.distribution)).toEqual(listed.map((distribution) => distribution.name))
       for (const fact of facts) {
         expect(["present", "absent", "unknown"]).toContain(fact.daemon)

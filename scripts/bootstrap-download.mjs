@@ -8,6 +8,7 @@ import { defaultPublicationTimeoutMs, publishBootstrapArchive } from "./bootstra
 const defaultMaximumBytes = 256 * 1024 * 1024
 export const maximumManifestBytes = 256 * 1024
 export const defaultBootstrapTimeoutMs = 300_000
+export const defaultBootstrapInactivityTimeoutMs = 30_000
 
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 const defaultMaximumRedirects = 5
@@ -26,6 +27,67 @@ function httpsUrl(url, base) {
 function byteLimit(maximumBytes) {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
     throw new Error("Bootstrap byte limit must be a non-negative safe integer")
+  }
+}
+
+export class BootstrapDownloadInactivityError extends Error {
+  constructor(url, inactivityTimeoutMs) {
+    super(`Bootstrap download from ${new URL(url).origin} received no body bytes during ${inactivityTimeoutMs} ms of network waiting; check the connection and retry`)
+    this.name = "BootstrapDownloadInactivityError"
+    this.code = "BOOTSTRAP_DOWNLOAD_INACTIVE"
+    this.inactivityTimeoutMs = inactivityTimeoutMs
+  }
+}
+
+function downloadDeadline(total, url, inactivityTimeoutMs) {
+  validateBootstrapTimeout(inactivityTimeoutMs)
+  total.check()
+  const controller = new AbortController()
+  const timeout = new BootstrapDownloadInactivityError(url, inactivityTimeoutMs)
+  const abortTotal = () => controller.abort(total.signal.reason)
+  total.signal.addEventListener("abort", abortTotal, { once: true })
+  let remaining = inactivityTimeoutMs
+  let activeSince
+  const check = () => {
+    total.check()
+    const elapsed = activeSince === undefined ? 0 : performance.now() - activeSince
+    if (remaining - elapsed <= 0) controller.abort(timeout)
+    controller.signal.throwIfAborted()
+  }
+  return {
+    signal: controller.signal,
+    check,
+    progress: (byteLength) => {
+      check()
+      if (byteLength > 0) remaining = inactivityTimeoutMs
+    },
+    clear: () => total.signal.removeEventListener("abort", abortTotal),
+    run: async (operation) => {
+      check()
+      const started = performance.now()
+      const phase = bootstrapDeadline(Math.ceil(remaining), timeout.message, total)
+      const abortPhase = () => controller.abort(total.signal.aborted ? total.signal.reason : timeout)
+      phase.signal.addEventListener("abort", abortPhase, { once: true })
+      activeSince = started
+      let value
+      let failure
+      let failed = false
+      try { value = await phase.run(operation) }
+      catch (error) { failure = error; failed = true }
+      finally {
+        remaining -= performance.now() - started
+        activeSince = undefined
+        phase.signal.removeEventListener("abort", abortPhase)
+        phase.clear()
+      }
+      // Headers, redirects and empty chunks spend this same allowance. Only a
+      // non-empty body chunk replenishes it, and never after clock settlement.
+      // No inactivity timer runs while the consumer writes a yielded chunk to
+      // disk. Backpressure still spends the original, immutable total deadline.
+      check()
+      if (failed) throw failure
+      return value
+    },
   }
 }
 
@@ -52,6 +114,8 @@ async function* readBounded(response, url, maximumBytes, deadline) {
       if (done) { finished = true; break }
       read += value.byteLength
       if (read > maximumBytes) throw new Error(`${url} is larger than ${maximumBytes} bytes`)
+      deadline.progress(value.byteLength)
+      if (value.byteLength === 0) continue
       yield value
     }
   } finally {
@@ -69,49 +133,53 @@ export async function* downloadOverHttps(url, {
   maximumBytes,
   fetch: fetchImpl = fetch,
   maximumRedirects = defaultMaximumRedirects,
-  deadline,
+  deadline: total,
+  inactivityTimeoutMs = defaultBootstrapInactivityTimeoutMs,
 }) {
   byteLimit(maximumBytes)
   if (!Number.isSafeInteger(maximumRedirects) || maximumRedirects < 0) {
     throw new Error("Bootstrap redirect limit must be a non-negative safe integer")
   }
   let current = httpsUrl(url).href
-  for (let hop = 0; hop <= maximumRedirects; hop += 1) {
-    const response = await deadline.run(async () => {
-      const received = await fetchImpl(current, { redirect: "manual", signal: deadline.signal })
-      try { deadline.check() } catch (error) {
-        // Native fetch obeys abort, but an injected transport may settle late.
-        // Release those bytes without letting a late result start body reads.
-        received.body?.cancel(error).catch(() => {})
-        throw error
+  const deadline = downloadDeadline(total, current, inactivityTimeoutMs)
+  try {
+    for (let hop = 0; hop <= maximumRedirects; hop += 1) {
+      const response = await deadline.run(async () => {
+        const received = await fetchImpl(current, { redirect: "manual", signal: deadline.signal })
+        try { deadline.check() } catch (error) {
+          // Native fetch obeys abort, but an injected transport may settle late.
+          // Release those bytes without letting a late result start body reads.
+          received.body?.cancel(error).catch(() => {})
+          throw error
+        }
+        return received
+      })
+      if (!redirectStatuses.has(response.status)) {
+        if (!response.ok) {
+          await deadline.run(() => response.body?.cancel()).catch(() => {})
+          throw new Error(`${current} answered ${response.status}`)
+        }
+        yield* readBounded(response, current, maximumBytes, deadline)
+        return
       }
-      return received
-    })
-    if (!redirectStatuses.has(response.status)) {
-      if (!response.ok) {
-        await deadline.run(() => response.body?.cancel()).catch(() => {})
-        throw new Error(`${current} answered ${response.status}`)
-      }
-      yield* readBounded(response, current, maximumBytes, deadline)
-      return
-    }
 
-    await deadline.run(() => response.body?.cancel())
-    const location = response.headers.get("location")
-    if (!location) throw new Error(`${current} redirected with no destination`)
-    let next
-    try {
-      next = httpsUrl(location, current)
-    } catch {
-      throw new Error(`${current} redirected to ${location}, which is not https`)
+      await deadline.run(() => response.body?.cancel())
+      const location = response.headers.get("location")
+      if (!location) throw new Error(`${current} redirected with no destination`)
+      let next
+      try {
+        next = httpsUrl(location, current)
+      } catch {
+        throw new Error(`${current} redirected to ${location}, which is not https`)
+      }
+      current = next.href
     }
-    current = next.href
-  }
-  throw new Error(`${url} redirected more than ${maximumRedirects} times`)
+    throw new Error(`${url} redirected more than ${maximumRedirects} times`)
+  } finally { deadline.clear() }
 }
 
-async function* downloadChunks(download, url, maximumBytes, deadline) {
-  const source = await deadline.run(() => download(url, { maximumBytes, deadline }))
+async function* downloadChunks(download, url, maximumBytes, deadline, inactivityTimeoutMs) {
+  const source = await deadline.run(() => download(url, { maximumBytes, deadline, inactivityTimeoutMs }))
   // Buffer-returning injected downloaders remain useful for small fixtures.
   // Production always supplies the streamed HTTPS iterator, never full bytes.
   if (source instanceof Uint8Array || typeof source === "string") {
@@ -146,12 +214,14 @@ export async function bootstrapDaemon({
   maximumBytes = defaultMaximumBytes,
   publicationTimeoutMs = defaultPublicationTimeoutMs,
   timeoutMs = defaultBootstrapTimeoutMs,
+  inactivityTimeoutMs = defaultBootstrapInactivityTimeoutMs,
   deadline: sharedDeadline,
 }) {
   const plan = bootstrapPlan({ version, baseUrl })
   const pinned = pinnedSha256(expectedSha256)
   byteLimit(maximumBytes)
   validateBootstrapTimeout(publicationTimeoutMs)
+  validateBootstrapTimeout(inactivityTimeoutMs)
   const release = join(destination, `v${plan.version}`)
   const path = join(release, plan.archive)
   const deadline = sharedDeadline ?? bootstrapDeadline(timeoutMs,
@@ -161,7 +231,7 @@ export async function bootstrapDaemon({
     // Only this small, separately bounded text file is accumulated in memory.
     const decoder = new TextDecoder()
     let manifest = ""
-    for await (const chunk of downloadChunks(fetchChunks, plan.checksumUrl, maximumManifestBytes, deadline)) {
+    for await (const chunk of downloadChunks(fetchChunks, plan.checksumUrl, maximumManifestBytes, deadline, inactivityTimeoutMs)) {
       manifest += decoder.decode(chunk, { stream: true })
     }
     manifest += decoder.decode()
@@ -169,7 +239,7 @@ export async function bootstrapDaemon({
     const hash = createHash("sha256")
     let byteLength = 0
     async function* archiveChunks() {
-      for await (const chunk of downloadChunks(fetchChunks, plan.archiveUrl, maximumBytes, deadline)) {
+      for await (const chunk of downloadChunks(fetchChunks, plan.archiveUrl, maximumBytes, deadline, inactivityTimeoutMs)) {
         byteLength += chunk.byteLength
         hash.update(chunk)
         yield chunk
