@@ -1,5 +1,4 @@
-import { assertDistributionName } from "./wsl-git.js"
-import { runWslText, withWslDeadline, wslTimeoutMs, type WslRunner } from "./wsl-run.js"
+import { assertDistributionName, runWslText, withWslDeadline, WslError, wslTimeoutMs, type WslRunner } from "./wsl-run.js"
 
 export type DistributionPathInput = {
   distribution: string
@@ -40,7 +39,7 @@ export async function distributionPath(input: DistributionPathInput): Promise<st
   try {
     placed = (await ask("-u", requested)).trim()
   } catch (error) {
-    if (error instanceof Error && /in time/.test(error.message)) throw error
+    if (error instanceof WslError) throw error
     throw new Error(`${distribution} could not place ${input.path} in its filesystem`, { cause: error })
   }
   if (!placed.startsWith("/")) {
@@ -51,7 +50,7 @@ export async function distributionPath(input: DistributionPathInput): Promise<st
   try {
     readBack = (await ask("-w", placed)).trim()
   } catch (error) {
-    if (error instanceof Error && /in time/.test(error.message)) throw error
+    if (error instanceof WslError) throw error
     throw new Error(`${distribution} could not say which Windows path ${placed} is`, { cause: error })
   }
   if (ownShare(distribution, readBack)) return placed

@@ -1,3 +1,5 @@
+import { assertDistributionName } from "./wsl-run.js"
+
 export type DistroGitInput = {
   distribution: string
   repositoryPath: string
@@ -7,18 +9,6 @@ export type DistroGitInput = {
 export type DistroCommand = {
   command: string
   args: string[]
-}
-
-const unsafeCharacters = new Set(["\"", "\\", "/"])
-
-// A control character or a separator in the name would either be swallowed by
-// wsl.exe or would name a different distribution than the one asked for.
-function hasUnsafeCharacter(value: string): boolean {
-  for (const character of value) {
-    if (unsafeCharacters.has(character)) return true
-    if ((character.codePointAt(0) ?? 0) < 0x20) return true
-  }
-  return false
 }
 
 // A path under /mnt is a Windows drive the distribution has mounted, so git
@@ -65,13 +55,6 @@ function assertInsideDistribution(repositoryPath: string): string {
     throw new Error(`${repositoryPath} is not a path inside the distribution`)
   }
   return normalized
-}
-
-export function assertDistributionName(distribution: string): string {
-  if (distribution === "" || hasUnsafeCharacter(distribution) || distribution.startsWith("-")) {
-    throw new Error(`${JSON.stringify(distribution)} is not a distribution wsl.exe can be asked for`)
-  }
-  return distribution
 }
 
 // Git runs in the distribution, in its own filesystem, never across the wsl
