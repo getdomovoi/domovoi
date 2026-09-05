@@ -36,6 +36,7 @@ const membersDirectory = "members"
 const chunksDirectory = "chunks"
 const chunkName = /^(0|[1-9][0-9]*)-(0|1)\.chunk$/u
 const publicationTails = new Map<string, Promise<void>>()
+const activeMemberReceives = new Set<string>()
 
 export const defaultTransferJournalRetentionMs = 7 * 24 * 60 * 60 * 1_000
 
@@ -204,6 +205,21 @@ export class FileTransferTransactions {
 
   async acceptMember(rawParams: TransferMemberParams): Promise<TransferMemberResult> {
     const params = transferMemberParamsSchema.parse(rawParams)
+    const path = this.#chunkPath(params.transferId, params.memberId)
+    // Reserve before the first await, across instances sharing this journal.
+    // Publication alone is too narrow: a retry can still be reading a chunk
+    // when the publisher removes its directory, which Windows refuses. Keep
+    // the existing retry refusal instead of adding an unbounded queue wait.
+    if (activeMemberReceives.has(path)) return this.#memberRefusal(params, "chunk-out-of-order")
+    activeMemberReceives.add(path)
+    try {
+      return await this.#acceptReservedMember(params)
+    } finally {
+      activeMemberReceives.delete(path)
+    }
+  }
+
+  async #acceptReservedMember(params: TransferMemberParams): Promise<TransferMemberResult> {
     const stored = await this.#stored(params.transferId)
     const current = await this.#status(params.transferId)
     if (current.state === "aborted" || current.state === "committed") {
