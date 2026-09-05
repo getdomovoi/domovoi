@@ -11,6 +11,9 @@ import {
   skillSummarySchema,
   skillDocumentSchema,
   type SkillDocument,
+  type SkillInstallPreview,
+  type SkillInstallScope,
+  type SkillInstallSource,
   type SkillScope,
   type SkillSignature,
   type SkillSource,
@@ -18,6 +21,13 @@ import {
   type SkillTrust,
 } from "@getdomovoi/protocol"
 
+import {
+  installSkill,
+  previewSkillInstall,
+  SkillSourceError,
+  type SkillInstallParams,
+  type SkillInstallRoot,
+} from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import {
   loadTrustedSkillKeys,
@@ -26,10 +36,11 @@ import {
   type TrustedSkillKeys,
 } from "./skill-signing.js"
 
-const maxSkillFileBytes = 128 * 1_024
+export const maxSkillFileBytes = 128 * 1_024
 const maxSignatureFileBytes = 4 * 1_024
 const maxSkillDepth = 4
 const maxSkills = 512
+export const skillInstallStagingPrefix = ".domovoi-install-"
 
 export type SkillRoot = {
   path: string
@@ -92,6 +103,32 @@ export class FileSkillCatalog implements SkillCatalog {
 
   async list(): Promise<SkillSummary[]> {
     return (await this.#cachedListing()).skills
+  }
+
+  async installPreview(source: SkillInstallSource): Promise<SkillInstallPreview> {
+    const listing = await this.#cachedListing()
+    return previewSkillInstall(source, this.#installRoots(), await listing.trust)
+  }
+
+  async install(params: SkillInstallParams): Promise<SkillSummary> {
+    const listing = await this.#cachedListing()
+    const installed = await installSkill(params, this.#installRoots(), await listing.trust)
+    this.invalidate()
+    const canonicalPath = await realpath(installed.path)
+    for (const skill of await this.list()) {
+      if (skill.path === installed.path || skill.path === canonicalPath) return skill
+    }
+    throw new SkillSourceError(`Installed skill was not discovered at ${installed.path}`)
+  }
+
+  #installRoots(): SkillInstallRoot[] {
+    const roots: SkillInstallRoot[] = []
+    for (const root of this.#roots) {
+      if (root.source !== "domovoi" || root.scope === "system") continue
+      const scope: SkillInstallScope = root.scope
+      roots.push({ scope, path: root.path })
+    }
+    return roots.sort((left, right) => left.scope.localeCompare(right.scope))
   }
 
   async read(id: string): Promise<SkillDocument> {
@@ -278,6 +315,7 @@ async function skillFiles(root: string, scope: SkillScope): Promise<string[]> {
     }
     entries.sort((left, right) => left.name.localeCompare(right.name))
     for (const entry of entries) {
+      if (entry.name.startsWith(skillInstallStagingPrefix)) continue
       const path = join(directory, entry.name)
       if (entry.isFile() && entry.name === "SKILL.md") {
         files.push(path)
@@ -330,7 +368,7 @@ async function readSkill(
 
 type SkillIdentity = Pick<SkillSummary, "id" | "path" | "scope" | "source">
 
-function skillFromContent(
+export function skillFromContent(
   content: string,
   identity: SkillIdentity,
   contentDigest: string,
@@ -357,7 +395,7 @@ function skillFromContent(
   return parsed.success ? parsed.data : undefined
 }
 
-async function skillSignatureMetadata(
+export async function skillSignatureMetadata(
   skillPath: string,
   contentDigest: string,
   trust: TrustedSkillKeys,
@@ -418,11 +456,11 @@ function blockedSignature(reason: "malformed" | "verification-failed"): {
   }
 }
 
-function skillId(canonicalPath: string): string {
+export function skillId(canonicalPath: string): string {
   return `skill-${createHash("sha256").update(canonicalPath).digest("hex").slice(0, 12)}`
 }
 
-function escapesRoot(root: string, path: string): boolean {
+export function escapesRoot(root: string, path: string): boolean {
   const relativePath = relative(root, path)
   return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
 }
