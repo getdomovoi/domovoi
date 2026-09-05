@@ -8,6 +8,7 @@ import {
   daemonAuthenticationErrorCode,
   createEmptyWorkspace,
   demoWorkspace,
+  protocolCompatibility,
   protocolVersion,
   protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
@@ -126,11 +127,22 @@ describe("openMachineSocket", () => {
     })).rejects.toThrow(`That machine speaks protocol 9.9.9, this daemon speaks ${protocolVersion}`)
   })
 
+  const mismatchData = (daemonProtocolVersion: string) => ({
+    kind: "protocol-mismatch", daemonProtocolVersion, clientProtocolVersion: protocolVersion,
+    compatibility: protocolCompatibility(daemonProtocolVersion, protocolVersion),
+  })
+  const claimRefusal = "Update both daemons to the same protocol before pairing"
+  const sentenceRefusal = protocolMismatchRefusal("0.3.0", protocolVersion)
+  const named = (version: string) => `That machine speaks protocol ${version}, this daemon speaks ${protocolVersion}`
+
   it.each([
-    ["names the daemon's version", protocolMismatchRefusal("0.3.0", protocolVersion), "0.3.0", `That machine speaks protocol 0.3.0, this daemon speaks ${protocolVersion}`],
-    ["names no version", "Update both daemons to the same protocol before pairing", undefined, "That machine speaks an incompatible protocol"],
+    ["carries the daemon's version as data", { message: claimRefusal, data: mismatchData("0.2.0") }, "0.2.0", named("0.2.0")],
+    ["carries data that disagrees with its sentence", { message: sentenceRefusal, data: mismatchData("0.2.0") }, "0.2.0", named("0.2.0")],
+    ["carries data this daemon cannot read", { message: sentenceRefusal, data: { kind: "protocol-mismatch" } }, "0.3.0", named("0.3.0")],
+    ["names the daemon's version in its sentence only", { message: sentenceRefusal }, "0.3.0", named("0.3.0")],
+    ["names no version", { message: claimRefusal }, undefined, "That machine speaks an incompatible protocol"],
   ])("keeps the version when a protocol refusal %s", async (_case, refusal, remoteVersion, message) => {
-    const machine = await machineServer(() => ({ rpcError: { code: protocolVersionMismatchErrorCode, message: refusal } }))
+    const machine = await machineServer(() => ({ rpcError: { code: protocolVersionMismatchErrorCode, ...refusal } }))
     const refused: unknown = await openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43) })
       .then(() => undefined, (cause: unknown) => cause)
     expect(refused).toBeInstanceOf(MachineProtocolMismatchError)
