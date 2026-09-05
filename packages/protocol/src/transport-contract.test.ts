@@ -56,6 +56,17 @@ describe("transport kind contract", () => {
     expect(transportCandidateSchema.safeParse(candidate("local", `ws://${host}/rpc`)).success).toBe(false)
   })
 
+  it.each(["127.0.0.2", "[::ffff:127.0.0.1]", "localhost."])("does not misclassify unsupported loopback %s as remote", (host) => {
+    for (const kind of ["lan", "tailnet", "relay"]) {
+      expect(transportCandidateSchema.safeParse(candidate(kind, `wss://${host}/rpc`)).success).toBe(false)
+    }
+  })
+
+  it.each(["WSS://remote.example/rpc", " wss://remote.example/rpc", "wss://remote.example/rpc ",
+    "wss://remote.\texample/rpc", "wss://remote.example\\rpc"])("rejects noncanonical scheme or URL separators: %j", (endpoint) => {
+    expect(transportCandidateSchema.safeParse(candidate("lan", endpoint)).success).toBe(false)
+  })
+
   it.each([
     ["credentials", "wss://user:secret@remote.example/rpc"],
     ["query", "wss://remote.example/rpc?token=secret"],

@@ -24,11 +24,14 @@ function endpointUrl(endpoint: string): URL | undefined {
   try { return new URL(endpoint) } catch { return undefined }
 }
 
-const websocketEndpointSchema = z.string().max(2048).url().refine((endpoint) => {
+const websocketEndpointSchema = z.string().max(2048).refine((endpoint) =>
+  // Check the raw spelling before url() can trim it. Consumers must not see
+  // a different endpoint from the one a schema accepted on their behalf.
+  (endpoint.startsWith("ws://") || endpoint.startsWith("wss://")) && !/[\s\\]/u.test(endpoint),
+"Transport endpoint must use a canonical ws:// or wss:// spelling").url().refine((endpoint) => {
   const url = endpointUrl(endpoint)
-  return url !== undefined && (url.protocol === "ws:" || url.protocol === "wss:")
-    && !url.username && !url.password && !url.search && !url.hash
-}, "Transport endpoint must be a WebSocket URL without credentials, query or fragment")
+  return url !== undefined && !url.username && !url.password && !url.search && !url.hash
+}, "Transport endpoint must be a WebSocket URL without credentials, query, fragment or noncanonical separators")
 
 export const loopbackTransportEndpointSchema = websocketEndpointSchema.refine((endpoint) => {
   const url = endpointUrl(endpoint)
@@ -38,7 +41,10 @@ export const loopbackTransportEndpointSchema = websocketEndpointSchema.refine((e
 const remoteTransportEndpointSchema = websocketEndpointSchema.refine((endpoint) => {
   const url = endpointUrl(endpoint)
   return url !== undefined && url.protocol === "wss:"
-    && !isTransportLoopbackHost(url.hostname) && !["0.0.0.0", "[::]"].includes(url.hostname)
+    && !isTransportLoopbackHost(url.hostname) && !["0.0.0.0", "[::]", "localhost."].includes(url.hostname)
+    // A loopback spelling outside the supported local allowlist is not a
+    // remote route. In particular, IPv4-mapped IPv6 stays rejected here too.
+    && !/^127\./u.test(url.hostname) && !/^\[::ffff:7f[\da-f]{2}:/u.test(url.hostname)
 }, "Remote transport endpoint requires TLS and a non-loopback, non-wildcard host")
 
 // A verified endpoint is an observation, not an advertised network kind.
