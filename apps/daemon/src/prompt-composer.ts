@@ -35,6 +35,7 @@ export type ProviderPromptInput = {
   skillCatalog: SkillCatalog
   requireTrustedSkills: boolean
   skillSelection?: TurnSkillSelection
+  budgetCodeUnits?: number
 }
 
 export type ComposedProviderPrompt = {
@@ -44,6 +45,18 @@ export type ComposedProviderPrompt = {
 }
 
 export class PromptCompositionLimitError extends Error {}
+
+export function validateProviderPromptBudget(budgetCodeUnits: number): void {
+  if (
+    !Number.isSafeInteger(budgetCodeUnits)
+    || budgetCodeUnits < 1
+    || budgetCodeUnits > maximumProviderPromptCodeUnits
+  ) {
+    throw new RangeError(
+      `Provider prompt budget must be an integer from 1 through ${maximumProviderPromptCodeUnits} UTF-16 code units`,
+    )
+  }
+}
 
 export const providerPromptPrecedence = [
   "skills",
@@ -130,6 +143,7 @@ function contextDeliveryMarker(
 function requiredContextError(
   input: ProviderPromptInput,
   handoff: ProviderPromptHandoffDelivery,
+  budgetCodeUnits: number,
 ): PromptCompositionLimitError {
   const required = [
     "user request",
@@ -144,7 +158,7 @@ function requiredContextError(
     ...(input.skillSelection?.skills.length ? ["remove one or more selected skills"] : []),
   ]
   return new PromptCompositionLimitError(
-    `Cannot send this turn: required ${required.join(" and ")} exceed the ${maximumProviderPromptCodeUnits} UTF-16 code units Domovoi payload limit. ${remedies.join(", ")} and try again.`,
+    `Cannot send this turn: required ${required.join(" and ")} exceed the ${budgetCodeUnits} UTF-16 code units Domovoi payload limit. ${remedies.join(", ")} and try again.`,
   )
 }
 
@@ -160,6 +174,8 @@ function requiredContextError(
 export async function composeProviderPrompt(
   input: ProviderPromptInput,
 ): Promise<ComposedProviderPrompt> {
+  const budgetCodeUnits = input.budgetCodeUnits ?? maximumProviderPromptCodeUnits
+  validateProviderPromptBudget(budgetCodeUnits)
   const handoff = prepareHandoffPrompt(
     input.snapshot,
     input.sessionId,
@@ -168,8 +184,8 @@ export async function composeProviderPrompt(
   const planPrompt = input.workingPlan
     ? agentPromptWithWorkingPlan(input.workingPlan, handoff.prompt)
     : handoff.prompt
-  if (planPrompt.length > maximumProviderPromptCodeUnits) {
-    throw requiredContextError(input, handoff.delivery)
+  if (planPrompt.length > budgetCodeUnits) {
+    throw requiredContextError(input, handoff.delivery, budgetCodeUnits)
   }
   const annotationVisuals = await prepareAnnotationVisuals(
     input.snapshot,
@@ -223,12 +239,12 @@ export async function composeProviderPrompt(
       annotationTurn.delivery,
       skillTurn.delivery,
     )
-    if (prompt.length <= maximumProviderPromptCodeUnits) {
+    if (prompt.length <= budgetCodeUnits) {
       const providerPromptDelivery = providerPromptDeliverySchema.parse({
         version: 1,
         budget: {
           unit: "utf16-code-units",
-          limit: maximumProviderPromptCodeUnits,
+          limit: budgetCodeUnits,
           used: prompt.length,
         },
         handoff: handoff.delivery,
@@ -254,6 +270,6 @@ export async function composeProviderPrompt(
 
     // Retention order is separate from semantic prompt precedence.
     const dropped = elasticPromptDropOrder.some((section) => droppers[section]())
-    if (!dropped) throw requiredContextError(input, handoff.delivery)
+    if (!dropped) throw requiredContextError(input, handoff.delivery, budgetCodeUnits)
   }
 }

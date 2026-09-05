@@ -15,6 +15,7 @@ import {
   composeProviderPrompt,
   elasticPromptDropOrder,
   providerPromptPrecedence,
+  validateProviderPromptBudget,
 } from "./prompt-composer.js"
 import type { SkillCatalog } from "./skills.js"
 
@@ -221,5 +222,57 @@ describe("composeProviderPrompt budget", () => {
     })).rejects.toThrow(
       "Cannot send this turn: required user request and working plan exceed the 262144 UTF-16 code units Domovoi payload limit. Shorten the request, edit the working plan and try again.",
     )
+  })
+})
+
+describe("composeProviderPrompt budget option", () => {
+  it("keeps a prompt under the configured budget untouched", async () => {
+    const snapshot = baseSnapshot()
+    const fixture = skillFixture()
+    snapshot.annotations = [annotation(1)]
+    snapshot.skillEnablements = [fixture.review]
+    const request = { ...input(snapshot, "Ship it"), skillCatalog: fixture.catalog }
+
+    const unbounded = await composeProviderPrompt(request)
+    const bounded = await composeProviderPrompt({
+      ...request,
+      budgetCodeUnits: unbounded.prompt.length,
+    })
+
+    expect(bounded.prompt).toBe(unbounded.prompt)
+    expect(bounded.providerPromptDelivery).toEqual({
+      ...unbounded.providerPromptDelivery,
+      budget: {
+        unit: "utf16-code-units",
+        limit: unbounded.prompt.length,
+        used: unbounded.prompt.length,
+      },
+    })
+    expect(bounded.providerPromptDelivery.skills.omitted.budget).toEqual([])
+    expect(bounded.providerPromptDelivery.annotations.omitted.budget).toBe(0)
+  })
+
+  it("refuses a budget smaller than the user request instead of trimming it", async () => {
+    await expect(composeProviderPrompt({
+      ...input(baseSnapshot(), "u".repeat(200)),
+      budgetCodeUnits: 100,
+    })).rejects.toThrow(
+      "Cannot send this turn: required user request exceed the 100 UTF-16 code units Domovoi payload limit. Shorten the request and try again.",
+    )
+  })
+
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    maximumProviderPromptCodeUnits + 1,
+  ])("rejects an invalid budget: %s", async (budgetCodeUnits) => {
+    expect(() => validateProviderPromptBudget(budgetCodeUnits)).toThrow(RangeError)
+    await expect(composeProviderPrompt({
+      ...input(baseSnapshot(), "Ship it"),
+      budgetCodeUnits,
+    })).rejects.toThrow(RangeError)
   })
 })
