@@ -34,6 +34,11 @@ async function* readBounded(response, url, maximumBytes, deadline) {
   let reader
   let read = 0
   let finished = false
+  const abort = () => {
+    // Cancellation is a notification, not a new wait after expiry. Consume its
+    // rejection without waiting for an uncooperative underlying source to close.
+    reader.cancel(deadline.signal.reason).catch(() => {})
+  }
   try {
     const declared = Number(response.headers.get("content-length"))
     if (Number.isFinite(declared) && declared > maximumBytes) {
@@ -42,6 +47,7 @@ async function* readBounded(response, url, maximumBytes, deadline) {
     if (!response.body) return
     deadline.check()
     reader = response.body.getReader()
+    deadline.signal.addEventListener("abort", abort, { once: true })
     for (;;) {
       const { done, value } = await deadline.run(() => reader.read())
       if (done) { finished = true; break }
@@ -55,6 +61,7 @@ async function* readBounded(response, url, maximumBytes, deadline) {
     if (!finished) {
       await deadline.run(() => reader ? reader.cancel() : response.body?.cancel()).catch(() => {})
     }
+    deadline.signal.removeEventListener("abort", abort)
     reader?.releaseLock()
   }
 }
@@ -71,7 +78,16 @@ export async function* downloadOverHttps(url, {
   }
   let current = httpsUrl(url).href
   for (let hop = 0; hop <= maximumRedirects; hop += 1) {
-    const response = await deadline.run(() => fetchImpl(current, { redirect: "manual", signal: deadline.signal }))
+    const response = await deadline.run(async () => {
+      const received = await fetchImpl(current, { redirect: "manual", signal: deadline.signal })
+      try { deadline.check() } catch (error) {
+        // Native fetch obeys abort, but an injected transport may settle late.
+        // Release those bytes without letting a late result start body reads.
+        received.body?.cancel(error).catch(() => {})
+        throw error
+      }
+      return received
+    })
     if (!redirectStatuses.has(response.status)) {
       if (!response.ok) {
         await deadline.run(() => response.body?.cancel()).catch(() => {})
