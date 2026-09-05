@@ -314,8 +314,3 @@ test("refuses a non-file destination instead of replacing it", { timeout: testTi
   assert.ok((await fs.lstat(path)).isDirectory())
   assert.deepEqual(await fs.readdir(release), [archive])
 })
-
-test("root package checks include the publication regressions", { timeout: testTimeoutMs }, async () => {
-  const manifest = JSON.parse(await fs.readFile(new URL("../package.json", import.meta.url), "utf8"))
-  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-publication\.test\.mjs(?: |$)/)
-})

@@ -15,6 +15,13 @@ const archive = `getdomovoi-daemon-${version}.tgz`
 const bytes = Buffer.from("a daemon release")
 const digest = createHash("sha256").update(bytes).digest("hex")
 
+test("root package checks include the publication regressions", { timeout: 10_000 }, async () => {
+  // Keep this in the pre-existing suite. If the new suite leaves the command,
+  // an assertion inside that omitted file would no longer run either.
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-publication\.test\.mjs(?: |$)/)
+})
+
 async function destination() {
   return await mkdtemp(join(tmpdir(), "domovoi-bootstrap-"))
 }
