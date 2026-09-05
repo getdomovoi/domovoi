@@ -209,11 +209,13 @@ describe("production fleet assembly", () => {
     await git(repository, ["init", "-b", "main"])
     await git(repository, ["config", "user.name", "Domovoi Test"])
     await git(repository, ["config", "user.email", "test@example.invalid"])
+    await git(repository, ["config", "core.autocrlf", "false"])
     await writeFile(join(repository, "README.md"), "initial\n")
     await git(repository, ["add", "README.md"])
     await git(repository, ["commit", "-m", "initial"])
     const targetRepository = join(await scratch(), "target")
     await git(repository, ["clone", "--no-local", repository, targetRepository])
+    await git(targetRepository, ["config", "core.autocrlf", "false"])
     await target.root.ok("project.open", { path: targetRepository, client: "cli" })
     await source.root.ok("project.open", { path: repository, client: "cli" })
     const created = workspaceSnapshotSchema.parse(await source.root.ok("session.create", {
