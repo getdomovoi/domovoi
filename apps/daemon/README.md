@@ -27,7 +27,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | Variable | Purpose |
 | --- | --- |
 | `DOMOVOI_HOST` | Listener host |
-| `DOMOVOI_PORT` | Listener port |
+| `DOMOVOI_PORT` | Listener port; `0` selects an ephemeral port published in the owner record |
 | `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
 | `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |
 | `DOMOVOI_MACHINE_IDENTITY_PATH` | Stable machine identity file path |
@@ -66,6 +66,33 @@ by a 30-second operation deadline. A failed attempt does not advance the last-co
 Forget reports whether the target confirmed revocation; unconfirmed removal requires revoking
 this machine in the target's Devices list. Enrollment does not grant a client credential for
 remote Use or Terminal; that is a separate admission step.
+
+Native machine-keyring construction, reads, writes, deletion and index repair run on one
+serialized worker, not the daemon event loop. Calls require the caller's existing operation
+deadline and have a five-second phase limit, including queue time. Admission is bounded to
+256 active or queued operations. Expiry refuses the caller but does not release the native
+slot: later calls cannot overtake a still-running OS operation. The worker checks cancellation
+and monotonic time between native steps. A native write already entered can still complete
+after expiry; its pending fleet journal stays authoritative until readback resolves it.
+
+Fleet rendering caches only the last successfully observed machine IDs. A list refreshes those
+IDs; a failed read retains known recovery rows and reports credential-store-unavailable for
+enrolled peers. Credentials are never cached for dialing. Index repair and guarded deletion
+check the journal's digest inside a single worker operation, and dialing rechecks current fleet
+eligibility after the credential wait. A failed worker is not replaced in the same daemon
+instance. Unlock the keychain and retry after slow operations settle; restart Domovoi if its
+worker failed. Shutdown waits up to five seconds for worker exit and reports failure if exit
+cannot be confirmed.
+
+The local recovery CLI also bounds shutdown. If native work will not acknowledge termination,
+it prints the shutdown failure, waits up to one second for a piped stderr to take it, and exits
+nonzero instead of leaving the terminal waiting.
+
+This does not change the installed native library's missing-value semantics. Its
+[1.3.0 synchronous getter](https://github.com/Brooooooklyn/keyring-node/blob/v1.3.0/src/entry.rs)
+converts native read errors into a missing result, so not every OS failure can
+be distinguished from an absent credential. The worker isolates blocking and exceptions; it
+does not claim to repair that upstream distinction.
 
 Admission is limited to 128 machine entries, including the local machine and pending enrollment
 reservations. At capacity, re-pairing an existing row requires its `expectedMachineId`; an unnamed
@@ -167,6 +194,14 @@ user-private files the daemon already reads.
 
 ## Programmatic use
 
+Node.js 22.13.0 or newer is required for unflagged `node:sqlite`.
+
+One process owns the canonical profile, protected before the state store is constructed.
+Desktop can use `acquireLocalDaemon` to start or attach, with distinct `owned`, `attached` and
+`refused` handles. Attachments can detach but cannot stop the owner. See
+[local daemon ownership](../../docs/local-daemon-ownership.md) for the record, proof, deadlines,
+restart rules, platform limits and service-install refusal.
+
 `@getdomovoi/daemon` exposes one supported production factory. It owns the daemon credential,
 stable machine identity, provider discovery, peer-credential store, TLS loading, state database,
 and worktree root. Embedders cannot omit those production dependencies or replace them with test
@@ -193,6 +228,7 @@ await daemon.stop()
 | `homeDirectory` | State-directory base; defaults to the current user's home |
 | `machineLabel` | Initial label for a new machine identity; defaults to the hostname |
 | `errorSink` | Receives daemon failures as `{ context, detail }` |
+| `owner` | Record this direct owner as `daemon` (default) or `desktop`; acquisition sets Desktop automatically |
 
 The returned handle exposes the configured `host`, `requestedPort`, whether the transport is
 secure, where its credential came from, and `start()` and `stop()`. `start()` returns the actual

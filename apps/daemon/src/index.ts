@@ -5,8 +5,11 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
-import { MachineCredentialStore } from "./machine-credentials.js"
+import { exitAfterStderr } from "./flushed-exit.js"
+import { MachineCredentialWorker } from "./machine-credential-worker.js"
+import { OperationDeadline } from "./operation-deadline.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -199,6 +202,11 @@ const help = `Usage: domovoid [options]
        domovoid service install
        domovoid service status
        domovoid service remove
+       domovoid profile recover --confirm-no-supervisor
+
+Profile recovery:
+  --confirm-no-supervisor asserts that no supervisor will restart this profile.
+  Stop and remove those supervisors before making this confirmation.
 
 Options:
   -h, --help       Show this help
@@ -243,8 +251,27 @@ async function main() {
   if (args[0] === "fleet-keychain") {
     // Exceptional local recovery, not enrollment or an unversioned RPC path.
     // The user must stop the daemon before removing an indexed credential.
-    process.exitCode = runFleetKeychainCommand(args, {
-      credentials: new MachineCredentialStore(),
+    const credentials = new MachineCredentialWorker()
+    try {
+      process.exitCode = await runFleetKeychainCommand(args, {
+        credentials,
+        stdout: (text) => process.stdout.write(text),
+        stderr: (text) => process.stderr.write(text),
+      })
+    } finally {
+      const cleanup = OperationDeadline.start(5_000)
+      try { await credentials.close(cleanup) }
+      catch {
+        // A native call can ignore Worker.terminate until it returns to JS.
+        // This short-lived CLI must not leave the terminal waiting forever.
+        await exitAfterStderr("Native keyring worker exit could not be confirmed. Stopping this CLI process.\n", 1, 1_000)
+      } finally { cleanup.clear() }
+    }
+    return
+  }
+  if (args[0] === "profile") {
+    process.exitCode = runProfileCommand(args, {
+      homeDirectory: homedir(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -309,6 +336,7 @@ async function main() {
   const daemon = await createProductionDaemon({
     environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
     homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
     machineLabel: hostname(),
   })
 
