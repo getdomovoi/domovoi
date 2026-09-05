@@ -294,12 +294,16 @@ export async function confirmMachineSocket(input: SocketInput & {
   const channel = await openMachineChannel(input)
   channel.rememberSecret(input.credential)
   try {
-    const result = deviceConfirmClaimResultSchema.parse(await channel.call("device.confirmClaim", {
+    const parsed = deviceConfirmClaimResultSchema.safeParse(await channel.call("device.confirmClaim", {
       authToken: input.credential, machineId: input.sourceMachineId, protocolVersion,
     }, undefined, input.deadline))
+    if (!parsed.success) throw new MachineDescriptorError()
+    const result = parsed.data
     if (result.device.id !== input.claim.deviceId || result.device.binding.kind !== "machine"
       || result.device.binding.machineId !== input.sourceMachineId || result.device.revokedAt !== undefined) {
-      throw new MachinePairingRequiredError()
+      // A malformed success is not an authoritative invalid-token refusal.
+      // The target may have committed; retain the source's recoverable key.
+      throw new MachineDescriptorError()
     }
     const id = await greet(channel, input.credential, input.deadline)
     if (id !== input.expectedMachineId) throw new MachineIdentityMismatchError()

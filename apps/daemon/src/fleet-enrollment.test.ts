@@ -8,7 +8,7 @@ import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
-import { MachinePairingRequiredError, MachineProtocolMismatchError, type openMachineSocket, type confirmMachineSocket } from "./machine-socket.js"
+import { MachinePairingRequiredError, MachineProtocolMismatchError, MachineDescriptorError, type openMachineSocket, type confirmMachineSocket } from "./machine-socket.js"
 
 function release(minorOffset: number) {
   const [major, minor] = protocolVersion.split(".").map(Number)
@@ -77,9 +77,9 @@ describe("fleet enrollment coordinator", () => {
     expect(f.confirm).toHaveBeenCalledOnce()
   })
 
-  it("keeps a lost confirmation reply pending and retries from stored bytes on restart", async () => {
+  it.each([new Error("reply lost after target commit"), new MachineDescriptorError()])("keeps ambiguous confirmation pending and retries from stored bytes on restart: %s", async (failure) => {
     const f = fixture()
-    f.confirm.mockRejectedValueOnce(new Error("reply lost after target commit"))
+    f.confirm.mockRejectedValueOnce(failure)
     expect(await f.service.enroll(params)).toMatchObject({ outcome: "pending" })
     expect(f.credentials.forMachine(targetId)).toBe(token)
     expect(f.registry.enrolled()).toEqual([])

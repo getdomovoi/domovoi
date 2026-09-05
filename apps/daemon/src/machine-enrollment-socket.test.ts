@@ -5,7 +5,7 @@ import { createEmptyWorkspace, demoWorkspace, protocolVersion } from "@getdomovo
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 
-import { claimMachineSocket, confirmMachineSocket, readMachineDescriptor } from "./machine-socket.js"
+import { claimMachineSocket, confirmMachineSocket, readMachineDescriptor, MachineDescriptorError } from "./machine-socket.js"
 import { OperationDeadline } from "./operation-deadline.js"
 
 const sourceId = `machine-${"a".repeat(32)}`
@@ -21,7 +21,7 @@ afterEach(async () => {
   }
 })
 
-async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string; heartbeatVersion?: string } = {}) {
+async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string; heartbeatVersion?: string; confirmationMachineId?: string } = {}) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   servers.push(server)
   await once(server, "listening")
@@ -43,7 +43,7 @@ async function target(overrides: { heartbeatId?: string; label?: string; silence
         token: credential, machine: { ...descriptor, id: targetId },
       } : call.method === "device.confirmClaim" ? { device: {
         id: `device-${"c".repeat(32)}`, label: "source", pairedAt: new Date().toISOString(),
-        binding: { kind: "machine", machineId: overrides.claimMachineId ?? sourceId },
+        binding: { kind: "machine", machineId: overrides.confirmationMachineId ?? overrides.claimMachineId ?? sourceId },
       } } : call.method === "system.hello" ? workspace
         : call.method === "fleet.heartbeat" ? descriptor : { revoked: true }
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }))
@@ -60,6 +60,13 @@ async function target(overrides: { heartbeatId?: string; label?: string; silence
 }
 
 describe("machine enrollment socket", () => {
+  it("does not translate malformed confirmation success into an invalid-token verdict", async () => {
+    const machine = await target({ confirmationMachineId: targetId })
+    const claimed = await claimMachineSocket(machine.input)
+    await expect(confirmMachineSocket({ ...machine.input, claim: claimed.claim, expectedMachineId: targetId, credential: claimed.credential }))
+      .rejects.toThrow(MachineDescriptorError)
+  })
+
   it("closes the pending claim socket and authenticates only on a later confirmation socket", async () => {
     const machine = await target()
     const claimed = await claimMachineSocket(machine.input)
