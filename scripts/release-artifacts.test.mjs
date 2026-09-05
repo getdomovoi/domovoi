@@ -9,6 +9,82 @@ import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
 
 import { buildReleaseArtifacts, checksumManifest, sbomComponents, sbomDocument } from "./release-artifacts.mjs"
+import * as release from "./release-artifacts.mjs"
+
+const protocolPath = "node_modules/@getdomovoi/protocol"
+const integrity = `sha512-${Buffer.alloc(64, 1).toString("base64")}`
+function lockedFixture() {
+  const entry = (version = "1.0.0") => ({ version, integrity, resolved: "https://registry.npmjs.org/test/-/test.tgz" })
+  return {
+    name: "@getdomovoi/daemon", version: "1.0.0", lockfileVersion: 3,
+    packages: {
+      "": { name: "@getdomovoi/daemon", version: "1.0.0", private: true, dependencies: { "@getdomovoi/protocol": "1.0.0", a: "1.0.0" } },
+      [protocolPath]: { ...entry(), resolved: "file:runtime/protocol.tgz", dependencies: { leaf: "1.0.0" } },
+      "node_modules/a": { ...entry(), dependencies: { leaf: "2.0.0" }, optionalDependencies: { "native-win": "1.0.0" } },
+      "node_modules/leaf": entry(),
+      "node_modules/a/node_modules/leaf": entry("2.0.0"),
+      "node_modules/native-win": { ...entry(), optional: true, os: ["win32"], cpu: ["arm64"] },
+    },
+  }
+}
+function lockedComponents(lock, graph = {}, options) {
+  assert.equal(typeof release.lockedSbomComponents, "function", "SBOM membership must come from the packed lock")
+  return release.lockedSbomComponents(lock, graph, options)
+}
+
+test("locked inventory includes every platform and version, independent of host license membership", () => {
+  const lock = lockedFixture()
+  lock.packages["node_modules/a/node_modules/native-win"] = { ...lock.packages["node_modules/native-win"] }
+  const components = lockedComponents(lock, { MIT: [
+    { name: "leaf", versions: ["1.0.0"] }, { name: "dev-only", versions: ["1.0.0"] },
+    { name: "native-win", versions: ["9.0.0"] },
+  ] })
+  assert.deepEqual(components.map((c) => `${c.name}@${c.version}`), [
+    "@getdomovoi/protocol@1.0.0", "a@1.0.0", "leaf@1.0.0", "leaf@2.0.0", "native-win@1.0.0",
+  ])
+  assert.deepEqual(components[2].licenses, [{ license: { id: "MIT" } }])
+  assert.deepEqual(components[3].licenses, [])
+  assert.deepEqual(components[4].licenses, [])
+  for (const component of components) assert.deepEqual(component.hashes, [{ alg: "SHA-512", content: "01".repeat(64) }])
+})
+
+test("protocol inventory follows only its locked closure and terminates on cycles", () => {
+  const lock = lockedFixture()
+  lock.packages["node_modules/leaf"].dependencies = { "@getdomovoi/protocol": "1.0.0" }
+  assert.deepEqual(lockedComponents(lock, {}, { rootPath: protocolPath }).map((c) => c.name), ["leaf"])
+  assert.throws(() => lockedComponents(lock, {}, { rootPath: "node_modules/missing" }), /missing.*root/i)
+})
+
+test("inventory refuses missing integrity, broken edges and conflicting bytes for one coordinate", () => {
+  const mutations = [
+    (lock) => { delete lock.packages["node_modules/leaf"].integrity },
+    (lock) => { delete lock.packages["node_modules/leaf"] },
+    (lock) => { lock.packages["node_modules/a/node_modules/duplicate/node_modules/leaf"] = {
+      ...lock.packages["node_modules/leaf"], integrity: `sha512-${Buffer.alloc(64, 2).toString("base64")}`,
+    } },
+  ]
+  for (const mutate of mutations) {
+    const lock = lockedFixture()
+    mutate(lock)
+    assert.throws(() => lockedComponents(lock), /unlocked package|missing edge|conflicting integrity/)
+  }
+})
+
+test("release refuses independently repacked protocol bytes even when name and version match", () => {
+  assert.equal(typeof release.verifyProtocolArtifact, "function")
+  const lock = lockedFixture()
+  const manifest = { name: "@getdomovoi/protocol", version: "1.0.0" }
+  assert.doesNotThrow(() => release.verifyProtocolArtifact(lock, manifest, integrity))
+  assert.throws(() => release.verifyProtocolArtifact(lock, manifest, `sha512-${Buffer.alloc(64, 2).toString("base64")}`), /protocol.*bytes/i)
+  assert.throws(() => release.verifyProtocolArtifact(lock, { ...manifest, version: "2.0.0" }, integrity), /protocol.*release/i)
+})
+
+test("conflicting exact-version license observations refuse instead of picking one", () => {
+  assert.throws(() => lockedComponents(lockedFixture(), {
+    MIT: [{ name: "leaf", versions: ["1.0.0"] }],
+    ISC: [{ name: "leaf", versions: ["1.0.0"] }],
+  }), /Conflicting license observations/)
+})
 
 test("writes checksums in the format sha256sum verifies", () => {
   assert.equal(
