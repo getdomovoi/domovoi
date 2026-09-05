@@ -100,6 +100,8 @@ keychain to be available. Pagination of larger legacy fleets is not implemented.
 one host or IP address, not a URL, port, wildcard or loopback address. The advertised endpoint uses
 the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` still supplies an independent LAN route;
 when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
+The factory's returned URL uses the LAN name when configured, otherwise the tailnet name, otherwise
+the bound address, so a tailnet-only setup does not hand clients a wildcard address.
 Names and address ranges are never treated as proof of tailnet membership or transport protection.
 Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
 

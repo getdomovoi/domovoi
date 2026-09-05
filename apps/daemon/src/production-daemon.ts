@@ -129,7 +129,7 @@ export async function createProductionDaemonWithDependencies(
       : { source: "file", path: config.credentialPath },
     start: async () => {
       const address = await daemon.start()
-      const reachableHost = config.advertiseHost ?? address.host
+      const reachableHost = config.advertiseHost ?? config.tailnetHost ?? address.host
       return {
         ...address,
         url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc`,
