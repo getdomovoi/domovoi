@@ -188,3 +188,69 @@ test("a child phase cannot outlive its parent or run a late continuation", { tim
     assert.equal(ran, false)
   } finally { child.clear(); parent.clear() }
 })
+
+for (const phase of ["headers", "first body bytes", "redirects", "empty chunks"]) {
+  test(`inactivity expires across ${phase} without accepting late bytes`, { timeout: 5_000 }, async (t) => {
+    let now = 0
+    let requests = 0
+    let reads = 0
+    const delivered = []
+    t.mock.method(performance, "now", () => now)
+    const deadline = bootstrapDeadline(1_000, "Original total expired")
+    const fetchImpl = async () => {
+      requests += 1
+      if (phase === "headers") now = 100
+      if (phase === "redirects") {
+        now += 40
+        if (requests < 3) return new Response(null, { status: 302, headers: { location: start } })
+      }
+      return new Response(new ReadableStream({
+        pull(controller) {
+          reads += 1
+          if (phase === "first body bytes") now = 100
+          if (phase === "empty chunks") {
+            now += 40
+            if (reads < 4) { controller.enqueue(new Uint8Array(0)); return }
+          }
+          controller.enqueue(new Uint8Array([1]))
+          controller.close()
+        },
+      }, { highWaterMark: 0 }))
+    }
+    try {
+      await assert.rejects(async () => {
+        for await (const chunk of downloadChunksOverHttps(start, { maximumBytes: 8, fetch: fetchImpl, deadline, inactivityTimeoutMs: 100 })) {
+          if (chunk.byteLength) delivered.push(chunk)
+        }
+      }, { code: "BOOTSTRAP_DOWNLOAD_INACTIVE" })
+      assert.deepEqual(delivered, [], "a late result must not reach the consumer")
+      assert.equal(deadline.signal.aborted, false, "inactivity must not rewrite the total budget")
+    } finally { deadline.clear() }
+  })
+}
+
+for (const phase of ["fetch", "body read"]) {
+  test(`inactivity aborts a silent ${phase} even when the transport ignores cancellation`, { timeout: 5_000 }, async () => {
+    const deadline = bootstrapDeadline(2_000, "Original total expired")
+    let signal
+    let cancelled = 0
+    const fetchImpl = (_url, options) => {
+      signal = options.signal
+      if (phase === "fetch") return new Promise(() => {})
+      return Promise.resolve(new Response(new ReadableStream({
+        pull() { return new Promise(() => {}) },
+        cancel() { cancelled += 1; return new Promise(() => {}) },
+      }, { highWaterMark: 0 })))
+    }
+    try {
+      await assert.rejects(async () => {
+        for await (const chunk of downloadChunksOverHttps(start, { maximumBytes: 8, fetch: fetchImpl, deadline, inactivityTimeoutMs: 50 })) {
+          assert.fail(`A silent response yielded ${chunk.byteLength} bytes`)
+        }
+      }, { code: "BOOTSTRAP_DOWNLOAD_INACTIVE" })
+      assert.equal(signal.aborted, true)
+      assert.equal(signal.reason.code, "BOOTSTRAP_DOWNLOAD_INACTIVE")
+      if (phase === "body read") assert.equal(cancelled, 1)
+    } finally { deadline.clear() }
+  })
+}
