@@ -7,10 +7,7 @@ import { protocolVersion } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
-import {
-  MachineCredentialStore,
-  type MachineCredentials,
-} from "./machine-credentials.js"
+import { MachineCredentialWorker, type AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { CliProviderProbe, type ProviderProbe } from "./providers.js"
 import { claimProfile, type ProfileLease } from "./profile-lease.js"
 import { createLocalOwnerSecret, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
@@ -72,7 +69,7 @@ export type ProductionDaemonDependencies = {
   ): Promise<MachineIdentity>
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   createProviderProbe(): ProviderProbe
-  createMachineCredentials(): MachineCredentials
+  createMachineCredentials(): AsyncMachineCredentials
   createDaemon(options: DaemonServerOptions): ProductionDaemonRuntime
 }
 
@@ -82,7 +79,7 @@ export const productionDaemonDependencies = {
   loadOrCreateIdentity: loadOrCreateMachineIdentity,
   loadTls: loadTlsMaterial,
   createProviderProbe: () => new CliProviderProbe(),
-  createMachineCredentials: () => new MachineCredentialStore(),
+  createMachineCredentials: () => new MachineCredentialWorker(),
   createDaemon: (options) => new DomovoiDaemon(options),
 } satisfies ProductionDaemonDependencies
 

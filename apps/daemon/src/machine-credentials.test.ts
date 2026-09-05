@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest"
 import {
   MachineCredentialStore,
   MachineCredentialUnavailableError,
+  machineCredentialDigest,
+  NativeMachineKeyring,
 } from "./machine-credentials.js"
 
 const machineId = `machine-${"a".repeat(32)}`
@@ -21,6 +23,31 @@ function keyring() {
 }
 
 describe("MachineCredentialStore", () => {
+  it("refuses native construction on the main thread before loading a binding", () => {
+    expect(() => new NativeMachineKeyring(() => {})).toThrow("require the keyring worker")
+  })
+  it("repairs a matching index without rewriting secret bytes", () => {
+    const ring = keyring()
+    ring.entries.set(machineId, credential)
+    const store = new MachineCredentialStore({ ...ring, set: (id, value) => {
+      expect(id).not.toBe(machineId)
+      ring.set(id, value)
+    } })
+    expect(store.repairIndex(machineId, machineCredentialDigest(machineId, credential))).toBe(true)
+    expect(store.machines()).toEqual([machineId])
+  })
+
+  it("never repairs or removes a replacement credential against an old journal digest", () => {
+    const ring = keyring()
+    const store = new MachineCredentialStore(ring)
+    const digest = machineCredentialDigest(machineId, credential)
+    store.save(machineId, "z".repeat(43))
+    expect(store.repairIndex(machineId, digest)).toBe(false)
+    expect(store.forgetIfMatching(machineId, digest)).toBe(false)
+    expect(store.forgetIfMatching(machineId, null)).toBe(false)
+    expect(store.forMachine(machineId)).toBe("z".repeat(43))
+    expect(store.machines()).toEqual([machineId])
+  })
   it("keeps a machine credential and gives it back", () => {
     const ring = keyring()
     const store = new MachineCredentialStore(ring)
