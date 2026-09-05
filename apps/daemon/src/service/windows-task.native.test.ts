@@ -84,7 +84,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(args).toEqual(["/delete", "/tn", "Domovoi daemon", "/f"])
       return { command, args: ["/delete", "/tn", name, "/f"] }
     }
-    await withinServiceDeadline(deadline, () => removeService({ platform: "win32" }, {
+    await withinServiceDeadline(deadline, () => removeService({ platform: "win32", home: directory! }, {
       ...effects,
       capture: (command, args, active) => capture(redirect(command, args), active),
       run: (command, args, active) => {

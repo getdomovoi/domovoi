@@ -31,6 +31,9 @@ export type ProductionDaemonOptions = {
   machineLabel?: string
   errorSink?: DaemonErrorSink
   owner?: "daemon" | "desktop"
+  // Local service provenance, not a credential or a claim about arbitrary
+  // supervisors. Only the CLI's parsed saved configuration supplies this.
+  serviceRegistrationId?: string
 }
 
 export type ProductionDaemonCredential =
@@ -105,6 +108,7 @@ export async function createProductionDaemonWithDependencies(
   let published = false
   try {
     const config = dependencies.parseEnvironment(environment, homeDirectory)
+    if (options.owner === "desktop" && options.serviceRegistrationId !== undefined) throw new Error("Desktop cannot claim a service registration")
     // Validate transport before any secret or listener side effect. Store
     // construction itself writes state, so ownership precedes its constructor.
     const tls = config.tls ? await beforeDeadline(dependencies.loadTls(config.tls), deadline) : undefined
@@ -124,6 +128,7 @@ export async function createProductionDaemonWithDependencies(
       ? { source: "environment" } : { source: "file", path: resolve(config.credentialPath) }
     const record: Extract<LocalOwnerRecord, { state: "starting" }> = {
       version: 1, state: "starting", ...identity, owner: options.owner ?? "daemon", credential,
+      ...(options.serviceRegistrationId ? { serviceRegistrationId: options.serviceRegistrationId } : {}),
       ...(config.tls ? { certificatePath: resolve(config.tls.certPath) } : {}),
     }
     writeLocalOwnerRecord(homeDirectory, record)

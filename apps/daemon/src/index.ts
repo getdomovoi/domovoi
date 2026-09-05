@@ -5,6 +5,7 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { runOpenCommand } from "./open-command.js"
@@ -203,6 +204,11 @@ const help = `Usage: domovoid [options]
        domovoid service install
        domovoid service status
        domovoid service remove
+       domovoid profile recover --confirm-no-supervisor
+
+Profile recovery:
+  --confirm-no-supervisor asserts that no supervisor will restart this profile.
+  Stop and remove those supervisors before making this confirmation.
 
 Options:
   -h, --help       Show this help
@@ -249,6 +255,14 @@ async function main() {
     // The user must stop the daemon before removing an indexed credential.
     process.exitCode = runFleetKeychainCommand(args, {
       credentials: new MachineCredentialStore(),
+      stdout: (text) => process.stdout.write(text),
+      stderr: (text) => process.stderr.write(text),
+    })
+    return
+  }
+  if (args[0] === "profile") {
+    process.exitCode = runProfileCommand(args, {
+      homeDirectory: homedir(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -325,6 +339,7 @@ async function main() {
   const daemon = await createProductionDaemon({
     environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
     homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
     machineLabel: hostname(),
   })
 

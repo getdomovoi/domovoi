@@ -12,6 +12,7 @@ import {
   readLocalOwnerCredential, readLocalOwnerRecord, readLocalOwnerSecret, readLocalProfileFile, type ReadyLocalOwner,
 } from "./local-owner-record.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "./profile-lease.js"
+import { retireRemovedLocalOwner } from "./local-owner-removal.js"
 import {
   createProductionDaemonWithDependencies, productionDaemonDependencies,
   type ProductionDaemonHandle, type ProductionDaemonOptions,
@@ -25,7 +26,7 @@ export type LocalDaemonHandle =
   | { kind: "owned"; endpoint: LocalDaemonEndpoint; stop(): Promise<void> }
   | { kind: "attached"; owner: "daemon" | "desktop"; endpoint: LocalDaemonEndpoint; closed: Promise<void>; detach(): void }
   | { kind: "refused"; reason: LocalDaemonRefusalReason; message: string }
-export type AcquireLocalDaemonOptions = Omit<ProductionDaemonOptions, "owner"> & {
+export type AcquireLocalDaemonOptions = Omit<ProductionDaemonOptions, "owner" | "serviceRegistrationId"> & {
   // Reconnects must rediscover the owner, never turn a restart gap into a new
   // Desktop daemon. Each attempt gets one finite budget before any resource.
   mode: "start-or-attach" | "attach-only"
@@ -112,13 +113,15 @@ async function attach(
         // Only return the endpoint that still belongs to this exact instance.
         const current = readLocalOwnerRecord(homeDirectory)
         if (current?.state !== "ready" || current.instanceId !== record.instanceId || current.url !== record.url) return fail("owner-busy")
-        deadline.throwIfExpired()
-        settled = true
-        cleanup()
-        settle({ kind: "attached", owner: record.owner, endpoint: { url: record.url, token }, closed, detach: () => socket.terminate() })
       } catch {
-        fail("owner-unverified")
+        return fail("owner-unverified")
       }
+      // Verification succeeded. A deadline that expired during it is a late
+      // result, not a proof failure, so it settles as unreachable.
+      if (deadline.remainingMs() === 0) return abort()
+      settled = true
+      cleanup()
+      settle({ kind: "attached", owner: record.owner, endpoint: { url: record.url, token }, closed, detach: () => socket.terminate() })
     }
     socket.on("upgrade", upgrade)
     socket.on("open", open)
@@ -148,8 +151,9 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     }
     // Lease freedom alone is not a shutdown record. A crashed service keeps
     // its record, and an installed but restarting service keeps its config.
-    if (options.mode !== "start-or-attach" || (record && record.state !== "none")
+    if (options.mode !== "start-or-attach"
       || existsSync(serviceConfigurationPath(homeDirectory, process.platform))) return refused("owner-unreachable")
+    if (record && record.state !== "none" && !retireRemovedLocalOwner(homeDirectory, lease, record, deadline)) return refused("owner-unreachable")
     deadline.throwIfExpired()
     const ownedLease = lease
     lease = undefined

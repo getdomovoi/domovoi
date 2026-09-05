@@ -44,6 +44,8 @@ const windowsScript = {
 function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   return {
     claimProfile: vi.fn(() => ({ release: vi.fn() })),
+    removalSnapshot: vi.fn(() => ({ owner: undefined, configurationDigest: null })),
+    writeRemovalReceipt: vi.fn(),
     write: vi.fn(async () => {}),
     run: vi.fn(async () => {}),
     capture: vi.fn(async () => ({ code: 0, stdout: "" })),
@@ -426,6 +428,7 @@ describe("runServiceCommand", () => {
     expect(configuration, "the supervised launch must carry a configuration file").toBeDefined()
     expect(JSON.parse(configuration![1])).toEqual({
       version: 1,
+      registrationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       homeDirectory: root,
       host: "0.0.0.0",
       port: 7717,
