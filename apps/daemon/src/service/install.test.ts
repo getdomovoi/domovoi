@@ -1,37 +1,47 @@
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { describe, expect, it, vi } from "vitest"
+import { OperationDeadline } from "../operation-deadline.js"
+import { createServiceConfiguration } from "./configuration.js"
+import { withinServiceDeadline } from "./deadline.js"
 
 import {
   installService,
+  nodeServiceEffects,
   removeService,
   runServiceCommand,
   serviceRemovalPlan,
   serviceStatus,
   servicePlan,
-  type CapturedRun,
   type ServiceCommandDependencies,
+  type ServiceEffects,
 } from "./install.js"
 
-const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl" }
-const darwin = { platform: "darwin", execPath: "/usr/local/bin/domovoid", home: "/Users/dl", uid: 501 }
-const windows = { platform: "win32", execPath: "C:\\Program Files\\Domovoi\\domovoid.exe", user: "dl" }
+function configuration(homeDirectory: string, platform: string) {
+  return createServiceConfiguration({}, { homeDirectory, platform, workingDirectory: homeDirectory })
+}
+const linux = { platform: "linux", execPath: "/usr/local/bin/domovoid", home: "/home/dl", configuration: configuration("/home/dl", "linux") }
+const darwin = { platform: "darwin", execPath: "/usr/local/bin/domovoid", home: "/Users/dl", uid: 501, configuration: configuration("/Users/dl", "darwin") }
+const windows = { platform: "win32", execPath: "C:\\Program Files\\Domovoi\\domovoid.exe", user: "dl", home: "C:\\Users\\dl", configuration: configuration("C:\\Users\\dl", "win32") }
 const windowsScript = {
   platform: "win32",
   execPath: "C:\\Program Files\\Domovoi\\dist\\index.js",
   runtime: "C:\\Program Files\\nodejs\\node.exe",
   user: "dl",
+  home: windows.home,
+  configuration: windows.configuration,
 }
 
-function effects(overrides: Partial<{
-  capture: (command: string, args: string[]) => Promise<CapturedRun>
-  exists: (path: string) => Promise<boolean>
-  run: (command: string, args: string[]) => Promise<void>
-}> = {}) {
+function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   return {
     write: vi.fn(async () => {}),
-    run: overrides.run ?? vi.fn(async () => {}),
-    capture: overrides.capture ?? vi.fn(async () => ({ code: 0, stdout: "" })),
-    exists: overrides.exists ?? vi.fn(async () => true),
+    run: vi.fn(async () => {}),
+    capture: vi.fn(async () => ({ code: 0, stdout: "" })),
+    exists: vi.fn(async () => true),
     remove: vi.fn(async () => {}),
+    ...overrides,
   }
 }
 
@@ -86,13 +96,13 @@ describe("servicePlan", () => {
   it("launches a script through Node rather than letting Windows pick an interpreter", () => {
     const plan = servicePlan(windowsScript)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js"')
+    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   it("passes a real executable straight through", () => {
     const plan = servicePlan(windows)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe"')
+    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   it("refuses a script with no runtime to run it", () => {
@@ -102,7 +112,7 @@ describe("servicePlan", () => {
   })
 
   it("refuses a platform with no service manager it knows", () => {
-    expect(() => servicePlan({ platform: "aix", execPath: "/usr/local/bin/domovoid" }))
+    expect(() => servicePlan({ ...linux, platform: "aix" }))
       .toThrow("aix has no service manager this knows how to install into")
   })
 
@@ -115,12 +125,68 @@ describe("servicePlan", () => {
 })
 
 describe("installService", () => {
+  it("honors every injected service effect", () => {
+    const write = vi.fn(async () => {})
+    const remove = vi.fn(async () => {})
+    const dependencies = effects({ write, remove })
+    expect(dependencies.write).toBe(write)
+    expect(dependencies.remove).toBe(remove)
+  })
+
+  it.skipIf(process.platform === "win32")("tightens existing service settings before starting the manager", async () => {
+    const deadline = OperationDeadline.start(5_000)
+    const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
+    const directory = await within(() => mkdtemp(join(tmpdir(), "domovoi-service-permissions-")))
+    try {
+      const path = join(directory, "service.json")
+      await within(() => writeFile(path, "old settings"))
+      await within(() => chmod(path, 0o666))
+      await within(() => chmod(directory, 0o777))
+      await within(() => nodeServiceEffects().write(path, "new settings", deadline))
+      expect((await within(() => stat(path))).mode & 0o777).toBe(0o600)
+      expect((await within(() => stat(directory))).mode & 0o777).toBe(0o700)
+      expect(await within(() => readFile(path, "utf8"))).toBe("new settings")
+    } finally {
+      await within(() => rm(directory, { recursive: true, force: true }))
+      deadline.clear()
+    }
+  })
+
+  it("uses one deadline for every install step", async () => {
+    const dependencies = effects()
+    await installService(linux, dependencies)
+    const deadline = vi.mocked(dependencies.write).mock.calls[0]?.[2]
+    expect(deadline).toBeInstanceOf(OperationDeadline)
+    expect(vi.mocked(dependencies.write).mock.calls.every((call) => call[2] === deadline)).toBe(true)
+    expect(vi.mocked(dependencies.run).mock.calls.every((call) => call[2] === deadline)).toBe(true)
+  })
+
+  it("expires a stalled config write without running later install steps", async () => {
+    vi.useFakeTimers()
+    let finishWrite: () => void = () => {}
+    try {
+      const write = vi.fn(() => new Promise<void>((resolve) => { finishWrite = resolve }))
+      const run = vi.fn(async () => {})
+      const installing = installService(linux, { write, run })
+      const rejection = expect(installing).rejects.toThrow(/deadline/)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await rejection
+      finishWrite()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(write).toHaveBeenCalledTimes(1)
+      expect(run).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("writes the unit before asking the manager to load it", async () => {
     const order: string[] = []
     const written = vi.fn(async () => { order.push("write") })
     const ran = vi.fn(async () => { order.push("run") })
     await installService(linux, { write: written, run: ran })
-    expect(order).toEqual(["write", "run", "run"])
+    expect(order).toEqual(["write", "write", "run", "run"])
   })
 
   it("does not run the manager when the unit cannot be written", async () => {
@@ -164,7 +230,8 @@ describe("removeService", () => {
   it("deletes the unit even when the manager refuses to stop a service it does not know", async () => {
     const dependencies = effects({ run: vi.fn(async () => { throw new Error("Unit not loaded") }) })
     await removeService({ platform: "linux", home: "/home/dl" }, dependencies)
-    expect(dependencies.remove).toHaveBeenCalledWith("/home/dl/.config/systemd/user/domovoid.service")
+    expect(dependencies.remove).toHaveBeenCalledWith("/home/dl/.config/systemd/user/domovoid.service", expect.any(OperationDeadline))
+    expect(dependencies.remove).toHaveBeenCalledWith("/home/dl/.domovoi/service.json", expect.any(OperationDeadline))
   })
 
   it("leaves the file system alone when there is no unit to delete", async () => {
