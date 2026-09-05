@@ -59,6 +59,8 @@ const contracts = [
       "dist/public.d.ts",
       "dist/server.js",
       "dist/server.d.ts",
+      "runtime/lock.json",
+      "runtime/protocol.tgz",
     ],
     exports: [".", "./internal"],
   },
