@@ -104,12 +104,23 @@ export const deviceRenameLabelSchema = z.string()
   .max(maximumPairedDeviceLabelLength)
   .regex(/^\P{Cc}*$/u, "A device label cannot contain control characters")
 
+// The expected label is a precondition: when present, the daemon renames only
+// a row whose label still reads that way, so an Undo sent after another client
+// renamed the same row refuses instead of overwriting that rename.
 export const deviceRenameParamsSchema = z.object({
   deviceId: deviceIdSchema,
   label: deviceRenameLabelSchema,
+  expectedLabel: deviceLabelSchema.optional(),
 }).strict()
 
 export const deviceRenameResultSchema = z.object({
+  device: pairedDeviceSchema,
+}).strict()
+
+// The data on a deviceLabelMismatchErrorCode refusal: the row as it is now, so
+// the client can show the current label without another round trip.
+export const deviceLabelMismatchSchema = z.object({
+  kind: z.literal("device-label-mismatch"),
   device: pairedDeviceSchema,
 }).strict()
 
@@ -143,3 +154,4 @@ export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>
 export type DeviceRenameParams = z.infer<typeof deviceRenameParamsSchema>
 export type DeviceRenameResult = z.infer<typeof deviceRenameResultSchema>
+export type DeviceLabelMismatch = z.infer<typeof deviceLabelMismatchSchema>

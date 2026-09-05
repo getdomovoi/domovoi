@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite"
 import { describe, expect, it } from "vitest"
 
 import {
+  DeviceLabelMismatchError,
   DeviceLimitReachedError,
   DeviceNotFoundError,
   SqliteDeviceRegistry,
@@ -293,6 +294,36 @@ describe("SqliteDeviceRegistry", () => {
     const { registry: devices } = registry()
 
     expect(() => devices.rename("device-missing", "kitchen-ipad")).toThrow(DeviceNotFoundError)
+    expect(() => devices.rename("device-missing", "kitchen-ipad", "studio-ipad")).toThrow(DeviceNotFoundError)
+  })
+
+  it("renames a device whose label still matches the expected one", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+
+    expect(devices.rename(paired.device.id, "kitchen-ipad", "studio-ipad"))
+      .toEqual({ ...paired.device, label: "kitchen-ipad" })
+    expect(devices.list()).toEqual([{ ...paired.device, label: "kitchen-ipad" }])
+  })
+
+  it("refuses a stale expected label and reports the row as it is", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    devices.rename(paired.device.id, "kitchen-ipad")
+
+    let refusal: unknown
+    try {
+      devices.rename(paired.device.id, "studio-ipad", "studio-ipad")
+    } catch (error) {
+      refusal = error
+    }
+
+    expect(refusal).toBeInstanceOf(DeviceLabelMismatchError)
+    expect((refusal as DeviceLabelMismatchError).mismatch).toEqual({
+      kind: "device-label-mismatch",
+      device: { ...paired.device, label: "kitchen-ipad" },
+    })
+    expect(devices.list()).toEqual([{ ...paired.device, label: "kitchen-ipad" }])
   })
 
   it.each(["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad"])(
