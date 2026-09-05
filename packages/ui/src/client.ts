@@ -7,6 +7,7 @@ import {
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
+  fleetChangedNotificationSchema,
   terminalAcceptedSchema,
   terminalClosedNotificationSchema,
   terminalOwnershipNotificationSchema,
@@ -21,13 +22,13 @@ import {
   type ArtifactAccess,
   type AuditExportParams,
   type AuditExportResult,
-  type DeviceMachineCredentialParams,
   type DevicePairResult,
   type DevicesResult,
+  type FleetEnrollParams,
+  type FleetEnrollResult,
+  type FleetForgetParams,
+  type FleetForgetResult,
   type FleetSnapshot,
-  type DeviceMachineCredentialResult,
-  type DeviceSaveCredentialParams,
-  type DeviceSaveCredentialResult,
   type AuditQueryPage,
   type AuditQueryParams,
   type ProviderModel,
@@ -51,13 +52,17 @@ import {
 
 import { Deadline, DeadlineExceededError, deadlineBudget, describeTarget } from "./deadline.js"
 
+// The daemon's typed error data rides along: a refusal such as a withheld
+// fleet list carries facts the surface has to show, and a code alone cannot.
 export class DaemonRpcError extends Error {
   readonly code: number
+  readonly data: unknown
 
-  constructor(code: number, message: string) {
+  constructor(code: number, message: string, data?: unknown) {
     super(message)
     this.name = "DaemonRpcError"
     this.code = code
+    this.data = data
   }
 }
 
@@ -776,18 +781,20 @@ export class DomovoiClient extends EventTarget {
     return this.request("device.rotate", { ...params, client: this.kind }, options)
   }
 
-  machineCredential(
-    params: DeviceMachineCredentialParams,
+  // The daemon claims, greets and stores on the client's behalf, so the only
+  // thing this connection ever carries is the one-time code and the answer.
+  enrollMachine(
+    params: Omit<FleetEnrollParams, "client">,
     options?: DomovoiRequestOptions,
-  ): Promise<DeviceMachineCredentialResult> {
-    return this.request("device.machineCredential", params, options)
+  ): Promise<FleetEnrollResult> {
+    return this.request("fleet.enroll", { ...params, client: this.kind }, options)
   }
 
-  saveMachineCredential(
-    params: DeviceSaveCredentialParams,
+  forgetMachine(
+    params: Omit<FleetForgetParams, "client">,
     options?: DomovoiRequestOptions,
-  ): Promise<DeviceSaveCredentialResult> {
-    return this.request("device.saveCredential", params, options)
+  ): Promise<FleetForgetResult> {
+    return this.request("fleet.forget", { ...params, client: this.kind }, options)
   }
 
   exportAudit(
@@ -905,6 +912,17 @@ export class DomovoiClient extends EventTarget {
         }
         return
       }
+      if (notification.data.method === "fleet.changed") {
+        const fleet = fleetChangedNotificationSchema.safeParse(notification.data.params)
+        if (fleet.success) {
+          this.dispatchEvent(new CustomEvent("fleet-changed", { detail: fleet.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a fleet.changed notification this client could not parse",
+          )
+        }
+        return
+      }
       if (notification.data.method === "terminal.output") {
         const output = terminalOutputNotificationSchema.safeParse(notification.data.params)
         if (output.success) {
@@ -981,7 +999,7 @@ export class DomovoiClient extends EventTarget {
     pending.cleanup()
 
     if (response.data.error) {
-      const error = new DaemonRpcError(response.data.error.code, response.data.error.message)
+      const error = new DaemonRpcError(response.data.error.code, response.data.error.message, response.data.error.data)
       if (response.data.error.code === daemonAuthenticationErrorCode) {
         pending.reject(error)
         this.#markAuthenticationRequired(response.data.error.message)

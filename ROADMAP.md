@@ -397,6 +397,11 @@ method can be wired safely.
   - The registry, protocol, and selector UI exist. Production writes only the local row; pairing
     saves a credential but no remote facts or endpoint, and nothing refreshes a peer. Close with
     two real daemons from pairing through selection and restart, without registry seeding.
+- [ ] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
+  - Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not
+    grant the initiating desktop a remote client credential. Until a separate client-admission
+    slice exists, remote Use and Terminal stay disabled with a reason naming that missing
+    credential. Direct phone-to-daemon client pairing is unchanged.
 - [ ] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
   2. WSL interop to a distro daemon on the same machine;

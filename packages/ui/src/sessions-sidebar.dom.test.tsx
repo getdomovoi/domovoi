@@ -39,7 +39,7 @@ it("names the connected machine and counts the fleet in the footer", () => {
     <TooltipProvider>
       <SessionsSidebar
         snapshot={snapshot}
-        fleet={[fleetMachine(1, false), fleetMachine(2, true), fleetMachine(3, false)]}
+        fleet={[fleetMachine(1, false), fleetMachine(2, true), fleetMachine(3, false)].map((machine) => ({ kind: "machine" as const, machine }))}
         {...handlers}
       />
     </TooltipProvider>,

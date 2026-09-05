@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { remoteControlRefusal } from "./machine-selection.js"
 import { activeSessionCount, Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
@@ -27,7 +28,7 @@ it("opens the device menu from the composer machine chip", async () => {
     <Thread
       snapshot={snapshot}
       connected
-      fleet={[{
+      fleet={[{ kind: "machine", machine: {
         id: `machine-${"a".repeat(32)}`,
         label: snapshot.machine.name,
         platform: snapshot.machine.platform,
@@ -42,7 +43,7 @@ it("opens the device menu from the composer machine chip", async () => {
         heartbeat: { state: "online", lastSeenAt: "2026-08-31T12:00:00.000Z" },
         health: "healthy",
         self: true,
-      }]}
+      } }]}
       currentMachineId={`machine-${"a".repeat(32)}`}
       {...handlers}
     />,
@@ -77,8 +78,10 @@ it("pairs a machine from the composer device menu", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
   const onPairMachine = vi.fn(async () => ({
+    outcome: "enrolled" as const,
     machineId: `machine-${"c".repeat(32)}`,
     label: "workshop",
+    fleet: { entries: [] },
   }))
   render(
     <Thread
@@ -104,7 +107,7 @@ it("pairs a machine from the composer device menu", async () => {
   })
 })
 
-it("selects another machine from the composer device menu", async () => {
+it("refuses another machine from the composer device menu and says why", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
   const onSelectMachine = vi.fn()
@@ -143,7 +146,7 @@ it("selects another machine from the composer device menu", async () => {
         heartbeat: { state: "online" as const, lastSeenAt: "2026-08-31T12:00:00.000Z" },
         health: "healthy" as const,
         self: true,
-      }, studio]}
+      }, studio].map((machine) => ({ kind: "machine" as const, machine }))}
       currentMachineId={snapshot.machine.id}
       onSelectMachine={onSelectMachine}
       {...handlers}
@@ -151,7 +154,10 @@ it("selects another machine from the composer device menu", async () => {
   )
 
   await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
-  await user.click(screen.getByRole("menuitem", { name: /studio/ }))
+  const item = screen.getByRole("menuitem", { name: /studio/ })
+  expect(item.getAttribute("aria-disabled")).toBe("true")
+  expect(item.textContent).toContain(remoteControlRefusal)
+  await user.click(item)
 
-  expect(onSelectMachine).toHaveBeenCalledWith(studio.id)
+  expect(onSelectMachine).not.toHaveBeenCalled()
 })

@@ -48,7 +48,10 @@ export function transferPreflight(input: {
 
   switch (target.health) {
     case "unreachable":
+    case "credential-store-unavailable":
       return refuse("target-unreachable")
+    case "pairing-required":
+      return refuse("target-pairing-required")
     case "degraded":
     case "reconnecting":
       return refuse("target-not-responding")

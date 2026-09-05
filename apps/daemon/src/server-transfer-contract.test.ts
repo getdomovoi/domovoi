@@ -454,7 +454,7 @@ describe("transactional session transfer RPC", () => {
       ["system.emergencyStop", { client: "desktop" }],
     ] as const) {
       await expect(machineCall(method, params)).resolves.toMatchObject({
-        error: { code: -32001, message: "Machine connections may only use transfer RPCs" },
+        error: { code: -32001, message: "Machine connections may only use machine lifecycle and transfer RPCs" },
       })
     }
     await expect(machineCall("session.transferPreview", request)).resolves.toMatchObject({

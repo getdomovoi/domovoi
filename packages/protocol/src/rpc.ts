@@ -50,10 +50,6 @@ import {
 import {
   deviceClaimParamsSchema,
   deviceIssueCodeResultSchema,
-  deviceMachineCredentialParamsSchema,
-  deviceMachineCredentialResultSchema,
-  deviceSaveCredentialParamsSchema,
-  deviceSaveCredentialResultSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -62,7 +58,13 @@ import {
   devicesResultSchema,
   pairedDeviceSchema,
 } from "./devices.js"
-import { fleetSnapshotSchema } from "./fleet.js"
+import { fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
+import {
+  fleetEnrollParamsSchema,
+  fleetEnrollResultSchema,
+  fleetForgetParamsSchema,
+  fleetForgetResultSchema,
+} from "./fleet-enrollment.js"
 import {
   annotationStatusSchema,
   canonicalBase64DecodedByteLength,
@@ -99,6 +101,7 @@ export const protocolVersionMismatchErrorCode = -32012 as const
 export const devicePairingLimitErrorCode = -32013 as const
 export const daemonPersistenceUnavailableErrorCode = -32014 as const
 export const turnSkillSelectionErrorCode = -32015 as const
+export const fleetSnapshotOverflowErrorCode = -32016 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -1143,15 +1146,14 @@ export const rpcMethods = {
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
+  "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
+  "fleet.forget": { params: fleetForgetParamsSchema, result: fleetForgetResultSchema },
+  "fleet.heartbeat": { params: fleetListParamsSchema, result: fleetMachineDescriptorSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
   // Reachable before authentication: a machine being paired has no credential
-  // yet. Gated on an open pairing code and nothing else.
+  // yet. Check protocol compatibility before consuming its one-time code.
   "device.claim": { params: deviceClaimParamsSchema, result: devicePairResultSchema },
   "device.issueCode": { params: deviceListParamsSchema, result: deviceIssueCodeResultSchema },
-  "device.saveCredential": {
-    params: deviceSaveCredentialParamsSchema,
-    result: deviceSaveCredentialResultSchema,
-  },
   "session.transfer": {
     params: sessionTransferParamsSchema,
     result: sessionTransferResultSchema,
@@ -1192,14 +1194,15 @@ export const rpcMethods = {
     params: transferAbortParamsSchema,
     result: transferAbortResultSchema,
   },
-  "device.machineCredential": {
-    params: deviceMachineCredentialParamsSchema,
-    result: deviceMachineCredentialResultSchema,
-  },
   "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
   "device.revoke": {
     params: deviceRevokeParamsSchema,
     result: z.object({ device: pairedDeviceSchema }).strict(),
+  },
+  // Machine-only: revokes the current verified device, never a supplied id.
+  "device.revokeCurrent": {
+    params: deviceListParamsSchema,
+    result: z.object({ revoked: z.literal(true) }).strict(),
   },
   "device.rotate": {
     params: deviceRotateParamsSchema,
@@ -1329,10 +1332,10 @@ export const rpcMethodMutations = {
   "terminal.resize": "read-only",
   "terminal.close": "read-only",
   "fleet.list": "read-only",
+  "fleet.heartbeat": "read-only",
   "session.transferPreview": "read-only",
   "transfer.preflight": "read-only",
   "transfer.status": "read-only",
-  "device.machineCredential": "read-only",
   "device.list": "read-only",
   "session.evidence": "read-only",
   "session.history": "read-only",
@@ -1347,8 +1350,10 @@ export const rpcMethodMutations = {
   "device.pair": "mutating",
   "device.claim": "mutating",
   "device.issueCode": "mutating",
-  "device.saveCredential": "mutating",
+  "fleet.enroll": "mutating",
+  "fleet.forget": "mutating",
   "device.revoke": "mutating",
+  "device.revokeCurrent": "mutating",
   "device.rotate": "mutating",
   "session.transfer": "mutating",
   "session.transferRecoverSource": "mutating",

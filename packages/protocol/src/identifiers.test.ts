@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import {
   deviceCredentialSchema,
-  deviceMachineCredentialParamsSchema,
-  deviceSaveCredentialParamsSchema,
+  deviceClaimParamsSchema,
   machineCredentialSchema,
 } from "./devices.js"
 import { machineIdSchema as fleetMachineIdSchema } from "./fleet.js"
+import { fleetEnrollParamsSchema, fleetForgetParamsSchema } from "./fleet-enrollment.js"
 import {
   annotationStatusSchema,
   clientIdentityIdSchema,
@@ -110,8 +110,9 @@ describe("client kind", () => {
 
 describe("machine id", () => {
   it("names every machine id field with machineIdSchema", () => {
-    expect(deviceSaveCredentialParamsSchema.shape.machineId).toBe(machineIdSchema)
-    expect(deviceMachineCredentialParamsSchema.shape.machineId).toBe(machineIdSchema)
+    expect(deviceClaimParamsSchema.shape.machineId).toBe(machineIdSchema)
+    expect(fleetEnrollParamsSchema.shape.expectedMachineId.unwrap()).toBe(machineIdSchema)
+    expect(fleetForgetParamsSchema.shape.machineId).toBe(machineIdSchema)
     expect(transferReceiptSchema.shape.sourceMachineId).toBe(machineIdSchema)
     expect(transferReceiptSchema.shape.targetMachineId).toBe(machineIdSchema)
     expect(sessionTransferParamsSchema.shape.targetMachineId).toBe(machineIdSchema)

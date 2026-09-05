@@ -3,12 +3,15 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { PairMachineDialog } from "./pair-machine-dialog.js"
+import type { PairedMachine } from "./pair-machine.js"
 
 afterEach(cleanup)
 
-const paired = {
+const paired: PairedMachine = {
+  outcome: "enrolled",
   machineId: `machine-${"c".repeat(32)}`,
   label: "workshop",
+  fleet: { entries: [] },
 }
 
 async function openDialog(onClaim = vi.fn(async () => paired)) {

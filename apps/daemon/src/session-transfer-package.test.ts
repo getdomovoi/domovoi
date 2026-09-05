@@ -148,6 +148,49 @@ describe("session transfer package", () => {
     ])
   })
 
+  it("omits undefined optional properties from canonical bytes and the intent commitment", async () => {
+    const absent = intentInput()
+    const withUndefined = intentInput()
+    const absentPlan = absent.snapshot.workingPlans.find((plan) => plan.sessionId === absent.sessionId)!
+    const undefinedPlan = withUndefined.snapshot.workingPlans.find((plan) => plan.sessionId === withUndefined.sessionId)!
+    delete absentPlan.pendingEdit
+    undefinedPlan.pendingEdit = undefined
+    const clean = await prepareSessionTransferIntent(absent)
+    const intent = await prepareSessionTransferIntent(withUndefined)
+    const packaged = createSessionTransferPackage(intent, {
+      transferId: `transfer-${"1".repeat(32)}`, checkpointCommit,
+      repository: { method: "git-bundle", bytes: Buffer.from("bundle") },
+      createdAt: "2026-09-03T20:30:00.000Z",
+    })
+    const stateBytes = packaged.members.find((entry) => entry.member.kind === "session-state")!.bytes
+    const state = sessionTransferStateSchema.parse(JSON.parse(stateBytes.toString("utf8")))
+    expect(state.workingPlan).not.toHaveProperty("pendingEdit")
+    expect(state.workingPlan?.steps).toEqual(intent.state.workingPlan?.steps)
+    expect(intent.preview.intentDigest).toBe(clean.preview.intentDigest)
+  })
+
+  it.each(["complete", "no-plan", "no-resources", "undefined-session", "undefined-artifact", "undefined-usage"])(
+    "round-trips %s portable state through package bytes and the target schema", async (variant) => {
+      const input = intentInput()
+      if (variant === "no-plan") input.snapshot.workingPlans = []
+      if (variant === "no-resources") {
+        input.snapshot.annotations = []
+        input.snapshot.artifacts = []
+      }
+      const intent = await prepareSessionTransferIntent(input)
+      if (variant === "undefined-session") intent.state.session.forkedFrom = undefined
+      if (variant === "undefined-artifact") intent.state.artifacts[0]!.mimeType = undefined
+      if (variant === "undefined-usage") intent.state.usage[0]!.contextTokens = undefined
+      const packaged = createSessionTransferPackage(intent, {
+        transferId: `transfer-${"1".repeat(32)}`, checkpointCommit,
+        repository: { method: "git-bundle", bytes: Buffer.from("bundle") },
+        createdAt: "2026-09-03T20:30:00.000Z",
+      })
+      const bytes = packaged.members.find((entry) => entry.member.kind === "session-state")!.bytes
+      expect(sessionTransferStateSchema.parse(JSON.parse(bytes.toString("utf8")))).toEqual(intent.state)
+    },
+  )
+
   it("uses a remote ref without pretending repository bytes were streamed", async () => {
     const input = intentInput()
     const intent = await prepareSessionTransferIntent({

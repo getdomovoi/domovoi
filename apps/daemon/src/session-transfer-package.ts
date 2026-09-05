@@ -62,9 +62,16 @@ function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`
   const record = value as Record<string, unknown>
-  return `{${Object.keys(record).sort().map((key) => (
+  // Validated optional properties can still be present as `undefined` in
+  // memory. JSON omits them; canonical ordering must preserve that rule for
+  // every object, both in the intent commitment and in the transferred bytes.
+  return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => (
     `${JSON.stringify(key)}:${canonicalJson(record[key])}`
   )).join(",")}}`
+}
+
+export function sessionTransferStateBytes(state: SessionTransferState): Buffer {
+  return Buffer.from(canonicalJson(state), "utf8")
 }
 
 function sha256(bytes: Uint8Array | string): string {
@@ -300,7 +307,7 @@ export function createSessionTransferPackage(
   if (input.repository.method !== intent.method) {
     throw new SessionTransferStateError("session-state-changed")
   }
-  const stateBytes = Buffer.from(canonicalJson(intent.state), "utf8")
+  const stateBytes = sessionTransferStateBytes(intent.state)
   const members = [
     member({
       memberId: "state",

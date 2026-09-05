@@ -8,10 +8,21 @@ import {
 
 import {
   importSessionTransferState,
-  portableSessionTransferState,
+  portableSessionTransferState as buildPortableSessionTransferState,
   sessionTransferCheckpointCommits,
   SessionTransferStateError,
 } from "./session-transfer-state.js"
+import { sessionTransferStateBytes } from "./session-transfer-package.js"
+
+function portableSessionTransferState(...args: Parameters<typeof buildPortableSessionTransferState>) {
+  const state = buildPortableSessionTransferState(...args)
+  // Every valid portable-state fixture also crosses the package encoder and
+  // exact parser used on the target. Parsing the in-memory object is not proof
+  // that its wire representation survives the trip.
+  expect(sessionTransferStateSchema.parse(JSON.parse(sessionTransferStateBytes(state).toString("utf8"))))
+    .toEqual(state)
+  return state
+}
 
 const sourceMachineId = `machine-${"a".repeat(32)}`
 const targetMachineId = `machine-${"b".repeat(32)}`

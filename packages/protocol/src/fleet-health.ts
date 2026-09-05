@@ -16,6 +16,8 @@ export const fleetHealthSchema = z.enum([
   "unreachable",
   "version-mismatch",
   "upgrade-required",
+  "pairing-required",
+  "credential-store-unavailable",
 ])
 
 export const protocolCompatibilitySchema = z.enum([
