@@ -24,7 +24,6 @@ const listingCommand = "\"wsl.exe --list --verbose\""
 // status that would otherwise read as a failure. Newer builds add an error
 // code that survives translation. A header with no rows is the same answer.
 const noDistributions = /no installed distributions|WSL_E_DEFAULT_DISTRO_NOT_FOUND/i
-const listingHeader = /\bNAME\b.*\bSTATE\b.*\bVERSION\b/i
 
 function saidNoDistributions(error: unknown): boolean {
   const failure = error as { stdout?: unknown; stderr?: unknown }
@@ -78,12 +77,14 @@ export async function listWslDistributions(input: WslListInput = {}): Promise<Ws
     throw listingFailure(classifyWslFailure(error, firstSaid(failure.stderr, failure.stdout)), timeoutMs)
   }
 
-  const distributions = parseWslDistributions(listing)
-  if (distributions.length > 0) return distributions
-  const text = wslText(listing)
-  if (noDistributions.test(text) || listingHeader.test(text.split(/\r?\n/)[0] ?? "")) return []
+  const result = parseWslDistributions(listing)
+  if (result.kind === "listed") return result.distributions
+  // An explicit no-distributions answer has no table header. Once a header
+  // exists, every nonblank row must parse, even one containing an error code
+  // or an absence phrase that would otherwise hide the corruption.
+  if (result.line === 1 && noDistributions.test(wslText(listing))) return []
   throw new WslError(
     "corrupt",
-    `wsl.exe answered ${listingCommand} with something other than a distribution listing, so the distributions on this machine are unknown. Run ${listingCommand} yourself to see what it prints.`,
+    `wsl.exe answered ${listingCommand} with a corrupt distribution listing at line ${result.line}, so the distributions on this machine are unknown. Run ${listingCommand} yourself to inspect its output and check "wsl.exe --status" before trying again.`,
   )
 }

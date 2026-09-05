@@ -7,8 +7,16 @@ export type WslDistribution = {
   default: boolean
 }
 
+// A corrupt listing has no usable rows, even if some could be read. Keeping
+// only the line number makes it impossible to mistake partial discovery for
+// a complete list, or repeat untrusted row contents in an operator message.
+export type WslDistributionListing =
+  | { kind: "listed"; distributions: WslDistribution[] }
+  | { kind: "corrupt"; line: number }
+
 const states = new Set<WslDistributionState>(["Running", "Stopped"])
 const byteOrderMark = "﻿"
+const header = /^\s*NAME\s+STATE\s+VERSION\s*$/i
 
 // wsl.exe writes its listing as UTF-16 with a byte order mark, so reading it as
 // UTF-8 leaves a NUL between every character and matches nothing.
@@ -40,12 +48,16 @@ function readDistribution(line: string): WslDistribution | undefined {
   }
 }
 
-export function parseWslDistributions(output: string | Buffer): WslDistribution[] {
-  const [, ...lines] = decode(output).split(/\r?\n/)
+export function parseWslDistributions(output: string | Buffer): WslDistributionListing {
+  const [first, ...lines] = decode(output).split(/\r?\n/)
+  if (!header.test(first ?? "")) return { kind: "corrupt", line: 1 }
+
   const distributions: WslDistribution[] = []
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (line.trim() === "") continue
     const distribution = readDistribution(line)
-    if (distribution) distributions.push(distribution)
+    if (!distribution) return { kind: "corrupt", line: index + 2 }
+    distributions.push(distribution)
   }
-  return distributions
+  return { kind: "listed", distributions }
 }
