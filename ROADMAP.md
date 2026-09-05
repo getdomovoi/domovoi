@@ -506,6 +506,10 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     verifies the installed graph before publishing a runnable receipt. Same-release protocol
     bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
     installation, native build, verification, publication, and cleanup share five minutes.
+  - Fresh musl or unknown-libc Linux installs force the reviewed node-pty source build rather
+    than selecting an unqualified Linux prebuild. Native loading is checked before publication
+    and on reuse. Ubuntu CI's pinned Node 22 Alpine smoke installs the real archive, opens a PTY,
+    and authenticates against the production daemon; other musl architectures remain unproven.
   - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
     external toolchain remain reproducibility limits. The protocol library keeps all three
     package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
