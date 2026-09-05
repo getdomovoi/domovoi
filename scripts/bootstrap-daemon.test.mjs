@@ -22,6 +22,7 @@ test("root package checks include the publication regressions", { timeout: 10_00
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-publication\.test\.mjs(?: |$)/)
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-install\.test\.mjs(?: |$)/)
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-install-live\.test\.mjs(?: |$)/)
+  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-download-live\.test\.mjs(?: |$)/)
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/runtime-lock\.test\.mjs(?: |$)/)
 })
 
@@ -219,6 +220,24 @@ test("cancels trickling archive bytes at the original deadline", { timeout: 10_0
     await rm(into, { force: true, recursive: true })
   }
 })
+
+for (const stalled of ["manifest", "archive"]) {
+  test(`passes the configured inactivity bound to the ${stalled} download before publication`, { timeout: 10_000 }, async (t) => {
+    const into = await destination()
+    let now = 0
+    t.mock.method(performance, "now", () => now)
+    t.mock.method(globalThis, "fetch", async (url) => {
+      const manifest = url.endsWith("SHA256SUMS")
+      if ((stalled === "manifest") === manifest) now += 100
+      return new Response(manifest ? `${digest}  ${archive}\n` : bytes)
+    })
+    try {
+      await assert.rejects(bootstrapDaemon({ version, baseUrl, destination: into, expectedSha256: digest,
+        timeoutMs: 1_000, inactivityTimeoutMs: 100 }), { code: "BOOTSTRAP_DOWNLOAD_INACTIVE" })
+      await assert.rejects(readFile(join(into, `v${version}`, archive)), { code: "ENOENT" })
+    } finally { await rm(into, { force: true, recursive: true }) }
+  })
+}
 
 for (const timeoutMs of [0, -1, Infinity, NaN, 0.5, 2_147_483_648]) {
   test(`refuses an invalid total budget before downloading: ${timeoutMs}`, async (t) => {

@@ -7,6 +7,7 @@ import { z } from "zod"
 
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { localOwnerIdentitySchema, localOwnerSecretSchema, type LocalOwnerSecret } from "./local-owner-proof.js"
+import type { OperationDeadline } from "./operation-deadline.js"
 
 const absolutePath = z.string().min(1).max(4096)
   .refine((path) => posix.isAbsolute(path) || win32.isAbsolute(path))
@@ -73,8 +74,8 @@ export function readLocalOwnerRecord(homeDirectory: string): LocalOwnerRecord | 
   }
 }
 
-export async function createLocalOwnerSecret(homeDirectory: string, rootBearer: string): Promise<LocalOwnerSecret> {
-  const secret = localOwnerSecretSchema.parse(await loadOrCreateDaemonToken(localOwnerSecretPath(homeDirectory)))
+export async function createLocalOwnerSecret(homeDirectory: string, rootBearer: string, deadline: OperationDeadline): Promise<LocalOwnerSecret> {
+  const secret = localOwnerSecretSchema.parse(await loadOrCreateDaemonToken(localOwnerSecretPath(homeDirectory), deadline))
   if (secret === rootBearer) throw new Error("The local owner challenge key must differ from the daemon credential")
   return secret
 }

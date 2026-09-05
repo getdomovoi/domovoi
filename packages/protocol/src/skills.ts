@@ -208,6 +208,50 @@ export const turnSkillSelectionRefusalSchema = z.object({
 
 export const skillReviewDecisionSchema = z.enum(["trust", "revoke"])
 
+export const maximumSkillInstallFiles = 256
+export const skillInstallScopeSchema = z.enum(["project", "user"])
+const skillInstallPathSchema = z.string().min(1).max(1_024).regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/)
+const skillInstallRelativePathSchema = z.string().min(1).max(1_024)
+
+export const skillInstallSourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("path"), path: skillInstallPathSchema }).strict(),
+])
+
+export const skillInstallRefusalSchema = z.object({
+  kind: z.literal("skill-install-refused"),
+  reason: z.enum([
+    "source-changed",
+    "blocked",
+    "name-conflict",
+    "symlink-escapes-source",
+    "source-too-large",
+  ]),
+  path: skillInstallRelativePathSchema.optional(),
+}).strict()
+
+export const skillInstallTargetSchema = z.object({
+  scope: skillInstallScopeSchema,
+  path: skillInstallPathSchema,
+  state: z.enum(["available", "installed", "conflict"]),
+}).strict()
+
+export const skillInstallPreviewSchema = z.object({
+  source: skillInstallSourceSchema,
+  name: skillSummarySchema.shape.name,
+  description: skillSummarySchema.shape.description,
+  manifest: skillCapabilityManifestSchema,
+  contentDigest: skillContentDigestSchema,
+  sourceDigest: skillContentDigestSchema,
+  signature: skillSignatureSchema,
+  trust: skillTrustSchema,
+  files: z.array(z.object({
+    path: skillInstallRelativePathSchema,
+    bytes: z.number().int().nonnegative(),
+  }).strict()).max(maximumSkillInstallFiles),
+  targets: z.array(skillInstallTargetSchema).max(skillInstallScopeSchema.options.length),
+  refusals: z.array(skillInstallRefusalSchema).max(maximumSkillInstallFiles),
+}).strict()
+
 export const skillManualReviewSchema = z.object({
   skillId: skillIdSchema,
   contentDigest: skillContentDigestSchema,
@@ -231,6 +275,11 @@ export type TurnSkillSelectionReference = z.infer<typeof turnSkillSelectionRefer
 export type TurnSkillSelection = z.infer<typeof turnSkillSelectionSchema>
 export type TurnSkillSelectionRefusal = z.infer<typeof turnSkillSelectionRefusalSchema>
 export type SkillReviewDecision = z.infer<typeof skillReviewDecisionSchema>
+export type SkillInstallScope = z.infer<typeof skillInstallScopeSchema>
+export type SkillInstallSource = z.infer<typeof skillInstallSourceSchema>
+export type SkillInstallRefusal = z.infer<typeof skillInstallRefusalSchema>
+export type SkillInstallTarget = z.infer<typeof skillInstallTargetSchema>
+export type SkillInstallPreview = z.infer<typeof skillInstallPreviewSchema>
 export type SkillManualReview = z.infer<typeof skillManualReviewSchema>
 export type SkillInventorySignature = z.infer<typeof skillInventorySignatureSchema>
 export type SkillInventoryTrust = z.infer<typeof skillInventoryTrustSchema>

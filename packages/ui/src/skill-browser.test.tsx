@@ -60,6 +60,8 @@ describe("skill browser", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -99,6 +101,8 @@ describe("skill browser", () => {
         }]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -132,6 +136,8 @@ describe("skill browser", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -168,6 +174,8 @@ describe("skill browser", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )

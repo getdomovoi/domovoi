@@ -1,9 +1,11 @@
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { promisify } from "node:util"
 
 import { pnpmInvocation } from "./package-artifact-command.mjs"
+import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
@@ -62,21 +64,22 @@ export function evaluateDependencyLicenses(graph, policy) {
   return failures
 }
 
-export function collectDependencyLicenses(root = repositoryRoot, packages = publishablePackages) {
-  const { command } = pnpmInvocation()
-  const filters = packages.flatMap((name) => ["--filter", name])
-  const output = execFileSync(command, [...filters, "licenses", "list", "--json", "--prod"], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-  })
+export async function collectDependencyLicenses(root = repositoryRoot, packages = publishablePackages, { deadline: parent } = {}) {
+  const deadline = bootstrapDeadline(30_000, "Dependency license inventory exceeded 30000 ms", parent)
+  try {
+    const { command } = pnpmInvocation()
+    const filters = packages.flatMap((name) => ["--filter", name])
+    const { stdout: output } = await deadline.run(() => promisify(execFile)(command, [...filters, "licenses", "list", "--json", "--prod"], {
+      cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, signal: deadline.signal, killSignal: "SIGKILL",
+    }))
 
-  if (output.trim() === "") {
-    throw new Error(
-      `pnpm reported no dependency for ${packages.join(", ")}; check that every publishable package still exists`,
-    )
-  }
-  return JSON.parse(output)
+    if (output.trim() === "") {
+      throw new Error(
+        `pnpm reported no dependency for ${packages.join(", ")}; check that every publishable package still exists`,
+      )
+    }
+    return JSON.parse(output)
+  } finally { deadline.clear() }
 }
 
 async function readPolicy(root) {
@@ -92,7 +95,7 @@ export async function checkDependencyLicenses(root = repositoryRoot) {
   let graph
   try {
     policy = await readPolicy(root)
-    graph = collectDependencyLicenses(root)
+    graph = await collectDependencyLicenses(root)
   } catch (error) {
     return { licenses: [], failures: [error.message] }
   }

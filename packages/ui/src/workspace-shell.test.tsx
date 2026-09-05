@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -98,6 +98,35 @@ it("does not refetch skills for unrelated workspace updates", () => {
   expect(skillInventoryRefreshKey(updated)).toBe(skillInventoryRefreshKey(demoWorkspace))
   updated.machine.version = "0.0.2"
   expect(skillInventoryRefreshKey(updated)).not.toBe(skillInventoryRefreshKey(demoWorkspace))
+})
+
+it("keys the project half of a skill refresh to the facts the catalog follows", () => {
+  const updated = structuredClone(demoWorkspace)
+  updated.thread.push({
+    id: "unrelated-thread-update",
+    sessionId: updated.activeSessionId!,
+    kind: "system",
+    body: "Unrelated workspace update",
+    createdAt: "2026-08-30T12:00:00.000Z",
+  })
+  updated.activeSessionId = updated.sessions[1]!.id
+  expect(skillProjectRefreshKey(updated)).toBe(skillProjectRefreshKey(demoWorkspace))
+
+  const renamed = structuredClone(demoWorkspace)
+  renamed.project!.name = "acme-api-renamed"
+  expect(skillProjectRefreshKey(renamed)).toBe(skillProjectRefreshKey(demoWorkspace))
+
+  const moved = structuredClone(demoWorkspace)
+  moved.project!.path = "/Users/dev/src/acme-api-copy"
+  expect(skillProjectRefreshKey(moved)).not.toBe(skillProjectRefreshKey(demoWorkspace))
+
+  const switched = structuredClone(demoWorkspace)
+  switched.project!.branch = "feature/skills"
+  expect(skillProjectRefreshKey(switched)).not.toBe(skillProjectRefreshKey(demoWorkspace))
+
+  const closed = structuredClone(demoWorkspace)
+  closed.project = null
+  expect(skillProjectRefreshKey(closed)).toBe(skillProjectRefreshKey(null))
 })
 
 describe("RuntimeControls", () => {
