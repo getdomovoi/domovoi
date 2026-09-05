@@ -1,7 +1,19 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { downloadOverHttps } from "./bootstrap-daemon.mjs"
+import { downloadOverHttps as downloadChunksOverHttps } from "./bootstrap-daemon.mjs"
+import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
+
+// Buffer only tiny test bodies. The production archive consumer writes chunks
+// directly to staging; its streaming boundary is tested through bootstrapDaemon.
+async function downloadOverHttps(url, options) {
+  const deadline = bootstrapDeadline(5_000, `Test download expired: ${url}`)
+  try {
+    const chunks = []
+    for await (const chunk of downloadChunksOverHttps(url, { ...options, deadline })) chunks.push(chunk)
+    return Buffer.concat(chunks)
+  } finally { deadline.clear() }
+}
 
 const start = "https://releases.test/v0.1.0/getdomovoi-daemon-0.1.0.tgz"
 

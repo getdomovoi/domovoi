@@ -260,7 +260,7 @@ test("expiry during staging cannot publish when the late write settles",
     })
     syncBuiltinESMExports()
     context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports() })
-    const result = settle(bootstrapDaemon({ ...input(destination, Buffer.from("release")), publicationTimeoutMs: 500 }))
+    const result = settle(bootstrapDaemon({ ...input(destination, Buffer.from("release")), timeoutMs: 500 }))
     try {
       await written.promise
       const outcome = await result
@@ -288,7 +288,7 @@ test("checks the clock at settlement even before the expiry timer runs",
     const link = context.mock.method(fs, "link", fs.link)
     syncBuiltinESMExports()
     context.after(() => { context.mock.restoreAll(); syncBuiltinESMExports() })
-    await assert.rejects(bootstrapDaemon(input(destination, Buffer.from("release"))), /exceeded 30000 ms/)
+    await assert.rejects(bootstrapDaemon({ ...input(destination, Buffer.from("release")), timeoutMs: 30_000 }), /exceeded 30000 ms/)
     assert.equal(link.mock.callCount(), 0)
     await assert.rejects(fs.lstat(join(destination, `v${version}`, archive)), { code: "ENOENT" })
   })
