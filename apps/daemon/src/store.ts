@@ -518,7 +518,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#writerFactory = options.writerFactory
     this.auditLog = new SqliteAuditLog(this.#database)
     this.devices = new SqliteDeviceRegistry(this.#database)
-    this.fleet = new SqliteFleetRegistry(this.#database)
+    this.fleet = new SqliteFleetRegistry(this.#database, this.auditLog)
     this.transferReceipts = new SqliteTransferReceipts(this.#database)
     this.transferOwnership = new SqliteTransferOwnership(this.#database)
     this.transferConflicts = new SqliteTransferConflicts(this.#database)

@@ -161,13 +161,17 @@ export class FleetEnrollmentService {
       deadline.throwIfExpired()
       // Discover a locked keychain before spending a one-time pairing code.
       await this.#readIndex(deadline)
-      const entries = this.snapshot().entries
+      const snapshot = this.snapshot()
+      const entries = snapshot.entries
+      const quarantined = snapshot.registry?.quarantined ?? []
       if (params.expectedMachineId && registry.pendingOperations().some((entry) => entry.machineId === params.expectedMachineId)) {
         throw new FleetOperationInProgressError()
       }
       const admitted = entries.filter((entry) => entry.kind === "machine" || (entry.kind === "pending" && entry.operation === "enroll"))
       if ((admitted.length >= maximumFleetMachines && !admitted.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId))
-        || (entries.length >= maximumFleetEntries && !entries.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId))) {
+        || (entries.length + quarantined.length >= maximumFleetEntries
+          && !entries.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId)
+          && !quarantined.some((entry) => entry.machineId !== undefined && entry.machineId === params.expectedMachineId))) {
         throw new FleetLimitReachedError()
       }
       claimed = await (this.#input.claim ?? claimMachineSocket)({
@@ -253,7 +257,9 @@ export class FleetEnrollmentService {
     try {
       deadline.throwIfExpired()
       await this.#readIndex(deadline)
-      if (!this.snapshot().entries.some((entry) => fleetEntryMachineId(entry) === params.machineId)) {
+      const snapshot = this.snapshot()
+      if (!snapshot.entries.some((entry) => fleetEntryMachineId(entry) === params.machineId)
+        && !snapshot.registry?.quarantined.some((entry) => entry.machineId === params.machineId)) {
         return { outcome: "refused", reason: "not-enrolled" }
       }
       const credential = await credentials.forMachine(params.machineId, deadline)
