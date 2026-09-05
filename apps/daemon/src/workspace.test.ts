@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { promisify } from "node:util"
@@ -9,10 +9,30 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } from "./workspace.js"
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, open: vi.fn(actual.open), unlink: vi.fn(actual.unlink) }
+})
+
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
 
+async function failNextRestoreClaimClose(error: Error) {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+  vi.mocked(open).mockImplementationOnce(async (...args) => {
+    const handle = await actual.open(...args)
+    const close = handle.close.bind(handle)
+    vi.spyOn(handle, "close").mockImplementationOnce(async () => {
+      await close()
+      throw error
+    })
+    return handle
+  })
+}
+
 afterEach(async () => {
+  vi.mocked(open).mockReset()
+  vi.mocked(unlink).mockReset()
   await removeScratchDirectories(scratchDirectories.splice(0))
 })
 
@@ -1120,6 +1140,77 @@ describe("GitWorkspaceService bundle restore", () => {
     } finally {
       inspect.mockRestore()
     }
+  })
+
+  it("reports a completed restore when unlink fails and clears its process reservation", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-unlink-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const cleanupError = Object.assign(new Error("claim unlink denied"), { code: "EACCES" })
+    vi.mocked(unlink).mockRejectedValueOnce(cleanupError)
+
+    const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+      .then(() => undefined, (error: unknown) => error)
+    expect(failure).toMatchObject({
+      name: "SessionRestoreClaimCleanupError", restoreCompleted: true, claimPath,
+      message: expect.stringContaining("Session restore completed"), errors: [cleanupError],
+    })
+    expect((failure as Error).message).toContain(claimPath)
+    expect((failure as Error).message).toContain("Do not retry")
+    expect(unlink).toHaveBeenCalledWith(claimPath)
+    await expect(readFile(join(root, "session-1", "README.md"), "utf8")).resolves.toMatch(/^moved\r?\n$/u)
+
+    // A filesystem collision includes its path; an uncleared process-local
+    // reservation would refuse earlier without identifying that file.
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .rejects.toThrow(claimPath)
+    await rm(claimPath)
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .resolves.toMatchObject({ branch: "domovoi/session-1" })
+  })
+
+  it("attempts unlink even if closing the restore claim fails", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-close-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const cleanupError = new Error("claim close failed")
+    await failNextRestoreClaimClose(cleanupError)
+
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .rejects.toMatchObject({ restoreCompleted: true, claimPath, errors: [cleanupError] })
+    expect(unlink).toHaveBeenCalledWith(claimPath)
+    await expect(lstat(claimPath)).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .resolves.toMatchObject({ branch: "domovoi/session-1" })
+  })
+
+  it("keeps the restore error primary when claim cleanup also fails", async () => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-both-errors-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const restoreError = Object.freeze(new Error("repository access refused"))
+    const closeError = new Error("claim close failed")
+    const cleanupError = new Error("claim unlink denied")
+    const inspect = vi.spyOn(target, "inspect").mockRejectedValueOnce(restoreError)
+    await failNextRestoreClaimClose(closeError)
+    vi.mocked(unlink).mockRejectedValueOnce(cleanupError)
+    try {
+      const failure = await target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+        .then(() => undefined, (error: unknown) => error)
+      expect(failure).toMatchObject({ restoreCompleted: false, claimPath,
+        cause: restoreError, errors: [restoreError, closeError, cleanupError],
+      })
+      expect((failure as Error).message).toMatch(/^repository access refused/)
+      expect((failure as Error).message).toContain(claimPath)
+      expect((failure as Error).cause).toBe(restoreError)
+      await expect(lstat(join(root, "session-1"))).rejects.toMatchObject({ code: "ENOENT" })
+      await rm(claimPath)
+      await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-1" })
+    } finally { inspect.mockRestore() }
   })
 
   it("releases a restore claim after cancellation without leaving incoming refs", async () => {

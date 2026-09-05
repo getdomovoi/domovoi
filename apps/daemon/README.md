@@ -129,7 +129,11 @@ taken before asynchronous work, and an exclusive file at
 fails immediately, without waiting or retrying. Restoring a different session remains independent;
 a later incremental restore is still allowed after the earlier operation settles.
 
-Success, failure and cancellation release the claim. A killed process can leave its claim behind.
+Success, failure and cancellation all attempt to close and remove the claim independently and
+always release the process-local reservation. Cleanup failures name the claim path and retain
+any restore failure as the primary cause. If the restore completed before cleanup failed, the
+error says so explicitly: do not retry that completed restore. A killed process or a failed
+unlink can leave its claim file behind.
 Domovoi never deletes a claim because it looks old. If the error names a stale claim, stop every
 Domovoi process using that worktree root and its supervisor, confirm no restore is active, then
 remove only the named claim file. Keep the session worktree, repository and Git refs intact.

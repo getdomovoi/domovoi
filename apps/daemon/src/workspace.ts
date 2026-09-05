@@ -91,6 +91,27 @@ export class SessionWorktreeExistsError extends Error {
   }
 }
 
+export class SessionRestoreClaimCleanupError extends AggregateError {
+  readonly restoreCompleted: boolean
+
+  constructor(
+    readonly claimPath: string,
+    cleanupErrors: readonly unknown[],
+    restoreFailure?: { error: unknown },
+  ) {
+    const diagnostic = `Restore claim cleanup failed at ${claimPath}`
+    super(
+      restoreFailure ? [restoreFailure.error, ...cleanupErrors] : cleanupErrors,
+      restoreFailure
+        ? `${restoreFailure.error instanceof Error ? restoreFailure.error.message : "Session restore failed"}. ${diagnostic}`
+        : `Session restore completed. ${diagnostic}. Do not retry the completed restore; inspect the named claim file.`,
+      { cause: restoreFailure ? restoreFailure.error : cleanupErrors[0] },
+    )
+    this.name = "SessionRestoreClaimCleanupError"
+    this.restoreCompleted = restoreFailure === undefined
+  }
+}
+
 // The recovery checkpoint is taken before the worktree moves, so a revert that
 // stops afterwards still has somewhere to put the work back. The commit travels
 // with the failure rather than being lost with it.
@@ -1220,6 +1241,8 @@ export class GitWorkspaceService implements WorkspaceService {
     if (activeBundleRestores.has(claimPath)) throw new SessionWorktreeExistsError()
     activeBundleRestores.add(claimPath)
     let claim: Awaited<ReturnType<typeof open>> | undefined
+    let outcome: { completed: true; workspace: SessionWorkspace } | { completed: false; error: unknown }
+    const cleanupErrors: unknown[] = []
     try {
       await mkdir(claimDirectory, { recursive: true })
       signal?.throwIfAborted()
@@ -1232,17 +1255,27 @@ export class GitWorkspaceService implements WorkspaceService {
         throw error
       }
       signal?.throwIfAborted()
-      return await this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal)
+      outcome = { completed: true, workspace: await this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal) }
+    } catch (error) {
+      outcome = { completed: false, error }
     } finally {
       try {
         if (claim) {
-          await claim.close()
-          await unlink(claimPath)
+          // A close failure must not skip unlink. Neither cleanup failure may
+          // hide the restore outcome or keep the process reservation occupied.
+          try { await claim.close() } catch (error) { cleanupErrors.push(error) }
+          try { await unlink(claimPath) } catch (error) { cleanupErrors.push(error) }
         }
       } finally {
         activeBundleRestores.delete(claimPath)
       }
     }
+    if (cleanupErrors.length > 0) {
+      // Preserve even frozen or non-Error failures without mutating them.
+      throw new SessionRestoreClaimCleanupError(claimPath, cleanupErrors, outcome.completed ? undefined : outcome)
+    }
+    if (!outcome.completed) throw outcome.error
+    return outcome.workspace
   }
 
   async #restoreClaimedSessionFromBundle(
