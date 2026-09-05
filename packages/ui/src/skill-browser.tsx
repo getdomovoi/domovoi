@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { FileTextIcon, SearchIcon } from "lucide-react"
+import { FileTextIcon, PlusIcon, SearchIcon } from "lucide-react"
 
-import type {
-  SkillDocument,
-  SkillEnablementReview,
-  SkillInventorySource,
-  SkillReviewDecision,
-  SkillSummary,
+import {
+  maximumSkillInstallFiles,
+  skillInstallRefusalSchema,
+  skillInstallSourceSchema,
+  type SkillDocument,
+  type SkillEnablementReview,
+  type SkillInstallPreview,
+  type SkillInstallRefusal,
+  type SkillInstallScope,
+  type SkillInstallSource,
+  type SkillInstallTarget,
+  type SkillInventorySource,
+  type SkillReviewDecision,
+  type SkillSummary,
 } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -39,8 +47,10 @@ import {
   DialogTitle,
 } from "./components/ui/dialog"
 import { Input } from "./components/ui/input"
+import { Label } from "./components/ui/label"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
+import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { cn } from "./lib/utils"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
 import { compareSkillInventories, type SkillFleetCellState } from "./skill-fleet-comparison"
@@ -62,7 +72,43 @@ function comparisonVariant(state: SkillFleetCellState): "success" | "warning" | 
   return "secondary"
 }
 
-function skillSecurityCopy(skill: SkillSummary): {
+const installScopeLabel: Record<SkillInstallScope, string> = {
+  project: "This project only",
+  user: "All my projects",
+}
+
+function installRefusalCopy(refusal: SkillInstallRefusal, name: string): string {
+  switch (refusal.reason) {
+    case "source-changed":
+      return "The folder changed since it was reviewed. Review it again."
+    case "blocked":
+      return "The signature is invalid, so this skill is blocked and cannot be installed."
+    case "name-conflict":
+      return `A different ${name} is already installed at ${refusal.path ?? "that scope"}.`
+    case "symlink-escapes-source":
+      return `${refusal.path ?? "A link"} links to a file outside the folder.`
+    case "source-too-large":
+      return `The folder has more than ${maximumSkillInstallFiles} files or is larger than the execution machine accepts.`
+  }
+}
+
+function installTargetCopy(target: SkillInstallTarget, name: string): string {
+  if (target.state === "installed") return `Already installed at ${target.path} with identical files.`
+  if (target.state === "conflict") return `A different ${name} is already at ${target.path}.`
+  return `Installs to ${target.path}`
+}
+
+function fileSize(bytes: number): string {
+  return bytes < 1_000 ? `${bytes} B` : `${(bytes / 1_000).toFixed(1)} kB`
+}
+
+function refusalData(cause: unknown): SkillInstallRefusal | undefined {
+  if (!cause || typeof cause !== "object" || !("data" in cause)) return undefined
+  const parsed = skillInstallRefusalSchema.safeParse(cause.data)
+  return parsed.success ? parsed.data : undefined
+}
+
+function skillSecurityCopy(skill: Pick<SkillSummary, "signature" | "trust">): {
   label: string
   buildAuto: string
   variant: "success" | "warning" | "destructive"
@@ -137,6 +183,8 @@ export function SkillBrowser({
   enablements,
   onSetSkillEnabled,
   onReviewSkill,
+  onPreviewSkillInstall,
+  onInstallSkill,
   onRetry,
   requestedSkillId,
 }: {
@@ -160,6 +208,12 @@ export function SkillBrowser({
     contentDigest: string
     decision: SkillReviewDecision
   }) => Promise<unknown>
+  onPreviewSkillInstall: (source: SkillInstallSource) => Promise<SkillInstallPreview>
+  onInstallSkill: (input: {
+    source: SkillInstallSource
+    scope: SkillInstallScope
+    sourceDigest: string
+  }) => Promise<SkillSummary>
   onRetry: () => void
 }) {
   const [query, setQuery] = useState("")
@@ -174,6 +228,13 @@ export function SkillBrowser({
   const [reviewError, setReviewError] = useState("")
   const [machineReviewPending, setMachineReviewPending] = useState(false)
   const [machineReviewError, setMachineReviewError] = useState("")
+  const [addOpen, setAddOpen] = useState(false)
+  const [addPath, setAddPath] = useState("")
+  const [addPreview, setAddPreview] = useState<SkillInstallPreview>()
+  const [addScope, setAddScope] = useState<SkillInstallScope>()
+  const [addPending, setAddPending] = useState(false)
+  const [addError, setAddError] = useState("")
+  const [addRefusal, setAddRefusal] = useState<SkillInstallRefusal>()
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
@@ -244,6 +305,60 @@ export function SkillBrowser({
     ).finally(() => setReviewPending(false))
   }
 
+  const addTarget = addPreview?.targets.find((target) => target.scope === addScope)
+  const addSecurity = addPreview ? skillSecurityCopy(addPreview) : undefined
+  const addRefusals = [...(addPreview?.refusals ?? []), ...(addRefusal ? [addRefusal] : [])]
+
+  const openAdd = () => {
+    setAddPath("")
+    setAddPreview(undefined)
+    setAddScope(undefined)
+    setAddError("")
+    setAddRefusal(undefined)
+    setAddOpen(true)
+  }
+
+  const reviewAdd = () => {
+    const source = skillInstallSourceSchema.safeParse({ kind: "path", path: addPath.trim() })
+    if (!source.success) {
+      setAddError("Enter the absolute path of a folder on this machine that contains SKILL.md.")
+      return
+    }
+    setAddPending(true)
+    setAddError("")
+    setAddRefusal(undefined)
+    setAddPreview(undefined)
+    void onPreviewSkillInstall(source.data).then(
+      (preview) => {
+        setAddPreview(preview)
+        setAddScope(preview.targets.find((target) => target.state !== "conflict")?.scope)
+      },
+      (cause: unknown) => setAddError(cause instanceof Error ? cause.message : "The folder could not be reviewed"),
+    ).finally(() => setAddPending(false))
+  }
+
+  const installAdd = () => {
+    if (!addPreview || !addScope) return
+    setAddPending(true)
+    setAddError("")
+    setAddRefusal(undefined)
+    void onInstallSkill({
+      source: addPreview.source,
+      scope: addScope,
+      sourceDigest: addPreview.sourceDigest,
+    }).then(
+      (installed) => {
+        setAddOpen(false)
+        setSelectedId(installed.id)
+      },
+      (cause: unknown) => {
+        const refusal = refusalData(cause)
+        if (refusal) setAddRefusal(refusal)
+        else setAddError(cause instanceof Error ? cause.message : "The skill could not be installed")
+      },
+    ).finally(() => setAddPending(false))
+  }
+
   const submitMachineReview = (decision: SkillReviewDecision) => {
     if (!selected) return
     setMachineReviewPending(true)
@@ -270,11 +385,17 @@ export function SkillBrowser({
           <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 sm:hidden">
             <Button variant="ghost" className="min-h-11" onClick={onOpenAudit}>Audit log</Button>
           </nav>
-          <div>
-            <h1 className="m-0 text-[17px] font-semibold">Skills</h1>
-            <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
-              {loading ? "Discovering skills on this machine." : `${skills.length} discovered across Domovoi, user, provider, project, and system directories.`} Skills run on the machine that holds the files they need.
-            </p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="m-0 text-[17px] font-semibold">Skills</h1>
+              <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
+                {loading ? "Discovering skills on this machine." : `${skills.length} discovered across Domovoi, user, provider, project, and system directories.`} Skills run on the machine that holds the files they need.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={openAdd}>
+              <PlusIcon data-icon="inline-start" />
+              Add skill
+            </Button>
           </div>
 
           <div className="relative mt-4">
@@ -470,6 +591,118 @@ export function SkillBrowser({
             />
           ) : null}
           <DialogFooter><Button variant="outline" onClick={() => setSourceSkill(undefined)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={addOpen} onOpenChange={(open) => { if (!open && !addPending) setAddOpen(false) }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Add a skill</DialogTitle>
+            <DialogDescription>Skills are folders with a SKILL.md. Domovoi reviews declared capabilities before anything runs, and never pushes a skill to a remote machine without you saying so.</DialogDescription>
+          </DialogHeader>
+          <div className="flex max-h-[62vh] flex-col gap-4 overflow-auto">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="skill-install-path">Folder on this machine</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="skill-install-path"
+                  className="font-machine"
+                  placeholder="/absolute/path/to/skill"
+                  value={addPath}
+                  disabled={addPending}
+                  onChange={(event) => setAddPath(event.target.value)}
+                />
+                <Button variant="outline" disabled={addPending || addPath.trim() === ""} onClick={reviewAdd}>Review</Button>
+              </div>
+              <p className="m-0 text-[10.5px] text-muted-foreground">The folder is read on the execution machine. Nothing is copied until you install.</p>
+            </div>
+            {addError ? (
+              <Alert variant="destructive">
+                <AlertTitle>Review failed</AlertTitle>
+                <AlertDescription>{addError}</AlertDescription>
+              </Alert>
+            ) : null}
+            {addPreview && addSecurity ? (
+              <>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="font-machine text-lg font-medium">{addPreview.name}</span>
+                    <Badge variant={addSecurity.variant}>{addSecurity.label}</Badge>
+                  </div>
+                  <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted-foreground">{addPreview.description}</p>
+                  <p className="mt-1 text-[10.5px] text-muted-foreground">{addSecurity.buildAuto}</p>
+                </div>
+                <section>
+                  <h3 className="m-0 text-[9.5px] font-medium tracking-[0.12em] text-faint">DECLARED CAPABILITIES · REVIEW BEFORE INSTALL</h3>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {addPreview.manifest.capabilities.length > 0
+                      ? addPreview.manifest.capabilities.map((capability) => <Badge key={capability} variant="outline">{capability}</Badge>)
+                      : <span className="font-machine text-[10.5px] text-muted-foreground">No declared capabilities</span>}
+                  </div>
+                  <p className="mt-2 text-[10.5px] text-muted-foreground">Declared by the skill, shown as written in its manifest. Installing grants nothing: every action still goes through the permission system, and Build auto requires a trusted skill.</p>
+                </section>
+                <section>
+                  <h3 className="m-0 text-[9.5px] font-medium tracking-[0.12em] text-faint">FILES AND DIGESTS</h3>
+                  <div className="mt-2 max-h-40 overflow-auto rounded-lg bg-code p-3 font-machine text-[10.5px]">
+                    {addPreview.files.map((file) => (
+                      <div key={file.path} className="flex justify-between gap-3">
+                        <span className="truncate">{file.path}</span>
+                        <span className="shrink-0 text-muted-foreground">{fileSize(file.bytes)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-machine text-[10.5px]">
+                    <dt className="text-muted-foreground">SKILL.md</dt>
+                    <dd className="m-0 break-all">{addPreview.contentDigest}</dd>
+                    <dt className="text-muted-foreground">folder</dt>
+                    <dd className="m-0 break-all">{addPreview.sourceDigest}</dd>
+                  </dl>
+                </section>
+                <section>
+                  <h3 className="m-0 text-[9.5px] font-medium tracking-[0.12em] text-faint">INSTALL SCOPE</h3>
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    value={addScope ?? ""}
+                    onValueChange={(value) => { if (value) setAddScope(value as SkillInstallScope) }}
+                  >
+                    {addPreview.targets.map((target) => (
+                      <ToggleGroupItem key={target.scope} value={target.scope} disabled={target.state === "conflict"}>
+                        {installScopeLabel[target.scope]}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                  <p className="mt-2 font-machine text-[10.5px] text-muted-foreground">
+                    {addTarget ? installTargetCopy(addTarget, addPreview.name) : "Choose where this skill lives."}
+                  </p>
+                </section>
+                {addRefusals.length > 0 ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>Install refused</AlertTitle>
+                    <AlertDescription>
+                      <ul className="m-0 list-disc pl-4">
+                        {addRefusals.map((refusal) => (
+                          <li key={`${refusal.reason}:${refusal.path ?? ""}`}>{installRefusalCopy(refusal, addPreview.name)}</li>
+                        ))}
+                      </ul>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={addPending} onClick={() => setAddOpen(false)}>Cancel</Button>
+            {addPreview ? (
+              <Button
+                disabled={addPending || !addTarget || addTarget.state === "conflict" || addPreview.refusals.length > 0}
+                onClick={installAdd}
+              >
+                Install
+              </Button>
+            ) : null}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <AlertDialog open={reviewEnabled !== undefined} onOpenChange={(open) => { if (!open && !reviewPending) setReviewEnabled(undefined) }}>

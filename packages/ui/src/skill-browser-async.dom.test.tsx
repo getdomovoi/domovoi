@@ -63,6 +63,8 @@ describe("skill browser source requests", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn(async () => undefined)}
         onReviewSkill={vi.fn(async () => undefined)}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )

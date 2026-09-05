@@ -1478,6 +1478,57 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("previews a skill folder and installs it against the previewed source digest", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const source = { kind: "path", path: "/home/dev/work/skills/pr-triage" } as const
+    const preview = client.previewSkillInstall({ source })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.installPreview",
+      params: { source },
+    })
+    const reviewed = {
+      source,
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      sourceDigest: `sha256:${"b".repeat(64)}`,
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+      files: [{ path: "SKILL.md", bytes: 120 }],
+      targets: [{ scope: "user", path: "/home/dev/.domovoi/skills/pr-triage", state: "available" }],
+      refusals: [],
+    }
+    socket.receive({ jsonrpc: "2.0", id: 2, result: reviewed })
+    await expect(preview).resolves.toEqual(reviewed)
+
+    const install = client.installSkill({ source, scope: "user", sourceDigest: `sha256:${"b".repeat(64)}` })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.install",
+      params: { source, scope: "user", sourceDigest: `sha256:${"b".repeat(64)}` },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      error: {
+        code: -32018,
+        message: "Skill source changed since it was reviewed; review it again",
+        data: { kind: "skill-install-refused", reason: "source-changed" },
+      },
+    })
+    await expect(install).rejects.toMatchObject({
+      code: -32018,
+      data: { kind: "skill-install-refused", reason: "source-changed" },
+    })
+    client.disconnect()
+  })
+
   it("queries and exports typed audit records with bounded request controls", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
