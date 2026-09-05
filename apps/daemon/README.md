@@ -13,8 +13,12 @@ pnpm install
 pnpm --filter @getdomovoi/daemon build
 ```
 
-The package is standard ESM, but npm, pnpm, and Bun registry installation will only be supported
-after publication.
+The package is standard ESM. After publication, the supported frozen installation is the
+verified bootstrap described in [the distribution contract](https://github.com/getdomovoi/domovoi/blob/main/docs/distribution.md).
+It requires Node 22 with bundled npm 10.0.0 or newer and installs the archive's integrity-locked
+runtime before publishing its receipt. Manual npm, pnpm, or Bun adds of the daemon are not frozen.
+Native compilation and the external toolchain remain reproducibility limits; provider SDKs are
+downloaded under their existing terms, not bundled in this package.
 
 ## Run
 
