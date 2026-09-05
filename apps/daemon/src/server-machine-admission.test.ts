@@ -55,11 +55,11 @@ async function open(url: string) {
 
 function call(socket: WebSocket, method: string, params: Record<string, unknown> = {}) {
   const id = ++nextId
-  return new Promise<{ result?: unknown; error?: { code: number; message: string } }>((resolve, reject) => {
+  return new Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }>((resolve, reject) => {
     const timer = setTimeout(() => { cleanup(); reject(new Error(`No test reply to ${method}`)) }, 2_000)
     const cleanup = () => { clearTimeout(timer); socket.off("message", onMessage) }
     const onMessage = (bytes: WebSocket.RawData) => {
-      const response = JSON.parse(bytes.toString()) as { id: number; result?: unknown; error?: { code: number; message: string } }
+      const response = JSON.parse(bytes.toString()) as { id: number; result?: unknown; error?: { code: number; message: string; data?: unknown } }
       if (response.id === id) { cleanup(); resolve(response) }
     }
     socket.on("message", onMessage)
@@ -110,6 +110,9 @@ describe("live machine admission", () => {
         code, label: "source", machineId: peerId, protocolVersion: "0.3.0",
       })
       expect(response.error?.code).toBe(protocolVersionMismatchErrorCode)
+      expect(response.error?.data).toEqual({
+        kind: "protocol-mismatch", daemonProtocolVersion: protocolVersion, clientProtocolVersion: "0.3.0", compatibility: "machine-ahead",
+      })
     }
     expect(claim).not.toHaveBeenCalled()
     expect(store.devices.list()).toEqual([])
@@ -133,6 +136,21 @@ describe("live machine admission", () => {
     const client = await open(url)
     await hello(client, daemon.authToken, "cli")
     expect((await call(client, "fleet.heartbeat")).error?.code).toBe(daemonAuthenticationErrorCode)
+  })
+
+  it("refuses a machine hello on another protocol with both versions as data", async () => {
+    const { daemon, url } = await target()
+    const socket = await open(url)
+    const paired = await claim(daemon, socket)
+    const response = await call(socket, "system.hello", {
+      client: "machine", clientVersion: "0.0.1", protocolVersion: "0.3.0", authToken: paired.token,
+    })
+    expect(response.error).toEqual({
+      code: protocolVersionMismatchErrorCode,
+      message: `This daemon speaks protocol ${protocolVersion}; the client speaks 0.3.0`,
+      data: { kind: "protocol-mismatch", daemonProtocolVersion: protocolVersion, clientProtocolVersion: "0.3.0", compatibility: "machine-ahead" },
+    })
+    expect((await call(socket, "fleet.heartbeat")).error?.code).toBe(daemonAuthenticationErrorCode)
   })
 
   it("acknowledges self-revocation before closing the socket and revokes only that credential", async () => {

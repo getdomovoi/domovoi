@@ -124,8 +124,9 @@ Pairing claims are limited to three per source address and thirty across the lis
 minute. For a valid JSON-RPC request naming `device.claim`, admission runs before parameter
 validation, protocol compatibility or code verification, so malformed parameters and incompatible
 versions count and a throttled valid code is not consumed. Admitted
-version mismatches return the update-required error without spending a code guess; exhausted
-sources receive the ordinary pairing refusal regardless of the submitted version or shape.
+version mismatches return `protocolVersionMismatchErrorCode` (`-32012`) with a `protocol-mismatch`
+payload naming both protocol versions and which side is behind, without spending a code guess;
+exhausted sources receive the ordinary pairing refusal regardless of the submitted version or shape.
 The source is the TCP peer address, not a forwarding
 header. Reconnecting, greeting with a credential, or issuing another code does not reset these
 budgets. Peers behind the same NAT or proxy share the source budget. A throttled claim receives the

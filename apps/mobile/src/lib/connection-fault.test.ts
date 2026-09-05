@@ -29,6 +29,22 @@ describe("connectionFault", () => {
     expect(fault.detail).toContain("0.1.0")
   })
 
+  it("names the versions from the refusal data when the sentence does not", () => {
+    const fault = connectionFault(new DaemonError(
+      "The daemon refused this protocol",
+      protocolVersionMismatchErrorCode,
+      {
+        kind: "protocol-mismatch",
+        daemonProtocolVersion: "0.4.0",
+        clientProtocolVersion: "0.1.0",
+        compatibility: "machine-ahead",
+      },
+    ))
+
+    expect(fault.retriable).toBe(false)
+    expect(fault.detail).toBe("This daemon speaks protocol 0.4.0; the client speaks 0.1.0. Update whichever of the two is older.")
+  })
+
   it("stops retrying a greeting the daemon cannot read, because the next one is the same", () => {
     expect(connectionFault(
       new DaemonError("Method parameters are invalid", -32602, undefined),
