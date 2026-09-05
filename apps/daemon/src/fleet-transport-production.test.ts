@@ -41,7 +41,7 @@ describe("production transport producers", () => {
       const facts = remote(fleetSnapshotSchema.parse(await withinServiceDeadline(deadline, () => daemon.root.ok("fleet.list", {}))), daemon.id)
       expect(daemon.address.url).toBe(`wss://localhost:${daemon.address.port}/rpc`)
       expect(facts.transports).toEqual([
-        { kind: "lan", endpoint: `wss://localhost:${daemon.address.port}/rpc`, authenticated: true },
+        { kind: "local", endpoint: `wss://localhost:${daemon.address.port}/rpc`, authenticated: true },
         { kind: "tailnet", endpoint: `wss://studio.tailnet.example:${daemon.address.port}/rpc`, authenticated: true },
       ])
     } finally { deadline.clear() }
