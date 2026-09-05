@@ -7,6 +7,8 @@ import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  createEmptyWorkspace,
+  demoWorkspace,
   sessionTransferManifestSchema,
   transferMemberChunkBytes,
   type SessionTransferManifest,
@@ -16,6 +18,11 @@ import { sessionTransferManifestDigest } from "./session-transfer-package.js"
 import { FileTransferTransactions, writeAllTransferBytes } from "./transfer-transactions.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { daemonWaitTimeoutMs } from "./test-wait-for.js"
+import { DomovoiDaemon } from "./server.js"
+import { SqliteWorkspaceStore } from "./store.js"
+import { openMachineSocket } from "./machine-socket.js"
+import type { MachineConnection } from "./machine-dial.js"
+import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 
 const renameSimulation = vi.hoisted(() => ({
   existingDirectoryIsBusy: false,
@@ -409,6 +416,110 @@ describe("file transfer transaction journal", () => {
     await expect(new FileTransferTransactions(root).acceptMember(chunk))
       .resolves.toEqual({ state: "member-received", transferId, memberId: "state" })
     await expect(transactions.readMember(transferId, manifestDigest, "state")).resolves.toEqual(stateBytes)
+  })
+
+  it.each(["retry", "abort"] as const)("queues a reconnected %s behind the disconnected receive", async (action) => {
+    const { root, transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const manifest = manifestFor(stateBytes, Buffer.from("repository"))
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    const chunkPath = join(root, transferId, "chunks", memberJournalKey("state"))
+    await mkdir(chunkPath)
+    await writeFile(join(chunkPath, "0-1.chunk"), stateBytes, { mode: 0o600 })
+    const store = new SqliteWorkspaceStore(":memory:", createEmptyWorkspace({
+      ...demoWorkspace.machine, id: targetMachineId,
+    }))
+    const credential = store.devices.pair({
+      label: "source", binding: { kind: "machine", machineId: sourceMachineId },
+    }).token
+    const daemon = new DomovoiDaemon({
+      port: 0, store, statePath: join(root, "state.sqlite"), transferTransactions: transactions,
+      outgoingTransferTransactions: new FileTransferTransactions(join(root, "outgoing")),
+    })
+    const receives = vi.spyOn(transactions, "acceptMember")
+    const aborts = vi.spyOn(transactions, "abort")
+    const queued = vi.spyOn(ResourceMutationQueue.prototype, "enqueue")
+    const budgetMs = daemonWaitTimeoutMs(process.platform)
+    const deadline = OperationDeadline.start(budgetMs)
+    const gate = new EventEmitter()
+    const connections: MachineConnection[] = []
+    try {
+      const address = await within(deadline, () => daemon.start())
+      const connect = async () => {
+        const connection = await openMachineSocket({
+          endpoint: `ws://${address.host}:${address.port}/rpc`,
+          expectedMachineId: targetMachineId, credential, deadline, callTimeoutMs: budgetMs,
+        })
+        connections.push(connection)
+        return connection
+      }
+      const first = await connect()
+      const opened = once(gate, "opened", { signal: deadline.signal })
+      chunkReadSimulation.path = join(chunkPath, "0-1.chunk")
+      chunkReadSimulation.pause = async () => {
+        const released = once(gate, "release", { signal: deadline.signal })
+        gate.emit("opened")
+        await released
+      }
+      const chunk = {
+        transferId, memberId: "state", sequence: 0,
+        bytes: stateBytes.toString("base64"), final: true, initiatedByClient: "desktop",
+      }
+      const lostReply = Promise.allSettled([first.call("transfer.member", chunk, undefined, deadline)])
+      await opened
+      first.close()
+      await expect(lostReply).resolves.toMatchObject([{ status: "rejected" }])
+      const reconnected = await connect()
+      const reply = Promise.allSettled([action === "retry"
+        ? reconnected.call("transfer.member", chunk, undefined, deadline)
+        : reconnected.call("transfer.abort", { transferId, manifestDigest, initiatedByClient: "desktop" }, undefined, deadline)])
+      // This later frame bypasses the mutation queue. Its reply proves the
+      // target has received the preceding retry or abort on the new socket.
+      await reconnected.call("fleet.heartbeat", {}, undefined, deadline)
+      // Pin shared routing too: the heartbeat does not wait for an unqueued
+      // handler's initial filesystem reads, so a call-count check alone can
+      // miss a bypass that has not reached the journal yet.
+      expect(queued.mock.calls.map(([resource]) => resource).filter((resource) => (
+        resource.startsWith(`transfer:${transferId}`)
+      ))).toEqual([`transfer:${transferId}`, `transfer:${transferId}`])
+      expect(receives).toHaveBeenCalledTimes(1)
+      expect(aborts).not.toHaveBeenCalled()
+      expect(chunkReadSimulation.blockedRemovals).toEqual([])
+      gate.emit("release")
+      await expect(reply).resolves.toEqual([{
+        status: "fulfilled",
+        value: action === "retry"
+          ? { state: "member-received", transferId, memberId: "state" }
+          : { state: "aborted", transferId },
+      }])
+      const originalReceive = receives.mock.results[0]
+      expect(originalReceive?.type).toBe("return")
+      if (originalReceive?.type === "return") {
+        await expect(originalReceive.value).resolves.toEqual({ state: "member-received", transferId, memberId: "state" })
+      }
+      if (action === "retry") {
+        await expect(transactions.readMember(transferId, manifestDigest, "state")).resolves.toEqual(stateBytes)
+      } else {
+        await expect(transactions.status(transferId, manifestDigest)).resolves.toEqual({ state: "aborted", transferId })
+      }
+    } finally {
+      gate.emit("release")
+      for (const connection of connections) connection.close()
+      const cleanup = OperationDeadline.start(budgetMs)
+      try {
+        await within(cleanup, async () => {
+          // A closed socket is not evidence the original receive settled.
+          await Promise.allSettled(receives.mock.results.flatMap((result) => (
+            result.type === "return" ? [result.value] : []
+          )))
+          await daemon.stop()
+        })
+      } finally {
+        cleanup.clear(); deadline.clear()
+        receives.mockRestore(); aborts.mockRestore(); queued.mockRestore()
+      }
+    }
   })
 
   it("publishes a final chunk retained across a process restart", async () => {

@@ -128,6 +128,11 @@ independently. This prevents cleanup racing a retry's open chunk handle within o
 which Windows can reject with `EPERM`. It does not coordinate separate daemon processes sharing a
 journal directory.
 
+Production transfer RPCs share a per-transfer resource queue across sockets. A reconnected retry
+or abort waits for the original handler to finish; dropping its socket does not release that
+queue slot. The journal's overlap refusal protects concurrent direct journal calls, not the
+ordinary reconnect path. Retention pruning runs before the daemon opens its listener.
+
 ## When state cannot reach disk
 
 The daemon writes the workspace snapshot after every change. A single failed write is retried on
