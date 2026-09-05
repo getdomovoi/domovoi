@@ -39,7 +39,7 @@
     "@vitest/coverage-v8": "catalog:",
     "jest": "^29.7.0",
     "jest-expo": "~57.0.5",
-    "tailwindcss": "^3.4.17",
+    "tailwindcss": "^4.3.3",
     "test-renderer": "^1.2.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
