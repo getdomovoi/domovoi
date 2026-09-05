@@ -90,10 +90,11 @@ test("handles cyclic graphs and optional dependencies also reached by a required
 })
 
 test("covers the real daemon graph, including non-host native packages, without redistribution", async () => {
+  const lock = parse(await readFile(new URL("../pnpm-lock.yaml", import.meta.url), "utf8"))
   const result = await generate({
     manifest: JSON.parse(await readFile(new URL("../apps/daemon/package.json", import.meta.url), "utf8")),
     protocolManifest: JSON.parse(await readFile(new URL("../packages/protocol/package.json", import.meta.url), "utf8")),
-    lock: parse(await readFile(new URL("../pnpm-lock.yaml", import.meta.url), "utf8")),
+    lock,
     protocolIntegrity: `sha512-${createHash("sha512").update("same-release protocol tarball").digest("base64")}`,
   })
   for (const suffix of ["darwin-arm64", "win32-x64", "linux-x64-musl"]) {
@@ -102,6 +103,7 @@ test("covers the real daemon graph, including non-host native packages, without 
     assert.match(entry.resolved, /^https:\/\/registry\.npmjs\.org\//)
     assert.match(entry.integrity, /^sha512-/)
   }
-  assert.equal(result.packages["node_modules/@anthropic-ai/claude-agent-sdk"].version, "0.3.251")
+  assert.equal(result.packages["node_modules/@anthropic-ai/claude-agent-sdk"].version,
+    lock.importers["apps/daemon"].dependencies["@anthropic-ai/claude-agent-sdk"].version.split("(", 1)[0])
   assert.equal(result.packages["node_modules/typescript"], undefined)
 })

@@ -142,6 +142,37 @@ test("binds protocol archive bytes before npm receives them", { timeout: testTim
   assert.equal(calls.filter(({ args }) => args.includes("ci")).length, 0)
 })
 
+for (const unsafe of ["parent", "duplicate", "symlink", "special"]) {
+  test(`refuses ${unsafe} archive entries before extracting or installing`, { timeout: testTimeout }, async (t) => {
+    const { options, calls } = await fixture(t)
+    const run = options.run
+    const seen = []
+    options.run = async (command, args, context) => {
+      seen.push(args)
+      if (args.includes("-tzf")) return { stdout: unsafe === "parent" ? "package/../outside\n"
+        : unsafe === "duplicate" ? "package/package.json\npackage/package.json\n" : "package/package.json\n", stderr: "" }
+      if (args.includes("-tvzf")) return { stdout: `${unsafe === "symlink" ? "l" : "p"}rw------- user package/package.json\n`, stderr: "" }
+      return await run(command, args, context)
+    }
+    await assert.rejects(installer(options), /Unsafe or duplicate|link or special/)
+    assert.equal(seen.some((args) => args.includes("-xzf")), false)
+    assert.equal(calls.some(({ args }) => args.includes("ci")), false)
+  })
+}
+
+test("rejects an expanded build permission before running npm", { timeout: testTimeout }, async (t) => {
+  const { options, calls, lock, packageRoot, pack } = await fixture(t)
+  lock.packages[""].allowScripts = { leaf: true }
+  await fs.writeFile(join(packageRoot, "runtime/lock.json"), JSON.stringify(lock))
+  await fs.writeFile(join(packageRoot, "runtime/package.json"), JSON.stringify(lock.packages[""]))
+  const bytes = await pack()
+  const digest = sha256(bytes)
+  await assert.rejects(installer({ ...options, expectedSha256: digest,
+    download: async (url) => url.endsWith("SHA256SUMS") ? `${digest}  ${archiveName}\n` : bytes,
+  }), /unreviewed native build permission/)
+  assert.equal(calls.some(({ args }) => args.includes("ci")), false)
+})
+
 test("reuses a verified installation without rerunning npm and releases its deadline", { timeout: testTimeout }, async (t) => {
   const { options, calls } = await fixture(t)
   const first = await installer(options)
