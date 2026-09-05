@@ -186,7 +186,7 @@ import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
-import { SettingsShell } from "./settings-shell"
+import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
@@ -267,6 +267,7 @@ export type WorkspaceShellProps = {
   rpcUrl?: string
   rpcToken?: string
   resolveRpcEndpoint?: () => Promise<{ url: string; token: string }>
+  localDaemon?: LocalDaemonDescription
   windowBridge?: DesktopWindowBridge
   onChangeCredential?: () => void
 }
@@ -3297,7 +3298,7 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, windowBridge, onChangeCredential }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, onChangeCredential }: WorkspaceShellProps) {
   const [machineSwitch, setMachineSwitch] = useState<MachineSwitchState>(homeMachineSwitch)
   const attached = machineSwitch.state === "attached" ? machineSwitch.target : null
   const activeRpcUrl = attached?.endpoint ?? rpcUrl
@@ -3920,6 +3921,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
+            {...(localDaemon ? { localDaemon } : {})}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
