@@ -1,7 +1,8 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import { once } from "node:events"
 
 import { WebSocketServer } from "ws"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 
 import {
   daemonAuthenticationErrorCode,
@@ -333,7 +334,7 @@ describe("openMachineSocket", () => {
         clearTimeout: () => {},
       },
     })
-    await vi.waitFor(() => expect(fired.length).toBeGreaterThan(0))
+    await waitForDaemon(() => expect(fired.length).toBeGreaterThan(0))
     for (const callback of fired) callback()
 
     await expect(opening).rejects.toThrow("That machine did not answer")
