@@ -38,6 +38,7 @@ import {
   sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
+  type ProtocolMismatch,
   rpcMethods,
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
@@ -1552,7 +1553,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -3168,6 +3169,7 @@ export class DomovoiDaemon {
           request.id,
           protocolVersionMismatchErrorCode,
           protocolMismatchRefusal(this.#advertisedProtocolVersion, clientProtocol),
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: clientProtocol, compatibility },
         )
         return
       }
@@ -3226,11 +3228,13 @@ export class DomovoiDaemon {
       // The one method a machine may reach before it has a credential, because
       // presenting the pairing code is how it gets one. It grants nothing else.
       const params = paramsResult.data as RpcParams<"device.claim">
-      if (protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion) !== "compatible") {
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
         // The wire must be compatible before spending a short-lived code or a
         // guessing attempt. No credential exists until the claim succeeds.
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
-          "Update both daemons to the same protocol before pairing")
+          "Update both daemons to the same protocol before pairing",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
         return
       }
       if (!this.#pairing) {
