@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads"
 
 import {
   executionResolutionSchema,
+  machineIdSchema,
   protocolVersion,
   resolvedExecutionSchema,
   workspaceSnapshotSchema,
@@ -142,6 +143,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+// A workspace written before canonical identity was enforced can hold a machine
+// id the fleet and pairing contracts reject. Quarantining that database would
+// throw away every stored session, so the legacy value is folded into the
+// canonical shape instead. The derivation is deterministic, so the same legacy
+// workspace keeps one identity across restarts.
+function canonicalizeLegacyMachineId(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined
+  if (machineIdSchema.safeParse(value).success) return undefined
+  return `machine-${createHash("sha256").update(`legacy-machine:${value}`).digest("hex").slice(0, 32)}`
+}
+
+function appendSystemReceipt(
+  migrated: Record<string, unknown>,
+  body: string,
+  detail: string,
+): void {
+  if (!Array.isArray(migrated.thread)) return
+  const project = isRecord(migrated.project) ? migrated.project : undefined
+  const projectId = project?.id
+  const sessions = Array.isArray(migrated.sessions) ? migrated.sessions : []
+  const validSessions = sessions.filter((session): session is Record<string, unknown> =>
+    isRecord(session)
+    && typeof session.id === "string"
+    && session.id.length > 0
+    && session.projectId === projectId
+  )
+  const activeSession = validSessions.find((session) => session.id === migrated.activeSessionId)
+  const receiptSession = activeSession ?? validSessions[0]
+  if (!receiptSession) return
+  migrated.thread.push({
+    id: `system-machine-reference-${randomUUID()}`,
+    sessionId: receiptSession.id,
+    kind: "system",
+    body,
+    detail,
+    createdAt: new Date().toISOString(),
+  })
+}
+
 function migrateStoredWorkspace(value: unknown): {
   snapshot: WorkspaceSnapshot
   repaired: boolean
@@ -187,6 +227,23 @@ function migrateStoredWorkspace(value: unknown): {
     }
   }
 
+  if (isRecord(migrated.machine)) {
+    const canonical = canonicalizeLegacyMachineId(migrated.machine.id)
+    if (canonical !== undefined) {
+      const legacyMachineId = migrated.machine.id
+      migrated.machine.id = canonical
+      if (isRecord(migrated.project) && migrated.project.machineId === legacyMachineId) {
+        migrated.project.machineId = canonical
+      }
+      appendSystemReceipt(
+        migrated,
+        "Stored machine identity migrated",
+        `Replaced the legacy machine id ${String(legacyMachineId)} with ${canonical} so this workspace can be recorded in the fleet.`,
+      )
+      repaired = true
+    }
+  }
+
   if (isRecord(migrated.machine) && isRecord(migrated.project)) {
     const machineId = migrated.machine.id
     const storedMachineId = migrated.project.machineId
@@ -196,28 +253,12 @@ function migrateStoredWorkspace(value: unknown): {
       && typeof storedMachineId === "string"
       && storedMachineId !== machineId
     ) {
-      const project = migrated.project
-      project.machineId = machineId
-      const projectId = project.id
-      const sessions = Array.isArray(migrated.sessions) ? migrated.sessions : []
-      const validSessions = sessions.filter((session): session is Record<string, unknown> =>
-        isRecord(session)
-        && typeof session.id === "string"
-        && session.id.length > 0
-        && session.projectId === projectId
+      migrated.project.machineId = machineId
+      appendSystemReceipt(
+        migrated,
+        "Stored project machine reference repaired",
+        `Updated project.machineId from ${storedMachineId} to ${machineId} while preserving project state.`,
       )
-      const activeSession = validSessions.find((session) => session.id === migrated.activeSessionId)
-      const receiptSession = activeSession ?? validSessions[0]
-      if (receiptSession && Array.isArray(migrated.thread)) {
-        migrated.thread.push({
-          id: `system-machine-reference-${randomUUID()}`,
-          sessionId: receiptSession.id,
-          kind: "system",
-          body: "Stored project machine reference repaired",
-          detail: `Updated project.machineId from ${storedMachineId} to ${machineId} while preserving project state.`,
-          createdAt: new Date().toISOString(),
-        })
-      }
       repaired = true
     }
   }
