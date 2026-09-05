@@ -6,16 +6,18 @@ import { join } from "node:path"
 
 import { createEmptyWorkspace, demoWorkspace, protocolVersion, protocolVersionMismatchErrorCode } from "@getdomovoi/protocol"
 import { WebSocketServer, type WebSocket } from "ws"
-import { afterEach, expect, it } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon } from "./local-daemon.js"
 import { localOwnerProof } from "./local-owner-proof.js"
 import { readLocalOwnerRecord, readLocalOwnerSecret, writeLocalOwnerRecord, type ReadyLocalOwner } from "./local-owner-record.js"
+import * as ownerRecords from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies } from "./production-daemon.js"
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const finish of cleanup.splice(0).reverse()) await finish()
 })
 
@@ -72,7 +74,7 @@ async function peer(options: { proof?: "missing" | "wrong" | "replayed"; respons
         }) }))
     })
   })
-  return { homeDirectory, owner, requests, headers, observed, connection: () => connection }
+  return { homeDirectory, owner, server, requests, headers, observed, connection: () => connection }
 }
 
 it.each(["missing", "wrong", "replayed"] as const)("never sends a bearer to a listener with a %s proof", async (proof) => {
@@ -109,4 +111,47 @@ it("bounds an unanswered hello and closes its socket without changing owner stat
     await closed
     expect(readLocalOwnerRecord(fake.homeDirectory)?.state).toBe("ready")
   } finally { observation.clear() }
+})
+
+it("bounds a listener that accepts TCP but never completes the WebSocket upgrade", async () => {
+  const fake = await peer()
+  const observation = OperationDeadline.start(3_000)
+  let accepted: (() => void) | undefined
+  const connected = new Promise<void>((resolve) => { accepted = resolve })
+  let rawSocket: import("node:stream").Duplex | undefined
+  fake.server.handleUpgrade = (request, socket) => {
+    expect(request.headers).not.toHaveProperty("authorization")
+    rawSocket = socket
+    // An upgraded HTTP socket is paused. Consume FIN so this deliberately
+    // silent peer can observe client teardown instead of retaining half-open I/O.
+    socket.once("end", () => socket.destroy())
+    socket.resume()
+    accepted?.()
+  }
+  const result = acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "start-or-attach", timeoutMs: 2_000 })
+  try {
+    await beforeDeadline(connected, observation)
+    const closed = once(rawSocket!, "close", { signal: observation.signal })
+    expect(await beforeDeadline(result, observation)).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+    await closed
+    expect(fake.requests).toEqual([])
+  } finally {
+    rawSocket?.destroy()
+    observation.clear()
+  }
+})
+
+it("classifies clock expiry during final record verification as unreachable, not bad identity", async () => {
+  const fake = await peer()
+  let clock = 0
+  vi.spyOn(performance, "now").mockImplementation(() => clock)
+  const read = ownerRecords.readLocalOwnerRecord
+  let reads = 0
+  vi.spyOn(ownerRecords, "readLocalOwnerRecord").mockImplementation((path) => {
+    const record = read(path)
+    if (++reads === 2) clock = 3_001
+    return record
+  })
+  expect(await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: 3_000 }))
+    .toMatchObject({ kind: "refused", reason: "owner-unreachable" })
 })
