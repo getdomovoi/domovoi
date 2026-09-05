@@ -20,6 +20,9 @@ test("root package checks include the publication regressions", { timeout: 10_00
   // an assertion inside that omitted file would no longer run either.
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
   assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-publication\.test\.mjs(?: |$)/)
+  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-install\.test\.mjs(?: |$)/)
+  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/bootstrap-install-live\.test\.mjs(?: |$)/)
+  assert.match(manifest.scripts["test:packages"], /(?:^| )scripts\/runtime-lock\.test\.mjs(?: |$)/)
 })
 
 async function destination() {
