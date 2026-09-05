@@ -41,6 +41,15 @@ describe("runOpenCommand", () => {
     expect(deps.translate).not.toHaveBeenCalled()
   })
 
+  it("opens a Windows path without waiting on a wsl.exe that never answers", async () => {
+    const deps = dependencies({
+      distributions: vi.fn(() => new Promise<WslDistribution[]>(() => {})),
+      translate: vi.fn(() => new Promise<string>(() => {})),
+    })
+    expect(await runOpenCommand(["open", "C:\\work\\repo"], deps)).toBe(0)
+    expect(deps.open).toHaveBeenCalledWith({ kind: "windows", path: "C:\\work\\repo" })
+  })
+
   it("opens a directory inside a distribution through that distribution, at the path it answered", async () => {
     const deps = dependencies()
     expect(await runOpenCommand(["open", "\\\\wsl$\\debian\\srv\\app"], deps)).toBe(0)
