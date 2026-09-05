@@ -9,6 +9,8 @@ type Request =
   | { kind: "save"; machineId: string; credential: string }
   | { kind: "forMachine" | "forget"; machineId: string }
   | { kind: "machines" }
+  | { kind: "repairIndex"; machineId: string; expectedDigest: string }
+  | { kind: "forgetIfMatching"; machineId: string; expectedDigest: string | null }
 
 port.on("message", ({ id, request, cancelled, expiresAt }: {
   id: number; request: Request; cancelled: SharedArrayBuffer; expiresAt: bigint
@@ -22,7 +24,9 @@ port.on("message", ({ id, request, cancelled, expiresAt }: {
     const store = new MachineCredentialStore(new NativeMachineKeyring(checkpoint))
     const result = request.kind === "save" ? store.save(request.machineId, request.credential)
       : request.kind === "forget" ? store.forget(request.machineId)
-        : request.kind === "forMachine" ? store.forMachine(request.machineId) : store.machines()
+        : request.kind === "forMachine" ? store.forMachine(request.machineId)
+          : request.kind === "repairIndex" ? store.repairIndex(request.machineId, request.expectedDigest)
+            : request.kind === "forgetIfMatching" ? store.forgetIfMatching(request.machineId, request.expectedDigest) : store.machines()
     checkpoint()
     port.postMessage({ id, ok: true, result })
   } catch {

@@ -4,10 +4,7 @@ import { join } from "node:path"
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
-import {
-  MachineCredentialStore,
-  type MachineCredentials,
-} from "./machine-credentials.js"
+import { MachineCredentialWorker, type AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { CliProviderProbe, type ProviderProbe } from "./providers.js"
 import {
   DomovoiDaemon,
@@ -62,7 +59,7 @@ export type ProductionDaemonDependencies = {
   ): Promise<MachineIdentity>
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   createProviderProbe(): ProviderProbe
-  createMachineCredentials(): MachineCredentials
+  createMachineCredentials(): AsyncMachineCredentials
   createDaemon(options: DaemonServerOptions): ProductionDaemonRuntime
 }
 
@@ -72,7 +69,7 @@ export const productionDaemonDependencies = {
   loadOrCreateIdentity: loadOrCreateMachineIdentity,
   loadTls: loadTlsMaterial,
   createProviderProbe: () => new CliProviderProbe(),
-  createMachineCredentials: () => new MachineCredentialStore(),
+  createMachineCredentials: () => new MachineCredentialWorker(),
   createDaemon: (options) => new DomovoiDaemon(options),
 } satisfies ProductionDaemonDependencies
 

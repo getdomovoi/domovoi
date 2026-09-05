@@ -13,6 +13,8 @@ export interface AsyncMachineCredentials {
   forMachine(machineId: string, deadline: OperationDeadline): Promise<string | undefined>
   forget(machineId: string, deadline: OperationDeadline): Promise<void>
   machines(deadline: OperationDeadline): Promise<string[]>
+  repairIndex(machineId: string, expectedDigest: string, deadline: OperationDeadline): Promise<boolean>
+  forgetIfMatching(machineId: string, expectedDigest: string | null, deadline: OperationDeadline): Promise<boolean>
   close(deadline: OperationDeadline): Promise<void>
 }
 
@@ -20,6 +22,8 @@ type Request =
   | { kind: "save"; machineId: string; credential: string }
   | { kind: "forMachine" | "forget"; machineId: string }
   | { kind: "machines" }
+  | { kind: "repairIndex"; machineId: string; expectedDigest: string }
+  | { kind: "forgetIfMatching"; machineId: string; expectedDigest: string | null }
 
 type Pending = {
   id: number
@@ -69,6 +73,16 @@ export class MachineCredentialWorker implements AsyncMachineCredentials {
 
   async machines(deadline: OperationDeadline): Promise<string[]> {
     return await this.#call({ kind: "machines" }, deadline) as string[]
+  }
+
+  async repairIndex(machineId: string, expectedDigest: string, deadline: OperationDeadline): Promise<boolean> {
+    machineIdSchema.parse(machineId)
+    return await this.#call({ kind: "repairIndex", machineId, expectedDigest }, deadline) as boolean
+  }
+
+  async forgetIfMatching(machineId: string, expectedDigest: string | null, deadline: OperationDeadline): Promise<boolean> {
+    machineIdSchema.parse(machineId)
+    return await this.#call({ kind: "forgetIfMatching", machineId, expectedDigest }, deadline) as boolean
   }
 
   #call(request: Request, parent: OperationDeadline): Promise<unknown> {
@@ -126,7 +140,9 @@ export class MachineCredentialWorker implements AsyncMachineCredentials {
       entry.deadline.throwIfExpired()
       if (!("ok" in value) || value.ok !== true || !("result" in value)) throw new MachineCredentialUnavailableError()
       const result = entry.kind === "machines" ? machineIdSchema.array().parse(value.result)
-        : entry.kind === "forMachine" ? credentialSchema.optional().parse(value.result) : undefined
+        : entry.kind === "forMachine" ? credentialSchema.optional().parse(value.result)
+          : entry.kind === "repairIndex" || entry.kind === "forgetIfMatching" ? value.result : undefined
+      if ((entry.kind === "repairIndex" || entry.kind === "forgetIfMatching") && typeof result !== "boolean") throw new MachineCredentialUnavailableError()
       if (!entry.settled) { this.#detach(entry); entry.resolve(result) }
     } catch { this.#refuse(entry) }
     this.#active = undefined

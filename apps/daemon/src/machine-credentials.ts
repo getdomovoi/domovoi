@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
+import { isMainThread } from "node:worker_threads"
 
 import { credentialSchema, machineIdSchema } from "@getdomovoi/protocol"
 
@@ -44,7 +45,7 @@ export function machineCredentialDigest(machineId: string, credential: string): 
 export class MachineCredentialStore implements MachineCredentials {
   readonly #keyring: MachineKeyring
 
-  constructor(keyring: MachineKeyring = new NativeMachineKeyring()) {
+  constructor(keyring: MachineKeyring) {
     this.#keyring = keyring
   }
 
@@ -111,6 +112,27 @@ export class MachineCredentialStore implements MachineCredentials {
   machines(): string[] {
     return this.#index()
   }
+
+  // These checks and writes are one worker operation, not two messages with
+  // an await between them. Index repair never writes back an earlier secret.
+  repairIndex(machineId: string, expectedDigest: string): boolean {
+    const held = this.forMachine(machineId)
+    if (!held || machineCredentialDigest(machineId, held) !== expectedDigest) return false
+    this.#writeIndex([...this.#index(), machineId])
+    const readback = this.forMachine(machineId)
+    if (!readback || machineCredentialDigest(machineId, readback) !== expectedDigest || !this.machines().includes(machineId)) {
+      throw new MachineCredentialUnavailableError()
+    }
+    return true
+  }
+
+  forgetIfMatching(machineId: string, expectedDigest: string | null): boolean {
+    const held = this.forMachine(machineId)
+    if (held !== undefined && machineCredentialDigest(machineId, held) !== expectedDigest) return false
+    this.forget(machineId)
+    if (this.forMachine(machineId) !== undefined || this.machines().includes(machineId)) throw new MachineCredentialUnavailableError()
+    return true
+  }
 }
 
 function requireMachineId(machineId: string): void {
@@ -133,7 +155,10 @@ export class NativeMachineKeyring implements MachineKeyring {
   #binding: KeyringBinding | undefined
   readonly #checkpoint: () => void
 
-  constructor(checkpoint: () => void = () => {}) { this.#checkpoint = checkpoint }
+  constructor(checkpoint: () => void) {
+    if (isMainThread) throw new Error("Native machine credentials require the keyring worker")
+    this.#checkpoint = checkpoint
+  }
 
   #entry(account: string): KeyringEntry {
     this.#checkpoint()
