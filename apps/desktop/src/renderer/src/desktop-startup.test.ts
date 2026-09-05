@@ -1,6 +1,43 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { resolveDesktopStartup } from "./desktop-startup.js"
+import { desktopRpcEndpointResolver, resolveDesktopStartup } from "./desktop-startup.js"
+
+describe("desktopRpcEndpointResolver", () => {
+  const startup = { rpcUrl: "ws://127.0.0.1:47831/rpc", rpcToken: "file-token" }
+
+  it("answers from the cached endpoint while this app owns the daemon", async () => {
+    const reacquireDaemon = vi.fn()
+    const resolve = desktopRpcEndpointResolver({ ...startup, daemon: { kind: "owned" } }, { reacquireDaemon })
+
+    await expect(resolve()).resolves.toEqual({ url: "ws://127.0.0.1:47831/rpc", token: "file-token" })
+    expect(reacquireDaemon).not.toHaveBeenCalled()
+  })
+
+  it("re-acquires through the main process while attached and hands over the fresh endpoint", async () => {
+    const reacquireDaemon = vi.fn(async () => ({
+      kind: "attached" as const,
+      owner: "daemon" as const,
+      url: "wss://localhost:50123/rpc",
+      token: "rotated-token",
+    }))
+    const resolve = desktopRpcEndpointResolver({ ...startup, daemon: { kind: "attached", owner: "daemon" } }, { reacquireDaemon })
+
+    await expect(resolve()).resolves.toEqual({ url: "wss://localhost:50123/rpc", token: "rotated-token" })
+    await expect(resolve()).resolves.toEqual({ url: "wss://localhost:50123/rpc", token: "rotated-token" })
+    expect(reacquireDaemon).toHaveBeenCalledTimes(2)
+  })
+
+  it("turns a refusal into the reconnect failure carrying the daemon's message", async () => {
+    const reacquireDaemon = vi.fn(async () => ({
+      kind: "refused" as const,
+      reason: "owner-unreachable" as const,
+      message: "The profile has no reachable owner.",
+    }))
+    const resolve = desktopRpcEndpointResolver({ ...startup, daemon: { kind: "attached", owner: "desktop" } }, { reacquireDaemon })
+
+    await expect(resolve()).rejects.toThrow("The profile has no reachable owner.")
+  })
+})
 
 describe("resolveDesktopStartup", () => {
   it("connects to the URL and token of the daemon this app owns, not a fixed address", async () => {
