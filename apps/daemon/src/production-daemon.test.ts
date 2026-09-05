@@ -117,6 +117,7 @@ describe("createProductionDaemon", () => {
       createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
       createDaemon,
     })
+    running.push(handle)
     expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({ tailnetHost: "studio.tailnet.example", sshTunnels }))
     expect(await handle.start()).toMatchObject({ url: "wss://studio.tailnet.example:49200/rpc" })
   })
