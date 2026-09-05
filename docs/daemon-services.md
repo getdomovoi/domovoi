@@ -50,7 +50,9 @@ See [schtasks delete](https://learn.microsoft.com/en-us/windows-server/administr
 and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state).
 
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
-`schtasks /query` text. It runs noninteractively without a profile, elevation, execution-policy
+`schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never
+from the project directory or `PATH`; a missing or relative OS directory refuses before spawning.
+It runs noninteractively without a profile, elevation, execution-policy
 bypass, or a task password. Missing or blocked PowerShell refuses removal; there is no delete-only
 fallback. Disable, stop, status observations, deletion, and configuration cleanup share the same
 30-second deadline. Polling cannot renew it, and a late result cannot start a later deletion.

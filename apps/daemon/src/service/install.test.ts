@@ -260,13 +260,17 @@ describe("serviceRemovalPlan", () => {
   })
 
   it("requires a Windows task stop and observation before removal", () => {
-    expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
-      kind: "task",
-      name: "Domovoi daemon",
-      stop: { command: "powershell.exe", args: expect.any(Array) },
-      inspect: { command: "powershell.exe", args: expect.any(Array) },
-      remove: { command: "powershell.exe", args: expect.any(Array) },
-    })
+    vi.stubEnv("SystemRoot", "C:\\Windows")
+    try {
+      const command = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
+        kind: "task",
+        name: "Domovoi daemon",
+        stop: { command, args: expect.any(Array) },
+        inspect: { command, args: expect.any(Array) },
+        remove: { command, args: expect.any(Array) },
+      })
+    } finally { vi.unstubAllEnvs() }
   })
 })
 

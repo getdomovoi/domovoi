@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { windowsTaskRemovalPlan } from "./windows-task.js"
+
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+afterEach(() => { vi.unstubAllEnvs() })
 
 // Vitest's clock does not replace node:timers/promises. Keep the same abort
 // contract while routing its finite poll through the controlled clock.
@@ -29,7 +32,7 @@ function taskManager() {
       task.registered = false
     }),
     capture: vi.fn(async (command, args) => {
-      expect(command).toBe("powershell.exe")
+      expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
       expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (script.includes("$task.Enabled = $false")) task.enabled = false
@@ -188,11 +191,30 @@ describe("Windows service removal", () => {
 })
 
 describe("Task Scheduler command boundary", () => {
+  it("pins the executable to the OS directory instead of searching the working directory", () => {
+    vi.stubEnv("SystemRoot", "D:\\System Root")
+    const plan = windowsTaskRemovalPlan("Domovoi daemon")
+    for (const command of [plan.stop, plan.inspect, plan.remove]) {
+      expect(command.command).toBe("D:\\System Root\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+    }
+  })
+
+  it.each([undefined, "", "Windows", "D:Windows", "\\Windows", "\\\\host\\Windows"])(
+    "refuses a missing or nonlocal OS directory %j before spawning anything", async (root) => {
+      vi.stubEnv("SystemRoot", root)
+      const { effects } = taskManager()
+      await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow("SystemRoot")
+      expect(effects.capture).not.toHaveBeenCalled()
+      expect(effects.run).not.toHaveBeenCalled()
+      expect(effects.remove).not.toHaveBeenCalled()
+    },
+  )
+
   it("uses a noninteractive encoded script and quotes task names as data", () => {
     const name = "a'; throw 'not a command"
     const plan = windowsTaskRemovalPlan(name)
     for (const command of [plan.stop, plan.inspect, plan.remove]) {
-      expect(command.command).toBe("powershell.exe")
+      expect(command.command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
       expect(command.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
       const script = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le")
       expect(script).toContain("$name = 'a''; throw ''not a command'")

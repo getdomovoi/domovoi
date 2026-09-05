@@ -9,13 +9,13 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, removeService, type ServiceCommand } from "./install.js"
-import { windowsTaskRemovalPlan } from "./windows-task.js"
+import { windowsPowerShellPath, windowsTaskRemovalPlan } from "./windows-task.js"
 
 const lifecycleBudget = 60_000
 const cleanupBudget = 30_000
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
 const powershell = (script: string): ServiceCommand => ({
-  command: "powershell.exe",
+  command: windowsPowerShellPath(),
   args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
 })
 
@@ -74,7 +74,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
     // substitution is the task name, so a /delete-only regression leaves the
     // test's live process behind and fails the liveness assertion below.
     const redirect = (command: string, args: string[]) => {
-      if (command === "powershell.exe") {
+      if (command === windowsPowerShellPath()) {
         const source = windowsTaskRemovalPlan("Domovoi daemon")
         const key = (["stop", "inspect", "remove"] as const).find((key) => JSON.stringify(source[key].args) === JSON.stringify(args))
         if (!key) throw new Error("Unexpected Task Scheduler command")
