@@ -34,6 +34,12 @@ removes unavailable routes. Dialers must use the latter; `selectTransport` retur
 Neither an absent route nor a failed network attempt becomes a different kind. Existing shared
 operation deadlines still govern connection, authentication and fallback.
 
+The client dialer translates invalid descriptors to `TransportDialError` before opening any
+connection, including when an invalid entry follows a valid one. Error text does not copy
+endpoints, unvalidated kinds, schema diagnostics or connector errors that might contain secrets.
+The existing plaintext refusal remains specific; other contract violations ask the caller to
+refresh the fleet information and check route configuration.
+
 `authenticated: true` requires authentication, not a claim that a handshake has already
 succeeded. A daemon still verifies the paired credential, expected machine identity and protocol
 version. Target advertisements cannot configure SSH on the source or authorize a remote peer's

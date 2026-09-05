@@ -1,4 +1,9 @@
-import { orderedTransports, type TransportCandidate } from "@getdomovoi/protocol"
+import {
+  connectionKindSchema,
+  isTransportLoopbackHost,
+  usableTransports,
+  type TransportCandidate,
+} from "@getdomovoi/protocol"
 
 export class TransportDialError extends Error {
   constructor(message: string) {
@@ -7,23 +12,28 @@ export class TransportDialError extends Error {
   }
 }
 
-const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"])
-
 export function isLoopbackEndpoint(endpoint: string): boolean {
   try {
-    return loopbackHosts.has(new URL(endpoint).hostname)
+    return isTransportLoopbackHost(new URL(endpoint).hostname)
   } catch {
     return false
   }
 }
 
-// A credential must never cross a network in the clear, so plaintext is only
-// allowed to a loopback endpoint, where it never leaves the machine.
-function assertProtectedEndpoint(candidate: TransportCandidate): void {
-  if (candidate.endpoint.startsWith("wss://")) return
-  if (isLoopbackEndpoint(candidate.endpoint)) return
-  throw new TransportDialError(
-    `Refusing to authenticate over an unencrypted ${candidate.kind} transport`,
+function invalidTransportError(candidates: TransportCandidate[]): TransportDialError {
+  // Preserve the actionable plaintext refusal, but never interpolate unparsed
+  // fields or schema errors: even a kind or an unknown field can hold a secret.
+  if (Array.isArray(candidates)) {
+    for (const candidate of candidates) {
+      const kind = connectionKindSchema.safeParse(candidate?.kind)
+      if (kind.success && typeof candidate?.endpoint === "string"
+        && candidate.endpoint.startsWith("ws://") && !isLoopbackEndpoint(candidate.endpoint)) {
+        return new TransportDialError(`Refusing to authenticate over an unencrypted ${kind.data} transport`)
+      }
+    }
+  }
+  return new TransportDialError(
+    "That machine advertises an invalid transport. Refresh its fleet information and check its route configuration.",
   )
 }
 
@@ -36,18 +46,17 @@ export async function dialTransport<Connection>(input: {
   candidates: TransportCandidate[]
   credential: string
   connect: (attempt: { endpoint: string; credential: string }) => Promise<Connection>
+  // Compatibility input only. It cannot enable an unimplemented relay.
   relayAvailable?: boolean
 }): Promise<DialedTransport<Connection>> {
   if (!input.credential) throw new TransportDialError("A transport credential is required")
 
-  const relayAvailable = input.relayAvailable ?? true
-  const usable = orderedTransports(input.candidates).filter((candidate) => {
-    if (candidate.kind === "ssh") return candidate.configured === true
-    if (candidate.kind === "relay") return relayAvailable
-    return true
-  })
-
-  for (const candidate of usable) assertProtectedEndpoint(candidate)
+  let usable: TransportCandidate[]
+  try {
+    usable = usableTransports(input.candidates)
+  } catch {
+    throw invalidTransportError(input.candidates)
+  }
 
   const refusedBy: string[] = []
   for (const candidate of usable) {
