@@ -87,6 +87,25 @@ async function openRpc(handle: ProductionDaemonHandle) {
 }
 
 describe("createProductionDaemon", () => {
+  it("passes validated routes from the production environment to the server", async () => {
+    const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    await createProductionDaemonWithDependencies({
+      environment: {
+        DOMOVOI_HOST: "0.0.0.0", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+        DOMOVOI_TLS_CERT_PATH: "/cert.pem", DOMOVOI_TLS_KEY_PATH: "/key.pem",
+        DOMOVOI_TAILNET_HOST: "studio.tailnet.example", DOMOVOI_SSH_TUNNELS: JSON.stringify(sshTunnels),
+      },
+      homeDirectory: await temporaryHome(),
+    }, {
+      ...productionDaemonDependencies,
+      loadTls: async () => ({ cert: Buffer.from("test certificate"), key: Buffer.from("test private key") }),
+      createMachineCredentials: () => new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} }),
+      createDaemon,
+    })
+    expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({ tailnetHost: "studio.tailnet.example", sshTunnels }))
+  })
+
   it("assembles every mandatory production dependency", async () => {
     const homeDirectory = join("", "home", "tester")
     const authToken = testToken("production-factory")

@@ -7,7 +7,7 @@ import { maximumFleetMachines, protocolVersion, type FleetMachineDescriptor } fr
 import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { MachineCredentialStore, machineCredentialDigest } from "./machine-credentials.js"
-import { MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
+import { MachinePairingRequiredError, MachineProtocolMismatchError, type openMachineSocket } from "./machine-socket.js"
 
 function release(minorOffset: number) {
   const [major, minor] = protocolVersion.split(".").map(Number)
@@ -43,13 +43,14 @@ function fixture() {
   const credentials = new MachineCredentialStore(keyring)
   const call = vi.fn(async (method: string): Promise<unknown> => method === "device.revokeCurrent" ? { revoked: true } : descriptor)
   const close = vi.fn()
-  const open = vi.fn(async () => ({ call, close }))
+  const open = vi.fn<typeof openMachineSocket>(async () => ({ call, close }))
   const claim = vi.fn(async () => ({ connection: { call, close }, credential: token, descriptor, endpoint }))
   const changed = vi.fn()
   let now = 1_000
-  const create = () => {
+  const create = (sshTunnels: Array<{ machineId: string; endpoint: string }> = []) => {
+    const routes = { sshTunnels }
     const service = new FleetEnrollmentService({
-      selfId: sourceId, registry, credentials, claim, open, changed,
+      selfId: sourceId, registry, credentials, claim, open, changed, ...routes,
       now: () => now, operationTimeoutMs: 1_000, heartbeatIntervalMs: 15_000,
     })
     services.push(service)
@@ -59,6 +60,44 @@ function fixture() {
 }
 
 describe("fleet enrollment coordinator", () => {
+  it("uses SSH for heartbeat and forget without turning a removable forward into a remembered route", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    await f.service.stop()
+    const forward = "ws://127.0.0.1:47900/rpc"
+    const configured = f.create([{ machineId: targetId, endpoint: forward }])
+    f.open.mockImplementation(async (input) => {
+      if (input.endpoint !== forward) throw new Error("direct endpoint is down")
+      return { call: f.call, close: f.close }
+    })
+    f.time(20_000)
+    await configured.refresh()
+    expect(configured.snapshot().entries[0]).toMatchObject({ machine: {
+      health: "healthy", heartbeat: { lastSeenAt: new Date(20_000).toISOString() },
+      verifiedRoute: { endpoint, lastAuthenticatedAt: new Date(1_000).toISOString() },
+      transports: [],
+    } })
+    expect(JSON.stringify(configured.snapshot())).not.toContain(forward)
+    await configured.stop()
+
+    const removed = f.create()
+    f.open.mockClear()
+    f.time(40_000)
+    await removed.refresh()
+    expect(removed.snapshot().entries[0]).toMatchObject({ machine: {
+      health: "reconnecting", heartbeat: { lastSeenAt: new Date(20_000).toISOString() },
+    } })
+    expect(f.open).toHaveBeenCalledOnce()
+    expect(f.open).toHaveBeenCalledWith(expect.objectContaining({ endpoint }))
+    await removed.stop()
+
+    const restored = f.create([{ machineId: targetId, endpoint: forward }])
+    expect(await restored.forget({ machineId: targetId, client: "cli" })).toMatchObject({
+      outcome: "forgotten", remoteRevocation: "confirmed",
+    })
+    expect(f.call).toHaveBeenCalledWith("device.revokeCurrent", {}, expect.any(AbortSignal), expect.anything())
+  })
+
   it("requires a known expected identity to re-pair at capacity without spending an ambiguous claim", async () => {
     const f = fixture()
     for (let index = 0; index < maximumFleetMachines; index++) {
