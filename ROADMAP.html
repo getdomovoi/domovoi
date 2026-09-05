@@ -705,6 +705,10 @@ td { color: var(--ink2); }
 </ul>
 </li>
 <li>[x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+<ul>
+<li>Audit item F3. <code>domovoid pair</code> and <code>domovoid open</code> spend one 15-second deadline across connect, <code>system.hello</code>, and the call, so a listener that accepts the socket and then says nothing is refused with the address waited on and a remedy rather than holding the terminal. Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's: a connection stalled inside a TLS handshake can outlive the refusal.
+</li>
+</ul>
 </li>
 <li>[x] Bound pairing claim admission and keep pre-auth noise out of authenticated audit history
 <ul>

@@ -10,6 +10,7 @@ import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
 import { OperationDeadline } from "./operation-deadline.js"
+import { callDaemon, type CliRpcTarget } from "./cli-rpc.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -20,7 +21,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { protocolVersion, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -28,88 +29,15 @@ import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
 import { runSkillCommand } from "./skill-command.js"
 import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration } from "./service/configuration.js"
 
-async function greetCli(socket: import("ws").WebSocket): Promise<void> {
-  const requestId = 1
-  await new Promise<void>((resolve, reject) => {
-    const settle = (finish: () => void) => {
-      socket.off("message", receive)
-      socket.off("close", closed)
-      socket.off("error", failed)
-      finish()
-    }
-    const receive = (data: { toString(): string }) => {
-      const message = JSON.parse(data.toString()) as {
-        id?: number
-        error?: { message?: string }
-      }
-      if (message.id !== requestId) return
-      settle(() => {
-        if (message.error) reject(new Error(message.error.message ?? "Daemon refused the CLI connection"))
-        else resolve()
-      })
-    }
-    const closed = () => settle(() => reject(new Error("Daemon connection closed")))
-    const failed = (error: Error) => settle(() => reject(error))
-    socket.on("message", receive)
-    socket.once("close", closed)
-    socket.once("error", failed)
-    socket.send(JSON.stringify({
-      jsonrpc: "2.0",
-      id: requestId,
-      method: "system.hello",
-      params: { client: "cli", clientVersion: "0.0.1", protocolVersion },
-    }))
-  })
-}
-
 async function requestPairingCode(
-  config: { host: string; port: number; tls?: unknown },
+  config: CliRpcTarget,
   token: string,
 ): Promise<DeviceIssueCodeResult> {
-  const { WebSocket } = await import("ws")
-  const scheme = config.tls ? "wss" : "ws"
-  const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
-    headers: { authorization: `Bearer ${token}` },
-  })
-  const requestId = 2
-  try {
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve)
-      socket.once("error", reject)
-    })
-    await greetCli(socket)
-    const result = await new Promise<DeviceIssueCodeResult>((resolve, reject) => {
-      // The daemon broadcasts notifications on the same socket, so only the
-      // reply carrying this request's id may settle it, and a socket that
-      // closes first must reject rather than leave the caller waiting.
-      const receive = (data: { toString(): string }) => {
-        const message = JSON.parse(data.toString()) as {
-          id?: number
-          result?: DeviceIssueCodeResult
-          error?: { message?: string }
-        }
-        if (message.id !== requestId) return
-        socket.off("message", receive)
-        if (message.result) resolve(message.result)
-        else reject(new Error(message.error?.message ?? "Daemon refused the pairing request"))
-      }
-      socket.on("message", receive)
-      socket.once("close", () => reject(new Error("Daemon connection closed")))
-      socket.once("error", reject)
-      socket.send(JSON.stringify({
-        jsonrpc: "2.0",
-        id: requestId,
-        method: "device.issueCode",
-        params: {},
-      }))
-    })
-    return result
-  } finally {
-    socket.close()
-  }
+  return await callDaemon({
+    target: config, token, method: "device.issueCode", params: {},
+  }) as DeviceIssueCodeResult
 }
 
-const projectOpenTimeoutMs = 15_000
 const loopbackListeners = new Set(["127.0.0.1", "::1", "localhost"])
 
 function isLoopbackListener(host: string): boolean {
@@ -117,63 +45,13 @@ function isLoopbackListener(host: string): boolean {
 }
 
 async function requestProjectOpen(
-  config: { host: string; port: number; tls?: unknown },
+  config: CliRpcTarget,
   token: string,
   path: string,
 ): Promise<void> {
-  const { WebSocket } = await import("ws")
-  const scheme = config.tls ? "wss" : "ws"
-  const socket = new WebSocket(`${scheme}://${config.host}:${config.port}/rpc`, {
-    headers: { authorization: `Bearer ${token}` },
+  await callDaemon({
+    target: config, token, method: "project.open", params: { path, client: "cli" },
   })
-  const requestId = 2
-  try {
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve)
-      socket.once("error", reject)
-    })
-    await greetCli(socket)
-    await new Promise<void>((resolve, reject) => {
-      // A daemon that accepts the socket and then says nothing would otherwise
-      // hold this open forever, so the wait is bounded and every listener is
-      // removed before the socket is closed in the finally block.
-      const timer = setTimeout(() => {
-        settle(() => reject(new Error("Daemon did not answer in time")))
-      }, projectOpenTimeoutMs)
-      const settle = (finish: () => void) => {
-        clearTimeout(timer)
-        socket.off("message", receive)
-        socket.off("close", closed)
-        socket.off("error", failed)
-        finish()
-      }
-      const receive = (data: { toString(): string }) => {
-        const message = JSON.parse(data.toString()) as {
-          id?: number
-          result?: unknown
-          error?: { message?: string }
-        }
-        if (message.id !== requestId) return
-        settle(() => {
-          if (message.error) reject(new Error(message.error.message ?? "Daemon refused to open the project"))
-          else resolve()
-        })
-      }
-      const closed = () => settle(() => reject(new Error("Daemon connection closed")))
-      const failed = (error: Error) => settle(() => reject(error))
-      socket.on("message", receive)
-      socket.once("close", closed)
-      socket.once("error", failed)
-      socket.send(JSON.stringify({
-        jsonrpc: "2.0",
-        id: requestId,
-        method: "project.open",
-        params: { path, client: "cli" },
-      }))
-    })
-  } finally {
-    socket.close()
-  }
 }
 
 async function openWorkspace(target: OpenTarget): Promise<void> {
