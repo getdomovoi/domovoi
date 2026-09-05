@@ -65,6 +65,29 @@ describe("dialTransport", () => {
     expect(connect).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { label: "remote endpoint labelled local", candidate: { ...lan, kind: "local" } },
+    { label: "loopback endpoint labelled LAN", candidate: { ...loopback, kind: "lan" } },
+    { label: "SSH without configuration", candidate: { ...loopback, kind: "ssh" } },
+    { label: "LAN with a configuration flag", candidate: { ...lan, configured: false } },
+    { label: "credential in endpoint", candidate: { ...lan, endpoint: `wss://${credential}@workshop.local/rpc` } },
+    { label: "credential in unknown kind", candidate: { ...lan, kind: credential } },
+    { label: "credential in unknown field", candidate: { ...lan, [credential]: true } },
+    { label: "missing candidate", candidate: null },
+    { label: "invalid endpoint type", candidate: { ...lan, endpoint: null } },
+  ])("translates $label into a safe typed refusal before dialing", async ({ candidate }) => {
+    const connect = vi.fn(async () => ({ closed: false }))
+
+    const failure = await dialTransport({ candidates: [loopback, candidate] as never, credential, connect })
+      .catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(TransportDialError)
+    expect(failure).toMatchObject({ message: expect.stringContaining("Refresh") })
+    expect(String(failure)).not.toContain(credential)
+    expect(failure).not.toHaveProperty("cause")
+    expect(connect).not.toHaveBeenCalled()
+  })
+
   it("allows plaintext only to a loopback endpoint", async () => {
     const connect = vi.fn(async () => ({ closed: false }))
 
@@ -90,7 +113,7 @@ describe("dialTransport", () => {
     expect(connect).toHaveBeenCalledTimes(2)
   })
 
-  it("does not reach for the relay before a hosted relay exists", async () => {
+  it.each([undefined, false, true])("cannot enable reserved relay with availability %s", async (relayAvailable) => {
     const connect = vi.fn(async () => ({ closed: false }))
     const relay: TransportCandidate = {
       kind: "relay",
@@ -98,9 +121,26 @@ describe("dialTransport", () => {
       authenticated: true,
     }
 
-    await expect(dialTransport({ candidates: [relay], credential, connect, relayAvailable: false }))
+    await expect(dialTransport({
+      candidates: [relay], credential, connect,
+      ...(relayAvailable === undefined ? {} : { relayAvailable }),
+    }))
       .rejects.toThrow("No transport reached that machine")
     expect(connect).not.toHaveBeenCalled()
+  })
+
+  it("only dials a configured SSH forward after closer routes fail", async () => {
+    const disabled: TransportCandidate = { ...loopback, kind: "ssh", configured: false }
+    const enabled: TransportCandidate = { ...disabled, endpoint: "ws://127.0.0.1:47832/rpc", configured: true }
+    const connect = vi.fn(async ({ endpoint }: { endpoint: string }) => {
+      if (endpoint === lan.endpoint) throw new Error("ECONNREFUSED")
+      return { closed: false }
+    })
+
+    const dialed = await dialTransport({ candidates: [disabled, enabled, lan], credential, connect })
+
+    expect(dialed.transport).toEqual(enabled)
+    expect(connect.mock.calls.map(([attempt]) => attempt.endpoint)).toEqual([lan.endpoint, enabled.endpoint])
   })
 
   it("never keeps a credential in the error it reports", async () => {
@@ -115,7 +155,10 @@ describe("dialTransport", () => {
   })
 
   it("keeps a timeout typed without copying credentials or arbitrary error text", async () => {
-    const endpoint = `wss://private-user:private-pass@studio.example/${credential}?token=${credential}#${credential}`
+    // Userinfo, query and fragment no longer reach a dialer: the transport
+    // contract refuses those candidates. A path can still carry a secret, and
+    // a remote timeout can still quote one, so both are redacted here.
+    const endpoint = `wss://studio.example/${credential}`
     const failure: unknown = await dialTransport({
       candidates: [{ ...lan, endpoint }], credential,
       connect: async () => {
@@ -130,8 +173,22 @@ describe("dialTransport", () => {
     })
     expect(String(failure)).toContain("hello")
     expect(String(failure)).toContain("wss://studio.example")
-    for (const secret of [credential, "private-user", "private-pass", "private provider error"]) {
+    for (const secret of [credential, "private provider error"]) {
       expect(JSON.stringify(failure)).not.toContain(secret)
+      expect(String(failure)).not.toContain(secret)
+    }
+  })
+
+  it("refuses a credential-bearing endpoint instead of dialing it", async () => {
+    const connect = vi.fn(async () => ({}))
+    const endpoint = `wss://private-user:private-pass@studio.example/rpc?token=${credential}#${credential}`
+
+    const failure: unknown = await dialTransport({ candidates: [{ ...lan, endpoint }], credential, connect })
+      .catch((error: unknown) => error)
+
+    expect(connect).not.toHaveBeenCalled()
+    expect(failure).toBeInstanceOf(TransportDialError)
+    for (const secret of [credential, "private-user", "private-pass"]) {
       expect(String(failure)).not.toContain(secret)
     }
   })

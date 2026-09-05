@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { CliDeadlineError } from "./cli-rpc.js"
 import { runPairCommand } from "./pair-command.js"
 
 function recorder() {
@@ -53,6 +54,21 @@ describe("runPairCommand", () => {
 
     expect(status).toBe(1)
     expect(io.err.join("")).toContain("Could not ask the daemon for a pairing code")
+    expect(io.out.join("")).toBe("")
+  })
+
+  it("repeats a deadline refusal that names the address and the remedy", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => {
+      throw new CliDeadlineError("The daemon at ws://127.0.0.1:47831/rpc did not answer device.issueCode"
+        + " before the deadline. Check that domovoid is running at that address, then run this command again.")
+    })
+
+    const status = await runPairCommand(["pair"], { issue, ...io })
+
+    expect(status).toBe(1)
+    expect(io.err.join("")).toContain("ws://127.0.0.1:47831/rpc did not answer device.issueCode before the deadline")
+    expect(io.err.join("")).toContain("Check that domovoid is running at that address")
     expect(io.out.join("")).toBe("")
   })
 
