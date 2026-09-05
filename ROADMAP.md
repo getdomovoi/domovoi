@@ -477,9 +477,15 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open
     items below replace the earlier assumption that relay had to wait for the hosted Goal 3
     service.
-  - The union-like base schema, preference order, and UI loop exist. Production produces only local
-    and LAN candidates, the daemon tries only the first candidate, the UI can wait forever on a
-    silent first candidate, and no WSL, tailnet, or SSH producer exists. Relay stays deferred.
+  - The base schema, preference order, and bounded client/daemon fallback loops exist. Production
+    now produces local, LAN and explicitly configured TLS tailnet advertisements. Source-local
+    configured SSH forwards follow direct candidates without becoming target-authored facts or
+    permanent remembered routes. Production socket tests cover TLS descriptor publication,
+    transfer over a configured loopback endpoint, forget masking and configuration removal.
+    They do not prove an external tailnet or an SSH process. WSL transport production remains
+    open in its own lane; WSL facts and the open shim are not a transport producer. Relay stays
+    deferred under Goal 3. A silent route can still spend the shared attempt deadline before
+    fallback begins.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
   rendezvous in `docs/encrypted-relay.md`
@@ -501,9 +507,16 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
   a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
-  - The downloader verifies the caller SHA-256 and the release `SHA256SUMS` and stores a bounded
-    archive. It does not extract, install dependencies, expose a binary, configure state, or
-    install supervision. Call it a verified downloader until a clean-machine lifecycle passes.
+  - Bootstrap streams and verifies the archive, stages it privately, materialises its embedded
+    integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`, and
+    verifies the installed graph before publishing a runnable receipt. Same-release protocol
+    bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
+    installation, native build, verification, publication, and cleanup share five minutes.
+  - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
+    external toolchain remain reproducibility limits. The protocol library keeps all three
+    package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
+    a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not
+    performed by bootstrap. See `docs/distribution.md`.
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is
@@ -705,6 +718,12 @@ before any public package or application publish.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
+  - E2 completeness fix: membership and SHA-512 component hashes come from the packed
+    all-platform runtime lock, including optional non-host binaries and the embedded protocol.
+    The separate protocol artifact is byte-bound to that lock and reports only its closure.
+    Offline pinned CycloneDX 1.6 validation and a real-archive completeness regression cover
+    generation. Host license observations annotate exact versions only; missing observations
+    remain empty. External toolchains and unfrozen manual installs are outside this inventory.
   - The release workflow attaches them to each published package's GitHub release once enabled.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set

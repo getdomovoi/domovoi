@@ -9,4 +9,4 @@ checksum checks, fsync, and atomic no-replace publication before reporting succe
 Downloads, staging, and publication share a five-minute total deadline; publication also has a
 30-second phase limit within the remainder. Expired operations cannot begin later steps. Timeout
 errors name the archive to inspect, and private staging can remain if its cleanup budget expired.
-The script remains a downloader, not an installer or service manager.
+The streamed archive phase does not itself install dependencies or manage a service.
