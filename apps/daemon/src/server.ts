@@ -10,6 +10,7 @@ import {
   canonicalBase64DecodedByteLength,
   credentialSchema,
   type MachineCapability,
+  type MachineWslFacts,
   type FleetMachine,
   fleetMachineDescriptorSchema,
   fleetSnapshotOverflowErrorCode,
@@ -166,6 +167,7 @@ import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
 import {
   DeviceLabelMismatchError,
@@ -773,6 +775,10 @@ export type DaemonServerOptions = {
   advertiseHost?: string
   tailnetHost?: string
   sshTunnels?: readonly ConfiguredSshTunnel[]
+  // The distribution this daemon runs in, when it runs inside WSL. It is a
+  // fact about the executable's host, so it is supplied at construction like
+  // the platform rather than read back from stored state.
+  wsl?: MachineWslFacts
   // Below the production factory only. The version this daemon advertises and
   // admits peers by, so a test peer can stand in for another release. Its own
   // dials keep the build's version.
@@ -897,6 +903,7 @@ export class DomovoiDaemon {
   #localOwner: DaemonServerOptions["localOwner"]
   #advertiseHost: string | undefined
   #tailnetHost: string | undefined
+  #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
   #machineCredentials: AsyncMachineCredentials | undefined
@@ -936,6 +943,7 @@ export class DomovoiDaemon {
     this.#localOwner = options.localOwner
     this.#advertiseHost = options.advertiseHost
     this.#tailnetHost = options.tailnetHost
+    this.#wsl = options.wsl
     this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
     if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
       throw new RangeError("Advertised protocol version must be a three-part semver")
@@ -1111,6 +1119,7 @@ export class DomovoiDaemon {
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
         ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
       }),
+      ...(this.#wsl ? { wsl: this.#wsl } : {}),
     })
   }
 
@@ -5609,6 +5618,19 @@ export class DomovoiDaemon {
 
       if (method === "project.open") {
         const params = paramsResult.data as RpcParams<"project.open">
+        // Repository work on a WSL distribution belongs to the daemon inside
+        // it. Reading the share from here would run git across the boundary,
+        // so the request is turned away before anything touches the path.
+        const share = wslSharePath(params.path)
+        if (share) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            `${params.path} is inside the WSL distribution ${share.distribution}, which this daemon does not reach through the share. Run domovoid open ${params.path} so the daemon inside ${share.distribution} opens it.`,
+          )
+          return
+        }
         const repository = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.inspect(params.path, signal),
           this.#agentTimeoutMs,

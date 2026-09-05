@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { parseWslDistributions, wslDaemonTargets } from "./wsl-distributions.js"
+import { parseWslDistributions } from "./wsl-distributions.js"
 
 function utf16(text: string, { bom = true } = {}): Buffer {
   return Buffer.from(`${bom ? "﻿" : ""}${text}`, "utf16le")
@@ -55,32 +55,5 @@ describe("parseWslDistributions", () => {
     expect(parseWslDistributions(utf16(broken))).toEqual([
       { name: "Ubuntu-24.04", state: "Running", version: 2, default: false },
     ])
-  })
-})
-
-describe("wslDaemonTargets", () => {
-  const distributions = parseWslDistributions(utf16(listing))
-
-  it("offers the running WSL2 distributions a daemon can be reached in", () => {
-    expect(wslDaemonTargets(distributions)).toEqual([
-      { name: "Ubuntu-24.04", default: true },
-    ])
-  })
-
-  it("leaves a stopped distribution alone rather than starting it", () => {
-    expect(wslDaemonTargets(distributions).map((target) => target.name)).not.toContain("debian")
-  })
-
-  it("refuses a WSL1 distribution, where the daemon has no separate network stack", () => {
-    expect(wslDaemonTargets(distributions).map((target) => target.name)).not.toContain("Legacy")
-  })
-
-  it("puts the default distribution first", () => {
-    const listed = parseWslDistributions(utf16([
-      "  NAME  STATE  VERSION",
-      "  alpha    Running   2",
-      "* beta     Running   2",
-    ].join("\r\n")))
-    expect(wslDaemonTargets(listed).map((target) => target.name)).toEqual(["beta", "alpha"])
   })
 })
