@@ -57,6 +57,8 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
     platform: "linux",
     execPath: "/usr/local/bin/domovoid",
     home: "/home/dl",
+    // The simulated target owns its path syntax, not the machine running Vitest.
+    workingDirectory: overrides.home ?? "/home/dl",
     stdout: vi.fn(),
     stderr: vi.fn(),
     ...overrides,
@@ -347,6 +349,19 @@ describe("serviceStatus", () => {
 })
 
 describe("runServiceCommand", () => {
+  it.each([linux, darwin])("keeps the $platform fixture independent of a Windows runner cwd", async (target) => {
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue("D:\\a\\domovoi\\domovoi\\apps\\daemon")
+    try {
+      const dependencies = command({ ...target })
+      const status = await runServiceCommand(["service", "install"], dependencies)
+      expect(dependencies.stderr).not.toHaveBeenCalled()
+      expect(status).toBe(0)
+      expect(dependencies.write).toHaveBeenCalled()
+    } finally {
+      cwd.mockRestore()
+    }
+  })
+
   it.each([
     linux,
     darwin,

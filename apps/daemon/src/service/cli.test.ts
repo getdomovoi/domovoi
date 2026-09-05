@@ -1,11 +1,11 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { on, once } from "node:events"
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 import { protocolVersion } from "@getdomovoi/protocol"
@@ -18,7 +18,7 @@ import { parseServiceConfiguration, serviceConfigurationPath } from "./configura
 import { withinServiceDeadline } from "./deadline.js"
 
 const cliPath = fileURLToPath(new URL("../../dist/index.js", import.meta.url))
-const managerShim = fileURLToPath(new URL("../../test-fixtures/service-manager.mjs", import.meta.url))
+const managerShimSource = new URL("../../test-fixtures/service-manager.mjs", import.meta.url)
 const run = promisify(execFile)
 const budget = process.platform === "win32" ? 30_000 : 15_000
 // A real process also drains provider probes on shutdown. That is not the
@@ -48,6 +48,11 @@ describe("distributed service CLI", () => {
     let exited: Promise<unknown> | undefined
     let socket: WebSocket | undefined
     try {
+      // A preload is an ESM specifier, not a filesystem argument. The reserved
+      // character catches a bare-path regression on POSIX as well as Windows.
+      const managerShimPath = join(home, "manager # shim.mjs")
+      await within(() => copyFile(managerShimSource, managerShimPath))
+      const managerShim = pathToFileURL(managerShimPath).href
       const port = await unusedPort(deadline)
       const certPath = join(home, "cert.pem")
       const keyPath = join(home, "private.key")
