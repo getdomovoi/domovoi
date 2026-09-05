@@ -152,11 +152,12 @@ test("identical archives install the reviewed transitive bytes after the registr
   assert.equal(await readFile(join(cliResult.runtimePath, "node_modules/node-pty/built.txt"), "utf8"), "reviewed build ran")
   await assert.rejects(readFile(join(root, "ambient-prefix/package-lock.json")), { code: "ENOENT" })
 
-  // Change the registry bytes under the same URL. A new install must reject on
-  // SRI rather than publish a graph whose manifests happen to have the right versions.
-  responses.set("/domovoi-lock-leaf/-/domovoi-lock-leaf-1.0.0.tgz", Buffer.from("replaced registry tarball"))
+  // Keep the replacement a valid archive with the same name and version. A
+  // malformed tarball could fail without checking integrity and prove nothing
+  // about the pin. Only the content hash distinguishes this substituted release.
+  await pack({ name: "domovoi-lock-leaf", version: "1.0.0" }, { "replacement.txt": "different bytes under the same version" })
   const rejected = join(root, "replaced")
-  await assert.rejects(install(rejected), /integrity|EINTEGRITY|TAR_BAD_ARCHIVE/i)
+  await assert.rejects(install(rejected), /EINTEGRITY/)
   await assert.rejects(readFile(join(rejected, "v1.0.0/runtime.json")), { code: "ENOENT" })
   t.diagnostic("Same archive twice: leaf 1.0.0 before and after registry 1.1.0. Real HTTPS bootstrap CLI: installed and built. Replaced locked bytes: refused, no runtime receipt.")
 })
