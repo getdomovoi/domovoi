@@ -1,4 +1,5 @@
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import * as filesystem from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -18,6 +19,11 @@ import {
   type ServiceCommandDependencies,
   type ServiceEffects,
 } from "./install.js"
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
 
 function configuration(homeDirectory: string, platform: string) {
   return createServiceConfiguration({}, { homeDirectory, platform, workingDirectory: homeDirectory })
@@ -58,6 +64,16 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
 }
 
 describe("servicePlan", () => {
+  it("refuses an overlong Windows command before any files or manager calls", async () => {
+    const dependencies = effects()
+    await expect(installService({
+      ...windowsScript,
+      execPath: `C:\\${"a".repeat(190)}\\dist\\index.js`,
+    }, dependencies)).rejects.toThrow(/Windows task command exceeds 262 characters/)
+    expect(dependencies.write).not.toHaveBeenCalled()
+    expect(dependencies.run).not.toHaveBeenCalled()
+  })
+
   it("puts a systemd unit in the asking user's own configuration", () => {
     const plan = servicePlan(linux)
     expect(plan).toMatchObject({
@@ -125,6 +141,29 @@ describe("servicePlan", () => {
 })
 
 describe("installService", () => {
+  it("keeps the last complete configuration when a replacement write fails partway", async () => {
+    const deadline = OperationDeadline.start(5_000)
+    const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
+    const directory = await within(() => mkdtemp(join(tmpdir(), "domovoi-service-replace-")))
+    const path = join(directory, "service.json")
+    const originalWrite = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).writeFile
+    try {
+      await within(() => originalWrite(path, "previous complete settings"))
+      vi.mocked(filesystem.writeFile).mockImplementationOnce(async (target, _contents, options) => {
+        await originalWrite(target, "partial replacement", options)
+        throw new Error("injected partial write")
+      })
+      await expect(within(() => nodeServiceEffects().write(path, "replacement settings", deadline)))
+        .rejects.toThrow(/injected partial write/)
+      expect(await within(() => readFile(path, "utf8"))).toBe("previous complete settings")
+      expect(await within(() => filesystem.readdir(directory))).toEqual(["service.json"])
+    } finally {
+      vi.mocked(filesystem.writeFile).mockImplementation(originalWrite)
+      await within(() => rm(directory, { recursive: true, force: true }))
+      deadline.clear()
+    }
+  })
+
   it("honors every injected service effect", () => {
     const write = vi.fn(async () => {})
     const remove = vi.fn(async () => {})

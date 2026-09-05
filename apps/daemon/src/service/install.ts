@@ -1,4 +1,5 @@
-import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
@@ -100,9 +101,9 @@ function assertUser(user: string | undefined): string {
   return user
 }
 
-function assertExecutable(execPath: string): string {
+function assertExecutable(execPath: string, description = "domovoid"): string {
   if (!/^[A-Za-z]:\\/.test(execPath) || hasForbiddenCharacter(execPath)) {
-    throw new Error(`${execPath} is not an absolute path to domovoid`)
+    throw new Error(`${execPath} is not an absolute path to ${description}`)
   }
   return execPath
 }
@@ -178,6 +179,10 @@ export function servicePlan({
   }
 
   if (platform === "win32") {
+    const taskCommand = `${windowsTaskCommand(execPath, runtime)} --service-config "${assertExecutable(configurationFile.path, "the service configuration")}"`
+    if (taskCommand.length > 262) {
+      throw new Error("Windows task command exceeds 262 characters. Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.")
+    }
     // A Windows service created with sc.exe runs as LocalSystem and belongs to
     // the machine, which is neither what the systemd user unit nor the launchd
     // agent does. A logon task runs as the user who asked, with their own
@@ -193,7 +198,7 @@ export function servicePlan({
             "/tn",
             displayName,
             "/tr",
-            `${windowsTaskCommand(execPath, runtime)} --service-config "${assertExecutable(configurationFile.path)}"`,
+            taskCommand,
             "/sc",
             "onlogon",
             "/ru",
@@ -253,8 +258,23 @@ async function writeUnit(path: string, contents: string, deadline: OperationDead
   const directory = dirname(path)
   await withinServiceDeadline(deadline, () => mkdir(directory, { recursive: true, mode: 0o700 }))
   if (process.platform !== "win32") await withinServiceDeadline(deadline, () => chmod(directory, 0o700))
-  await withinServiceDeadline(deadline, () => writeFile(path, contents, { mode: 0o600, signal: deadline.signal }))
-  if (process.platform !== "win32") await withinServiceDeadline(deadline, () => chmod(path, 0o600))
+  const staging = `${path}.${randomUUID()}.tmp`
+  try {
+    // Never truncate the last complete configuration. Exclusive creation gives
+    // this install a private inode, including when the old file was writable.
+    await withinServiceDeadline(deadline, () => writeFile(staging, contents, { flag: "wx", mode: 0o600, signal: deadline.signal }))
+    await withinServiceDeadline(deadline, () => rename(staging, path))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw error
+    try {
+      // Cleanup shares the install budget. If it expired, no new I/O begins;
+      // the private staging file may remain, but never becomes launch input.
+      await withinServiceDeadline(deadline, () => rm(staging, { force: true }))
+    } catch {
+      throw new Error(`Service file publication failed at ${path}; a temporary file may remain at ${staging}`, { cause: error })
+    }
+    throw error
+  }
 }
 
 async function serviceOperation<T>(operation: (deadline: OperationDeadline) => Promise<T>): Promise<T> {

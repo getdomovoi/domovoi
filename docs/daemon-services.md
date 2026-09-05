@@ -4,10 +4,14 @@
 It captures the current daemon configuration before asking the service manager to start anything.
 Close other daemon owners, including Desktop, before starting the service. Desktop attachment to an
 already supervised daemon remains separate work.
+Existing installations need one reinstall to replace their old launch command; upgrading the binary
+alone does not rewrite service-manager configuration.
 
 The installer writes `<user-home>/.domovoi/service.json`. The installed command names the Node
 runtime, daemon entry point, and `--service-config <path>` explicitly. On startup the production
 factory receives the saved settings, not daemon variables inherited from the supervisor.
+Windows installation refuses command lines over 262 characters before writing files; use shorter
+absolute installation paths rather than a truncated launch command.
 
 The versioned file contains listener host and port, remote-listener opt-in, TLS certificate and key
 **paths**, advertised host, allowed browser origins, credential and machine-identity paths, and the
@@ -44,11 +48,15 @@ test intercepts only OS-manager subprocess calls, checks the real files and laun
 launches the real daemon with a conflicting environment and authenticates over its saved TLS
 endpoint. Removing the CLI environment handoff makes that test recover the default endpoint and
 identity paths instead.
+The TLS fixture requires `openssl` on the test runner's PATH to generate its temporary certificate.
 
 This proves configuration delivery, not native systemd, launchd, or Task Scheduler lifecycle
 behavior. Real manager restart/removal checks, installer rollback, and Desktop/service ownership
 remain separate audit work. A timed-out manager may already have changed OS state; inspect service
-status before retrying. A failed file write can leave an incomplete file, which startup refuses.
+status before retrying. Each file is replaced by a same-directory rename only after a complete
+private staging write. A failed write preserves the last complete file. Expiry or a crash can leave
+a private `.tmp` sibling; it is never read as configuration and may be removed after installation
+has stopped. Replacement of the configuration and unit is not one cross-file transaction.
 
 Launch escaping follows the managers' own rules, not a shell: systemd expands specifiers and
 environment references in command lines, while Task Scheduler accepts the program and arguments

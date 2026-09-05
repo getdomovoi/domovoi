@@ -72,10 +72,16 @@ describe("distributed service CLI", () => {
         DOMOVOI_ALLOWED_ORIGINS: "https://service.example.com",
         DOMOVOI_ADVERTISE_HOST: "localhost", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "0",
       }
+      const configPath = serviceConfigurationPath(home, process.platform)
+      await expect(within(() => run(process.execPath, ["--import", managerShim, cliPath, "service", "install"], {
+        env: { ...environment, DOMOVOI_AUTH_TOKEN: "s".repeat(43) },
+        signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()),
+      }))).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("Configure a private DOMOVOI_CREDENTIAL_PATH") })
+      await expect(within(() => stat(configPath))).rejects.toMatchObject({ code: "ENOENT" })
+      await expect(within(() => stat(managerLog))).rejects.toMatchObject({ code: "ENOENT" })
       await within(() => run(process.execPath, ["--import", managerShim, cliPath, "service", "install"], {
         env: environment, signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()),
       }))
-      const configPath = serviceConfigurationPath(home, process.platform)
       const saved = parseServiceConfiguration(await within(() => readFile(configPath, "utf8")))
       expect(saved).toMatchObject({ port, tls: { certPath, keyPath }, credentialPath, machineIdentityPath: identityPath })
       expect(JSON.stringify(saved)).not.toContain(token)
@@ -110,6 +116,37 @@ describe("distributed service CLI", () => {
         expect(stderr).not.toContain("Error:")
         expect(stdout).toContain(`domovoid listening on wss://localhost:${port}/rpc`)
       }))
+      for (const bearer of [undefined, "s".repeat(43)]) {
+        deadline.throwIfExpired()
+        const rejected = new WebSocket(`wss://127.0.0.1:${port}/rpc`, {
+          rejectUnauthorized: false, origin: "https://service.example.com",
+          ...(bearer ? { headers: { authorization: `Bearer ${bearer}` } } : {}),
+        })
+        try {
+          await once(rejected, "open", { signal: deadline.signal })
+          const messages = on(rejected, "message", { signal: deadline.signal })
+          rejected.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.hello", params: { client: "cli", clientVersion: "service-test", protocolVersion } }))
+          for await (const [bytes] of messages) {
+            const response = JSON.parse(String(bytes)) as { id?: number; result?: unknown; error?: unknown }
+            if (response.id !== 1) continue
+            expect(response.error).toMatchObject({ message: "Daemon authentication failed" })
+            expect(response.result).toBeUndefined()
+            break
+          }
+        } finally {
+          rejected.terminate()
+        }
+      }
+      deadline.throwIfExpired()
+      const wrongOrigin = new WebSocket(`wss://127.0.0.1:${port}/rpc`, {
+        rejectUnauthorized: false, origin: "https://unapproved.example.com",
+        headers: { authorization: `Bearer ${token}` },
+      })
+      try {
+        await expect(once(wrongOrigin, "open", { signal: deadline.signal })).rejects.toThrow("Unexpected server response: 401")
+      } finally {
+        wrongOrigin.terminate()
+      }
       deadline.throwIfExpired()
       socket = new WebSocket(`wss://127.0.0.1:${port}/rpc`, {
         rejectUnauthorized: false, origin: "https://service.example.com",
