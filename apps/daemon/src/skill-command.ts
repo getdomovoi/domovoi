@@ -2,7 +2,12 @@ import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto"
 import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 
-import { skillInstallScopeSchema, type SkillInstallPreview, type SkillInstallScope } from "@getdomovoi/protocol"
+import {
+  skillInstallScopeSchema,
+  type SkillInstallPreview,
+  type SkillInstallScope,
+  type SkillInstallTarget,
+} from "@getdomovoi/protocol"
 
 import {
   SkillInstallError,
@@ -188,7 +193,11 @@ async function sign(
   return 0
 }
 
-function reviewLines(preview: SkillInstallPreview, scope: SkillInstallScope): string {
+function reviewLines(
+  preview: SkillInstallPreview,
+  scope: SkillInstallScope,
+  target: SkillInstallTarget | undefined,
+): string {
   const row = (label: string, value: string) => `${`${label}:`.padEnd(16)}${value}`
   const signature = preview.signature.state === "unsigned"
     ? "unsigned"
@@ -199,7 +208,6 @@ function reviewLines(preview: SkillInstallPreview, scope: SkillInstallScope): st
     ? `trusted (${preview.trust.reason}) · ${preview.trust.authority}`
     : `${preview.trust.state} (${preview.trust.reason})`
   const totalBytes = preview.files.reduce((sum, file) => sum + file.bytes, 0)
-  const target = preview.targets.find((candidate) => candidate.scope === scope)
   return [
     row("skill", preview.name),
     row("description", preview.description),
@@ -233,7 +241,8 @@ async function add(
     dependencies.stderr(`${error.message}\n`)
     return 1
   }
-  dependencies.stdout(reviewLines(preview, scope))
+  const target = preview.targets.find((candidate) => candidate.scope === scope)
+  dependencies.stdout(reviewLines(preview, scope, target))
   if (preview.refusals.length > 0) {
     dependencies.stderr(preview.refusals.map((refusal) => `refused: ${skillInstallRefusalMessage(refusal)}\n`).join(""))
     return 1
@@ -244,7 +253,7 @@ async function add(
   }
   try {
     const installed = await catalog.install({ source, scope, sourceDigest: preview.sourceDigest })
-    dependencies.stdout(`installed ${installed.name} to ${dirname(installed.path)}\n`)
+    dependencies.stdout(`installed ${installed.name} to ${target?.path ?? dirname(installed.path)}\n`)
     return 0
   } catch (error) {
     if (error instanceof SkillInstallError) {

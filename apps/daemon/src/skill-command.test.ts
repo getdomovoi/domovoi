@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -254,6 +254,25 @@ describe("domovoid skill", () => {
     expect(run.stderr.join("")).toContain(`Skill source is not a readable directory: ${join(home, "nowhere")}`)
     expect(await run("add", source, "--scope", "system")).toBe(1)
     expect(run.stderr.join("")).toMatch(/Usage: domovoid skill keygen/u)
+  })
+
+  it.skipIf(process.platform === "win32")("names the reviewed destination when the home is reached through a link", async () => {
+    const enclosure = await mkdtemp(join(tmpdir(), "domovoi-skill-command-link-"))
+    scratchDirectories.push(enclosure)
+    await mkdir(join(enclosure, "canonical"))
+    await symlink(join(enclosure, "canonical"), join(enclosure, "home"), "dir")
+    const home = join(enclosure, "home")
+    const run = terminal(home)
+    const source = join(home, "work", "pr-triage")
+    await mkdir(source, { recursive: true })
+    await writeFile(join(source, "SKILL.md"), "---\nname: pr-triage\ndescription: Triage.\n---\n")
+    const userTarget = join(home, ".domovoi", "skills", "pr-triage")
+
+    expect(await run("add", source, "--scope", "user", "--yes")).toBe(0)
+
+    expect(run.stdout.join("")).toContain(`installs to:    ${userTarget} (available)`)
+    expect(run.stdout.join("")).toContain(`installed pr-triage to ${userTarget}`)
+    expect(run.stdout.join("")).not.toContain(join(enclosure, "canonical", ".domovoi"))
   })
 
   it.skipIf(process.platform === "win32")("refuses to add a key to a trust file other users can read", async () => {
