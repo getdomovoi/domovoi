@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -543,17 +543,28 @@ export function AppBar({
 }
 
 export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
+  const id = useId()
   const readout = usage ? usageTodayReadout(usage) : undefined
   if (!usage || !readout) return null
-  const detail = usageTodayDetail(usage)
+  const labelId = `${id}-label`
+  const valueId = `${id}-value`
   return (
-    <span
-      role="status"
-      aria-label="Usage today"
-      className="font-machine text-[10.5px] text-faint"
-      {...(detail ? { title: detail } : {})}
-    >
-      {readout}
+    <span role="status" aria-labelledby={`${labelId} ${valueId}`} className="font-machine text-[10.5px] text-faint">
+      <span id={labelId} className="sr-only">Usage today</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            id={valueId}
+            className="rounded-[4px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+          >
+            {readout}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[42ch] text-[11.5px] leading-relaxed">
+          {usageTodayDetail(usage)}
+        </TooltipContent>
+      </Tooltip>
     </span>
   )
 }

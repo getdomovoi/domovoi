@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it } from "vitest"
 
 import type { SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 
+import { TooltipProvider } from "./components/ui/tooltip"
 import { AppBar, SessionUsageFooter, SessionUsageSummary } from "./workspace-shell.js"
 
 afterEach(cleanup)
@@ -114,29 +115,31 @@ function usageToday(overrides: Partial<UsageWindow> = {}): UsageWindow {
   }
 }
 
-it("reads the day's cost across sessions out in the app bar", () => {
-  render(<AppBar {...appBarProps()} usageToday={usageToday()} />)
+it("reads the day's cost across sessions out in the app bar", async () => {
+  render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday()} /></TooltipProvider>)
 
-  const readout = screen.getByRole("status", { name: "Usage today" })
-  expect(readout.textContent).toBe("$4.18 today")
-  expect(readout.getAttribute("title")).toBe("1.2k tokens across 3 turns in 2 sessions today.")
+  const readout = screen.getByRole("status", { name: "Usage today $4.18 today" })
+  expect(readout.textContent).toContain("$4.18 today")
+  expect(screen.queryByTitle(/tokens across/u)).toBeNull()
+
+  act(() => screen.getByRole("button", { name: "$4.18 today" }).focus())
+  expect((await screen.findByRole("tooltip")).textContent).toBe("1.2k tokens across 3 turns in 2 sessions today.")
 })
 
 it("falls back to tokens when no provider reported a cost today", () => {
-  render(<AppBar {...appBarProps()} usageToday={usageToday({ reportedCostTurns: 0, unavailableCostTurns: 3, costMicros: 0, currency: undefined })} />)
+  render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday({ reportedCostTurns: 0, unavailableCostTurns: 3, costMicros: 0, currency: undefined })} /></TooltipProvider>)
 
-  const readout = screen.getByRole("status", { name: "Usage today" })
-  expect(readout.textContent).toBe("1.2k tokens today")
+  const readout = screen.getByRole("status", { name: "Usage today 1.2k tokens today" })
   expect(readout.textContent).not.toContain("$")
 })
 
 it("leaves the today readout out until a turn is recorded today", () => {
-  const { unmount } = render(<AppBar {...appBarProps()} usageToday={null} />)
-  expect(screen.queryByRole("status", { name: "Usage today" })).toBeNull()
+  const { unmount } = render(<TooltipProvider><AppBar {...appBarProps()} usageToday={null} /></TooltipProvider>)
+  expect(screen.queryByRole("status", { name: /Usage today/u })).toBeNull()
   unmount()
 
-  render(<AppBar {...appBarProps()} usageToday={usageToday({ sessions: 0, turns: 0, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costMicros: 0, currency: undefined, reportedCostTurns: 0 })} />)
-  expect(screen.queryByRole("status", { name: "Usage today" })).toBeNull()
+  render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday({ sessions: 0, turns: 0, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costMicros: 0, currency: undefined, reportedCostTurns: 0 })} /></TooltipProvider>)
+  expect(screen.queryByRole("status", { name: /Usage today/u })).toBeNull()
 })
 
 it("puts cost and context in the inspector footer", () => {
