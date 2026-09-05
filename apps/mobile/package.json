@@ -7,6 +7,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
+    "prebuild": "pnpm --filter @getdomovoi/protocol build",
+    "build": "expo export --platform ios --output-dir dist",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
     "prestart": "pnpm --filter @getdomovoi/protocol build",
     "pretypecheck": "pnpm --filter @getdomovoi/protocol build",
