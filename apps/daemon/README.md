@@ -165,7 +165,10 @@ facts and last contact but do not replace or refresh the timestamp of the rememb
 Otherwise a removed setting would quietly survive as a preferred route. Remove the SSH entry and
 restart with the updated configuration to remove this fallback. A separately enrolled direct route
 is independent and remains until re-enrollment or Forget. Service installation saves both settings
-in its non-secret `service.json`; later changes to a supervisor's environment do not override them.
+in its non-secret `service.json`, and a supervised daemon started with `--service-config` reads
+that file instead of the supervisor's environment. Removing `DOMOVOI_SSH_TUNNELS` from the
+supervisor and restarting leaves the saved fallback active. Rerun `domovoid service install` with
+the intended environment, or edit `service.json`, before restarting the service.
 
 These producers do not add WSL transport discovery, remote client admission for Use or Terminal,
 or a relay. WSL facts and its open shim remain separate from a WSL transport producer.
