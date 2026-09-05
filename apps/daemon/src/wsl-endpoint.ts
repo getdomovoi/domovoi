@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
-
 import { assertDistributionName } from "./wsl-git.js"
+import { runWslText, withWslDeadline, wslTimeoutMs, type WslRunner } from "./wsl-run.js"
 
 export type DistroEndpoint = {
   host: string
@@ -11,20 +9,11 @@ export type DistroEndpoint = {
 
 export type DistroEndpointInput = {
   distribution: string
-  run?: (
-    command: string,
-    args: readonly string[],
-    options: { timeoutMs: number },
-  ) => Promise<string>
+  run?: WslRunner<string>
   timeoutMs?: number
 }
 
-const execute = promisify(execFile)
 const endpointFile = ".domovoi/endpoint.json"
-
-// wsl.exe talks to a service that can be starting, stopping, or wedged, so the
-// read is bounded rather than left to hang.
-const defaultTimeoutMs = 10_000
 
 // Only one failure means there is no daemon in the distribution: the file is
 // not there. An unreachable distribution, a denied read, or a wsl.exe that is
@@ -33,26 +22,6 @@ function isMissingEndpointStderr(stderr: string): boolean {
   return stderr.includes(endpointFile) && /No such file or directory/i.test(stderr)
 }
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
-
-async function readThroughWsl(
-  command: string,
-  args: readonly string[],
-  options: { timeoutMs: number },
-): Promise<string> {
-  const { stdout } = await execute(command, [...args], {
-    encoding: "utf8",
-    timeout: options.timeoutMs,
-    killSignal: "SIGKILL",
-  })
-  return stdout
-}
-
-function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("wsl.exe did not answer in time")), timeoutMs)
-    work.then(resolve, reject).finally(() => clearTimeout(timer))
-  })
-}
 
 function isMissingEndpointFile(error: unknown): boolean {
   const stderr = (error as { stderr?: unknown }).stderr
@@ -88,15 +57,11 @@ export async function readDistroEndpoint(
   input: DistroEndpointInput,
 ): Promise<DistroEndpoint | undefined> {
   assertDistributionName(input.distribution)
-  const run = input.run ?? readThroughWsl
-
-  // A timeout of zero or less would leave the child with no deadline at all,
-  // which is the opposite of what asking for one means.
-  const requested = input.timeoutMs ?? defaultTimeoutMs
-  const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : defaultTimeoutMs
+  const run = input.run ?? runWslText
+  const timeoutMs = wslTimeoutMs(input.timeoutMs)
   let contents: string
   try {
-    contents = await withDeadline(
+    contents = await withWslDeadline(
       run("wsl.exe", [
         "-d",
         input.distribution,

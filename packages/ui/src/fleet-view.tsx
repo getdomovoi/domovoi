@@ -17,6 +17,7 @@ import {
 
 import {
   deviceRenameLabelSchema,
+  machinePlatformLabel,
   maximumPairedDeviceLabelLength,
   transportPreference,
   type ClientKind,
@@ -334,7 +335,7 @@ function MachineCard({
         <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{note}</p>
       ) : null}
       <p className="mt-1.5 m-0 font-machine text-[10px] text-faint">
-        {machine.platform} · {machine.arch} · {machine.version} · {machine.connection}
+        {machinePlatformLabel(machine)} · {machine.arch} · {machine.version} · {machine.connection}
         {sessionCount === undefined ? "" : ` · ${sessionSummary(sessionCount)}`}
       </p>
       <div className="mt-2 flex flex-wrap gap-1.5">

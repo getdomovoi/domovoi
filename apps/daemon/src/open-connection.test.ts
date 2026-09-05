@@ -59,11 +59,11 @@ describe("connectionForTarget", () => {
     expect(local).not.toHaveBeenCalled()
   })
 
-  it("says which distribution has no daemon rather than opening anything", async () => {
+  it("says which distribution has no daemon, and how to start one, rather than opening anything", async () => {
     await expect(connectionForTarget(
       { kind: "wsl", distribution: "debian", path: "/srv/app" },
       dependencies({ endpoint: async () => undefined }),
-    )).rejects.toThrow(/debian/)
+    )).rejects.toThrow(/no daemon is running in debian.*wsl\.exe -d debian.*domovoid/s)
   })
 
   it("never repeats a credential in the error it raises", async () => {

@@ -4,6 +4,8 @@ import { join, resolve } from "node:path"
 
 import { protocolVersion } from "@getdomovoi/protocol"
 
+import type { MachineWslFacts } from "@getdomovoi/protocol"
+
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
@@ -18,6 +20,7 @@ import {
   type DaemonServerOptions,
 } from "./server.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
+import { wslHostFacts } from "./wsl-host.js"
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
@@ -70,6 +73,7 @@ export type ProductionDaemonDependencies = {
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   createProviderProbe(): ProviderProbe
   createMachineCredentials(): AsyncMachineCredentials
+  wslFacts(environment: DaemonEnvironment): MachineWslFacts | undefined
   createDaemon(options: DaemonServerOptions): ProductionDaemonRuntime
 }
 
@@ -80,6 +84,7 @@ export const productionDaemonDependencies = {
   loadTls: loadTlsMaterial,
   createProviderProbe: () => new CliProviderProbe(),
   createMachineCredentials: () => new MachineCredentialWorker(),
+  wslFacts: (environment) => wslHostFacts({ environment }),
   createDaemon: (options) => new DomovoiDaemon(options),
 } satisfies ProductionDaemonDependencies
 
@@ -126,6 +131,7 @@ export async function createProductionDaemonWithDependencies(
     writeLocalOwnerRecord(homeDirectory, record)
     published = true
     deadline.throwIfExpired()
+    const wsl = dependencies.wslFacts(environment)
     const daemon = dependencies.createDaemon({
       localOwner: { secret, identity },
       host: config.host,
@@ -137,6 +143,7 @@ export async function createProductionDaemonWithDependencies(
       machineIdentity,
       ...(tls ? { tls } : {}),
       ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
+      ...(wsl ? { wsl } : {}),
       machineCredentials: dependencies.createMachineCredentials(),
       statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
       worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
