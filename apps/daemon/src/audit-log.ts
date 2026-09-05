@@ -20,8 +20,12 @@ import {
 import { PublicRpcError, redactErrorDetail } from "./rpc-errors.js"
 
 const defaultMaximumEntries = 10_000
+const defaultMaximumPreAuthEntries = 1_000
 
 export type AuditAppendInput = {
+  // Untrusted ingress must never consume retention reserved for decisions and
+  // activity. This is daemon-assigned storage policy, not an RPC parameter.
+  retention?: "pre-auth"
   id?: string
   occurredAt?: string
   actor: AuditActor
@@ -41,6 +45,7 @@ export interface AuditLog {
 
 export type SqliteAuditLogOptions = {
   maximumEntries?: number
+  maximumPreAuthEntries?: number
 }
 
 type StoredAuditEntry = {
@@ -61,10 +66,14 @@ type StoredAuditEntry = {
 export class SqliteAuditLog implements AuditLog {
   #database: DatabaseSync
   #maximumEntries: number
+  #maximumPreAuthEntries: number
 
   constructor(database: DatabaseSync, options: SqliteAuditLogOptions = {}) {
     this.#database = database
     this.#maximumEntries = validateMaximumEntries(options.maximumEntries ?? defaultMaximumEntries)
+    this.#maximumPreAuthEntries = validateMaximumEntries(
+      options.maximumPreAuthEntries ?? defaultMaximumPreAuthEntries,
+    )
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS audit_log (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +88,8 @@ export class SqliteAuditLog implements AuditLog {
         session_id TEXT,
         project_id TEXT,
         target TEXT,
-        detail TEXT
+        detail TEXT,
+        retention_class TEXT NOT NULL DEFAULT 'activity'
       );
       CREATE INDEX IF NOT EXISTS audit_log_occurred_at ON audit_log (occurred_at DESC);
       CREATE INDEX IF NOT EXISTS audit_log_action ON audit_log (action);
@@ -92,12 +102,19 @@ export class SqliteAuditLog implements AuditLog {
     if (!columns.some(({ name }) => name === "actor_connection_id")) {
       this.#database.exec("ALTER TABLE audit_log ADD COLUMN actor_connection_id TEXT")
     }
+    if (!columns.some(({ name }) => name === "retention_class")) {
+      // Keep legacy history intact. There was no durable classification to
+      // distinguish untrusted ingress from activity before this migration.
+      this.#database.exec("ALTER TABLE audit_log ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'activity'")
+    }
     this.#database.exec(`
       CREATE INDEX IF NOT EXISTS audit_log_project ON audit_log (project_id);
+      CREATE INDEX IF NOT EXISTS audit_log_retention ON audit_log (retention_class, sequence DESC);
     `)
   }
 
   append(input: AuditAppendInput): AuditEntry {
+    const retention = input.retention ?? "activity"
     const entry = auditEntrySchema.parse({
       id: sanitizeAuditText(input.id ?? `audit-${randomUUID()}`, 512),
       occurredAt: input.occurredAt ?? new Date().toISOString(),
@@ -119,8 +136,8 @@ export class SqliteAuditLog implements AuditLog {
       this.#database.prepare(`
         INSERT INTO audit_log (
           id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
-          action, outcome, session_id, project_id, target, detail
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          action, outcome, session_id, project_id, target, detail, retention_class
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         entry.id,
         entry.occurredAt,
@@ -134,11 +151,21 @@ export class SqliteAuditLog implements AuditLog {
         entry.projectId ?? null,
         entry.target ?? null,
         entry.detail ?? null,
+        retention,
       )
+      // Sequence numbers are shared by both classes and may have gaps. Prune
+      // by the retained row count within this class, never by MAX(sequence).
       this.#database.prepare(`
         DELETE FROM audit_log
-        WHERE sequence <= (SELECT MAX(sequence) - ? FROM audit_log)
-      `).run(this.#maximumEntries)
+        WHERE retention_class = ? AND sequence <= (
+          SELECT sequence FROM audit_log WHERE retention_class = ?
+          ORDER BY sequence DESC LIMIT 1 OFFSET ?
+        )
+      `).run(
+        retention,
+        retention,
+        retention === "pre-auth" ? this.#maximumPreAuthEntries : this.#maximumEntries,
+      )
       this.#database.exec("COMMIT")
     } catch (error) {
       this.#database.exec("ROLLBACK")

@@ -188,6 +188,55 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
+  it("retains pre-auth refusals separately without spending activity retention", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database, {
+      maximumEntries: 3,
+      maximumPreAuthEntries: 2,
+    })
+    try {
+      for (let index = 1; index <= 4; index += 1) {
+        audit.append({
+          id: `decision-${index}`,
+          actor: { kind: "client", client: "desktop" },
+          action: "approval.resolve",
+          outcome: "denied",
+        })
+        for (let refusal = 0; refusal < 4; refusal += 1) {
+          audit.append({
+            id: `refusal-${index}-${refusal}`,
+            retention: "pre-auth",
+            actor: { kind: "daemon", component: "rpc" },
+            action: "device.claim",
+            outcome: "denied",
+          })
+        }
+        expect(audit.query({ action: "approval.resolve" }).entries).toHaveLength(Math.min(index, 3))
+        expect(audit.query({ action: "device.claim" }).entries).toHaveLength(2)
+      }
+      const expectedIds = ["refusal-4-3", "refusal-4-2", "decision-4", "decision-3", "decision-2"]
+      expect(audit.query().entries.map(({ id }) => id)).toEqual(expectedIds)
+      expect(audit.export().content.trim().split("\n").map((line) => JSON.parse(line).id))
+        .toEqual(expectedIds)
+      expect(audit.query({ before: "refusal-4-2" }).entries.map(({ id }) => id))
+        .toEqual(expectedIds.slice(2))
+      const reopened = new SqliteAuditLog(database, { maximumEntries: 3, maximumPreAuthEntries: 2 })
+      reopened.append({
+        id: "refusal-after-reopen",
+        retention: "pre-auth",
+        actor: { kind: "daemon", component: "authentication" },
+        action: "security.authentication",
+        outcome: "denied",
+      })
+      expect(reopened.query({ action: "approval.resolve" }).entries.map(({ id }) => id))
+        .toEqual(["decision-4", "decision-3", "decision-2"])
+      expect(reopened.query().entries).toHaveLength(5)
+      expect(reopened.export().content).not.toContain("retention")
+    } finally {
+      database.close()
+    }
+  })
+
   it("pages exports before their wire-size bound", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database)
@@ -256,7 +305,7 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
-  it("adds durable connection attribution to an existing audit database", () => {
+  it("adds retention isolation and connection attribution without deleting legacy history", () => {
     const database = new DatabaseSync(":memory:")
     database.exec(`
       CREATE TABLE audit_log (
@@ -274,7 +323,11 @@ describe("SqliteAuditLog", () => {
         detail TEXT
       )
     `)
-    const audit = new SqliteAuditLog(database)
+    database.prepare(`
+      INSERT INTO audit_log (id, occurred_at, actor_kind, actor_name, action, outcome)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run("legacy-approval", "2026-08-29T12:00:00.000Z", "client", "desktop", "approval.resolve", "denied")
+    const audit = new SqliteAuditLog(database, { maximumEntries: 2, maximumPreAuthEntries: 1 })
     audit.append({
       id: "audit-connection",
       actor: {
@@ -292,6 +345,17 @@ describe("SqliteAuditLog", () => {
           connectionId: "11111111-1111-4111-8111-111111111111",
         }),
       })])
+    for (let index = 0; index < 4; index += 1) {
+      audit.append({
+        retention: "pre-auth",
+        actor: { kind: "daemon", component: "rpc" },
+        action: "device.claim",
+        outcome: "denied",
+      })
+    }
+    expect(audit.query().entries).toHaveLength(3)
+    expect(audit.query({ action: "approval.resolve" }).entries)
+      .toEqual([expect.objectContaining({ id: "legacy-approval" })])
     database.close()
   })
 })

@@ -1313,6 +1313,7 @@ export class DomovoiDaemon {
     if ((this.#preAuthAuditDeadlines.get(kind) ?? 0) > now) return
     this.#preAuthAuditDeadlines.set(kind, now + preAuthAuditWindowMs)
     this.#appendAudit({
+      retention: "pre-auth",
       actor: { kind: "daemon", component: kind === "authentication" ? kind : "rpc" },
       action: `security.${kind}`,
       outcome: kind === "authentication" ? "denied" : "failed",
@@ -3167,6 +3168,7 @@ export class DomovoiDaemon {
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
           this.#appendAudit({
+            retention: "pre-auth",
             actor: { kind: "daemon", component: "rpc" },
             action: "device.claim",
             outcome: "denied",
@@ -3180,6 +3182,7 @@ export class DomovoiDaemon {
         // unauthenticated caller must not learn whether a code exists, has
         // expired, or was simply wrong.
         this.#appendAudit({
+          retention: "pre-auth",
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
           outcome: "denied",
