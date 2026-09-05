@@ -685,6 +685,10 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.usage", { sessionId })
   }
 
+  usageWindow(window: RpcParams<"usage.window">): Promise<RpcResult<"usage.window">> {
+    return this.request("usage.window", window)
+  }
+
   listSkills(): Promise<SkillSummary[]> {
     return this.request("skill.list", {})
   }

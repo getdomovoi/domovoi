@@ -963,7 +963,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       agents: {},
-      usageLedger: { record: vi.fn(), session: usage, close: vi.fn() },
+      usageLedger: { record: vi.fn(), session: usage, window: vi.fn(), close: vi.fn() },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -992,6 +992,56 @@ describe("DomovoiDaemon", () => {
       model: "gpt-5.6-sol",
       threadId: "thread-current",
     })
+    socket.close()
+  })
+
+  it("reads usage totals over a window across sessions from the ledger", async () => {
+    const result = {
+      sessions: 2,
+      turns: 3,
+      inputTokens: 35,
+      cachedInputTokens: 2,
+      outputTokens: 13,
+      reasoningTokens: 1,
+      totalTokens: 49,
+      costMicros: 30_000,
+      currency: "USD",
+      reportedCostTurns: 2,
+      unavailableCostTurns: 1,
+    }
+    const window = vi.fn(() => result)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agents: {},
+      usageLedger: { record: vi.fn(), session: vi.fn(), window, close: vi.fn() },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: string }
+        if (message.id === "usage-window") resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "usage-window",
+      method: "usage.window",
+      params: { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" },
+    }))
+
+    await expect(response).resolves.toMatchObject({ result })
+    expect(window).toHaveBeenCalledWith(
+      Date.parse("2026-09-04T06:00:00.000Z"),
+      Date.parse("2026-09-05T06:00:00.000Z"),
+    )
     socket.close()
   })
 
@@ -1028,6 +1078,7 @@ describe("DomovoiDaemon", () => {
       usageLedger: {
         record: vi.fn(() => { throw new Error("usage database unavailable") }),
         session: vi.fn(),
+        window: vi.fn(),
         close: vi.fn(),
       },
       errorSink,

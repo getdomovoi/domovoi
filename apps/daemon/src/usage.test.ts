@@ -7,6 +7,14 @@ import { describe, expect, it } from "vitest"
 
 import { UsageLedger, normalizeProviderUsage, normalizeUsage } from "./usage.js"
 
+function clock(start: string) {
+  let now = Date.parse(start)
+  return {
+    now: () => now,
+    set(next: string) { now = Date.parse(next) },
+  }
+}
+
 describe("provider usage telemetry", () => {
   it("normalizes tokens and provider-reported cost into integer micros", () => {
     expect(normalizeUsage({
@@ -391,6 +399,223 @@ describe("provider usage telemetry", () => {
         model: "sonnet",
         threadId: "thread-1",
       })).toMatchObject({ contextTokens: 32_000, contextWindowTokens: 200_000 })
+      ledger.close()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("totals usage recorded in a window across sessions and leaves other turns out", () => {
+    const time = clock("2026-09-04T01:00:00Z")
+    const ledger = new UsageLedger(":memory:", { now: time.now })
+    ledger.record({
+      sessionId: "session-earlier",
+      turnId: "turn-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 1_000, outputTokens: 500, cost: { amount: 1, currency: "USD" } }),
+    })
+    time.set("2026-09-04T09:00:00Z")
+    ledger.record({
+      sessionId: "session-earlier",
+      turnId: "turn-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 2_000, outputTokens: 900, cost: { amount: 2, currency: "USD" } }),
+    })
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({
+        inputTokens: 10,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        reasoningTokens: 1,
+        cost: { amount: 0.01, currency: "USD" },
+      }),
+    })
+    time.set("2026-09-04T10:00:00Z")
+    ledger.record({
+      sessionId: "session-2",
+      turnId: "turn-1",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      usage: normalizeUsage({ inputTokens: 20, outputTokens: 8, cost: { amount: 0.02, currency: "USD" } }),
+    })
+    ledger.record({
+      sessionId: "session-2",
+      turnId: "turn-2",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      usage: normalizeUsage({ inputTokens: 5, outputTokens: 1 }),
+    })
+    time.set("2026-09-05T06:00:00Z")
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-2",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 100, outputTokens: 100, cost: { amount: 0.5, currency: "USD" } }),
+    })
+
+    expect(ledger.window(Date.parse("2026-09-04T06:00:00Z"), Date.parse("2026-09-05T06:00:00Z"))).toEqual({
+      sessions: 2,
+      turns: 3,
+      inputTokens: 35,
+      cachedInputTokens: 2,
+      outputTokens: 13,
+      reasoningTokens: 1,
+      totalTokens: 49,
+      costMicros: 30_000,
+      currency: "USD",
+      reportedCostTurns: 2,
+      unavailableCostTurns: 1,
+    })
+    ledger.close()
+  })
+
+  it("answers an empty window with zero totals and no currency", () => {
+    const ledger = new UsageLedger()
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      usage: normalizeUsage({ inputTokens: 10, cost: { amount: 0.01, currency: "USD" } }),
+    })
+
+    const empty = ledger.window(0, 1)
+    expect(empty).toEqual({
+      sessions: 0,
+      turns: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+      costMicros: 0,
+      reportedCostTurns: 0,
+      unavailableCostTurns: 0,
+    })
+    expect(empty).not.toHaveProperty("currency")
+    ledger.close()
+  })
+
+  it("does not combine window costs reported in different currencies", () => {
+    const ledger = new UsageLedger()
+    ledger.record({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      provider: "grok",
+      model: "grok-code",
+      usage: normalizeUsage({ inputTokens: 1, cost: { amount: 1, currency: "USD" } }),
+    })
+    ledger.record({
+      sessionId: "session-2",
+      turnId: "turn-1",
+      provider: "grok",
+      model: "grok-code",
+      usage: normalizeUsage({ inputTokens: 1, cost: { amount: 1, currency: "EUR" } }),
+    })
+
+    const totals = ledger.window(0, Number.MAX_SAFE_INTEGER)
+    expect(totals).toMatchObject({ sessions: 2, turns: 2, totalTokens: 2, costMicros: 0, reportedCostTurns: 2 })
+    expect(totals).not.toHaveProperty("currency")
+    ledger.close()
+  })
+
+  it("persists recorded times across ledger restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-window-"))
+    const path = join(directory, "state.sqlite")
+    try {
+      const time = clock("2026-09-04T09:00:00Z")
+      const first = new UsageLedger(path, { now: time.now })
+      first.record({
+        sessionId: "session-1",
+        turnId: "turn-1",
+        provider: "grok",
+        model: "grok-code-fast-1",
+        usage: normalizeUsage({ totalTokens: 120, cost: { amount: 0.03, currency: "USD" } }),
+      })
+      first.close()
+
+      time.set("2026-09-06T09:00:00Z")
+      const reopened = new UsageLedger(path, { now: time.now })
+      expect(reopened.window(Date.parse("2026-09-04T00:00:00Z"), Date.parse("2026-09-05T00:00:00Z"))).toMatchObject({
+        sessions: 1,
+        turns: 1,
+        totalTokens: 120,
+        costMicros: 30_000,
+        currency: "USD",
+      })
+      expect(reopened.window(Date.parse("2026-09-06T00:00:00Z"), Date.parse("2026-09-07T00:00:00Z"))).toMatchObject({
+        sessions: 0,
+        turns: 0,
+      })
+      reopened.close()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("gives transferred rows no recorded time, so they never count toward a window on the target", () => {
+    const source = new UsageLedger()
+    source.record({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      usage: normalizeUsage({ inputTokens: 20, outputTokens: 8, cost: { amount: 0.02, currency: "USD" } }),
+    })
+    const target = new UsageLedger()
+    target.replaceTransferredSession("session-1", source.transferSession("session-1"))
+
+    expect(source.window(0, Number.MAX_SAFE_INTEGER)).toMatchObject({ sessions: 1, turns: 1, totalTokens: 28 })
+    expect(target.window(0, Number.MAX_SAFE_INTEGER)).toMatchObject({ sessions: 0, turns: 0, totalTokens: 0 })
+    expect(target.session("session-1")).toMatchObject({ totalTokens: 28, costMicros: 20_000 })
+    source.close()
+    target.close()
+  })
+
+  it("leaves rows recorded before the time column existed out of every window", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-window-migration-"))
+    const path = join(directory, "state.sqlite")
+    try {
+      const legacy = new DatabaseSync(path)
+      legacy.exec(`
+        CREATE TABLE provider_usage (
+          session_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          input_tokens INTEGER NOT NULL,
+          cached_input_tokens INTEGER NOT NULL,
+          output_tokens INTEGER NOT NULL,
+          reasoning_tokens INTEGER NOT NULL,
+          total_tokens INTEGER NOT NULL,
+          cost_source TEXT NOT NULL,
+          cost_micros INTEGER,
+          currency TEXT,
+          PRIMARY KEY (session_id, turn_id)
+        );
+        INSERT INTO provider_usage VALUES (
+          'session-legacy', 'turn-1', 'codex', 'gpt-5.6-sol', 40, 0, 2, 0, 42, 'unavailable', NULL, NULL
+        );
+      `)
+      legacy.close()
+
+      const ledger = new UsageLedger(path)
+      ledger.record({
+        sessionId: "session-1",
+        turnId: "turn-1",
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        usage: normalizeUsage({ inputTokens: 3, outputTokens: 1 }),
+      })
+      expect(ledger.window(0, Number.MAX_SAFE_INTEGER)).toMatchObject({ sessions: 1, turns: 1, totalTokens: 4 })
+      expect(ledger.session("session-legacy")).toMatchObject({ totalTokens: 42 })
       ledger.close()
     } finally {
       await rm(directory, { recursive: true, force: true })

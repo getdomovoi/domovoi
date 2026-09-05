@@ -36,6 +36,24 @@ export type TurnUsage = {
   usage: NormalizedUsage
 }
 
+export type UsageWindowTotals = {
+  sessions: number
+  turns: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  totalTokens: number
+  costMicros: number
+  currency?: string
+  reportedCostTurns: number
+  unavailableCostTurns: number
+}
+
+type UsageLedgerOptions = {
+  now?: () => number
+}
+
 export function normalizeUsage(input: {
   inputTokens?: number
   cachedInputTokens?: number
@@ -140,9 +158,11 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
 export class UsageLedger {
   readonly #database: DatabaseSync
   readonly #path: string
+  readonly #now: () => number
 
-  constructor(path = ":memory:") {
+  constructor(path = ":memory:", options: UsageLedgerOptions = {}) {
     this.#path = path
+    this.#now = options.now ?? Date.now
     this.#database = new DatabaseSync(path)
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
@@ -162,6 +182,7 @@ export class UsageLedger {
         cost_source TEXT NOT NULL CHECK (cost_source IN ('provider-reported', 'unavailable')),
         cost_micros INTEGER,
         currency TEXT,
+        recorded_at INTEGER,
         PRIMARY KEY (session_id, turn_id)
       );
       CREATE INDEX IF NOT EXISTS provider_usage_session ON provider_usage(session_id);
@@ -169,10 +190,18 @@ export class UsageLedger {
     this.#addColumnIfMissing("provider_thread_id", "TEXT")
     this.#addColumnIfMissing("context_tokens", "INTEGER")
     this.#addColumnIfMissing("context_window_tokens", "INTEGER")
+    this.#addColumnIfMissing("recorded_at", "INTEGER")
+    this.#database.exec(
+      "CREATE INDEX IF NOT EXISTS provider_usage_recorded_at ON provider_usage(recorded_at)",
+    )
     this.#restrictFilePermissions()
   }
 
   record(record: TurnUsage): void {
+    this.#upsert(record, this.#now())
+  }
+
+  #upsert(record: TurnUsage, recordedAt: number | null): void {
     const currency = record.usage.currency
     const context = reportedContextOccupancy(
       record.usage.contextTokens,
@@ -191,8 +220,8 @@ export class UsageLedger {
         session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
         context_tokens, context_window_tokens,
-        cost_source, cost_micros, currency
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_source, cost_micros, currency, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, turn_id) DO UPDATE SET
         provider_thread_id = excluded.provider_thread_id,
         provider = excluded.provider,
@@ -209,7 +238,8 @@ export class UsageLedger {
         ),
         cost_source = excluded.cost_source,
         cost_micros = excluded.cost_micros,
-        currency = excluded.currency
+        currency = excluded.currency,
+        recorded_at = COALESCE(provider_usage.recorded_at, excluded.recorded_at)
     `).run(
       record.sessionId,
       record.turnId,
@@ -226,8 +256,43 @@ export class UsageLedger {
       record.usage.costSource,
       record.usage.costMicros ?? null,
       record.usage.currency ?? null,
+      recordedAt,
     )
     this.#restrictFilePermissions()
+  }
+
+  window(start: number, end: number): UsageWindowTotals {
+    const row = this.#database.prepare(`
+      SELECT
+        COUNT(DISTINCT session_id) AS sessions,
+        COUNT(*) AS turns,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+        COALESCE(SUM(total_tokens), 0) AS total_tokens,
+        COALESCE(SUM(CASE WHEN cost_source = 'provider-reported' THEN cost_micros END), 0) AS cost_micros,
+        COALESCE(SUM(cost_source = 'provider-reported'), 0) AS reported_cost_turns,
+        COALESCE(SUM(cost_source = 'unavailable'), 0) AS unavailable_cost_turns,
+        COUNT(DISTINCT CASE WHEN cost_source = 'provider-reported' THEN currency END) AS currencies,
+        MIN(CASE WHEN cost_source = 'provider-reported' THEN currency END) AS currency
+      FROM provider_usage
+      WHERE recorded_at >= ? AND recorded_at < ?
+    `).get(start, end) as Record<string, unknown>
+    const singleCurrency = Number(row.currencies) === 1 && typeof row.currency === "string"
+    return {
+      sessions: Number(row.sessions),
+      turns: Number(row.turns),
+      inputTokens: Number(row.input_tokens),
+      cachedInputTokens: Number(row.cached_input_tokens),
+      outputTokens: Number(row.output_tokens),
+      reasoningTokens: Number(row.reasoning_tokens),
+      totalTokens: Number(row.total_tokens),
+      costMicros: singleCurrency ? Number(row.cost_micros) : 0,
+      ...(singleCurrency ? { currency: row.currency as string } : {}),
+      reportedCostTurns: Number(row.reported_cost_turns),
+      unavailableCostTurns: Number(row.unavailable_cost_turns),
+    }
   }
 
   session(sessionId: string, active?: ActiveUsageContext) {
@@ -294,7 +359,7 @@ export class UsageLedger {
           } : {}),
         }
         const { turnId, provider, model } = record
-        this.record({ sessionId, turnId, provider, model, usage })
+        this.#upsert({ sessionId, turnId, provider, model, usage }, null)
       }
       this.#database.exec("COMMIT")
     } catch (error) {
