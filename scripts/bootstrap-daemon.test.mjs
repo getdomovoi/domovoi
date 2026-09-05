@@ -47,6 +47,47 @@ test("installs the archive the pinned release published", async () => {
   }
 })
 
+test("writes each archive chunk before requesting the next one", { timeout: 10_000 }, async (t) => {
+  const into = await destination()
+  const release = join(into, `v${version}`)
+  const chunks = Array.from({ length: 4 }, (_, index) => Buffer.alloc(64 * 1024, index + 1))
+  const expected = Buffer.concat(chunks)
+  const expectedSha256 = createHash("sha256").update(expected).digest("hex")
+  // Zero queued chunks makes pull the actual consumer boundary. Reusing the
+  // backing buffer also catches a sink that retains views instead of writing.
+  const reusable = new Uint8Array(chunks[0].length)
+  let consumed = 0
+  const body = new ReadableStream({
+    async pull(controller) {
+      if (consumed > 0) {
+        const files = await readdir(release, { recursive: true }).catch(() => [])
+        const partials = files.filter((file) => file.endsWith(".partial"))
+        assert.equal(partials.length, 1, "a consumed chunk must reach private staging before the next read")
+        assert.deepEqual(await readFile(join(release, partials[0])), expected.subarray(0, consumed * reusable.length))
+      }
+      if (consumed === chunks.length) {
+        controller.close()
+        return
+      }
+      reusable.set(chunks[consumed])
+      consumed += 1
+      controller.enqueue(reusable)
+    },
+  }, { highWaterMark: 0 })
+  t.mock.method(globalThis, "fetch", async (url) => new Response(url.endsWith("SHA256SUMS")
+    ? `${expectedSha256}  ${archive}\n`
+    : body))
+  try {
+    const result = await bootstrapDaemon({ version, baseUrl, destination: into, expectedSha256 })
+    assert.equal(consumed, chunks.length)
+    assert.equal(result.sha256, expectedSha256)
+    assert.deepEqual(await readFile(result.path), expected)
+    assert.deepEqual(await readdir(release), [archive])
+  } finally {
+    await rm(into, { force: true, recursive: true })
+  }
+})
+
 test("keeps the release in a directory named for its version", async () => {
   const into = await destination()
   try {
