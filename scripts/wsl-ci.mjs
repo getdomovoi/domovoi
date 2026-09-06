@@ -55,10 +55,23 @@ export async function downloadWslImage(path, deadline, { download = downloadOver
 }
 
 export function assertWslReport(report) {
-  assert.ok(report?.success === true && report.numTotalTests >= 10
+  assert.ok(report?.success === true && report.numTotalTests >= 15
     && report.numPassedTests === report.numTotalTests && report.numFailedTests === 0
     && report.numPendingTests === 0 && report.numTodoTests === 0,
-  "WSL native proofs must pass at least ten tests with no skipped, pending or failed tests")
+  "WSL native proofs must pass at least fifteen tests including repository assertions with no skipped, pending or failed tests")
+  // A larger count could be unrelated tests. Require the actual boundary
+  // assertions too, so deleting their registration cannot leave a green job.
+  const assertions = report.testResults?.flatMap((suite) => suite.assertionResults ?? []) ?? []
+  for (const title of [
+    "opens the native repository through the Windows CLI without changing the Windows workspace",
+    "keeps the native repository owned by the guest while executing real Git",
+    "refuses the custom-mounted Windows drive through the Windows open shim",
+    "refuses WSL shares at the Windows daemon before repository inspection",
+    "rediscovers the restarted guest with its repository and pairing intact",
+  ]) {
+    assert.ok(assertions.some((test) => test.title === title && test.status === "passed"),
+      `WSL native proofs missing repository assertion: ${title}`)
+  }
 }
 
 const nodeEffects = {
@@ -213,7 +226,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         await summary.run(() => appendFile(process.env.GITHUB_STEP_SUMMARY,
           `### WSL native proofs\n\n${result.tests} passed, zero skipped. One Ubuntu 24.04.4 WSL 2 distribution.\n\n`
           + result.phases.map(({ name, seconds }) => `- ${name}: ${seconds} seconds\n`).join("")
-          + "\nProves guest boot, filesystem boundaries, authenticated WSL fleet routes, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, mirrored networking or VPNs.\n"))
+          + "\nProves guest boot, custom-mount refusal, Windows CLI repository open, guest ownership and Git, authenticated WSL routes, graceful daemon restart, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, service supervision, mirrored networking or VPNs.\n"))
       } finally { summary.clear() }
     }
   } catch (error) {

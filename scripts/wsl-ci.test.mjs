@@ -11,7 +11,14 @@ import { assertWslReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
-const passed = { numTotalTests: 10, numPassedTests: 10, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true }
+const passed = { numTotalTests: 15, numPassedTests: 15, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true,
+  testResults: [{ assertionResults: [
+    "opens the native repository through the Windows CLI without changing the Windows workspace",
+    "keeps the native repository owned by the guest while executing real Git",
+    "refuses the custom-mounted Windows drive through the Windows open shim",
+    "refuses WSL shares at the Windows daemon before repository inspection",
+    "rediscovers the restarted guest with its repository and pairing intact",
+  ].map((title) => ({ title, status: "passed" })) }] }
 
 function fixture(overrides = {}) {
   const calls = []
@@ -71,7 +78,15 @@ test("six discovery proofs alone no longer satisfy the transport job", () => {
 })
 
 test("a green transport report without repository boundary proofs is insufficient", () => {
-  assert.throws(() => assertWslReport(passed), /WSL native proofs.*repository/)
+  assert.throws(() => assertWslReport({ ...passed, numTotalTests: 10, numPassedTests: 10, testResults: [] }), /WSL native proofs.*repository/)
+  for (const assertion of passed.testResults[0].assertionResults) {
+    const withoutOne = { ...passed, testResults: [{ assertionResults: passed.testResults[0].assertionResults
+      .filter((entry) => entry !== assertion) }] }
+    assert.throws(() => assertWslReport(withoutOne), (error) => error.message.includes(assertion.title))
+    assert.throws(() => assertWslReport({ ...withoutOne, testResults: [{ assertionResults: [
+      ...withoutOne.testResults[0].assertionResults, { ...assertion, status: "pending" },
+    ] }] }), (error) => error.message.includes(assertion.title))
+  }
 })
 
 test("image download streams the pinned bytes and refuses a digest mismatch", { timeout: 5_000 }, async () => {
@@ -128,7 +143,7 @@ test("provisions exactly one distro, requires it in the test process, then remov
   }
   assert.deepEqual(calls.at(-1).args, ["--unregister", distribution])
   assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "guest runtime", "native proofs", "cleanup"])
-  assert.equal(result.tests, 10)
+  assert.equal(result.tests, 15)
 })
 
 test("missing virtualization fails before the proofs, not as a green skip", async () => {
