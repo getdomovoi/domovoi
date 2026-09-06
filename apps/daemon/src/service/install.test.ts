@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import * as filesystem from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -8,6 +8,7 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { createProductionDaemon } from "../production-daemon.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 import {
   installService,
@@ -160,7 +161,7 @@ describe("installService", () => {
       expect(dependencies.run).not.toHaveBeenCalled()
     } finally {
       await desktop.stop()
-      await rm(homeDirectory, { recursive: true, force: true })
+      await removeScratchDirectory(homeDirectory)
     }
   })
   it("keeps the last complete configuration when a replacement write fails partway", async () => {
@@ -181,7 +182,7 @@ describe("installService", () => {
       expect(await within(() => filesystem.readdir(directory))).toEqual(["service.json"])
     } finally {
       vi.mocked(filesystem.writeFile).mockImplementation(originalWrite)
-      await within(() => rm(directory, { recursive: true, force: true }))
+      await removeScratchDirectory(directory)
       deadline.clear()
     }
   })
@@ -208,7 +209,7 @@ describe("installService", () => {
       expect((await within(() => stat(directory))).mode & 0o777).toBe(0o700)
       expect(await within(() => readFile(path, "utf8"))).toBe("new settings")
     } finally {
-      await within(() => rm(directory, { recursive: true, force: true }))
+      await removeScratchDirectory(directory)
       deadline.clear()
     }
   })

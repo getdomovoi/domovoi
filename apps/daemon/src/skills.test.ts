@@ -21,7 +21,7 @@ import { FileSkillCatalog, skillRoots } from "./skills.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 async function skill(root: string, directory: string, frontmatter: string): Promise<string> {
