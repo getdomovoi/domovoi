@@ -889,12 +889,14 @@ describe("GitWorkspaceService transfer resources", () => {
 })
 
 describe("GitWorkspaceService bundle restore", () => {
+  // A rendezvous, not a deadline. The test holds a gate open across real Git
+  // work, so a wall-clock timer here races the runner instead of catching a
+  // hang: on a slow Windows runner it fired inside the restore under test and
+  // failed the winner with this file's own error. The test timeout is the
+  // deadline, and every gate is released in a finally block.
   function restoreGate() {
     let release = () => {}
-    const promise = new Promise<void>((resolvePromise, reject) => {
-      const timer = setTimeout(() => reject(new Error("Restore test gate deadline expired")), 2_000)
-      release = () => { clearTimeout(timer); resolvePromise() }
-    })
+    const promise = new Promise<void>((resolvePromise) => { release = resolvePromise })
     return { promise, release }
   }
 
@@ -1095,13 +1097,21 @@ describe("GitWorkspaceService bundle restore", () => {
     const competingInspect = vi.spyOn(competing, "inspect")
     let second: ReturnType<GitWorkspaceService["restoreSessionFromBundle"]> | undefined
     try {
-      await reachedHead.promise
+      await Promise.race([
+        reachedHead.promise,
+        // A winner that settles without ever reaching its HEAD lookup fails
+        // here with its own reason instead of hanging on a gate nobody opens.
+        first.then(() => { throw new Error("The winning restore settled before its HEAD lookup") }),
+      ])
       second = competing.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
       const settled = Promise.allSettled([first, second])
       await expect(competing.restoreSessionFromBundle(bundle.path, "session-2", { repositoryPath: targetRepositoryPath }))
         .resolves.toMatchObject({ branch: "domovoi/session-2" })
       releaseFirst.release()
       const results = await settled
+      // A rejected winner has to name its own failure. Reporting only the
+      // status pair is what made this unreadable the last time CI caught it.
+      if (results[0].status === "rejected") throw results[0].reason
       expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"])
       expect(results[1]).toMatchObject({ reason: { message: expect.stringContaining("Session worktree already exists") } })
       // Only the independent session may reach repository work.
