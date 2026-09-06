@@ -26,7 +26,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   for (const socket of sockets.splice(0)) socket.terminate()
   for (const daemon of daemons.splice(0)) await daemon.stop()
-  await removeScratchDirectories(roots.splice(0))
+  await removeScratchDirectories(roots)
 })
 
 async function target() {

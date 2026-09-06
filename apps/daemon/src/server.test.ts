@@ -272,7 +272,7 @@ const codexModels = () => [{
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 describe("DomovoiDaemon", () => {
