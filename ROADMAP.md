@@ -578,10 +578,22 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     contends for the port: it attaches to the verified local owner, and it refuses to start a
     fallback daemon at all when a service configuration is present.
   - The Windows logon task still has no crash restart, where the systemd unit has
-    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager only on
-    the Windows runner, where `apps/daemon/src/service/windows-task.native.test.ts` registers,
-    stops, and removes a real scheduled task under a throwaway name. No test invokes a real
-    systemd or launchd.
+    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI now reaches a real manager on
+    all three legs. `apps/daemon/src/service/windows-task.native.test.ts` registers, stops, and
+    removes a real scheduled task under a throwaway name. `systemd-unit.native.test.ts` installs,
+    reports and removes a real user unit under a throwaway name, then crashes its process through
+    the manager and requires exactly one restart, with a deliberate stop and a clean exit both
+    required to stay stopped; the Ubuntu leg starts the user manager and asserts its socket so the
+    test cannot skip silently.
+  - `launchd-agent.native.test.ts` is the macOS counterpart and is written but unexecuted, because
+    it was authored on Linux. It bootstraps a throwaway agent into the per-user domain the
+    installer targets, crashes it through the manager, and requires launchd's own run count to
+    increment, with a clean exit required to stay exited past launchd's throttle. The hosted-runner
+    question it depended on is settled from evidence: `actions/runner-images` gives every macOS
+    image GUI auto-login, and a green `macos-14` job published a `launchctl print` dump with a live
+    audit session id, `state = running` and a real `pid`. The macOS leg asserts that same domain, so
+    the first CI run either proves the assertions or fails by name. Until it runs, `KeepAlive`
+    supervision stays unproven. See `docs/daemon-services.md`.
   - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
     installation, first start, TLS, supervision, pairing, and recovery, and names what remains
     unproven per platform.
@@ -694,12 +706,14 @@ Not covered, and the reason this goal is open:
 
 - the two-daemon test injects the OS keyring and provider readiness, so platform keychain
   behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
-- Windows and macOS run component suites, but service managers and WSL remain simulated;
+- native service managers are driven for real on the Linux and Windows legs, and a real WSL 2 guest
+  is provisioned by its own job, but the macOS launchd test has never run and Windows has no crash
+  restart to test at all;
 - no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
-bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus jobs that
-invoke native service managers and a real WSL. A daemon must also remain reachable from a paired
+bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a green
+macOS leg that actually ran the launchd test. A daemon must also remain reachable from a paired
 phone across private-network identity changes without exposing payload plaintext to the relay,
 and a bearer or channel key alone must not be enough to enter.
 

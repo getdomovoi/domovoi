@@ -161,30 +161,58 @@ the directive from both sides. The test shares the throwaway unit name, the runt
 `systemctl` chokepoint, the refusing preflight and the always-run cleanup with the lifecycle test
 rather than carrying a second copy of them.
 
-There is no launchd equivalent, so a green Linux and Windows run does not prove native macOS
-installation or removal. Writing one first needs a macOS runner where `launchctl bootstrap
-gui/<uid>` and `launchctl print gui/<uid>/<label>` are confirmed to work in the hosted session,
-which nobody has checked; that domain is the one the installer targets, and guessing at it would
-produce a test that passes for the wrong reason.
+A native macOS-only test drives launchd itself through the same install, status and removal
+functions the CLI calls. It bootstraps a throwaway agent into the per-user `gui/<uid>` domain the
+installer targets, checks that the domain registered that exact file as a launch agent, that it is
+running, and that the process launchd reports is the one that wrote its own PID file, then removes
+it and requires process exit, an absent agent, an absent saved configuration and a domain that no
+longer answers for the label. Its label is the production one with a fresh identifier appended, so
+it cannot collide with the operator's own agent while still being classified by the daemon's own
+missing-service matcher. Bootstrapping names a path rather than a search directory, so every file
+stays inside a throwaway home and nothing is written to the operator's own `Library/LaunchAgents`.
+It runs `launchctl` only, refuses any domain but this user's own, refuses to name the production
+label, refuses to overwrite a label that already exists, and cleans up whatever the assertions did.
+Its gate is that domain, so a session without one, such as a plain ssh login, skips. The macOS CI
+leg asserts the same domain and refuses to run as uid 0, so the test cannot disappear from the run
+and cannot pass against `gui/0` instead.
 
-The launchd agent's `KeepAlive` with `SuccessfulExit` false is the same shape of policy as
-`Restart=on-failure`: relaunch after a failed exit, leave a clean one alone. A macOS restart test
-needs three things beyond that runner, and none of them is confirmed here. It needs a way to crash
-the agent's process through the manager rather than by a raw PID that could have been reused, for
-which `launchctl kill SIGKILL gui/<uid>/<label>` is the apparent counterpart of `systemctl kill`.
-It needs a manager-reported witness that a relaunch happened, meaning a field of
-`launchctl print gui/<uid>/<label>` that names the current PID together with a run count or exit
-record; systemd's `NRestarts` has no confirmed launchd equivalent, and a changed PID on its own
-does not say who started the replacement. It needs the relaunch delay launchd actually applies, so
-the wait proving no relaunch happened can be sized past it the way the systemd test sizes its
-window against the reported `RestartSec`. Until someone reads those three off a real macOS
-session, `KeepAlive` supervision stays unproven and no test here should claim otherwise.
+A second native macOS-only test proves the supervision the agent declares. It reads launchd's own
+relaunch throttle back off the manager, crashes the process through the manager with
+`launchctl kill SIGKILL`, and requires launchd's own run count to increment alongside a new live
+process that rewrote the fixture's PID file. That counter, not a changed process id, is what says
+launchd started the replacement, and it is the counterpart of the systemd unit's `NRestarts`. The
+negative half is what pins `SuccessfulExit` false rather than a bare `KeepAlive`: a process that
+exits zero through the fixture's private stop path must stay exited past the throttle window with
+the run count unmoved. Two launchd behaviours are handled rather than left to flake. Booting out is
+asynchronous, so the domain is polled until it stops answering instead of sampled once. A throttled
+relaunch is reported as `spawn scheduled` rather than as absent, so the no-relaunch half excludes
+that state as well as `running`.
+
+Both macOS tests are unexecuted. They were written on Linux, which cannot run launchd, so their
+first run on a real macOS runner is the evidence for every assertion in them. What is settled now
+is the runner question they depend on and the three facts the supervision test is sized against,
+all read off real hosted macOS jobs rather than assumed. A hosted GitHub macOS runner does run
+inside a GUI login session: `actions/runner-images` provisions every macOS image with GUI
+auto-login for the runner user, and a green `macos-14` job has published a `launchctl print` dump
+showing `domain = gui/501` with a live audit session id, `type = LaunchAgent`, `state = running`
+and a real `pid`. That is an agent which runs, not one which only loads. The relaunch witness is
+`runs`, launchd's own spawn counter, which belongs to a single bootstrap and is therefore only read
+as a delta across a crash. The relaunch delay is launchd's own throttle, reported as
+`minimum runtime` and defaulting to ten seconds, which is what the no-relaunch window is sized
+past. What remains unobserved in any public run is the exact composition these tests perform, a
+`SIGKILL` through the manager followed by a `KeepAlive` relaunch in the per-user domain, so that is
+what their first run settles.
+
+macOS status reports loadedness, not liveness. `domovoid service status` runs
+`launchctl print gui/<uid>/<label>` and reads its exit code, so an agent whose process has exited
+and will not be relaunched still reports as running. The lifecycle test asserts that exact wording
+rather than treating it as a liveness check.
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision is proven on
-systemd alone. `KeepAlive` is unproven for the reasons above, and the Windows logon task is created
-with no restart setting at all, so nothing on that platform claims to relaunch a crashed daemon
-before the next logon and there is no policy there for a test to hold to. Installer rollback
+systemd, written but not yet run on launchd, and absent on Windows: the logon task is created with
+no restart setting at all, so nothing on that platform claims to relaunch a crashed daemon before
+the next logon and there is no policy there for a test to hold to. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service
 status before retrying. Each file is replaced by a same-directory rename only after a complete
 private staging write. A failed write preserves the last complete file. Expiry or a crash can leave
@@ -192,6 +220,7 @@ a private `.tmp` sibling; it is never read as configuration and may be removed a
 has stopped. Replacement of the configuration and unit is not one cross-file transaction.
 
 Launch escaping follows the managers' own rules, not a shell: systemd expands specifiers and
-environment references in command lines, while Task Scheduler accepts the program and arguments
+environment references in command lines, launchd takes the program and each argument as separate
+XML-escaped strings, and Task Scheduler accepts the program and arguments
 through `/tr`. See [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
 and [schtasks create](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create).
