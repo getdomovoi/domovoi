@@ -97,9 +97,10 @@ dependency and image downloads.
 
 The [expanded hosted run](https://github.com/getdomovoi/domovoi/actions/runs/34009889782/job/101423747322)
 tested commit `4f3f59c` and completed in **2 minutes 36 seconds**, with ten native
-proofs passed and zero skipped. Provisioning took 37.8 seconds, installing and
-verifying 115 locked guest dependencies took 17.1 seconds, proofs took 10.8
-seconds, and cleanup took 0.8 seconds. It used the same image and WSL/kernel
+proofs passed and zero skipped. Provisioning took 37.8 seconds, preparing the
+guest runtime (Node download/extraction and installing/verifying 115 locked
+dependencies) took 17.1 seconds, proofs took 10.8 seconds, and cleanup took 0.8
+seconds. It used the same image and WSL/kernel
 versions above. This replaces the unmeasured guest-runtime estimate, not the
 3-to-6-minute cold-run planning allowance or the hard deadlines. No extra
 distribution or normal CI matrix leg is added.
