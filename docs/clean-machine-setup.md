@@ -351,10 +351,14 @@ Read these before relying on this guide for a fleet rollout.
   A timed-out manager command may already have changed OS state; inspect the manager before
   retrying.
 - Windows crash restart of the logon task is not configured.
-- The [dedicated WSL job](wsl-ci.md) has passed ten real proofs on a hosted Windows runner with one
-  WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root and
-  literal shell metacharacters, and an authenticated route to a daemon installed inside the guest.
-  Opening a project, repository work and daemon restart over that route are not yet proven.
+- The [dedicated WSL job](wsl-ci.md) has passed fifteen real proofs on a hosted Windows runner with
+  one WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root
+  and literal shell metacharacters, an authenticated route to a daemon installed inside the guest,
+  opening a repository through the Windows CLI on both share spellings, guest-owned real Git, and a
+  graceful guest daemon restart with the project and pairing intact.
+- Those proofs run against one throwaway distribution built from one pinned Ubuntu 24.04 image, and
+  as root inside it. Two distributions at once, non-root guest permissions, a session transfer over
+  the route, mirrored networking, and VPNs are unproven.
 - A running WSL 2 distribution is a source-local transport route, not a fleet member of its own.
   Local, LAN, explicitly configured TLS tailnet, source-local SSH, and WSL routes are produced
   today. Relay is not implemented.

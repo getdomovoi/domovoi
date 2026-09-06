@@ -28,8 +28,13 @@ installed WSL 1 distribution is not sufficient. The kernel must identify WSL 2.
 
 The native test process receives the exact required distro name. It must find
 that distro running under WSL 2, rather than selecting some other running guest.
-The report must contain at least ten passed native tests and zero skipped,
-pending, todo or failed tests. Missing virtualization, a corrupt listing, a
+The report must contain exactly fifteen named proofs: six discovery, four
+transport and five repository boundary tests. Each must appear once and pass,
+with zero skipped, pending, todo or failed tests. The required count comes from
+that named set, not a separate minimum. Local tests read the real test
+registrations, so adding or removing one requires an explicit contract update.
+Unrelated passes, duplicate names and extra assertions cannot satisfy the guard.
+Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.
 Success prints `DOMOVOI_WSL_NATIVE_OK`; failure prints
 `DOMOVOI_WSL_NATIVE_FAILED` with the underlying reason. Failed proofs print the
@@ -61,7 +66,10 @@ not its daemon, protocol, SQLite registry, discovery, heartbeat or socket path.
 
 The Windows fixture holds a foreground `wsl.exe` child attached to the guest
 CLI, observes its exit and retains at most 64 KiB of output. Its lifetime is
-bounded to three minutes, with a separate 60-second startup deadline. The first
+bounded by the job's proof-phase allowance (four minutes), passed explicitly to
+the fixture rather than maintained as a shorter independent timer. The outer
+phase deadline still bounds all launches together. Startup has its own
+60-second deadline. The first
 expanded hosted runs exposed a detached `nohup` launch that returned without
 publishing an endpoint or any daemon log. Keeping the invocation attached made
 startup observable and let all ten proofs run. This is not a proof of detached
@@ -105,6 +113,21 @@ versions above. This replaces the unmeasured guest-runtime estimate, not the
 3-to-6-minute cold-run planning allowance or the hard deadlines. No extra
 distribution or normal CI matrix leg is added.
 
+The [repository-boundary run](https://github.com/getdomovoi/domovoi/actions/runs/34011937724/job/101429169562)
+tested commit `28698e3` and completed in **3 minutes 37 seconds**, with all
+fifteen native proofs passed and zero skipped. Provisioning took 40.5 seconds,
+guest runtime preparation 20.7 seconds, proofs 30.7 seconds and cleanup 0.3
+seconds, on the same runner image and guest kernel. The five repository proofs
+added about 20 seconds to the measured proof phase versus the ten-test run;
+total job duration also varies with tool setup, dependencies and build time.
+
+The [repeat after the fixture-budget review](https://github.com/getdomovoi/domovoi/actions/runs/34012561772/job/101430766711)
+tested `5a0a5f5`: **15 passed, zero skipped, 2 minutes 36 seconds total**.
+Provisioning took 32.5 seconds, the guest runtime 16.3 seconds, proofs 22.9
+seconds and cleanup 0.6 seconds. Successful proof output is now retained too;
+the real guest reported Git 2.43.0. The image and kernel were unchanged. These
+two successful runs establish the named boundaries, not a duration guarantee.
+
 Every Domovoi invocation prints measured provisioning, proof and cleanup seconds
 and adds them to the Actions summary after success. Actions records the other
 step durations. Unrelated PRs incur no WSL runner minutes.
@@ -132,11 +155,46 @@ refusal, no route from a stale file after killing the guest daemon, and refusal
 of a stopped guest without waking it. These claims come from the required
 Windows run, not from Linux's skipped native tests.
 
-It still does **not** open a project or execute Git repository work over that
-route, prove daemon restart, resolve two distribution identities, or cover
+The repository extension is registered in the same required guest, before the
+deliberate kill and stopped-distro tests. It adds the following real operations:
+
+- Execute the built Windows `domovoid wsl list` and `domovoid open` commands, not
+  just their helpers, with both UNC spellings and a repository name containing
+  spaces, dollar signs and command-substitution syntax.
+- Verify the guest workspace records the Linux path and guest machine id while
+  the Windows daemon's project remains unchanged. The Windows CLI deliberately
+  receives the Windows daemon's connection configuration, so reusing it for the
+  guest would fail the proof.
+- Execute the production `distroGitCommand` through real `wsl.exe`, checking
+  repository root, commit, clean status, guest filesystem mapping and ownership.
+  The guest's Git version is printed. Git comes from the pinned Ubuntu image,
+  not a mocked runner or a newly fetched tool.
+- Refuse a valid Windows Git repository reached through the custom automount
+  root, through both the open shim and Git-command preparation, with the
+  Windows-drive remedy and no project mutation on either daemon.
+- Refuse direct Windows-daemon `project.open` calls for both WSL share spellings
+  with the specific share-boundary refusal, not an unrelated Git failure.
+- Stop the real guest daemon gracefully, observe process exit and endpoint
+  removal, restart the same profile, and reauthenticate using the stored pairing.
+  The persisted project, machine id and Git commit must survive. No assumption
+  about a newly chosen ephemeral port being different is needed.
+
+All of these assertions passed in the repository-boundary hosted run above,
+against the same single root-user Ubuntu guest. Linux registration/typecheck
+and the report-guard unit tests alone do not prove any Windows crossing.
+
+The job still does **not** resolve two distribution identities or cover
 Windows 11 mirrored networking and VPNs. It does not prove the host keychain,
 multi-distro port collision handling or an atomic stop-versus-endpoint-read
 operation. The regular guest CLI retains WSL's distribution environment; the
 saved service launch configuration does not carry those facts today and is not
-covered by this proof. A second distribution is added only when a test needs two. The hosted
-results above cover only the named discovery, filesystem and route boundaries.
+covered by this proof. The restart is a normal foreground CLI restart, not
+crash recovery or supervisor restart. The client open uses the guest's local
+root credential; the fleet route separately uses the paired machine credential.
+This does not add client admission to a machine credential or prove a session
+transfer. A second distribution is added only when a test needs two.
+
+Unit-only cases still include refusing a path that reads back as another
+distribution's share, alternate mount spellings and manually bound drive paths
+beyond the configured automount root, and Git repository-selection argument refusals. Do not infer those outcomes
+from the single-guest hosted result.

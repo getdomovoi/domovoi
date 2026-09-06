@@ -12,6 +12,7 @@ import { fleetProductionHarness, remote, type FleetDaemon } from "./test-fleet-p
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { readDistroEndpoint, type DistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
+import { nativeWslRepositoryProofs } from "./wsl-native-repository-proof.js"
 import { runWslText } from "./wsl-run.js"
 
 // Loaded only by wsl-windows.test.ts. The job provisions this one disposable
@@ -46,13 +47,42 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
           await delay(100, undefined, { signal: deadline.signal })
         }
       }
-      function dial(credential?: string) {
+      function dial(credential?: string, deadline?: OperationDeadline) {
         return createMachineDialer({ machine: () => guest,
           credentials: credential === undefined ? asyncTestCredentials(source.credentials)
             : asyncTestCredentials({ forMachine: () => credential, machines: () => [guest.id], save: () => {}, forget: () => {} }),
           dialTimeoutMs: 5_000,
           open: (input) => openMachineSocket({ ...input, callTimeoutMs: 5_000 }),
-        })(guest.id)
+        })(guest.id, undefined, deadline)
+      }
+
+      async function startGuest(deadline: OperationDeadline) {
+        deadline.throwIfExpired()
+        guestLifetime?.clear()
+        // The job owns the total phase budget. A shorter independent lifetime
+        // would kill a slow valid guest before that phase actually expires.
+        guestLifetime = OperationDeadline.start(Number(process.env["DOMOVOI_WSL_NATIVE_BUDGET_MS"]))
+        guestOutput = ""
+        guestExit = undefined
+        // Fixed paths in this job's UUID guest. Keep its production CLI in the
+        // foreground so startup, graceful exit and restart are observable.
+        guestProcess = spawn("wsl.exe", ["-d", distribution!, "--exec", "sh", "-c",
+          "echo $$ >/tmp/domovoi-ci-daemon.pid; "
+          + "exec env PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin DOMOVOI_HOST=127.0.0.1 DOMOVOI_PORT=0 "
+          + "/opt/domovoi-ci-node/bin/node /opt/domovoi-ci-daemon/dist/index.js"], {
+          stdio: ["ignore", "pipe", "pipe"], signal: guestLifetime.signal, killSignal: "SIGKILL",
+        })
+        const output = (bytes: Buffer) => { guestOutput = (guestOutput + bytes.toString()).slice(-65_536) }
+        guestProcess.stdout?.on("data", output)
+        guestProcess.stderr?.on("data", output)
+        guestProcess.once("error", (error) => { guestExit = error.message })
+        guestProcess.once("exit", (code, signal) => { guestExit = `code ${code}, signal ${signal}` })
+        endpoint = await observe(deadline, () => {
+          if (guestExit !== undefined) throw new Error(`Guest daemon exited before endpoint publication: ${guestExit}; ${guestOutput}`)
+          return readDistroEndpoint({ distribution: distribution!, timeoutMs: Math.ceil(deadline.remainingMs()) })
+        })
+        pid = (await linux(deadline, ["cat", "/tmp/domovoi-ci-daemon.pid"])).trim()
+        expect(pid).toMatch(/^[1-9][0-9]*$/)
       }
 
       beforeAll(async () => {
@@ -67,32 +97,8 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
         try {
           progress(phase)
           source = await beforeDeadline(harness.machine("Windows WSL route owner"), deadline)
-          // Fixed fixture paths in the job's UUID guest. The launched binary is
-          // the real CLI and uses createProductionDaemon, its normal stores and
-          // endpoint publisher. It never imports a test daemon constructor.
           progress("launch guest daemon")
-          // Keep the WSL invocation attached to its real CLI, not a shell that
-          // leaves before its background child's startup can be observed. The
-          // fixture's lifetime is bounded independently of individual RPCs.
-          guestLifetime = OperationDeadline.start(180_000)
-          guestProcess = spawn("wsl.exe", ["-d", distribution!, "--exec", "sh", "-c",
-            "echo $$ >/tmp/domovoi-ci-daemon.pid; "
-            + "exec env PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin DOMOVOI_HOST=127.0.0.1 DOMOVOI_PORT=0 "
-            + "/opt/domovoi-ci-node/bin/node /opt/domovoi-ci-daemon/dist/index.js"], {
-            stdio: ["ignore", "pipe", "pipe"], signal: guestLifetime.signal, killSignal: "SIGKILL",
-          })
-          const output = (bytes: Buffer) => { guestOutput = (guestOutput + bytes.toString()).slice(-65_536) }
-          guestProcess.stdout?.on("data", output)
-          guestProcess.stderr?.on("data", output)
-          guestProcess.once("error", (error) => { guestExit = error.message })
-          guestProcess.once("exit", (code, signal) => { guestExit = `code ${code}, signal ${signal}` })
-          progress("observe guest endpoint publication")
-          endpoint = await observe(deadline, () => {
-            if (guestExit !== undefined) throw new Error(`Guest daemon exited before endpoint publication: ${guestExit}`)
-            return readDistroEndpoint({ distribution: distribution!, timeoutMs: Math.ceil(deadline.remainingMs()) })
-          })
-          pid = (await linux(deadline, ["cat", "/tmp/domovoi-ci-daemon.pid"])).trim()
-          expect(pid).toMatch(/^[1-9][0-9]*$/)
+          await startGuest(deadline)
           // The listener may be up before WSL's localhost forward is installed.
           // Each probe gets only its remaining caller budget; the poll itself
           // shares this setup deadline and never creates a second daemon.
@@ -155,6 +161,29 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
           await expect(dial(credential)).rejects.toBeInstanceOf(MachinePairingRequiredError)
         }
       }, 20_000)
+
+      nativeWslRepositoryProofs({ distribution: distribution!, source: () => source,
+        endpoint: () => endpoint, guest: () => guest, scratch: harness.scratch, repository: harness.repository,
+        linux, run, dial: (deadline) => dial(undefined, deadline),
+        restart: async (deadline) => {
+          await linux(deadline, ["kill", "-TERM", "--", pid])
+          await observe(deadline, async () => guestExit)
+          expect(guestExit, guestOutput).toBe("code 0, signal null")
+          expect(await readDistroEndpoint({ distribution: distribution!, timeoutMs: Math.ceil(deadline.remainingMs()) }))
+            .toBeUndefined()
+          await startGuest(deadline)
+          // WSL may publish the new endpoint before localhost forwarding is
+          // ready. Only an authenticated reply settles restart readiness.
+          await observe(deadline, async () => {
+            const attempt = deadline.limit(3_000)
+            try {
+              return await callDaemonOnce({ target: endpoint, token: endpoint.token,
+                method: "workspace.get", params: {}, deadline: attempt })
+            } catch { return undefined }
+            finally { attempt.clear() }
+          })
+        },
+      })
 
       it("produces no route from the real leftover endpoint after the daemon is killed", async () => {
         const deadline = OperationDeadline.start(15_000)

@@ -524,9 +524,9 @@ Every ledger entry is now merged.
     They do not prove an external tailnet or an SSH process. Windows now produces source-local
     WSL candidates only after a paired daemon answers with the expected identity. The required
     hosted WSL 2 job proves real enrollment, heartbeat, authenticated dialing, stale-endpoint
-    refusal and stopped-distro refusal: ten proofs passed, zero skipped, in run 34009889782.
+    refusal and stopped-distro refusal: fifteen proofs passed, zero skipped, in run 34017787075.
     This closes the WSL producer part of D3/I6, not multi-distro routing, guest service supervision,
-    mirrored networking, VPNs or a project/transfer through that route. Relay stays
+    mirrored networking, VPNs or a session transfer through that route. Relay stays
     deferred under Goal 3. Client and daemon dialers reserve a share of the remaining overall
     deadline for each eligible route. Real socket tests prove fallback after silent upgrade and
     hello, with typed timeout refusals and losing-attempt cancellation. These bounds and their
@@ -617,32 +617,42 @@ Every ledger entry is now merged.
   - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
     installation, first start, TLS, supervision, pairing, and recovery, and names what remains
     unproven per platform.
-- [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
+- [x] Implement WSL discovery and a `domovoid open` Windows interop shim
   - Since #262 `domovoid wsl list` discovers each distribution and whether a daemon answers there,
     the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
     Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
     denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
     daemon. Unit tests drive them with a fake `wsl.exe`. A corrupt listing returns no partial
     discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt
-    classification and remedy through both CLI commands. Real Windows-to-WSL tests exist:
-    `apps/daemon/src/wsl-windows.test.ts` and the transport proofs it includes skip by name off
-    Windows or on a Windows machine without a guest, and the `wsl-native` workflow in
-    `.github/workflows/wsl.yml` runs all of them against a disposable WSL 2 distribution it
-    provisions from a pinned image. `scripts/wsl-ci.mjs` requires at least ten passed proofs and
-    zero skipped, so the job is red rather than green when a proof cannot run. That job covers
-    discovery of a running distribution, absent and stopped classification, path translation
-    through the guest's own `wslpath`, and an authenticated route to a daemon installed inside the
-    guest. Opening a project, Git repository work, and daemon restart through that route remain
-    unverified, as do multiple distributions at once and mirrored networking. No `domovoi` alias
-    exists, and WSL is not a fleet candidate; it became a transport route in the transport item
-    above.
-- [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
+    classification and remedy through both CLI commands. The `wsl-native` workflow in
+    `.github/workflows/wsl.yml` is path-filtered and nightly, and it provisions one throwaway
+    Ubuntu 24.04 WSL 2 guest from an image pinned by URL and `sha256`. `scripts/wsl-ci.mjs` names
+    all fifteen proofs and requires exactly those to pass with none skipped, pending, or failed,
+    so the job is red rather than green when a proof cannot run.
+    `apps/daemon/src/wsl-windows.test.ts` and the proofs it registers skip by name off Windows or
+    on a Windows machine without a guest, and refuse to skip once the job names a required
+    distribution. Run 34017787075, on WSL sources and a workflow byte-identical to the merged
+    ones, passed all fifteen: real CLI discovery, open through both the `wsl$` and
+    `wsl.localhost` spellings, guest project ownership and real Git, authenticated fleet routing,
+    a graceful daemon restart with the project and pairing intact, and refusal of a stale endpoint
+    and of a stopped distribution. `docs/wsl-ci.md` records the run, timings, and limits. WSL
+    routes are source-local candidates produced only after the guest answers with the enrolled
+    identity; WSL is not a fleet candidate. Every proof runs against that single guest built from
+    that single pinned image, so two distributions at once have never been exercised, and
+    multi-distro arbitration, service-launch WSL facts, mirrored networking, VPNs, and a `domovoi`
+    alias are unclaimed.
+- [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
   - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
     a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
     it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
-    `wsl-native` job runs the real mount-boundary proof against a guest configured to mount Windows
-    drives under `/domovoi-ci-drives/`, through both path translation and Git-command preparation.
-    Only the refusal is proven there; no Git work has yet succeeded inside a distribution.
+    dedicated native job now proves the custom automount case at `/domovoi-ci-drives/`, including
+    refusing a valid Windows Git repository through the real Windows open shim and Git-command
+    preparation without changing either daemon's project. It also proves the Windows daemon
+    refuses both WSL share spellings with the boundary-specific remedy, while the guest owns the
+    native project and executes real Git in a path carrying spaces and literal shell
+    metacharacters. Hand-mounted drive paths and repository-selecting Git arguments remain
+    unit-tested, not native-tested. The proofs run as root in that one distribution, so non-root
+    guest permissions, a second distribution, and a session transfer are not proven.
 - [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
@@ -745,15 +755,14 @@ Not covered, and the reason this goal is open:
 - native service managers are driven for real on all three legs, with a crash restart proven on a
   real systemd user unit and on a real launchd agent, but the Windows logon task has no crash
   restart to test at all;
-- a real WSL 2 guest is provisioned by its own job, and no project or Git work has run over the
-  proven WSL route;
+- a project is opened and Git is executed over the WSL route, but only inside one throwaway guest
+  built from one pinned image and only as root, and no session has been transferred over it;
 - no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
-bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a project
-opened and worked on over the WSL route. A daemon must also remain reachable from a paired phone
-across private-network identity changes without exposing payload plaintext to the relay, and a
-bearer or channel key alone must not be enough to enter.
+bounded ordered dial, a session move, reconnect, restart, revocation, and removal. A daemon must
+also remain reachable from a paired phone across private-network identity changes without exposing
+payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
