@@ -609,6 +609,19 @@ milliseconds instead, so a stall can be aimed at whichever bound is being measur
 delay is cancelled with the test, and the child stays under its parent's kill deadline. Normal runs
 inject no delay.
 
+The pending fleet claim tests take 40 seconds on Windows and 20 elsewhere. A per-file test budget
+must not fall below the platform default in `vitest.config.ts`, which gives Windows 30 seconds
+because that runner releases handles slowly. Each of those three tests builds two production
+daemons over real sockets and SQLite before stopping and restarting one, and a single production
+start or stop is allowed 30 seconds on its own.
+
+The native Windows task removal test keeps its 60-second lifecycle budget, which no passing CI run
+has come near. It now records the phase it is in, so an expiry names the step that spent the budget
+instead of reporting only that a deadline passed. It also takes the task teardown obligation before
+issuing the registration rather than reading it from the result, because a committed
+`RegisterTaskDefinition` survives the PowerShell process an expired deadline abandons, while a name
+that was never registered stops cleanly as missing.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed
