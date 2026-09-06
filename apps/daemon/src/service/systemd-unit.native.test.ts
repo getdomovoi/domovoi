@@ -11,6 +11,7 @@ import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { installService, nodeServiceEffects, removeService, serviceStatus, type ServiceEffects } from "./install.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 const lifecycleBudget = 60_000
 const cleanupBudget = 30_000
@@ -150,7 +151,9 @@ it.runIf(managerRunning)("installs, reports and removes a real systemd user unit
       const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
       expect(left.stdout.trim()).toBe("LoadState=not-found")
       const created = installedHome
-      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+      // Removal stands on its own retry, so a cleanup budget the unit
+      // teardown spent does not leave the home behind.
+      if (created !== undefined) await removeScratchDirectory(created)
     } finally { cleanup.clear() }
   }
 }, lifecycleBudget + cleanupBudget + 1_000)

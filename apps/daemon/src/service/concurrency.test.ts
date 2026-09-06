@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,6 +9,7 @@ import { claimProfile } from "../profile-lease.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { installService, nodeServiceEffects, removeService, serviceStatus } from "./install.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 const budget = process.platform === "win32" ? 30_000 : 10_000
 const cleanupBudget = 5_000
@@ -80,10 +81,16 @@ describe("service command exclusion", () => {
       resume.release()
       deadline.clear()
       const cleanup = OperationDeadline.start(cleanupBudget)
+      const failures: unknown[] = []
       try {
         if (pending) await withinServiceDeadline(cleanup, () => pending!.catch(() => {}))
-        await withinServiceDeadline(cleanup, () => rm(home, { recursive: true, force: true }))
+      } catch (error) {
+        failures.push(error)
       } finally { cleanup.clear() }
+      // Removal is never skipped because waiting for the pending operation
+      // spent the budget, and it retries a home that operation still holds.
+      try { await removeScratchDirectory(home) } catch (error) { failures.push(error) }
+      if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
     }
   }, budget + cleanupBudget + 1_000)
 })
