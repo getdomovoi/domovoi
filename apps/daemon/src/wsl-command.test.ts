@@ -76,6 +76,18 @@ describe("runWslCommand", () => {
     expect(deps.stdout).not.toHaveBeenCalled()
   })
 
+  it("reports an unreadable distribution row with a remedy, not an empty fleet", async () => {
+    const deps = dependencies({
+      discover: discoveryWith(async () => Buffer.from(
+        "  NAME  STATE  VERSION\r\n  Ubuntu Running broken\r\n",
+        "utf16le",
+      )),
+    })
+    expect(await runWslCommand(["wsl", "list"], deps)).toBe(1)
+    expect(deps.stderr.mock.calls.join("")).toMatch(/corrupt.*Run "wsl\.exe --list --verbose"/s)
+    expect(deps.stdout).not.toHaveBeenCalled()
+  })
+
   it("reports a wsl.exe that never answers as timed out", async () => {
     const deps = dependencies({
       discover: vi.fn(() => discoverWslMachines({

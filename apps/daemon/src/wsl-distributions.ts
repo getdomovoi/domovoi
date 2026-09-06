@@ -7,8 +7,16 @@ export type WslDistribution = {
   default: boolean
 }
 
+// A corrupt listing has no usable rows, even if some could be read. Keeping
+// only the cause and line number keeps partial discovery and untrusted row
+// contents out of a result the caller might otherwise mistake for a list.
+export type WslDistributionListing =
+  | { kind: "listed"; distributions: WslDistribution[] }
+  | { kind: "corrupt"; reason: "encoding" | "header" | "row"; line: number }
+
 const states = new Set<WslDistributionState>(["Running", "Stopped"])
 const byteOrderMark = "﻿"
+const header = /^\s*NAME\s+STATE\s+VERSION\s*$/i
 
 // wsl.exe writes its listing as UTF-16 with a byte order mark, so reading it as
 // UTF-8 leaves a NUL between every character and matches nothing.
@@ -31,21 +39,32 @@ function readDistribution(line: string): WslDistribution | undefined {
   const name = groups["name"] ?? ""
   const state = groups["state"] ?? ""
   if (name === "" || !states.has(state as WslDistributionState)) return undefined
+  const version = Number(groups["version"])
+  if (!Number.isSafeInteger(version) || version < 1) return undefined
 
   return {
     name,
     state: state as WslDistributionState,
-    version: Number(groups["version"]),
+    version,
     default: isDefault,
   }
 }
 
-export function parseWslDistributions(output: string | Buffer): WslDistribution[] {
-  const [, ...lines] = decode(output).split(/\r?\n/)
-  const distributions: WslDistribution[] = []
-  for (const line of lines) {
-    const distribution = readDistribution(line)
-    if (distribution) distributions.push(distribution)
+export function parseWslDistributions(output: string | Buffer): WslDistributionListing {
+  const [first, ...lines] = decode(output).split(/\r?\n/)
+  // Buffer's UTF-16 decoder silently drops a trailing half character. That
+  // could erase the only evidence of a row after an otherwise empty header.
+  if (typeof output !== "string" && output.length % 2 !== 0) {
+    return { kind: "corrupt", reason: "encoding", line: lines.length + 1 }
   }
-  return distributions
+  if (!header.test(first ?? "")) return { kind: "corrupt", reason: "header", line: 1 }
+
+  const distributions: WslDistribution[] = []
+  for (const [index, line] of lines.entries()) {
+    if (line.trim() === "") continue
+    const distribution = readDistribution(line)
+    if (!distribution) return { kind: "corrupt", reason: "row", line: index + 2 }
+    distributions.push(distribution)
+  }
+  return { kind: "listed", distributions }
 }
