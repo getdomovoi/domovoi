@@ -73,8 +73,9 @@ linux:
     code. The desktop application starts and owns that daemon when no other
     client already has it.
   # Debian requires a maintainer contact and electron-builder refuses to build a
-  # deb without one. domovoi.sh publishes no mailbox for this yet, so this is a
-  # placeholder and has to be replaced before any published release.
+  # deb without one. This address is a Cloudflare Email Routing rule on
+  # domovoi.sh that forwards to the maintainer, so it receives mail but cannot
+  # send from that address.
   maintainer: Domovoi contributors <maintainers@domovoi.sh>
   # Electron takes its Linux app_id from desktopName in package.json. Syncing
   # the desktop entry to the same name is what lets a running window carry the
