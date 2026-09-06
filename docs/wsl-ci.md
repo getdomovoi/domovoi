@@ -59,6 +59,14 @@ its actual ephemeral loopback port. The test enrolls it through real sockets;
 the Windows source's platform keychain is replaced with the existing test store,
 not its daemon, protocol, SQLite registry, discovery, heartbeat or socket path.
 
+The Windows fixture holds a foreground `wsl.exe` child attached to the guest
+CLI, observes its exit and retains at most 64 KiB of output. Its lifetime is
+bounded to three minutes, with a separate 60-second startup deadline. The first
+expanded hosted runs exposed a detached `nohup` launch that returned without
+publishing an endpoint or any daemon log. Keeping the invocation attached made
+startup observable and let all ten proofs run. This is not a proof of detached
+shell startup or guest service supervision.
+
 Cleanup runs after success and failure, with its own deadline. It terminates and
 unregisters only this invocation's UUID distro and deletes only its staging
 directory. Unregistering destroys the disposable guest's files. No existing
@@ -87,11 +95,14 @@ kernel `6.18.33.2-microsoft-standard-WSL2`. This is an observed run, not a futur
 duration guarantee. Keep **3 to 6 minutes** as the planning allowance for cold
 dependency and image downloads.
 
-Those measurements cover the original six proofs, not the guest runtime and
-four new transport proofs. The first run of the expanded job is still pending.
-Allow an additional 2 to 5 minutes for cold Node and npm downloads until hosted
-measurements replace that estimate. No extra distribution or normal CI matrix
-leg is added.
+The [expanded hosted run](https://github.com/getdomovoi/domovoi/actions/runs/34009889782/job/101423747322)
+tested commit `4f3f59c` and completed in **2 minutes 36 seconds**, with ten native
+proofs passed and zero skipped. Provisioning took 37.8 seconds, installing and
+verifying 115 locked guest dependencies took 17.1 seconds, proofs took 10.8
+seconds, and cleanup took 0.8 seconds. It used the same image and WSL/kernel
+versions above. This replaces the unmeasured guest-runtime estimate, not the
+3-to-6-minute cold-run planning allowance or the hard deadlines. No extra
+distribution or normal CI matrix leg is added.
 
 Every Domovoi invocation prints measured provisioning, proof and cleanup seconds
 and adds them to the Actions summary after success. Actions records the other
@@ -114,15 +125,17 @@ non-default automount root. It tests the existing implementation, not a parallel
 WSL adapter. Normal unit tests retain their optional native gate outside this
 dedicated job.
 
-The expanded job requires production WSL route creation after authenticated
+The expanded run also proved production WSL route creation after authenticated
 heartbeat, a machine-authorized RPC over that route, wrong/root credential
 refusal, no route from a stale file after killing the guest daemon, and refusal
-of a stopped guest without waking it. These become evidence only when the new
-hosted run passes, not from Linux's skipped native tests.
+of a stopped guest without waking it. These claims come from the required
+Windows run, not from Linux's skipped native tests.
 
 It still does **not** open a project or execute Git repository work over that
 route, prove daemon restart, resolve two distribution identities, or cover
 Windows 11 mirrored networking and VPNs. It does not prove the host keychain,
 multi-distro port collision handling or an atomic stop-versus-endpoint-read
-operation. A second distribution is added only when a test needs two. The hosted
-result above remains evidence for the original discovery/filesystem boundaries.
+operation. The regular guest CLI retains WSL's distribution environment; the
+saved service launch configuration does not carry those facts today and is not
+covered by this proof. A second distribution is added only when a test needs two. The hosted
+results above cover only the named discovery, filesystem and route boundaries.

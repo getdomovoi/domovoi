@@ -50,6 +50,11 @@ forwarding is a refusal, not permission to trust another listener. Custom profil
 guests without the standard loopback endpoint publication are not discovered by this producer.
 They can still use an explicitly enrolled non-loopback TLS route or configured SSH forward.
 
+The descriptor must contain the guest's real WSL facts. The CLI obtains the distribution name
+from `WSL_DISTRO_NAME`; a launch that removes it appears as plain Linux. In particular, the saved
+service launch configuration does not carry that variable today. This branch proves the regular
+CLI launch, not a WSL guest launched through `--service-config` or a supervisor that scrubs it.
+
 The successful heartbeat records connection kind `wsl` but never turns its loopback port into a
 permanent direct route or target advertisement. Every later dial rechecks the distro and reads
 the current port. A remembered loopback enrollment route for a WSL peer on Windows cannot bypass

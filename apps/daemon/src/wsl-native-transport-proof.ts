@@ -16,7 +16,9 @@ import { runWslText } from "./wsl-run.js"
 
 // Loaded only by wsl-windows.test.ts. The job provisions this one disposable
 // guest and its exact locked runtime before asking Windows to run these proofs.
-// No fake listing, endpoint file, machine fact, credential or socket is used.
+// Enrollment, guest facts, endpoint files, credentials and sockets are real.
+// The final proof deliberately restores an obsolete loopback route on the
+// observed target to check that it cannot bypass a stopped distribution.
 export function nativeWslTransportProofs(distribution: string | undefined): void {
   describe.skipIf(distribution === undefined || process.env["DOMOVOI_WSL_NATIVE_TRANSPORT"] !== "1")(
     "production WSL transport in the required guest", () => {
