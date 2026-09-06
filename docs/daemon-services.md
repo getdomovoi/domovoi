@@ -139,7 +139,9 @@ directory, checks that the manager loaded that exact fragment, enabled it and st
 the unit names, then removes it and requires process exit, an absent unit, an absent enable symlink
 and an absent saved configuration. It runs `systemctl` only in the user scope, refuses a command
 naming any other unit, refuses to overwrite a name that already exists, and cleans up whatever the
-assertions did. Its gate is the systemd user manager's private socket, so a machine without a
+assertions did. That cleanup also resets the unit's failed state, because a run that ends in
+failure stays loaded and listed as failed after its fragment file is deleted, and it then requires
+the manager to list nothing failed under that name. Its gate is the systemd user manager's private socket, so a machine without a
 running user manager skips it. The Linux CI leg starts that manager and fails when the socket is
 missing, so the test cannot disappear from the run.
 
