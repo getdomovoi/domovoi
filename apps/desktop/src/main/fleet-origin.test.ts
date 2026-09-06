@@ -84,12 +84,33 @@ describe("Desktop fleet origin admission", () => {
     expect(await removed).toEqual({ outcome: "refused", reason: "not-enrolled" })
   })
 
-  it.each(["wss://*.example/rpc", "ws://studio.example/rpc", "wss://user:secret@studio.example/rpc", "wss://[2001:db8::1]/rpc"])(
+  it.each([
+    "wss://*.example/rpc", "ws://studio.example/rpc", "wss://user:secret@studio.example/rpc", "wss://[2001:db8::1]/rpc",
+    "wss://studio.example;other.example/rpc", "wss://studio.example%3bother.example/rpc", "wss://studio.example%3Bother.example/rpc",
+    "wss://studio.example,other.example/rpc", "wss://studio.example%2cother.example/rpc",
+    "wss://studio.example%20other.example/rpc", "wss://studio.example%09other.example/rpc",
+    "wss://studio.example%0aother.example/rpc", "wss://studio.example%0dother.example/rpc",
+    "wss://%2a.example/rpc", "wss://studio.example:*/rpc", "wss://studio.example%27other.example/rpc",
+    "wss://studio_name.example/rpc", "wss://studio%5fname.example/rpc", "wss://studio..example/rpc",
+  ])(
     "refuses an origin CSP cannot name narrowly: %s", async (endpoint) => {
       const admission = new FleetOriginAdmission(async () => ({ ...route, transport: { ...route.transport, endpoint } }))
       expect(await admission.authorize(machineId, 5_000)).toEqual({ outcome: "refused", reason: "client-route-unavailable" })
     },
   )
+
+  it.each([
+    ["wss://STUDIO-01.Example:47831/rpc", "wss://studio-01.example:47831"],
+    ["wss://studio.example.:47831/rpc", "wss://studio.example.:47831"],
+    ["wss://caf\u00e9.example/rpc", "wss://xn--caf-dma.example"],
+    ["ws://127%2e0%2e0%2e1:47831/rpc", "ws://127.0.0.1:47831"],
+    ["wss://192.0.2.1:9443/rpc", "wss://192.0.2.1:9443"],
+  ])("names a normalized exact host without broadening it: %s", async (endpoint, origin) => {
+    const admission = new FleetOriginAdmission(async () => ({ ...route, transport: { ...route.transport, endpoint } }))
+    const result = await admission.authorize(machineId, 5_000)
+    if (result.outcome !== "ready") throw new Error("An exact CSP host was refused")
+    expect(admission.consume(result.ticket)).toBe(`default-src 'none'; connect-src ${origin}`)
+  })
 
   it("bounds ticket retention and invalidates unused tickets on removal", async () => {
     let now = 0
