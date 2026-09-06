@@ -4,6 +4,7 @@ import { FleetWorkerSocket } from "./fleet-worker-socket.js"
 afterEach(() => vi.unstubAllGlobals())
 
 it("forwards socket traffic and closes the worker without forwarding remote close text", () => {
+  expect(typeof window).toBe("object")
   class WorkerDouble extends EventTarget {
     static current: WorkerDouble
     postMessage = vi.fn()
