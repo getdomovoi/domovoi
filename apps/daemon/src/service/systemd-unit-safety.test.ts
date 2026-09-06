@@ -7,9 +7,10 @@ import { expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
 import { removeScratchDirectory } from "../test-scratch.js"
+import { parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type CapturedRun } from "./install.js"
-import { systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
+import { systemdFixtureConfiguration, systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
 
 const safetyBudget = 10_000
 type Body = Parameters<typeof withThrowawayUnit>[1]
@@ -17,6 +18,14 @@ type Body = Parameters<typeof withThrowawayUnit>[1]
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
   return { ...actual, rm: vi.fn(actual.rm) }
+})
+
+it("uses host path semantics for a Windows safety fixture home", () => {
+  const home = String.raw`C:\Users\runner\AppData\Local\Temp\domovoi-systemd-fixture`
+  const configuration = systemdFixtureConfiguration(home, "win32")
+  expect(configuration.homeDirectory).toBe(home)
+  expect(configuration.credentialPath).toBe(`${home}\\.domovoi\\daemon.token`)
+  expect(parseServiceConfiguration(serializeServiceConfiguration(configuration))).toEqual(configuration)
 })
 
 // Run the exact native harness with real private files but no native manager.

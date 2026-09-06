@@ -18,6 +18,12 @@ export const supervisionBudget = 90_000
 export const cleanupBudget = 30_000
 const productionUnit = "domovoid.service"
 
+export function systemdFixtureConfiguration(home: string, platform: NodeJS.Platform = process.platform) {
+  // Safety tests simulate systemd on every host but keep their real private
+  // files on that host. Only the native Linux suite runs a real manager.
+  return createServiceConfiguration({}, { homeDirectory: home, platform, workingDirectory: home })
+}
+
 // Broken links are occupied names too. existsSync follows them and would
 // incorrectly authorize replacing a pre-existing dangling unit or wants link.
 function entryAt(path: string) {
@@ -248,7 +254,7 @@ export async function withThrowawayUnit(
           execPath: script,
           runtime: process.execPath,
           home,
-          configuration: createServiceConfiguration({}, { homeDirectory: home, platform: "linux", workingDirectory: home }),
+          configuration: systemdFixtureConfiguration(home),
         }, effects)
       }),
       observed: (observed) => { pid = observed },
