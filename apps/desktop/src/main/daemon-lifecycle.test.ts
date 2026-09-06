@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
+import { DesktopDaemonLifecycle, DesktopDaemonReleaseTimeoutError, startDesktop } from "./daemon-lifecycle.js"
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -90,14 +90,36 @@ describe("DesktopDaemonLifecycle", () => {
     expect(reentrantEvent.preventDefault).not.toHaveBeenCalled()
   })
 
-  it("stops waiting for a release that never settles", async () => {
+  it("reports a release that never settles and still quits", async () => {
     const release = vi.fn(() => new Promise<void>(() => {}))
-    const lifecycle = new DesktopDaemonLifecycle(release, () => {}, 25)
+    const errorSink = vi.fn()
+    const lifecycle = new DesktopDaemonLifecycle(release, errorSink, 25)
     const quit = vi.fn()
 
     lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
 
     await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
     expect(release).toHaveBeenCalledOnce()
+    expect(errorSink).toHaveBeenCalledOnce()
+    const reported: unknown = errorSink.mock.calls[0]?.[0]
+    expect(reported).toBeInstanceOf(DesktopDaemonReleaseTimeoutError)
+    expect(reported).toMatchObject({ timeoutMs: 25 })
+    expect((reported as Error).message).toContain("release")
+    expect((reported as Error).message).toContain("25")
+  })
+
+  it("reports nothing when the release settles inside its bound", async () => {
+    const released = deferred()
+    const release = vi.fn(() => released.promise)
+    const errorSink = vi.fn()
+    const lifecycle = new DesktopDaemonLifecycle(release, errorSink, 25)
+    const quit = vi.fn()
+
+    lifecycle.beforeQuit({ preventDefault: vi.fn() }, quit)
+    released.resolve()
+
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
+    expect(release).toHaveBeenCalledOnce()
+    expect(errorSink).not.toHaveBeenCalled()
   })
 })
