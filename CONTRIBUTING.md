@@ -116,7 +116,11 @@ widths. Describe keyboard, touch, loading, empty, and failure states when they a
 
 Every workspace package shares one version and is released as one compatibility unit. Record the
 release intent of a change with `pnpm changeset` and commit the generated file alongside the
-change. `pnpm release:status` lists changed packages that still lack metadata, and
+change. `pnpm release:status` shows accumulated release intent. CI's `pnpm release:metadata`
+compares each PR to its base and requires its own new note for source or lockfile changes;
+existing notes cannot cover another PR. Use `pnpm changeset --empty` only for an explicit,
+reviewed no-release decision. Generated version PRs are exempt only while they change versions,
+changelogs and consumed metadata, not source or dependencies. Separately,
 `pnpm release:invariants` fails when package versions drift apart, the built protocol's
 `buildVersion` differs from its manifest (rebuild after versioning), a workflow references an
 action by a mutable tag, `ROADMAP.html` is stale relative to `ROADMAP.md`, or the phone's

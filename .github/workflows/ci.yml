@@ -19,6 +19,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
         with:
           install: false
@@ -30,6 +31,12 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: pnpm install --frozen-lockfile
+      - name: Require this pull request's release metadata
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        env:
+          RELEASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        timeout-minutes: 2
+        run: pnpm release:metadata
       - run: pnpm lint
       - run: pnpm typecheck
       # The native systemd test gates on the user manager's private socket, so

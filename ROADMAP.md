@@ -828,23 +828,32 @@ Priority: `P2`. Every install channel must wrap the same immutable release.
 Release tooling exists; no package is published from this repository yet. Finish this section
 before any public package or application publish.
 
-- [ ] Add Changesets and require release metadata for every publishable change before any public
+- [x] Add Changesets and require release metadata for every publishable change before any public
   publish
   - Changesets, the `@getdomovoi/*` fixed version group, `pnpm changeset`, and `pnpm release:status`
     are in place.
-  - The blocking pull-request gate lands with the publish workflow.
+  - CI runs `release:metadata` against each pull request's base. New source or lockfile changes
+    require a new note, not an accumulated note from another PR. Real Changesets CLI fixture tests
+    cover generated version PRs, whose content-only exemption cannot smuggle source or dependencies.
+  - That step is conditioned on the pull-request event in `ci.yml`, so it covers changes that
+    arrive through a pull request, not every commit. A commit pushed straight to `main` skips the
+    step, and a skipped step is not a job failure, so the release gate below still passes for it.
 - [ ] Make `0.1.0-alpha.0` the first public alpha release
   - Changesets pre-release mode numbers from zero and the workflow never sets a version by
     hand, so the first tag the tooling produces is the one that ships. `docs/distribution.md`
-    records the same number.
+    records the same number. No public version or prerelease state is committed yet.
 - [x] Keep package, app, daemon, protocol, and CLI versions in lockstep through `0.x`, and treat
   compatibility as one release unit
   - A fixed Changesets group moves every workspace version together.
   - `pnpm release:invariants` fails CI when a manifest version drifts.
 - [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
   GitHub Releases from the same immutable commit
-  - `.github/workflows/release.yml` does all of this through Changesets and npm trusted
-    publishing, with the protocol published before the daemon.
+  - Repository mechanisms are implemented, not yet proven by a hosted publication.
+    `release.yml` opens version PRs, packs once, verifies downloaded archives, and publishes the
+    protocol before the daemon. Alpha uses its own npm channel. A single canonical `v<version>`
+    GitHub release matches the bootstrap URL and stays a draft until all asset hashes are checked.
+    Local tests cover real Changesets versioning, artifact binding and API refusal/order behavior;
+    account admission, provenance and the first public install still need a hosted release.
   - Its `gate` job runs `pnpm release:gate`, and `scripts/release-gate.mjs` refuses to continue
     until the `ci` run for that exact commit has concluded success with every one of its jobs
     concluded success too. A run reporting no job at all, and a job that was skipped rather than
@@ -859,8 +868,14 @@ before any public package or application publish.
   - `wsl.yml` is path filtered and scheduled rather than run on every commit, so it is not part
     of that gate. Making a path-filtered workflow a per-commit requirement would leave it
     pending on every commit outside its paths.
-  - It stays inert until the `RELEASE_PUBLISHING` repository variable reads `enabled`; the npm
-    organisation and trusted publishers do not exist yet. See `docs/distribution.md`.
+  - `RELEASE_PUBLISHING=version-only` permits version PRs without publication; `enabled` permits
+    publication too. Missing or unknown values permit neither. Initial public alpha admission
+    requires an explicit manual request and a temporary protected-environment token because npm
+    requires existing packages before OIDC setup. Normal runs never receive that token.
+  - On 2026-09-06, read-only checks found the variable and `npm` environment absent, Actions PR
+    creation disabled, and both npm packages missing. npm organization ownership was not proved.
+    Repository read-only token defaults can stay. The ordered maintainer-only setup and first-run
+    proof requirements are in `docs/release-setup.md`.
 - [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
   are stable
 
@@ -893,7 +908,7 @@ before any public package or application publish.
     Offline pinned CycloneDX 1.6 validation and a real-archive completeness regression cover
     generation. Host license observations annotate exact versions only; missing observations
     remain empty. External toolchains and unfrozen manual installs are outside this inventory.
-  - The release workflow attaches them to each published package's GitHub release once enabled.
+  - The release workflow attaches them to the canonical `v<version>` GitHub release once enabled.
 - [ ] Add a Windows package-manager manifest after installer signing is stable
 - [ ] Choose and publish the Linux AppImage/native package set
 - [ ] Add daemon and desktop update checks with explicit user control
