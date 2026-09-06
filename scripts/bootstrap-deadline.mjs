@@ -1,7 +1,25 @@
+import { setTimeout as delay } from "node:timers/promises"
+
 // Removing a failed invocation's own unpublished staging gets this fresh
 // budget, never the exhausted main deadline, so retries do not accumulate
 // node_modules and caches. A removal that outlives it names the leftover path.
 export const defaultCleanupTimeoutMs = 30_000
+
+// A child the deadline aborted is killed but not yet reaped, and Windows
+// refuses to remove a directory any surviving handle still holds. Retry inside
+// the caller's cleanup budget instead of reporting a leftover tree.
+const heldByAnExitingProcess = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"])
+
+export async function removeStaging(staging, remove, cleanup) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await remove(staging, { recursive: true, force: true }) }
+    catch (error) {
+      if (!heldByAnExitingProcess.has(error?.code)) throw error
+      cleanup.check()
+      await delay(Math.min(20 * attempt, 200), undefined, { signal: cleanup.signal })
+    }
+  }
+}
 
 export function validateBootstrapTimeout(timeoutMs) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {

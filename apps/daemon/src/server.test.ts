@@ -1511,6 +1511,97 @@ describe("DomovoiDaemon", () => {
     expect(save).not.toHaveBeenCalled()
   })
 
+  it("removes a session worktree the creation deadline abandoned", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    let releaseWorkspace: (() => void) | undefined
+    const removeSessionWorkspace = vi.fn(async () => {})
+    // The aborted git run can still finish its worktree, and only this promise
+    // records where that worktree went.
+    const createSessionWorkspace = vi.fn((_path: string, sessionId: string) => (
+      new Promise<{ path: string; branch: string; baseCommit: string }>((resolve) => {
+        releaseWorkspace = () => resolve({
+          path: `/worktrees/${sessionId}`,
+          branch: `domovoi/${sessionId}`,
+          baseCommit: "a".repeat(40),
+        })
+      })
+    ))
+    const workspaceService = {
+      inspect: vi.fn(async (path: string) => ({
+        root: path, name: "domovoi", branch: "main", head: "a".repeat(40),
+      })),
+      createSessionWorkspace,
+      removeSessionWorkspace,
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "provider-thread-1"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "provider-turn-1"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: testAuthToken("abandoned-worktree-token"),
+      agentTimeoutMs: 10,
+      errorSink: vi.fn(),
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      agents: { codex: agent },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== 7) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "session.create",
+      params: {
+        title: "Abandoned worktree",
+        client: "desktop",
+        runtime: {
+          provider: "codex",
+          model: "default",
+          reasoning: "medium",
+          permissionMode: "build",
+          auto: false,
+        },
+      },
+    }))
+    await expect(response).resolves.toMatchObject({
+      id: 7,
+      error: { message: "Session workspace creation timed out" },
+    })
+    expect(releaseWorkspace).toBeDefined()
+    releaseWorkspace!()
+    await waitForDaemon(() => expect(removeSessionWorkspace).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/worktrees\/session-/),
+    ))
+    socket.close()
+  })
+
   it("drains queued events once and rejects late shutdown events", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
