@@ -16,8 +16,24 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { removeScratchDirectory } from "./test-scratch.js"
 
 const budget = process.platform === "win32" ? 40_000 : 20_000
+// The child this waits on is not a plain spawn. Node boots with two --import
+// hooks, one of them tsx, which transpiles the whole daemon source graph before
+// the fixture creates a real daemon and listens, so this is the heaviest wait
+// in the file and at a fixed ten seconds it was also the tightest one. Measured
+// across the 213 CI runs since this test landed, the whole test costs a median
+// of 2826 ms on Windows against a 95th percentile of 4695 ms and a worst
+// passing run of 8103 ms, while Ubuntu never passed 3596 ms and macOS 3551 ms.
+// Startup is most of that. This same wait has now expired twice: on Ubuntu at
+// 3178 ms while it was three seconds, and on Windows at 10151 ms once it was
+// ten. Twenty seconds is two and a half times the widest passing Windows run
+// and half the budget above, so the outer deadline still bounds a real hang.
+const startupBudget = process.platform === "win32" ? 20_000 : 10_000
+// The latency the test exists to prove. Sizing this would weaken the claim.
 const probeBudget = process.platform === "win32" ? 5_000 : 1_500
-const cleanupBudget = 10_000
+// A killed child releases its handles slowly on the runner whose tail is twice
+// every other one. Nothing has expired here across those runs; this bounds
+// teardown rather than a claim, and it was the last fixed window left.
+const cleanupBudget = process.platform === "win32" ? 20_000 : 10_000
 const beforeDeadline = <T>(operation: Promise<T>, deadline: OperationDeadline) =>
   withinServiceDeadline(deadline, () => operation)
 
@@ -48,7 +64,11 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
     const { url } = await beforeDeadline(vi.waitFor(() => {
       expect(child!.exitCode, stderr).toBeNull()
       return fixtureAddress(stdout)
-    }, { timeout: 10_000 }), deadline)
+    }, { timeout: startupBudget }).catch((cause: unknown) => {
+      // "has not printed its address yet" alone leaves the next reader unable
+      // to tell a stalled runner from a child that never intended to listen.
+      throw new Error(`The keyring fixture did not start within its ${startupBudget}ms startup budget`, { cause })
+    }), deadline)
     deadline.throwIfExpired()
     socket = new WebSocket(url, { handshakeTimeout: Math.ceil(deadline.remainingMs()) })
     await once(socket, "open", { signal: deadline.signal })

@@ -597,11 +597,17 @@ make live manual claim deletion safe.
 ## Loaded fixture checks
 
 The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
-keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
-short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+keyring responsiveness test allows 20 seconds on Windows and ten elsewhere to observe its real
+child daemon starting. That child boots Node with two `--import` hooks, one of them `tsx`, which
+transpiles the daemon source before the fixture listens, so it is the heaviest wait in the file;
+a fixed ten seconds expired on Windows once the runner was loaded. Its teardown wait is scaled the
+same way. The short RPC responsiveness probe is deliberately not scaled, because the latency it
+bounds is what the test proves. The suite-wide observation and test defaults are unchanged.
 Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
-delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
-child stays under its parent's kill deadline. Normal runs inject no delay.
+delay and a 3.5-second child startup delay. Any other number sets the child startup delay in
+milliseconds instead, so a stall can be aimed at whichever bound is being measured. The journal
+delay is cancelled with the test, and the child stays under its parent's kill deadline. Normal runs
+inject no delay.
 
 ## Terminal dependency
 
