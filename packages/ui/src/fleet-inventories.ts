@@ -1,7 +1,7 @@
 import type { FleetMachine, SkillInventory, SkillInventoryMachine, SkillInventorySource } from "@getdomovoi/protocol"
 
 import { MachineOpenError } from "./open-machine.js"
-import { machineSelection } from "./machine-selection.js"
+import { machineAttachment, machineSelection } from "./machine-selection.js"
 
 export type FleetInventoryReader = {
   inventory: () => Promise<SkillInventory>
@@ -66,7 +66,9 @@ export async function collectFleetInventories(input: {
   const gathered: SkillInventorySource[] = []
 
   const collect = async (machine: FleetMachine): Promise<SkillInventorySource> => {
-    const selection = machineSelection(machine)
+    // Pairing may authenticate an operator's route the target cannot advertise.
+    // The reader still has to prove client authority; this only checks health.
+    const selection = machine.verifiedRoute ? machineAttachment(machine, true) : machineSelection(machine)
     if (!selection.selectable) return { state: "unreachable", machine: inventoryMachineFor(machine) }
 
     let reader: FleetInventoryReader | undefined

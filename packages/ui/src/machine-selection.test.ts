@@ -71,10 +71,12 @@ describe("machineSelection", () => {
 })
 
 describe("machineAttachment", () => {
-  it("refuses every remote machine because no client credential exists for it", () => {
+  it("refuses remote control until a separate client credential is verified", () => {
     expect(machineAttachment(machine)).toEqual({ selectable: false, reason: remoteControlRefusal })
-    expect(remoteControlRefusal).toContain("its own device credential")
-    expect(remoteControlRefusal).toContain("not part of this release")
+    expect(remoteControlRefusal).toContain("separate client credential")
+    expect(remoteControlRefusal).toContain("Authorize this client")
+    expect(machineAttachment(machine, true)).toEqual({ selectable: true })
+    expect(machineAttachment({ ...machine, health: "pairing-required" }, true).selectable).toBe(false)
   })
 
   it("refuses a remote machine for the credential before its health", () => {
