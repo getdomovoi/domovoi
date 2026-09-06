@@ -65,8 +65,8 @@ function assertNoRepositorySelection(args: readonly string[]): readonly string[]
 // share and never on a Windows drive the distribution mounts. The distribution
 // is asked where the repository reads back before git is asked to run there,
 // with the rule the open shim applies, so a path the shim hands over is one
-// the runner accepts. Arguments are passed as a list, so nothing is re-parsed
-// by a shell, and `--` closes wsl.exe's own options before the command begins.
+// the runner accepts. --exec ends WSL's options and bypasses the default Linux
+// shell, so repository paths and Git arguments remain literal data.
 export async function distroGitCommand(input: DistroGitInput): Promise<DistroCommand> {
   if (input.args.length === 0) throw new Error("there is no git command to run")
 
@@ -82,6 +82,6 @@ export async function distroGitCommand(input: DistroGitInput): Promise<DistroCom
 
   return {
     command: "wsl.exe",
-    args: ["-d", distribution, "--cd", repository, "--", "git", ...args],
+    args: ["-d", distribution, "--cd", repository, "--exec", "git", ...args],
   }
 }

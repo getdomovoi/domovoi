@@ -33,7 +33,7 @@ describe("distroGitCommand", () => {
   it("runs git inside the distribution that holds the repository", async () => {
     await expect(command({ args: ["status", "--porcelain"] })).resolves.toEqual({
       command: "wsl.exe",
-      args: ["-d", distribution, "--cd", repositoryPath, "--", "git", "status", "--porcelain"],
+      args: ["-d", distribution, "--cd", repositoryPath, "--exec", "git", "status", "--porcelain"],
     })
   })
 
@@ -42,7 +42,7 @@ describe("distroGitCommand", () => {
     await command({ run })
     expect(run).toHaveBeenCalledWith(
       "wsl.exe",
-      ["-d", distribution, "--", "wslpath", "-w", repositoryPath],
+      ["-d", distribution, "--exec", "wslpath", "-w", repositoryPath],
       { timeoutMs: expect.any(Number) },
     )
   })
@@ -59,9 +59,11 @@ describe("distroGitCommand", () => {
     expect((run.mock.calls[0]?.[2] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0)
   })
 
-  it("ends its own options before the command, so a repository cannot supply one", async () => {
+  it("ends its own options and bypasses the Linux shell before the command", async () => {
     const { args } = await command({ args: ["--version"] })
-    expect(args.indexOf("--")).toBeLessThan(args.indexOf("git"))
+    const exec = args.indexOf("--exec")
+    expect(exec).toBeGreaterThan(-1)
+    expect(args.slice(exec + 1)).toEqual(["git", "--version"])
   })
 
   it("keeps an argument containing spaces as one argument", async () => {
