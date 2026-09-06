@@ -2,6 +2,7 @@ import { daemonAuthenticationErrorCode, devicePairResultSchema, protocolVersion 
 import { afterEach, describe, expect, it } from "vitest"
 
 import { machineCredentialDigest } from "./machine-credentials.js"
+import { verifyLocalFleetClientRoute } from "./local-client-route.js"
 import { fleetProductionHarness, persistedRegistry } from "./test-fleet-production.js"
 
 const { cleanup, machine, enroll, connect } = fleetProductionHarness()
@@ -33,6 +34,10 @@ describe("real remote client admission", () => {
     expect(route).toEqual({ outcome: "ready", machineId: target.id,
       transport: { kind: "local", endpoint: target.address.url, authenticated: true } })
     expect(JSON.stringify(route)).not.toContain(credential)
+    const desktopRoute = () => verifyLocalFleetClientRoute({
+      endpoint: { url: source.address.url, token: source.handle.authToken }, machineId: target.id, timeoutMs: 5_000,
+    })
+    expect(await desktopRoute()).toEqual(route)
     expect(await source.root.ok("fleet.clientRoute", { machineId: target.id }))
       .toEqual({ outcome: "refused", reason: "client-route-unavailable" })
 
@@ -47,5 +52,6 @@ describe("real remote client admission", () => {
     persistedRegistry(source.homeDirectory, (registry) => registry.stageForget(target.id, machineCredentialDigest(target.id, credential), Date.now()))
     expect(await source.root.ok("fleet.clientRoute", { machineId: target.id, allowSourceLocal: true }))
       .toEqual({ outcome: "refused", reason: "not-enrolled" })
+    expect(await desktopRoute()).toEqual({ outcome: "refused", reason: "not-enrolled" })
   })
 })

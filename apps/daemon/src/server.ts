@@ -1018,7 +1018,7 @@ export class DomovoiDaemon {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
     this.allowedOrigins = new Set(
-      options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
+      options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
     )
     this.#rpcOutbound = new RpcOutboundBackpressure(options.rpcOutboundBackpressure)
     const machinePlatform = platform()
@@ -8318,7 +8318,8 @@ export function frameAncestorsFor(origins: Iterable<string>): string {
   for (const origin of origins) {
     try {
       const parsed = new URL(origin)
-      if (parsed.protocol === "file:") sources.push("file:")
+      if (origin === "domovoi-app://desktop") sources.push(origin)
+      else if (parsed.protocol === "file:") sources.push("file:")
       else if (parsed.protocol === "http:" || parsed.protocol === "https:") {
         sources.push(parsed.origin)
       }

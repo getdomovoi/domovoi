@@ -102,11 +102,12 @@ describe("parseDaemonEnvironment", () => {
 
   it("normalizes and deduplicates trusted browser origins", () => {
     expect(parseDaemonEnvironment({
-      DOMOVOI_ALLOWED_ORIGINS: "https://app.domovoi.sh/, file://,http://localhost:5178,https://app.domovoi.sh",
+      DOMOVOI_ALLOWED_ORIGINS: "https://app.domovoi.sh/, file://,http://localhost:5178,https://app.domovoi.sh,domovoi-app://desktop",
     }, "/home/tester").allowedOrigins).toEqual([
       "https://app.domovoi.sh",
       "file://",
       "http://localhost:5178",
+      "domovoi-app://desktop",
     ])
   })
 
@@ -115,6 +116,7 @@ describe("parseDaemonEnvironment", () => {
     "not-a-url",
     "file:///",
     "file://host",
+    "domovoi-app://other",
     "wss://app.domovoi.sh",
     "https://user:pass@app.domovoi.sh",
     "https://app.domovoi.sh/path",
