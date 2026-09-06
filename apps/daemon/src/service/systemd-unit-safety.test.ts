@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs"
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, relative } from "node:path"
+import { join, posix, relative } from "node:path"
 
 import { expect, it, vi } from "vitest"
 
@@ -11,6 +11,7 @@ import { parseServiceConfiguration, serializeServiceConfiguration } from "./conf
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type CapturedRun } from "./install.js"
 import { systemdConfigHome, systemdFixtureConfiguration, systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
+import { systemdUnit } from "./units.js"
 
 const safetyBudget = 10_000
 type Body = Parameters<typeof withThrowawayUnit>[1]
@@ -18,6 +19,18 @@ type Body = Parameters<typeof withThrowawayUnit>[1]
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
   return { ...actual, rm: vi.fn(actual.rm) }
+})
+
+// Lifecycle safety does not require a runnable Unix unit. Keep the actual
+// installer, private files, fences and cleanup, but script the text consumed
+// by our scripted manager. The real renderer is exercised separately below
+// and is never mocked in the native Linux suite.
+vi.mock("./units.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./units.js")>()
+  return {
+    ...actual,
+    systemdUnit: vi.fn<typeof actual.systemdUnit>(() => "[Service]\nExecStart=/scripted/native-fixture\n"),
+  }
 })
 
 it("uses host path semantics for a Windows safety fixture home", () => {
@@ -39,10 +52,11 @@ it("preserves a configured systemd config home", () => {
   expect(systemdConfigHome(configured, home)).toBe(configured)
 })
 
-// Run the exact native harness with real private files but no native manager.
+// Run the exact native harness with real private files and a scripted unit
+// renderer and manager, so lifecycle checks run even with Windows launch paths.
 // Even its old, destructive cleanup can only remove this scenario's fixtures.
 async function scenario(
-  options: { collision?: "manager" | "files"; probe?: CapturedRun; failEnable?: boolean; failCleanup?: boolean; refuseCleanup?: boolean },
+  options: { collision?: "manager" | "files"; probe?: CapturedRun; failEnable?: boolean; failCleanup?: boolean; refuseCleanup?: boolean; runtime?: string },
   check: (state: {
     run: (body: Body) => Promise<void>
     calls: string[][]
@@ -65,6 +79,7 @@ async function scenario(
       calls, paths, loaded: () => loaded, outsideFile: join(root, "escaped"),
       run: (body) => withThrowawayUnit(safetyBudget, body, {
         runtimeDirectory, configHome,
+        ...(options.runtime !== undefined ? { runtime: options.runtime } : {}),
         effects: {
           ...base,
           run: async (_command, args) => {
@@ -101,6 +116,51 @@ async function scenario(
     finally { cleanup.clear() }
   }
 }
+
+it("keeps safety lifecycle assertions independent of a Windows launcher path", async () => {
+  const runtime = String.raw`C:\hostedtoolcache\windows\node\22.23.2\x64\node.exe`
+  await scenario({ runtime }, async ({ run, calls, paths, loaded }) => {
+    await run(async (unit, deadline) => {
+      await unit.install(deadline)
+      expect(loaded()).toBe(true)
+      expect(existsSync(unit.unitPath)).toBe(true)
+    })
+    expect(loaded()).toBe(false)
+    expect(calls.filter((args) => args[1] === "enable" || args[1] === "disable").map((args) => args[1]))
+      .toEqual(["enable", "disable"])
+    for (const path of paths) expect(existsSync(path)).toBe(false)
+  })
+}, safetyBudget + 6_000)
+
+// Only rendering a real launch command needs POSIX paths. Do not gate the
+// arming, collision, retention, scratch cleanup or fence tests on this check.
+const posixLaunchPaths = posix.isAbsolute(tmpdir()) && posix.isAbsolute(process.execPath)
+it.runIf(posixLaunchPaths)("renders the installer's real unit through the same file and command fences", async () => {
+  const actual = await vi.importActual<typeof import("./units.js")>("./units.js")
+  const renderer = vi.mocked(systemdUnit)
+  const scripted = renderer.getMockImplementation()
+  if (scripted === undefined) throw new Error("The scripted unit renderer must be available")
+  renderer.mockClear().mockImplementation(actual.systemdUnit)
+  try {
+    await scenario({}, async ({ run, calls }) => {
+      await run(async (unit, deadline) => {
+        const plan = await unit.install(deadline)
+        expect(plan).toMatchObject({ kind: "file", path: unit.productionUnitPath })
+        expect(renderer).toHaveBeenCalledExactlyOnceWith({
+          execPath: process.execPath,
+          args: [join(unit.home, "unit.mjs"), "--service-config", unit.configurationPath],
+        })
+        const contents = await readFile(unit.unitPath, "utf8")
+        expect(contents).toContain("Restart=on-failure")
+        expect(contents).toContain("--service-config")
+      })
+      expect(calls.filter((args) => args[1] === "enable" || args[1] === "disable").map((args) => args[1]))
+        .toEqual(["enable", "disable"])
+    })
+  } finally {
+    renderer.mockImplementation(scripted)
+  }
+}, safetyBudget + 6_000)
 
 it.each(["manager", "files"] as const)("leaves a pre-existing %s collision untouched after refusing", async (collision) => {
   await scenario({ collision }, async ({ run, calls, paths, loaded }) => {

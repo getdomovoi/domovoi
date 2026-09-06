@@ -153,6 +153,9 @@ collection itself also refuses a missing socket rather than trusting the earlier
 A stale socket reaches the bounded manager query and fails instead of being treated as absence.
 The same harness has portable safety tests with a simulated manager and real private files; those
 tests exercise refusals without risking a pre-existing service on the developer's machine.
+Those lifecycle tests script unit text so Windows launch paths do not mask their assertions.
+A separate real-renderer test requires POSIX-absolute runtime and temporary paths; native Linux
+proofs always use the real renderer and manager.
 If cleanup cannot confirm the attempted unit stopped, it retains files rather than leaving a
 restartable job pointing at deleted launch input. The error names the UUID unit and paths to
 inspect and preserves the original assertion failure alongside the cleanup failure. Stop that

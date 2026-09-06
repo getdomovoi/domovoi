@@ -103,7 +103,7 @@ type ThrowawayUnit = {
 export async function withThrowawayUnit(
   budgetMs: number,
   body: (throwaway: ThrowawayUnit, deadline: OperationDeadline) => Promise<void>,
-  host: { runtimeDirectory: string; configHome: string; effects?: ServiceEffects },
+  host: { runtimeDirectory: string; configHome: string; effects?: ServiceEffects; runtime?: string },
 ): Promise<void> {
   const { runtimeDirectory, configHome } = host
   // This is the native boundary, not an interception of systemd. The unit is a
@@ -256,7 +256,7 @@ export async function withThrowawayUnit(
         return installService({
           platform: "linux",
           execPath: script,
-          runtime: process.execPath,
+          runtime: host.runtime ?? process.execPath,
           home,
           configuration: systemdFixtureConfiguration(home),
         }, effects)
