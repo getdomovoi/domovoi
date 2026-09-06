@@ -833,7 +833,10 @@ before any public package or application publish.
   - Changesets, the `@getdomovoi/*` fixed version group, `pnpm changeset`, and `pnpm release:status`
     are in place.
   - The blocking pull-request gate lands with the publish workflow.
-- [ ] Make `0.1.0-alpha.1` the first public alpha release
+- [ ] Make `0.1.0-alpha.0` the first public alpha release
+  - Changesets pre-release mode numbers from zero and the workflow never sets a version by
+    hand, so the first tag the tooling produces is the one that ships. `docs/distribution.md`
+    records the same number.
 - [x] Keep package, app, daemon, protocol, and CLI versions in lockstep through `0.x`, and treat
   compatibility as one release unit
   - A fixed Changesets group moves every workspace version together.
