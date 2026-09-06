@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { demoWorkspace } from "@getdomovoi/protocol"
 
 import { DomovoiClient } from "./client"
+import { ClientAdmissionError } from "./client-admission-policy"
 import { installFakeWebSocket, completeHandshake, fail, notify, respond } from "./test-support/fake-websocket"
 
 const machineId = demoWorkspace.machine.id
@@ -14,6 +15,30 @@ beforeEach(() => { vi.useFakeTimers(); sockets = installFakeWebSocket() })
 afterEach(() => { client?.disconnect(); sockets.uninstall(); vi.useRealTimers() })
 
 describe("client credential admission", () => {
+  it("reports route verification refusal and does not retry it silently", async () => {
+    const resolveEndpoint = vi.fn(async () => { throw new ClientAdmissionError("not-enrolled") })
+    client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets, admission: { machineId }, resolveEndpoint })
+    const refused = vi.fn()
+    client.addEventListener("authentication-required", refused)
+    await expect(client.connect()).rejects.toMatchObject({ reason: "not-enrolled" })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(resolveEndpoint).toHaveBeenCalledOnce()
+    expect(refused).toHaveBeenCalledOnce()
+  })
+  it("settles a refused socket factory after endpoint discovery", async () => {
+    client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets, admission: { machineId },
+      resolveEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "a".repeat(43),
+        createSocket: () => { throw new Error("Worker refused") },
+      }),
+    })
+    const rejected = vi.fn()
+    void client.connect().catch(rejected)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(rejected).toHaveBeenCalledOnce()
+    expect(sockets.sockets).toHaveLength(0)
+  })
+
   function connect(expectedMachine = machineId, pinDevice = true) {
     client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
       budgets, authToken: "a".repeat(43), admission: { machineId: expectedMachine, ...(pinDevice ? { deviceId } : {}) },

@@ -56,6 +56,7 @@ import {
 
 import { Deadline, DeadlineExceededError, deadlineBudget, describeTarget } from "./deadline.js"
 import { ClientAdmissionError, parseClientAdmission, verifyClientAdmission, type ClientAdmission } from "./client-admission-policy.js"
+import type { ClientSocket, ClientSocketFactory } from "./client-socket.js"
 
 // The daemon's typed error data rides along: a refusal such as a withheld
 // fleet list carries facts the surface has to show, and a code alone cannot.
@@ -135,7 +136,7 @@ export type DomovoiReconnectScheduler = {
   clearTimeout: (timer: DomovoiReconnectTimer) => void
 }
 
-export type DomovoiEndpoint = { url: string; token: string }
+export type DomovoiEndpoint = { url: string; token: string; createSocket?: ClientSocketFactory }
 
 export type DomovoiClientOptions = {
   budgets: DomovoiClientBudgets
@@ -148,6 +149,7 @@ export type DomovoiClientOptions = {
   clientId?: string
   resolveEndpoint?: (deadline: Deadline) => Promise<DomovoiEndpoint>
   admission?: ClientAdmission
+  createSocket?: ClientSocketFactory
 }
 
 const defaultReconnectDelayMs = 1_000
@@ -173,7 +175,9 @@ export class DomovoiClient extends EventTarget {
   #url: string
   readonly kind: ClientKind
   readonly clientId: string
-  #socket: WebSocket | undefined
+  #socket: ClientSocket | undefined
+  #createSocket: ClientSocketFactory = (url) => new WebSocket(url)
+  #defaultCreateSocket: ClientSocketFactory = this.#createSocket
   #requestId = 0
   #pending = new Map<number, PendingRequest>()
   // A request this client gave up on, by cancellation or by its deadline, is
@@ -232,6 +236,8 @@ export class DomovoiClient extends EventTarget {
     this.#random = options.random ?? Math.random
     this.#scheduler = options.scheduler ?? defaultReconnectScheduler
     this.#authToken = options.authToken
+    this.#createSocket = options.createSocket ?? this.#createSocket
+    this.#defaultCreateSocket = this.#createSocket
     this.#resolveEndpoint = options.resolveEndpoint
     this.#admission = options.admission ? parseClientAdmission(options.admission) : undefined
   }
@@ -281,7 +287,17 @@ export class DomovoiClient extends EventTarget {
     this.#socketListeners = listeners
     const opening = new Promise<WorkspaceSnapshot>((resolve, reject) => {
       const dial = () => {
-        const socket = new WebSocket(this.#url)
+        let socket: ClientSocket
+        try { socket = this.#createSocket(this.#url) } catch (cause) {
+          const error = this.#admission ? new ClientAdmissionError("verification-unavailable")
+            : cause instanceof Error ? cause : new Error("Daemon socket could not be created")
+          listeners.abort()
+          if (error instanceof ClientAdmissionError) this.#markAuthenticationRequired(error.message)
+          reject(error)
+          this.dispatchEvent(new Event("disconnected"))
+          this.#scheduleReconnect()
+          return
+        }
         this.#socket = socket
         let opening = true
         let stage: DomovoiConnectStage = "open"
@@ -397,6 +413,7 @@ export class DomovoiClient extends EventTarget {
       this.#cancelOpening = failResolution
       const abandon = (error: Error) => {
         if (!resolving || generation !== this.#connectionGeneration) return
+        if (error instanceof ClientAdmissionError) this.#markAuthenticationRequired(error.message)
         failResolution(error)
         this.dispatchEvent(new Event("disconnected"))
         this.#scheduleReconnect()
@@ -407,6 +424,7 @@ export class DomovoiClient extends EventTarget {
         if (!resolving || generation !== this.#connectionGeneration) return
         if (deadline.remainingMs() === 0) { expire(); return }
         resolving = false
+        this.#createSocket = endpoint.createSocket ?? this.#defaultCreateSocket
         deadline.signal.removeEventListener("abort", expire)
         this.#url = endpoint.url
         this.#authToken = endpoint.token
