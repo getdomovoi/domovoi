@@ -271,17 +271,14 @@ Every ledger entry is now merged.
 - [x] Gate terminal-based skill installs through the normal permission system
 - [x] Define safe behavior for unsigned skills in Build auto
 - [x] Define the skill inventory contract and comparison model without distributing executables
-- [ ] Fetch inventories from every reachable fleet member and compare them
-  - The fan-out exists and is unit tested. `collectFleetInventories` in
-    `packages/ui/src/fleet-inventories.ts` selects the paired machines that report the skills
-    capability, dials each one, and reports `unreachable` or `unknown` rather than dropping a
-    machine that does not answer. Metadata only stays the contract: no skill file crosses a
-    machine boundary.
-  - Production never calls it. `packages/ui/src/workspace-shell.tsx` sets a single local source,
-    because asking a fleet member for its inventory is a client dial with a client credential
-    that no remote machine grants until client admission lands, so the comparison covers this
-    machine rather than guessing at the others. Close with client admission, then a comparison
-    across two real daemons.
+- [x] Fetch inventories from admitted reachable fleet members and compare them
+  - Opening Skills calls `collectFleetInventories` through separate, verified client credentials.
+    Each reader checks machine identity and the pinned device receipt, with a bounded connect
+    and read. No machine keychain secret reaches the client. Unadmitted or unavailable members
+    remain `unknown` or `unreachable`; metadata only travels, never skill files or trust.
+  - `fleet-client-smoke.mjs` drives the real Desktop renderer against two production-built
+    daemons and checks the admitted inventory exchange and rendered machine comparison.
+    Linux execution is proven locally; the same proof is in the Desktop launch check for CI.
 
 ### Desktop quality
 
@@ -502,11 +499,17 @@ Every ledger entry is now merged.
     production test takes enrollment through restart without registry seeding. Each enrollment
     and forget is journaled by credential digest and promoted or rolled back on restart, because
     SQLite and the OS keychain cannot be atomic.
-- [ ] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
+- [x] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
   - Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not
-    grant the initiating desktop a remote client credential. Until a separate client-admission
-    slice exists, remote Use and Terminal stay disabled with a reason naming that missing
-    credential. Direct phone-to-daemon client pairing is unchanged.
+    grant the initiating desktop a remote client credential. Authorize this client explains the
+    separate target command and full ordinary session, approval and terminal authority. Use and
+    Terminal enable only after the machine identity and kind-bound client receipt verify.
+  - Desktop main verifies the enrolled route through the home daemon, then grants one exact
+    worker socket origin. The packaged app uses an explicit bundled-resource origin so CSP is
+    enforced. Real Electron proofs cover origin refusal, Use, Terminal, inventory and removal.
+    App-memory retention does not revoke on the target; the UI names its Devices list. Remote
+    HTTP previews need a separate verified frame path and remain explicitly unavailable.
+    Direct phone-to-daemon client pairing is unchanged. See `docs/fleet-client-admission.md`.
 - [ ] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
   2. WSL interop to a distro daemon on the same machine;
