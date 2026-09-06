@@ -1,17 +1,23 @@
 import { existsSync } from "node:fs"
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
 import { expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type CapturedRun } from "./install.js"
 import { systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
 
 const safetyBudget = 10_000
 type Body = Parameters<typeof withThrowawayUnit>[1]
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, rm: vi.fn(actual.rm) }
+})
 
 // Run the exact native harness with real private files but no native manager.
 // Even its old, destructive cleanup can only remove this scenario's fixtures.
@@ -71,7 +77,7 @@ async function scenario(
   } finally {
     deadline.clear()
     const cleanup = OperationDeadline.start(5_000)
-    try { await withinServiceDeadline(cleanup, () => rm(root, { recursive: true, force: true })) }
+    try { await withinServiceDeadline(cleanup, () => removeScratchDirectory(root)) }
     finally { cleanup.clear() }
   }
 }
@@ -115,6 +121,36 @@ it("still retires an attempted installation after the body fails", async () => {
     expect(calls.some((args) => args[1] === "disable")).toBe(true)
     for (const path of paths) expect(existsSync(path)).toBe(false)
   })
+}, safetyBudget + 6_000)
+
+it.each(["held", "recreated"] as const)("reclaims a %s native fixture home through shared cleanup", async (kind) => {
+  const removal = vi.mocked(rm)
+  const original = removal.getMockImplementation()
+  if (original === undefined) throw new Error("The real filesystem remover must be available")
+  let home: string | undefined
+  let attempts = 0
+  removal.mockImplementation(async (path, options) => {
+    if (path !== home) return original(path, options)
+    attempts += 1
+    if (kind === "held" && attempts <= 2) {
+      throw Object.assign(new Error(`EPERM: fixture home is held: ${home}`), { code: "EPERM" })
+    }
+    await original(path, options)
+    if (kind === "recreated" && attempts <= 2) await mkdir(join(home, "provider"), { recursive: true })
+  })
+  try {
+    await scenario({}, async ({ run, loaded }) => {
+      await run(async (unit, deadline) => { home = unit.home; await unit.install(deadline) })
+      expect(loaded()).toBe(false)
+      expect(attempts, "the shared cleanup must retry held and recreated homes").toBe(3)
+      await expect(stat(home!)).rejects.toMatchObject({ code: "ENOENT" })
+    })
+  } finally {
+    removal.mockImplementation(original)
+    // The red version deliberately leaves this invocation's private home.
+    // Reclaim it after restoring the real remover, never an operator's unit.
+    if (home !== undefined) await removeScratchDirectory(home)
+  }
 }, safetyBudget + 6_000)
 
 it("arms cleanup before enable can fail after changing manager state", async () => {
@@ -162,7 +198,7 @@ it.each(["throws", "refuses"] as const)("names retained files and both failures 
       // No real manager ran in this scenario. Reclaim only the private home
       // returned by the harness whose intentionally failed cleanup retained it.
       const cleanup = OperationDeadline.start(5_000)
-      try { if (home) await withinServiceDeadline(cleanup, () => rm(home!, { recursive: true, force: true })) }
+      try { if (home) await withinServiceDeadline(cleanup, () => removeScratchDirectory(home!)) }
       finally { cleanup.clear() }
     }
   })

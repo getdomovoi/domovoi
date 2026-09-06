@@ -7,6 +7,7 @@ import { isAbsolute, join, posix, relative, resolve, sep } from "node:path"
 import { expect } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
@@ -163,7 +164,9 @@ export async function withThrowawayUnit(
         expect(failed.stdout.trim()).toBe("")
       }
       const created = installedHome
-      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+      // Keep main's independent retry and absence proof after authorization.
+      // A spent manager deadline must not abandon an otherwise removable home.
+      if (created !== undefined) await removeScratchDirectory(created)
     } catch (error) {
       // Unconditional deletion here would leave a possibly restartable job
       // pointing at removed files. Retain on uncertainty and preserve both the

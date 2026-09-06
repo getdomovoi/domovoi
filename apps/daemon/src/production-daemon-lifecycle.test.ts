@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,6 +9,7 @@ import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { claimProfile } from "./profile-lease.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies } from "./production-daemon.js"
 import { waitForDaemon } from "./test-wait-for.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 it("never releases ownership or publishes late startup until that runtime has stopped", async () => {
   const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-owner-lifecycle-"))
@@ -48,6 +49,6 @@ it("never releases ownership or publishes late startup until that runtime has st
     await beforeDeadline(owner.stop(), observation)
     observation.clear()
     deadline.clear()
-    await rm(homeDirectory, { recursive: true, force: true })
+    await removeScratchDirectory(homeDirectory)
   }
 })

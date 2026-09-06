@@ -13,6 +13,7 @@ import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
 import { fixtureAddress } from "./test-fixture-address.js"
 import { waitForDaemon } from "./test-wait-for.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 const budget = process.platform === "win32" ? 40_000 : 20_000
 const probeBudget = process.platform === "win32" ? 5_000 : 1_500
@@ -101,7 +102,9 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
     const cleanup = OperationDeadline.start(cleanupBudget)
     try {
       if (exited) await beforeDeadline(exited, cleanup)
-      await beforeDeadline(rm(home, { recursive: true, force: true }), cleanup)
     } finally { cleanup.clear() }
+    // Removal never shares the budget the wait above may have spent, and it
+    // retries a home the exiting child still holds.
+    await removeScratchDirectory(home)
   }
 }, budget + cleanupBudget + 1_000)

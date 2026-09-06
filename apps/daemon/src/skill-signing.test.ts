@@ -21,7 +21,7 @@ import { removeScratchDirectories } from "./test-scratch.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 async function scratchTrustPath(): Promise<string> {

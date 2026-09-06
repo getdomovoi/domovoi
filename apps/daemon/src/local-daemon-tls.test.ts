@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises"
+import { chmod, copyFile, mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,6 +9,7 @@ import { readLocalOwnerRecord } from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemon, type ProductionDaemonHandle } from "./production-daemon.js"
 import { CliProviderProbe } from "./providers.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 // This boundary proof must also run on hosts without external certificate tools.
 vi.mock("node:child_process", async (importOriginal) => {
@@ -58,7 +59,9 @@ it.each(["localhost", "127.0.0.1"])("keeps TLS certificate and hostname checks w
     const closing = OperationDeadline.start(budget)
     try {
       if (owner) await beforeDeadline(owner.stop(), closing)
-      await beforeDeadline(rm(homeDirectory, { recursive: true, force: true }), closing)
     } finally { closing.clear() }
+    // Removal never shares the budget the stop may have spent, and it retries
+    // a home the stopping daemon still holds.
+    await removeScratchDirectory(homeDirectory)
   }
 }, budget * 2 + 1_000)

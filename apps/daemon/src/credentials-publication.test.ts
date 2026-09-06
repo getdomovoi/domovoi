@@ -20,7 +20,7 @@ afterEach(async () => {
   vi.mocked(link).mockReset().mockImplementation(actual.link)
   vi.mocked(mkdir).mockReset().mockImplementation(actual.mkdir)
   vi.mocked(rm).mockReset().mockImplementation(actual.rm)
-  await removeScratchDirectories(directories.splice(0))
+  await removeScratchDirectories(directories)
   vi.mocked(rm).mockClear()
 })
 async function setup() {

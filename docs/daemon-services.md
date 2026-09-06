@@ -158,6 +158,10 @@ restartable job pointing at deleted launch input. The error names the UUID unit 
 inspect and preserves the original assertion failure alongside the cleanup failure. Stop that
 test-owned unit before manually removing retained files. A preflight refusal never authorizes
 stopping or deleting the colliding unit.
+Once manager cleanup is confirmed, the private fixture home uses the shared
+scratch removal helper: held-directory refusals are retried and removal is
+verified by absence. That retry is independent of the manager cleanup deadline;
+it does not authorize removal when manager ownership or shutdown is unknown.
 
 A second native Linux-only test proves the restart supervision that unit declares. It reads
 `Restart` and `RestartSec` back from the manager's parse of the installed unit rather than from the
