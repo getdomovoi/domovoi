@@ -44,7 +44,7 @@ describe("distributionPath", () => {
       .resolves.toBe("/home/me/project")
     expect(run).toHaveBeenCalledWith(
       "wsl.exe",
-      ["-d", distribution, "--", "wslpath", "-u", "\\\\wsl$\\Ubuntu-24.04\\home\\me\\project"],
+      ["-d", distribution, "--exec", "wslpath", "-u", "\\\\wsl$\\Ubuntu-24.04\\home\\me\\project"],
       { timeoutMs: expect.any(Number) },
     )
   })
@@ -54,7 +54,7 @@ describe("distributionPath", () => {
     await distributionPath({ distribution, path: "\\\\wsl$\\Ubuntu-24.04\\home\\me\\project", run })
     expect(run).toHaveBeenCalledWith(
       "wsl.exe",
-      ["-d", distribution, "--", "wslpath", "-w", "/home/me/project"],
+      ["-d", distribution, "--exec", "wslpath", "-w", "/home/me/project"],
       { timeoutMs: expect.any(Number) },
     )
   })

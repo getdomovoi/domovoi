@@ -346,9 +346,10 @@ Read these before relying on this guide for a fleet rollout.
   removal tests, not by full native systemd, launchd, or Task Scheduler lifecycle acceptance. A
   timed-out manager command may already have changed OS state; inspect the manager before retrying.
 - Windows crash restart of the logon task is not configured.
-- The WSL steps are exercised by unit tests that stub `wsl.exe`. There is no real
-  Windows-to-WSL test, and the WSL mount-boundary guard assumes Windows drives are mounted under
-  `/mnt`.
+- The [dedicated WSL job](wsl-ci.md) has passed six real discovery and path-boundary proofs
+  on a hosted Windows runner with one WSL 2 guest, including a non-default Windows-drive
+  mount root and literal shell metacharacters in paths. Authenticated distro daemon access,
+  repository work and daemon restart are not yet proven by that job.
 - WSL distributions are not fleet transport candidates. Only local, LAN, explicitly configured TLS
   tailnet, and source-local SSH routes are produced today. Relay is not implemented.
 - Fleet health reporting covers revocation. Version mismatch and upgrade-required states have no
