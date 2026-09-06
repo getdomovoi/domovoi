@@ -41,6 +41,12 @@ const commandBudgetMs = 180_000
 // bootstrap message that names it rather than by a blunt outer timeout. Four
 // simultaneous maximal stalls would still land here, and that is deliberate.
 const testBudgetMs = 300_000
+// Every fixture spawn and loopback listen below carried the same fixed ten
+// second window, which is the bound that a bare where.exe spawn blew twice on
+// these runners at 10.1 and 10.8 seconds. The sibling that measured those
+// stalls settled the same class at sixty seconds. These guard against a hung
+// helper, and the test budget above still stops the run either way.
+const fixtureBudgetMs = 60_000
 
 test("identical archives install the reviewed transitive bytes after the registry changes", { timeout: testBudgetMs }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-frozen-live-"))
@@ -55,10 +61,10 @@ test("identical archives install the reviewed transitive bytes after the registr
     response.setHeader("content-type", Buffer.isBuffer(value) ? "application/octet-stream" : "application/json")
     response.end(Buffer.isBuffer(value) ? value : JSON.stringify(value))
   })
-  server.requestTimeout = 10_000
-  server.headersTimeout = 10_000
+  server.requestTimeout = fixtureBudgetMs
+  server.headersTimeout = fixtureBudgetMs
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Fixture registry did not listen in 10000 ms")), 10_000)
+    const timer = setTimeout(() => reject(new Error(`Fixture registry did not listen in ${fixtureBudgetMs} ms`)), fixtureBudgetMs)
     const fail = (error) => { clearTimeout(timer); reject(error) }
     server.once("error", fail)
     server.listen(0, "127.0.0.1", () => { clearTimeout(timer); server.off("error", fail); resolve() })
@@ -76,7 +82,7 @@ test("identical archives install the reviewed transitive bytes after the registr
       await writeFile(target, bytes)
     }
     const archive = `${directory}.tgz`
-    await execute("tar", ["-czf", archive, "-C", directory, "package"], { timeout: 10_000, killSignal: "SIGKILL" })
+    await execute("tar", ["-czf", archive, "-C", directory, "package"], { timeout: fixtureBudgetMs, killSignal: "SIGKILL" })
     const bytes = await readFile(archive)
     const path = `/${manifest.name}/-/${manifest.name.split("/").at(-1)}-${manifest.version}.tgz`
     responses.set(path, bytes)
@@ -139,7 +145,7 @@ test("identical archives install the reviewed transitive bytes after the registr
   await pack({ name: "domovoi-lock-leaf", version: "1.1.0" })
   const second = await install(join(root, "second"))
   for (const result of [first, second]) {
-    const outcome = await execute(process.execPath, [join(result.runtimePath, "dist/index.js")], { timeout: 10_000, killSignal: "SIGKILL" })
+    const outcome = await execute(process.execPath, [join(result.runtimePath, "dist/index.js")], { timeout: fixtureBudgetMs, killSignal: "SIGKILL" })
     assert.equal(outcome.stdout.trim(), "1.0.0")
     assert.equal(await readFile(join(result.runtimePath, "node_modules/node-pty/built.txt"), "utf8"), "reviewed build ran")
   }
@@ -153,17 +159,17 @@ test("identical archives install the reviewed transitive bytes after the registr
   const certificate = join(root, "release-cert.pem")
   await execute("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
     "-nodes", "-keyout", key, "-out", certificate, "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
-  { timeout: 10_000, killSignal: "SIGKILL" })
+  { timeout: fixtureBudgetMs, killSignal: "SIGKILL" })
   const releaseServer = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, (request, response) => {
     if (request.url === "/v1.0.0/SHA256SUMS") response.end(`${sha256}  getdomovoi-daemon-1.0.0.tgz\n`)
     else if (request.url === "/v1.0.0/getdomovoi-daemon-1.0.0.tgz") response.end(app.bytes)
     else response.writeHead(404).end()
   })
-  releaseServer.requestTimeout = 10_000
-  releaseServer.headersTimeout = 10_000
+  releaseServer.requestTimeout = fixtureBudgetMs
+  releaseServer.headersTimeout = fixtureBudgetMs
   t.after(() => { releaseServer.closeAllConnections(); releaseServer.close() })
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("HTTPS fixture listen timed out")), 10_000)
+    const timer = setTimeout(() => reject(new Error(`HTTPS fixture did not listen in ${fixtureBudgetMs} ms`)), fixtureBudgetMs)
     releaseServer.once("error", (error) => { clearTimeout(timer); reject(error) })
     releaseServer.listen(0, "127.0.0.1", () => { clearTimeout(timer); resolve() })
   })
