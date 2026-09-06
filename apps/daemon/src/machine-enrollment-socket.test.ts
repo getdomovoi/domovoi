@@ -5,7 +5,7 @@ import { createEmptyWorkspace, demoWorkspace, protocolVersion } from "@getdomovo
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 
-import { claimMachineSocket } from "./machine-socket.js"
+import { claimMachineSocket, confirmMachineSocket, readMachineDescriptor, MachineDescriptorError } from "./machine-socket.js"
 import { OperationDeadline } from "./operation-deadline.js"
 
 const sourceId = `machine-${"a".repeat(32)}`
@@ -21,7 +21,7 @@ afterEach(async () => {
   }
 })
 
-async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string; heartbeatVersion?: string } = {}) {
+async function target(overrides: { heartbeatId?: string; label?: string; silenceAt?: string; claimMachineId?: string; heartbeatVersion?: string; confirmationMachineId?: string } = {}) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
   servers.push(server)
   await once(server, "listening")
@@ -39,11 +39,12 @@ async function target(overrides: { heartbeatId?: string; label?: string; silence
       calls.push(call)
       if (call.method === overrides.silenceAt) return
       const result = call.method === "device.claim" ? {
-        device: {
-          id: `device-${"c".repeat(32)}`, label: "source", pairedAt: new Date(0).toISOString(),
-          binding: { kind: "machine", machineId: overrides.claimMachineId ?? sourceId },
-        }, token: credential,
-      } : call.method === "system.hello" ? workspace
+        claim: { state: "pending", deviceId: `device-${"c".repeat(32)}`, machineId: overrides.claimMachineId ?? sourceId, expiresAt: new Date(Date.now() + 300_000).toISOString() },
+        token: credential, machine: { ...descriptor, id: targetId },
+      } : call.method === "device.confirmClaim" ? { device: {
+        id: `device-${"c".repeat(32)}`, label: "source", pairedAt: new Date().toISOString(),
+        binding: { kind: "machine", machineId: overrides.confirmationMachineId ?? overrides.claimMachineId ?? sourceId },
+      } } : call.method === "system.hello" ? workspace
         : call.method === "fleet.heartbeat" ? descriptor : { revoked: true }
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }))
     })
@@ -59,20 +60,31 @@ async function target(overrides: { heartbeatId?: string; label?: string; silence
 }
 
 describe("machine enrollment socket", () => {
-  it("claims, authenticates and fetches target facts on one real socket", async () => {
+  it("does not translate malformed confirmation success into an invalid-token verdict", async () => {
+    const machine = await target({ confirmationMachineId: targetId })
+    const claimed = await claimMachineSocket(machine.input)
+    await expect(confirmMachineSocket({ ...machine.input, claim: claimed.claim, expectedMachineId: targetId, credential: claimed.credential }))
+      .rejects.toThrow(MachineDescriptorError)
+  })
+
+  it("closes the pending claim socket and authenticates only on a later confirmation socket", async () => {
     const machine = await target()
     const claimed = await claimMachineSocket(machine.input)
+    expect(machine.calls.map((call) => call.method)).toEqual(["device.claim"])
+    const connection = await confirmMachineSocket({ ...machine.input, claim: claimed.claim, expectedMachineId: targetId, credential: claimed.credential })
     try {
-      expect(machine.connections()).toBe(1)
-      expect(machine.calls.map((call) => call.method)).toEqual(["device.claim", "system.hello", "fleet.heartbeat"])
+      expect(machine.connections()).toBe(2)
+      expect(await readMachineDescriptor(connection, targetId, claimed.credential, machine.input.deadline)).toEqual(machine.descriptor)
+      expect(machine.calls.map((call) => call.method)).toEqual(["device.claim", "device.confirmClaim", "system.hello", "fleet.heartbeat"])
       expect(machine.calls[0]?.params).toEqual({
         code: machine.input.code, label: "workshop", machineId: sourceId, protocolVersion,
       })
-      expect(machine.calls[1]?.params).toEqual({ client: "machine", clientVersion: "0.0.1", protocolVersion, authToken: credential })
+      expect(machine.calls[1]?.params).toEqual({ authToken: credential, machineId: sourceId, protocolVersion })
+      expect(machine.calls[2]?.params).toEqual({ client: "machine", clientVersion: "0.0.1", protocolVersion, authToken: credential })
       expect(claimed.descriptor).toEqual(machine.descriptor)
       expect(claimed.credential).toBe(credential)
       expect(claimed.endpoint).toBe(machine.input.endpoint)
-    } finally { claimed.connection.close() }
+    } finally { connection.close() }
   })
 
   it("checks the expected identity and refuses self before publishing any facts", async () => {
@@ -82,35 +94,22 @@ describe("machine enrollment socket", () => {
     const self = await target({ claimMachineId: targetId })
     await expect(claimMachineSocket({ ...self.input, sourceMachineId: targetId }))
       .rejects.toThrow("cannot enroll itself")
-    expect(self.calls.map((call) => call.method)).toEqual(["device.claim", "system.hello", "device.revokeCurrent"])
+    expect(self.calls.map((call) => call.method)).toEqual(["device.claim"])
   })
 
   it("checks the identity again in the authenticated descriptor", async () => {
     const machine = await target({ heartbeatId: sourceId })
-    await expect(claimMachineSocket(machine.input)).rejects.toThrow("different machine")
-    expect(machine.calls.at(-1)?.method).toBe("device.revokeCurrent")
+    const claimed = await claimMachineSocket(machine.input)
+    const connection = await confirmMachineSocket({ ...machine.input, claim: claimed.claim, expectedMachineId: targetId, credential: claimed.credential })
+    try { await expect(readMachineDescriptor(connection, targetId, credential, machine.input.deadline)).rejects.toThrow("different machine") }
+    finally { connection.close() }
   })
 
   it("retains a compatible descriptor patch version rather than requiring literal equality", async () => {
     const remoteVersion = `${protocolVersion.split(".").slice(0, 2).join(".")}.1`
     const machine = await target({ heartbeatVersion: remoteVersion })
     const claimed = await claimMachineSocket(machine.input)
-    try { expect(claimed.descriptor.protocolVersion).toBe(remoteVersion) }
-    finally { claimed.connection.close() }
-  })
-
-  it("bounds a silent compensating revocation and preserves the original refusal", async () => {
-    const machine = await target({ heartbeatId: sourceId, silenceAt: "device.revokeCurrent" })
-    let expire: (() => void) | undefined
-    const deadline = OperationDeadline.start(1_000, {
-      now: () => 0,
-      scheduler: { setTimeout: (callback) => { expire ??= callback; return 1 }, clearTimeout: () => {} },
-    })
-    deadlines.push(deadline)
-    const refused = expect(claimMachineSocket({ ...machine.input, deadline })).rejects.toThrow("different machine")
-    await waitForDaemon(() => expect(machine.calls.at(-1)?.method).toBe("device.revokeCurrent"))
-    expire!()
-    await refused
+    expect(claimed.descriptor.protocolVersion).toBe(remoteVersion)
   })
 
   it("refuses a claim bound to another machine before sending its credential", async () => {
@@ -126,7 +125,7 @@ describe("machine enrollment socket", () => {
     await expect(outcome).rejects.not.toThrow(credential)
   })
 
-  it.each(["device.claim", "system.hello", "fleet.heartbeat"])("bounds a silent %s with the original deadline", async (silenceAt) => {
+  it.each(["device.claim", "device.confirmClaim", "system.hello", "fleet.heartbeat"])("bounds a silent %s with the original deadline", async (silenceAt) => {
     const machine = await target({ silenceAt })
     let expire: (() => void) | undefined
     const deadline = OperationDeadline.start(1_000, {
@@ -137,7 +136,12 @@ describe("machine enrollment socket", () => {
       },
     })
     deadlines.push(deadline)
-    const outcome = claimMachineSocket({ ...machine.input, deadline })
+    const outcome = (async () => {
+      const claimed = await claimMachineSocket({ ...machine.input, deadline })
+      const connection = await confirmMachineSocket({ ...machine.input, deadline, claim: claimed.claim, expectedMachineId: targetId, credential: claimed.credential })
+      try { await readMachineDescriptor(connection, targetId, claimed.credential, deadline) }
+      finally { connection.close() }
+    })()
     const refused = expect(outcome).rejects.toThrow(/deadline|answer/)
     await waitForDaemon(() => expect(machine.calls.at(-1)?.method).toBe(silenceAt))
     expire!()

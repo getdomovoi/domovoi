@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import {
-  createEmptyWorkspace, daemonAuthenticationErrorCode, demoWorkspace, devicePairResultSchema,
+  createEmptyWorkspace, daemonAuthenticationErrorCode, demoWorkspace, deviceClaimResultSchema,
   fleetMachineDescriptorSchema, protocolVersion, protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
 
@@ -47,7 +47,7 @@ async function target() {
 }
 
 async function open(url: string) {
-  const socket = new WebSocket(url)
+  const socket = new WebSocket(url, { handshakeTimeout: 2_000 })
   sockets.push(socket)
   await once(socket, "open")
   return socket
@@ -71,7 +71,10 @@ async function claim(daemon: DomovoiDaemon, socket: WebSocket) {
   const response = await call(socket, "device.claim", {
     code: daemon.issuePairingCode().code, label: "source laptop", machineId: peerId, protocolVersion,
   })
-  return devicePairResultSchema.parse(response.result)
+  const pending = deviceClaimResultSchema.parse(response.result)
+  const confirmed = await call(socket, "device.confirmClaim", { authToken: pending.token, machineId: peerId, protocolVersion })
+  expect(confirmed.error).toBeUndefined()
+  return { ...confirmed.result as { device: { id: string } }, token: pending.token }
 }
 
 async function hello(socket: WebSocket, token: string, client: "machine" | "cli" = "machine") {
@@ -82,6 +85,31 @@ async function hello(socket: WebSocket, token: string, client: "machine" | "cli"
 }
 
 describe("live machine admission", () => {
+  it("refuses pending authority on hello and ordinary RPCs until confirmation", async () => {
+    const { daemon, store, url } = await target()
+    const claimant = await open(url)
+    const pending = deviceClaimResultSchema.parse((await call(claimant, "device.claim", {
+      code: daemon.issuePairingCode().code, label: "not stored", machineId: peerId, protocolVersion,
+    })).result)
+    expect(store.devices.list()).toEqual([])
+    for (const client of ["machine", "cli"] as const) {
+      const unauthenticated = await open(url)
+      expect((await call(unauthenticated, "system.hello", { client, clientVersion: "0.0.1", protocolVersion, authToken: pending.token })).error?.code)
+        .toBe(daemonAuthenticationErrorCode)
+    }
+    expect((await call(claimant, "fleet.heartbeat")).error?.code).toBe(daemonAuthenticationErrorCode)
+    expect((await call(claimant, "transfer.status", {})).result).toBeUndefined()
+    expect(store.devices.isActive(pending.token)).toBe(false)
+    const confirmation = await open(url)
+    const params = { authToken: pending.token, machineId: peerId, protocolVersion }
+    expect((await call(confirmation, "device.confirmClaim", params)).error).toBeUndefined()
+    expect((await call(confirmation, "device.confirmClaim", params)).error).toBeUndefined()
+    await hello(confirmation, pending.token)
+    expect((await call(confirmation, "fleet.heartbeat")).error).toBeUndefined()
+    expect(store.devices.list()).toHaveLength(1)
+    expect(JSON.stringify(store.auditLog.query({ limit: 100 }))).not.toContain(pending.token)
+  })
+
   it("refuses conflicting durable and canonical machine identities before starting", async () => {
     const store = new SqliteWorkspaceStore(":memory:", createEmptyWorkspace({ ...demoWorkspace.machine, id: selfId }))
     try {
@@ -117,7 +145,7 @@ describe("live machine admission", () => {
     expect(claim).not.toHaveBeenCalled()
     expect(store.devices.list()).toEqual([])
     const accepted = await call(socket, "device.claim", { code, label: "source", machineId: peerId, protocolVersion })
-    expect(devicePairResultSchema.parse(accepted.result).device.binding).toEqual({ kind: "machine", machineId: peerId })
+    expect(deviceClaimResultSchema.parse(accepted.result).claim.machineId).toBe(peerId)
     expect(claim).toHaveBeenCalledTimes(1)
   })
 

@@ -12,6 +12,42 @@ const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 describe("SqliteAuditLog", () => {
+  it("commits quarantine evidence only with the transaction that changed the registry", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database)
+    try {
+      database.exec("CREATE TABLE quarantine_probe (id TEXT PRIMARY KEY)")
+      for (const outcome of ["ROLLBACK", "COMMIT"]) {
+        database.exec("BEGIN IMMEDIATE")
+        database.prepare("INSERT INTO quarantine_probe VALUES (?)").run(outcome)
+        audit.append({
+          id: `audit-${outcome}`, actor: { kind: "daemon", component: "fleet-registry" },
+          action: "fleet.quarantine", outcome: "succeeded", target: "opaque-record-id",
+        })
+        database.exec(outcome)
+      }
+      expect(database.prepare("SELECT id FROM quarantine_probe").all()).toEqual([{ id: "COMMIT" }])
+      expect(audit.query().entries.map((entry) => entry.id)).toEqual(["audit-COMMIT"])
+    } finally { database.close() }
+  })
+
+  it("rolls back a failed append without taking over its caller's transaction", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database)
+    try {
+      database.exec("CREATE TABLE quarantine_probe (id TEXT PRIMARY KEY)")
+      database.exec("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
+      database.exec("BEGIN IMMEDIATE")
+      database.prepare("INSERT INTO quarantine_probe VALUES (?)").run("caller-owned")
+      expect(() => audit.append({
+        actor: { kind: "daemon", component: "fleet-registry" }, action: "fleet.quarantine", outcome: "succeeded",
+      })).toThrow("audit unavailable")
+      database.exec("COMMIT")
+      expect(database.prepare("SELECT id FROM quarantine_probe").all()).toEqual([{ id: "caller-owned" }])
+      expect(audit.query().entries).toEqual([])
+    } finally { database.close() }
+  })
+
   it("redacts secrets before durable storage and uses the same record for export", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database)
