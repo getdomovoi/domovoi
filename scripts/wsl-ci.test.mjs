@@ -143,6 +143,45 @@ test("a skipped native suite fails even when the test runner exits zero", async 
   assert.equal(calls.at(-1).args[0], "--unregister")
 })
 
+test("a failed proof prints its report before cleanup and keeps the process error", async () => {
+  const events = []
+  const proofError = new Error("Vitest exited 1: JSON report written to native.json")
+  const failed = { ...passed, success: false, numFailedTests: 1, numPassedTests: 5,
+    testResults: [{ assertionResults: [{ fullName: "required guest discovery", status: "failed",
+      failureMessages: ["Expected the provisioned guest to be Running, received Stopped"] }] }] }
+  const original = fixture()
+  const { effects } = fixture({
+    run: (command, args, options) => {
+      if (args.includes("src/wsl-windows.test.ts")) throw proofError
+      if (args[0] === "--unregister") events.push("unregister")
+      return original.effects.run(command, args, options)
+    },
+    readReport: async () => failed,
+    log: (line) => events.push(line),
+  })
+  await assert.rejects(runWslCi({ platform: "win32", effects }), (error) => error === proofError)
+  const report = events.findIndex((line) => line.includes('"testResults"'))
+  assert.ok(report >= 0, "the nonzero Vitest exit must not hide its JSON report")
+  assert.ok(report < events.indexOf("unregister"), "read the report before removing its directory")
+  assert.match(events[report], /Expected the provisioned guest to be Running, received Stopped/)
+})
+
+test("a missing proof report is named without replacing the original failure", async () => {
+  const lines = []
+  const proofError = new Error("test runner could not start")
+  const original = fixture()
+  const { effects } = fixture({
+    run: (command, args, options) => {
+      if (args.includes("src/wsl-windows.test.ts")) throw proofError
+      return original.effects.run(command, args, options)
+    },
+    readReport: async () => { throw new Error("ENOENT: native.json") },
+    log: (line) => lines.push(line),
+  })
+  await assert.rejects(runWslCi({ platform: "win32", effects }), (error) => error === proofError)
+  assert.match(lines.join("\n"), /WSL native proof report unavailable.*native\.json.*ENOENT/)
+})
+
 test("a silent provisioning call expires and cleanup gets its own finite budget", { timeout: 3_000 }, async () => {
   let aborted
   const { calls, effects } = fixture({ run: async (command, args, options) => {

@@ -129,13 +129,28 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
     await phase("native proofs", budgets.proofs, async (deadline) => {
       const reportPath = join(staging, "native.json")
       const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
-      await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
-        "--coverage.enabled=false", "--reporter=json", `--outputFile=${reportPath}`], {
-        cwd: join(rootDirectory, "apps", "daemon"),
-        env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot },
-      })
-      report = await deadline.run(() => effects.readReport(reportPath))
-      assertWslReport(report)
+      try {
+        await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
+          "--coverage.enabled=false", "--reporter=json", `--outputFile=${reportPath}`], {
+          cwd: join(rootDirectory, "apps", "daemon"),
+          env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot },
+        })
+        report = await deadline.run(() => effects.readReport(reportPath))
+        assertWslReport(report)
+      } catch (error) {
+        // A nonzero Vitest exit still writes assertion and hook failures to
+        // JSON. Print them before cleanup deletes the only copy. Diagnostics
+        // get a separate five-second bound if the proof deadline is exhausted,
+        // and a missing report must never replace the original process error.
+        const diagnostics = bootstrapDeadline(5_000, "WSL proof report read exceeded its deadline")
+        try {
+          const failedReport = report ?? await diagnostics.run(() => effects.readReport(reportPath))
+          effects.log(`WSL native proof report (${reportPath}):\n${JSON.stringify(failedReport, null, 2)}`)
+        } catch (diagnosticError) {
+          effects.log(`WSL native proof report unavailable (${reportPath}): ${diagnosticError.message}`)
+        } finally { diagnostics.clear() }
+        throw error
+      }
     })
   } catch (error) {
     failure = error
