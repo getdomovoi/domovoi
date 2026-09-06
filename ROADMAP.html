@@ -1007,15 +1007,19 @@ td { color: var(--ink2); }
 <h3 id="release-engineering-and-semantic-versioning">Release engineering and semantic versioning</h3>
 <p>Release tooling exists; no package is published from this repository yet. Finish this section before any public package or application publish.</p>
 <ul>
-<li>[ ] Add Changesets and require release metadata for every publishable change before any public publish
+<li>[x] Add Changesets and require release metadata for every publishable change before any public publish
 <ul>
 <li>Changesets, the <code>@getdomovoi/*</code> fixed version group, <code>pnpm changeset</code>, and <code>pnpm release:status</code> are in place.
 </li>
-<li>The blocking pull-request gate lands with the publish workflow.
+<li>CI runs <code>release:metadata</code> against each PR's base. New source or lockfile changes require a new note, not an accumulated note from another PR. Real Changesets CLI fixture tests cover generated version PRs, whose content-only exemption cannot smuggle source or dependencies.
 </li>
 </ul>
 </li>
 <li>[ ] Make <code>0.1.0-alpha.1</code> the first public alpha release
+<ul>
+<li>Changesets 3.0.1 generates <code>0.1.0-alpha.0</code> after <code>pre enter alpha</code>; settle the naming discrepancy before entering pre mode. No public version or prerelease state is committed yet.
+</li>
+</ul>
 </li>
 <li>[x] Keep package, app, daemon, protocol, and CLI versions in lockstep through <code>0.x</code>, and treat compatibility as one release unit
 <ul>
@@ -1027,7 +1031,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and GitHub Releases from the same immutable commit
 <ul>
-<li><code>.github/workflows/release.yml</code> does all of this through Changesets and npm trusted publishing, with the protocol published before the daemon.
+<li>Repository mechanisms are implemented, not yet proven by a hosted publication. <code>release.yml</code> opens version PRs, packs once, verifies downloaded archives, and publishes the protocol before the daemon. Alpha uses its own npm channel. A single canonical <code>v&lt;version&gt;</code> GitHub release matches the bootstrap URL and stays a draft until all asset hashes are checked. Local tests cover real Changesets versioning, artifact binding and API refusal/order behavior; account admission, provenance and the first public install still need a hosted release.
 </li>
 <li>Its <code>gate</code> job runs <code>pnpm release:gate</code>, and <code>scripts/release-gate.mjs</code> refuses to continue until the <code>ci</code> run for that exact commit has concluded success with every one of its jobs concluded success too. A run reporting no job at all, and a job that was skipped rather than run, are refusals rather than passes. A release therefore inherits the Linux, macOS, and Windows matrix, the packed-daemon musl check, and the production dependency audit instead of re-running a Linux-only subset of them. While a run is still going, and while no run exists for the commit at all, the gate polls every 30 seconds for up to 45 minutes and then fails, so an absent or unfinished verdict is a refusal rather than a publish. <code>scripts/release-gate.test.mjs</code> covers each of those outcomes.
 </li>
@@ -1035,7 +1039,9 @@ td { color: var(--ink2); }
 </li>
 <li><code>wsl.yml</code> is path filtered and scheduled rather than run on every commit, so it is not part of that gate. Making a path-filtered workflow a per-commit requirement would leave it pending on every commit outside its paths.
 </li>
-<li>It stays inert until the <code>RELEASE_PUBLISHING</code> repository variable reads <code>enabled</code>; the npm organisation and trusted publishers do not exist yet. See <code>docs/distribution.md</code>.
+<li><code>RELEASE_PUBLISHING=version-only</code> permits version PRs without publication; <code>enabled</code> permits publication too. Missing or unknown values permit neither. Initial public alpha admission requires an explicit manual request and a temporary protected-environment token because npm requires existing packages before OIDC setup. Normal runs never receive that token.
+</li>
+<li>On 2026-09-06, read-only checks found the variable and <code>npm</code> environment absent, Actions PR creation disabled, and both npm packages missing. npm organization ownership was not proved. Repository read-only token defaults can stay. The ordered maintainer-only setup and first-run proof requirements are in <code>docs/release-setup.md</code>.
 </li>
 </ul>
 </li>
@@ -1062,7 +1068,7 @@ td { color: var(--ink2); }
 </li>
 <li>E2 completeness fix: membership and SHA-512 component hashes come from the packed all-platform runtime lock, including optional non-host binaries and the embedded protocol. The separate protocol artifact is byte-bound to that lock and reports only its closure. Offline pinned CycloneDX 1.6 validation and a real-archive completeness regression cover generation. Host license observations annotate exact versions only; missing observations remain empty. External toolchains and unfrozen manual installs are outside this inventory.
 </li>
-<li>The release workflow attaches them to each published package's GitHub release once enabled.
+<li>The release workflow attaches them to the canonical <code>v&lt;version&gt;</code> GitHub release once enabled.
 </li>
 </ul>
 </li>
