@@ -2,13 +2,34 @@
   "name": "@getdomovoi/desktop",
   "version": "0.0.1",
   "private": true,
+  "description": "Domovoi Desktop, the client that owns the local execution daemon.",
+  "productName": "Domovoi",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./out/main/index.js",
+  "homepage": "https://domovoi.sh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getdomovoi/domovoi.git",
+    "directory": "apps/desktop"
+  },
+  "bugs": {
+    "url": "https://github.com/getdomovoi/domovoi/issues"
+  },
+  "desktopName": "sh.domovoi.desktop.desktop",
   "scripts": {
     "build": "electron-vite build",
     "predev": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "pretest:launch": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "dev": "electron-vite dev",
+    "prepackage": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
+    "package": "electron-vite build && electron-builder --publish never",
+    "prepackage:linux": "pnpm prepackage",
+    "package:linux": "electron-vite build && electron-builder --linux --publish never",
+    "prepackage:mac": "pnpm prepackage",
+    "package:mac": "electron-vite build && electron-builder --mac --publish never",
+    "prepackage:win": "pnpm prepackage",
+    "package:win": "electron-vite build && electron-builder --win --publish never",
     "test": "vitest run",
     "test:launch": "node --test scripts/launch-smoke-args.node.mjs && electron-vite build && node scripts/launch-smoke.mjs",
     "typecheck": "tsc --noEmit"
@@ -27,6 +48,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "catalog:",
     "electron": "44.0.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "catalog:",
     "vite": "catalog:",
