@@ -483,8 +483,12 @@ type ManagerCall = { command: string; args: readonly string[] }
 // Only the manager is scripted. Every file these tests drive is really written,
 // into a real throwaway home, so this exercises the preflight and the cleanup
 // as they run for real rather than a paraphrase of them. `print` is answered by
-// call number, and every other command succeeds silently.
-function scriptedManager(print: (call: number, service: string) => CapturedRun | Error): { effects: ServiceEffects; calls: ManagerCall[] } {
+// call number, and every other command succeeds silently unless `runFails` is
+// given, which is how a bootstrap the manager refuses is driven.
+function scriptedManager(
+  print: (call: number, service: string) => CapturedRun | Error,
+  runFails?: Error,
+): { effects: ServiceEffects; calls: ManagerCall[] } {
   const base = nodeServiceEffects()
   const calls: ManagerCall[] = []
   let asked = 0
@@ -500,7 +504,10 @@ function scriptedManager(print: (call: number, service: string) => CapturedRun |
     calls,
     effects: {
       ...base,
-      run: async (command, args) => { answer(command, args) },
+      run: async (command, args) => {
+        answer(command, args)
+        if (runFails !== undefined) throw runFails
+      },
       capture: async (command, args) => answer(command, args),
     },
   }
@@ -508,6 +515,17 @@ function scriptedManager(print: (call: number, service: string) => CapturedRun |
 
 const commands = (calls: readonly ManagerCall[]) => calls.map((call) => `${call.command} ${call.args.join(" ")}`)
 const removals = (calls: readonly ManagerCall[]) => commands(calls).filter((command) => /\b(?:bootout|bootstrap|kill)\b/.test(command))
+const bootouts = (calls: readonly ManagerCall[]) => commands(calls).filter((command) => command.startsWith("launchctl bootout"))
+
+// An install that reaches the manager can only be driven where a temporary
+// directory is posix absolute. The daemon's darwin configuration refuses a home
+// that is not, which is every Windows temporary directory, and there is no
+// spelling that would satisfy both: darwin service paths are built with posix
+// joins while the local owner receipt beside them uses the platform join, so on
+// Windows the two disagree and the throwaway home guard would refuse the
+// receipt. The arming rule itself is asserted on every platform below; only the
+// successful bootstrap needs this.
+const posixTemporaryHome = posix.isAbsolute(tmpdir())
 
 it("runs only the launchctl commands the throwaway agent needs", () => {
   const label = `${productionLabel}.native-test-${randomUUID()}`
@@ -594,6 +612,23 @@ it("arms the removal only once a bootstrap has been attempted", async () => {
   }, withoutBootstrap.effects)
   expect(commands(withoutBootstrap.calls)).toEqual([`launchctl print ${probed}`])
 
+  // The other half of the same rule, and the reason arming precedes the attempt
+  // rather than following a successful one: an install that failed can still
+  // have left a job behind, so the cleanup owes the domain a removal either
+  // way. This install fails everywhere, at the manager where the daemon's
+  // darwin configuration is constructible and at that configuration's own
+  // posix path check where it is not, and the removal is owed in both cases.
+  const refused = scriptedManager((_call, service) => notFound(service), new Error("the scripted manager refused the bootstrap"))
+  let attempted: string | undefined
+  await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+    attempted = throwaway.target
+    await expect(throwaway.install(deadline)).rejects.toThrow()
+  }, refused.effects)
+  expect(bootouts(refused.calls)).toEqual([`launchctl bootout ${attempted}`])
+  expect(commands(refused.calls).some((command) => command.endsWith(`/${productionLabel}`))).toBe(false)
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it.runIf(posixTemporaryHome)("sends the installer's own bootstrap through the fence", async () => {
   const withBootstrap = scriptedManager((_call, service) => notFound(service))
   let bootstrapped: string | undefined
   let installedAgent: string | undefined
@@ -603,8 +638,9 @@ it("arms the removal only once a bootstrap has been attempted", async () => {
     bootstrapped = throwaway.target
   }, withBootstrap.effects)
   expect(installedAgent).toBeDefined()
-  // A bootstrap was attempted, so the cleanup owes the domain a removal, and it
-  // names the throwaway label rather than the daemon's own.
+  // The command line the installer really emits, admitted by the allowlist and
+  // naming the plist inside the throwaway home, followed by the removal the
+  // attempt armed. Neither names the daemon's own label.
   expect(removals(withBootstrap.calls)).toEqual([
     `launchctl bootstrap ${domain} ${installedAgent}`,
     `launchctl bootout ${bootstrapped}`,
@@ -620,8 +656,10 @@ it("compares the file launchd names, not the spelling it uses", async () => {
     await writeFile(join(agents, productionAgent), "")
     // `/var` is a symlink to `/private/var` on macOS, which is why launchd
     // answers a fixture holding one path with the other spelling of it. This
-    // is the assertion that failed on the first hosted run.
-    await symlink(home, join(home, "private"))
+    // is the assertion that failed on the first hosted run. A junction stands
+    // in on Windows, where a directory symlink needs a privilege the runner
+    // may not have and the type argument is ignored everywhere else.
+    await symlink(home, join(home, "private"), "junction")
     const reported = join(home, "private", "Library", "LaunchAgents", productionAgent)
     const expected = join(agents, productionAgent)
     expect(reported).not.toBe(expected)

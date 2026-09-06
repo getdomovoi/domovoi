@@ -186,7 +186,11 @@ at the preflight asks launchd to retire nothing. Its gate is that domain, so a s
 such as a plain ssh login, skips; the probe that reads it is bounded, because it runs before any
 test deadline applies. On CI that gate throws instead of skipping. The macOS leg asserts the same
 domain before the suite and refuses to run as uid 0, and the test file refuses to skip there as
-well, because a skipped macOS leg reports exactly like a passing one.
+well, because a skipped macOS leg reports exactly like a passing one. One further check, that the
+bootstrap command line the installer really emits is admitted by that allowlist, needs an install
+which reaches the manager, so it runs only where a temporary directory is posix absolute. A Windows
+one is not, and no spelling would satisfy both halves of the daemon, which builds darwin service
+paths with posix joins and the local owner receipt beside them with the platform join.
 
 A second native macOS-only test proves the supervision the agent declares. It reads launchd's own
 relaunch throttle back off the manager, crashes the process through the manager with
