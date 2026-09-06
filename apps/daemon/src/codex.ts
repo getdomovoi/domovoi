@@ -138,22 +138,31 @@ export class StdioCodexTransport implements CodexTransport {
     if (this.#closed || this.#child.exitCode !== null || this.#child.signalCode !== null) return
     this.#closePromise = new Promise<void>((resolve) => {
       let settled = false
+      let forced: ReturnType<typeof setTimeout> | undefined
       const finish = () => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        if (forced) clearTimeout(forced)
         this.#child.off("close", finish)
         resolve()
       }
       const timer = setTimeout(() => {
         if (
-          !this.#closed
-          && this.#child.exitCode === null
-          && this.#child.signalCode === null
+          this.#closed
+          || this.#child.exitCode !== null
+          || this.#child.signalCode !== null
         ) {
-          this.#child.kill("SIGKILL")
+          finish()
+          return
         }
-        finish()
+        this.#child.kill("SIGKILL")
+        // A kill is a request to the kernel, not the exit itself. Waiting for
+        // the real close keeps the caller from treating an app-server that
+        // still holds its workspace open as stopped, and keeps a replacement
+        // from starting alongside it.
+        forced = setTimeout(finish, this.#shutdownGraceMs)
+        forced.unref()
       }, this.#shutdownGraceMs)
       timer.unref()
       this.#child.once("close", finish)
