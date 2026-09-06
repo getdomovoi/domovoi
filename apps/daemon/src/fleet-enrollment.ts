@@ -16,7 +16,7 @@ import {
   type EnrolledFleetMachine, type FleetConnectionFailure, type FleetRegistry,
 } from "./fleet-registry.js"
 import {
-  claimMachineSocket, defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs,
+  claimMachineSocket, confirmMachineSocket, defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs,
   MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError,
   MachineProtocolMismatchError, MachineSelfEnrollmentError, openMachineSocket, readMachineDescriptor,
 } from "./machine-socket.js"
@@ -38,6 +38,7 @@ type Options = {
   reportFailure?: (context: string) => void
   // Test dependencies remain below the production factory, not on the wire.
   claim?: typeof claimMachineSocket
+  confirm?: typeof confirmMachineSocket
   open?: typeof openMachineSocket
   now?: () => number
 }
@@ -194,24 +195,21 @@ export class FleetEnrollmentService {
       operation = registry.stageEnrollment({
         ...descriptor, connection: "direct",
         verifiedRoute: { endpoint: claimed.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() },
-      }, machineCredentialDigest(descriptor.id, claimed.credential), receivedAt)
+      }, machineCredentialDigest(descriptor.id, claimed.credential), receivedAt, claimed.claim)
       this.#changed()
       ++this.#indexRead
       try { await credentials.save(descriptor.id, claimed.credential, deadline) } catch { /* Read back; a write can fail after changing the key. */ }
       const settled = await this.#settleEnrollment(operation, deadline)
       this.#changed()
       if (settled === "enrolled") return fleetEnrollResultSchema.parse({ outcome: "enrolled", machineId: descriptor.id, fleet: this.snapshot() })
-      if (settled === "aborted") {
-        await this.#revokeUnkeptClaim(claimed.connection, deadline)
-        return { outcome: "refused", reason: "credential-store-unavailable" }
+      if (settled === "aborted" || settled === "unkept") {
+        return { outcome: "refused", reason: settled === "unkept" ? "credential-store-unavailable" : "pairing-refused" }
       }
       return this.#pendingEnrollment(operation)
     } catch (error) {
       if (operation && registry.pendingOperations().some((entry) => entry.id === operation!.id)) return this.#pendingEnrollment(operation)
-      if (claimed) await this.#revokeUnkeptClaim(claimed.connection, deadline)
       return { outcome: "refused", reason: enrollRefusal(error) }
     } finally {
-      claimed?.connection.close()
       deadline.clear()
       this.#lifecycleBusy = false
     }
@@ -221,8 +219,9 @@ export class FleetEnrollmentService {
     return fleetEnrollResultSchema.parse({ outcome: "pending", operation: fleetOperationSummary(operation), fleet: this.snapshot() })
   }
 
-  async #settleEnrollment(operation: FleetEnrollmentOperation, deadline: OperationDeadline): Promise<"enrolled" | "pending" | "aborted"> {
+  async #settleEnrollment(operation: FleetEnrollmentOperation, deadline: OperationDeadline): Promise<"enrolled" | "pending" | "aborted" | "unkept"> {
     const { registry, credentials } = this.#input
+    let connection: MachineConnection | undefined
     try {
       deadline.throwIfExpired()
       ++this.#indexRead
@@ -230,11 +229,43 @@ export class FleetEnrollmentService {
       deadline.throwIfExpired()
       if (!matched) {
         registry!.abortEnrollment(operation.id)
-        return "aborted"
+        return "unkept"
       }
       this.#knownCredentialIds = [...new Set([...this.#knownCredentialIds, operation.machineId])]
+      const credential = await credentials!.forMachine(operation.machineId, deadline)
+      deadline.throwIfExpired()
+      if (!credential || machineCredentialDigest(operation.machineId, credential) !== operation.credentialDigest) return "pending"
+      const input = { endpoint: operation.facts.verifiedRoute.endpoint, expectedMachineId: operation.machineId,
+        credential, deadline, callTimeoutMs: defaultMachineCallTimeoutMs, signal: this.#lifetime.signal }
+      connection = operation.claim
+        ? await (this.#input.confirm ?? confirmMachineSocket)({ ...input, sourceMachineId: this.#input.selfId, claim: operation.claim })
+        : await (this.#input.open ?? openMachineSocket)(input)
+      await readMachineDescriptor(connection, operation.machineId, credential, deadline)
+      // Neither an accepted confirmation nor its lost reply is permission to
+      // publish against keychain bytes that changed during the network wait.
+      const held = await credentials!.forMachine(operation.machineId, deadline)
+      deadline.throwIfExpired()
+      if (held !== credential) {
+        await this.#revokeUnkeptClaim(connection, deadline)
+        return "pending"
+      }
       return registry!.completeEnrollment(operation.id, operation.credentialDigest) ? "enrolled" : "pending"
-    } catch { return "pending" }
+    } catch (error) {
+      if (error instanceof MachinePairingRequiredError) {
+        // Invalid/expired confirmation is authoritative. Transport, storage,
+        // timeout and protocol failures are not: keep the journal for retry.
+        try {
+          const removed = await credentials!.forgetIfMatching(operation.machineId, operation.credentialDigest, deadline)
+          deadline.throwIfExpired()
+          if (removed) {
+            this.#knownCredentialIds = this.#knownCredentialIds.filter((id) => id !== operation.machineId)
+            registry!.abortEnrollment(operation.id)
+            return "aborted"
+          }
+        } catch { /* Keep the journal when local cleanup could not finish. */ }
+      }
+      return "pending"
+    } finally { connection?.close() }
   }
 
   async #revokeUnkeptClaim(connection: MachineConnection, parent: OperationDeadline): Promise<void> {

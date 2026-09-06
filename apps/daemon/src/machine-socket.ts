@@ -4,7 +4,8 @@ import {
   buildVersion,
   daemonAuthenticationErrorCode,
   credentialSchema,
-  devicePairResultSchema,
+  deviceClaimResultSchema,
+  deviceConfirmClaimResultSchema,
   fleetDirectEndpointSchema,
   fleetMachineDescriptorSchema,
   machineIdSchema,
@@ -15,6 +16,7 @@ import {
   rpcResponseSchema,
   systemHelloResultSchema,
   type FleetMachineDescriptor,
+  type PendingDeviceClaim,
 } from "@getdomovoi/protocol"
 
 import type { MachineConnection } from "./machine-dial.js"
@@ -251,42 +253,64 @@ export async function claimMachineSocket(input: SocketInput & {
   sourceDeviceLabel: string
   code: string
 }): Promise<{
-  connection: MachineConnection
+  claim: PendingDeviceClaim
   credential: string
   descriptor: FleetMachineDescriptor
   endpoint: string
 }> {
   const channel = await openMachineChannel(input)
-  let authenticated = false
   try {
     const rawClaim = await channel.call("device.claim", {
       code: input.code, label: input.sourceDeviceLabel, machineId: input.sourceMachineId, protocolVersion,
     }, undefined, input.deadline)
-    const claim = devicePairResultSchema.safeParse(rawClaim)
-    if (!claim.success || claim.data.device.binding.kind !== "machine"
-      || claim.data.device.binding.machineId !== input.sourceMachineId || claim.data.device.revokedAt !== undefined) {
+    const claim = deviceClaimResultSchema.safeParse(rawClaim)
+    if (!claim.success || claim.data.claim.machineId !== input.sourceMachineId) {
       throw new Error("That machine returned an invalid credential binding")
     }
     const credential = claim.data.token
-    const id = await greet(channel, credential, input.deadline)
-    authenticated = true
+    const descriptor = claim.data.machine
+    if (JSON.stringify(descriptor).includes(credential)) throw new MachineDescriptorError()
+    const id = descriptor.id
     if (input.expectedMachineId !== undefined && id !== input.expectedMachineId) throw new MachineIdentityMismatchError()
     if (id === input.sourceMachineId) throw new MachineSelfEnrollmentError()
-    const descriptor = await readMachineDescriptor(channel, id, credential, input.deadline)
-    channel.finishHandshake()
-    return { connection: { call: channel.call, close: channel.close }, credential, descriptor, endpoint: input.endpoint }
-  } catch (error) {
-    if (authenticated && input.deadline.remainingMs() > 0) {
-      // A claim that never reaches the coordinator must not leave avoidable
-      // authority behind. Best effort only, on this authenticated socket and
-      // within the original budget; never replace the original refusal.
-      const cleanup = input.deadline.limit(1_000)
-      try { await channel.call("device.revokeCurrent", {}, undefined, cleanup) } catch { /* No confirmed-revocation claim. */ }
-      finally { cleanup.clear() }
+    if (protocolCompatibility(protocolVersion, descriptor.protocolVersion) !== "compatible") {
+      throw new MachineProtocolMismatchError(descriptor.protocolVersion)
     }
-    channel.close()
-    throw error
-  }
+    input.deadline.throwIfExpired()
+    // Never hold an unauthenticated socket across keychain work or greet with
+    // pending authority. A crash here leaves only an expiring remote claim.
+    return { claim: claim.data.claim, credential, descriptor, endpoint: input.endpoint }
+  } finally { channel.close() }
+}
+
+// Only the enrollment journal's durable readback reaches this seam. Confirmation
+// is replayable on a fresh socket after restart or an ambiguous response.
+export async function confirmMachineSocket(input: SocketInput & {
+  sourceMachineId: string
+  expectedMachineId: string
+  credential: string
+  claim: PendingDeviceClaim
+}): Promise<MachineConnection> {
+  if (input.claim.machineId !== input.sourceMachineId) throw new MachineIdentityMismatchError()
+  const channel = await openMachineChannel(input)
+  channel.rememberSecret(input.credential)
+  try {
+    const parsed = deviceConfirmClaimResultSchema.safeParse(await channel.call("device.confirmClaim", {
+      authToken: input.credential, machineId: input.sourceMachineId, protocolVersion,
+    }, undefined, input.deadline))
+    if (!parsed.success) throw new MachineDescriptorError()
+    const result = parsed.data
+    if (result.device.id !== input.claim.deviceId || result.device.binding.kind !== "machine"
+      || result.device.binding.machineId !== input.sourceMachineId || result.device.revokedAt !== undefined) {
+      // A malformed success is not an authoritative invalid-token refusal.
+      // The target may have committed; retain the source's recoverable key.
+      throw new MachineDescriptorError()
+    }
+    const id = await greet(channel, input.credential, input.deadline)
+    if (id !== input.expectedMachineId) throw new MachineIdentityMismatchError()
+    channel.finishHandshake()
+    return { call: channel.call, close: channel.close }
+  } catch (error) { channel.close(); throw error }
 }
 
 export async function readMachineDescriptor(

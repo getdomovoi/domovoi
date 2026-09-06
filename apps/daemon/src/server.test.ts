@@ -4283,7 +4283,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("pairs an unauthenticated machine that presents the pairing code", async () => {
+  it("stages but does not activate an unauthenticated machine presenting the pairing code", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
@@ -4300,10 +4300,8 @@ describe("DomovoiDaemon", () => {
 
     const token = (claimed.result as { token: string }).token
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(store.devices.verify(token)).toEqual({
-      device: expect.objectContaining({ label: "studio-ipad" }),
-      binding: { kind: "machine", machineId: claimedMachineId },
-    })
+    expect(store.devices.verify(token)).toBeUndefined()
+    expect(store.devices.list()).toEqual([])
     socket.close()
   })
 
