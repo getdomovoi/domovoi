@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
 import { chmod, link, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { dirname, join, posix, win32 } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { promisify } from "node:util"
 
 import { bootstrapDaemon, defaultBootstrapInactivityTimeoutMs, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
@@ -135,6 +136,22 @@ async function existingRuntime(release, archive, deadline, run) {
   return { ...archive, runtimePath: directory }
 }
 
+// An npm child the deadline aborted is killed but not yet reaped, and Windows
+// refuses to remove a directory any surviving handle still holds. Retry inside
+// the cleanup budget instead of reporting a leftover tree.
+const heldByAnExitingProcess = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"])
+
+async function removeStaging(staging, remove, cleanup) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return await remove(staging, { recursive: true, force: true }) }
+    catch (error) {
+      if (!heldByAnExitingProcess.has(error?.code)) throw error
+      cleanup.check()
+      await delay(Math.min(20 * attempt, 200), undefined, { signal: cleanup.signal })
+    }
+  }
+}
+
 export async function installBootstrapDaemon(options) {
   const timeoutMs = options.timeoutMs ?? defaultBootstrapTimeoutMs
   pinnedSha256(options.expectedSha256)
@@ -144,17 +161,22 @@ export async function installBootstrapDaemon(options) {
   const run = options.run ?? runBootstrapCommand
   const remove = options.remove ?? rm
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? defaultCleanupTimeoutMs
-  let staging
+  let release
+  let created
+  let published
   let keep = false
   let result
   let failure
   try {
     const npm = await bundledNpm(deadline, run)
     const archive = await bootstrapDaemon({ ...options, deadline })
-    const release = dirname(archive.path)
+    release = dirname(archive.path)
     result = await existingRuntime(release, archive, deadline, run)
     if (result) { deadline.clear(); return result }
-    await deadline.run(async () => { staging = await mkdtemp(join(release, ".runtime-")) })
+    // Hold the creation itself. An expiry rejects without waiting for the
+    // operation, so this promise is the only remaining record of the path.
+    created = mkdtemp(join(release, ".runtime-"))
+    const staging = await deadline.run(() => created)
     await privateDirectory(staging, deadline, run)
     await extractRuntime(archive.path, staging, run, deadline)
     const directory = join(staging, "package")
@@ -189,17 +211,29 @@ export async function installBootstrapDaemon(options) {
     try {
       // Atomic no-replace publication uses the same primitive as the archive.
       // Concurrent installers keep private trees until one verified receipt wins.
-      await deadline.run(async () => { await link(receiptPath, join(release, "runtime.json")); keep = true })
+      // Hold this promise too: an expiry abandons the link without waiting, and
+      // only its outcome says whether a receipt now names this tree.
+      published = link(receiptPath, join(release, "runtime.json"))
+      await deadline.run(() => published)
+      keep = true
     } catch (error) { if (error.code !== "EEXIST") throw error }
     result = await existingRuntime(release, archive, deadline, run)
     if (!result) throw new Error("Verified runtime receipt disappeared before publication completed")
   } catch (error) { failure = error } finally { deadline.clear() }
-  if (staging && !keep) {
+  if (created && !keep) {
     const cleanup = bootstrapDeadline(cleanupTimeoutMs, `Staging cleanup exceeded ${cleanupTimeoutMs} ms`)
-    try { await cleanup.run(() => remove(staging, { recursive: true, force: true })) }
-    catch (error) {
+    let staging
+    try {
+      // Settle both abandoned operations before deciding. A landed receipt
+      // names this tree, and removing it would strand an unusable release.
+      if (published) keep = await cleanup.run(() => published.then(() => true, () => false))
+      if (!keep) {
+        staging = await cleanup.run(() => created.catch(() => undefined))
+        if (staging) await cleanup.run(() => removeStaging(staging, remove, cleanup))
+      }
+    } catch (error) {
       failure = new AggregateError(failure ? [failure, error] : [error],
-        `${failure?.message ?? error.message}. Unpublished private staging may remain at ${staging}; no runnable receipt was confirmed`)
+        `${failure?.message ?? error.message}. Unpublished private staging may remain at ${staging ?? `${join(release, ".runtime-")}*`}; no runnable receipt was confirmed`)
     } finally { cleanup.clear() }
   }
   if (failure) throw failure

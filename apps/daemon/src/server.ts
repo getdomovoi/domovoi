@@ -5851,15 +5851,23 @@ export class DomovoiDaemon {
           return
         }
         const sessionId = `session-${randomUUID()}`
+        let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.createSessionWorkspace(
-            project.path,
-            sessionId,
-            signal,
-          ),
+          (signal) => {
+            const creating = this.#workspaceService.createSessionWorkspace(
+              project.path,
+              sessionId,
+              signal,
+            )
+            creatingWorkspace = creating
+            return creating
+          },
           this.#agentTimeoutMs,
           "Session workspace creation timed out",
-        )
+        ).catch((error: unknown) => {
+          this.#removeAbandonedWorkspace(creatingWorkspace)
+          throw error
+        })
         let providerThreadId: string
         try {
           const agent = this.#agents.require(runtime.provider)
@@ -6020,16 +6028,24 @@ export class DomovoiDaemon {
           .update(params.requestId)
           .digest("hex")
           .slice(0, 20)}`
+        let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.createSessionWorkspaceFromCheckpoint!(
-            source.workspacePath!,
-            checkpoint.commit!,
-            sessionId,
-            signal,
-          ),
+          (signal) => {
+            const creating = this.#workspaceService.createSessionWorkspaceFromCheckpoint!(
+              source.workspacePath!,
+              checkpoint.commit!,
+              sessionId,
+              signal,
+            )
+            creatingWorkspace = creating
+            return creating
+          },
           this.#agentTimeoutMs,
           "Fork workspace creation timed out",
-        )
+        ).catch((error: unknown) => {
+          this.#removeAbandonedWorkspace(creatingWorkspace)
+          throw error
+        })
         const agent = this.#agents.require(runtime.provider)
         let providerThreadId: string
         try {
@@ -7406,6 +7422,24 @@ export class DomovoiDaemon {
       ? AbortSignal.any([this.#workspaceAbort.signal, parentSignal])
       : this.#workspaceAbort.signal
     return withAbortTimeout(operation, timeoutMs, message, signal)
+  }
+
+  // A deadline rejects without waiting for the git run it aborted, so the
+  // worktree that run may still finish is recorded only by this promise.
+  // Remove it once it settles instead of stranding a worktree and its branch.
+  #removeAbandonedWorkspace(creating: Promise<{ path: string }> | undefined): void {
+    if (!creating) return
+    void creating.then(async (workspace) => {
+      try {
+        await withTimeout(
+          this.#workspaceService.removeSessionWorkspace(workspace.path),
+          this.#agentTimeoutMs,
+          "Late session worktree cleanup timed out",
+        )
+      } catch (error) {
+        this.#reportError("Domovoi could not remove a late session worktree", error)
+      }
+    }, () => undefined)
   }
 
   #emergencyFailureMessage(error: unknown, fallback: string): string {

@@ -37,13 +37,17 @@ export async function publishBootstrapArchive({ release, path, source, verify, d
   validateBootstrapTimeout(timeoutMs)
   let publication
   let active = deadline
+  let created
   let directory
   let verified = false
   let failure
   let metadata
   try {
     await deadline.run(() => mkdir(release, { recursive: true }))
-    await deadline.run(async () => { directory = await mkdtemp(join(release, ".bootstrap-")) })
+    // Hold the creation itself. An expiry rejects without waiting for the
+    // operation, so this promise is the only remaining record of the path.
+    created = mkdtemp(join(release, ".bootstrap-"))
+    directory = await deadline.run(() => created)
     const staging = join(directory, "archive.partial")
     // writeFile consumes an async iterable with backpressure, then fsyncs and
     // closes before it resolves. No archive-sized buffer or second file copy.
@@ -74,16 +78,22 @@ export async function publishBootstrapArchive({ release, path, source, verify, d
   } catch (error) { failure = error }
 
   try {
-    if (directory) {
+    if (created) {
       // Only this invocation's private directory is eligible for cleanup.
       // No recursive deletion, legacy .partial cleanup, or final-archive unlink.
-      await active.run(() => rm(join(directory, "archive.partial"), { force: true }))
-      await active.run(() => rmdir(directory))
+      // An expiry during creation left the path known only to that operation,
+      // so settle it here rather than reporting nothing about what remains.
+      directory ??= await active.run(() => created.catch(() => undefined))
+      if (directory) {
+        await active.run(() => rm(join(directory, "archive.partial"), { force: true }))
+        await active.run(() => rmdir(directory))
+      }
     }
   } catch (cleanup) {
     const outcome = verified ? `Archive verified at ${path}, but staging cleanup failed`
       : `Bootstrap did not finish; inspect ${path} before retrying`
-    const message = `${outcome}. Retained staging may remain at ${directory}. ${failure?.message ?? cleanup.message}`
+    const retained = directory ?? `${join(release, ".bootstrap-")}*`
+    const message = `${outcome}. Retained staging may remain at ${retained}. ${failure?.message ?? cleanup.message}`
     failure = new AggregateError(failure ? [failure, cleanup] : [cleanup], message)
   } finally { publication?.clear() }
   if (failure) throw failure
