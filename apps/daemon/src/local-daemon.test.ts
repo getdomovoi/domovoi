@@ -12,6 +12,7 @@ import { createProductionDaemon, type ProductionDaemonHandle } from "./productio
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { localDaemonBudgetMs } from "../vitest.config.js"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -39,20 +40,36 @@ async function home() {
   homes.push(directory)
   return directory
 }
-const defaults = { environment: { DOMOVOI_PORT: "0" }, timeoutMs: 3_000, mode: "start-or-attach" as const }
+const budgetMs = localDaemonBudgetMs(process.platform)
+const defaults = { environment: { DOMOVOI_PORT: "0" }, timeoutMs: budgetMs, mode: "start-or-attach" as const }
+const waited = new WeakMap<LocalDaemonHandle, number>()
 async function acquire(homeDirectory: string, mode = defaults.mode as "start-or-attach" | "attach-only") {
+  const started = performance.now()
   const handle = await acquireLocalDaemon({ ...defaults, homeDirectory, mode })
+  waited.set(handle, Math.round(performance.now() - started))
   handles.push(handle)
   return handle
+}
+// A refusal this test's own budget produced reads exactly like one the daemon
+// meant, and a failed object match prints neither the reason nor a clock, so
+// every acquisition is asserted as a sentence, and a refusal that outlasted the
+// budget names what it waited and what it waited against.
+function outcome(handle: LocalDaemonHandle): string {
+  if (handle.kind === "owned") return "owned"
+  if (handle.kind === "attached") return `attached to ${handle.owner}`
+  const observed = waited.get(handle)
+  return observed !== undefined && observed >= budgetMs
+    ? `refused ${handle.reason} after ${observed}ms of its ${budgetMs}ms budget`
+    : `refused ${handle.reason}`
 }
 
 it("owns a free profile but gives a second Desktop attachment no stop capability", async () => {
   const sent = vi.spyOn(WebSocket.prototype, "send")
   const homeDirectory = await home()
   const first = await acquire(homeDirectory)
-  expect(first.kind).toBe("owned")
+  expect(outcome(first)).toBe("owned")
   const second = await acquire(homeDirectory)
-  expect(second).toMatchObject({ kind: "attached", owner: "desktop" })
+  expect(outcome(second)).toBe("attached to desktop")
   expect(second).not.toHaveProperty("stop")
   if (second.kind !== "attached" || first.kind !== "owned") throw new Error("Missing attachment")
   expect(second.endpoint).toEqual(first.endpoint)
@@ -63,7 +80,7 @@ it("owns a free profile but gives a second Desktop attachment no stop capability
     return message.method === "system.hello" ? [message.params?.clientVersion] : []
   })).toContain("9.8.7-test")
   second.detach()
-  expect((await acquire(homeDirectory, "attach-only")).kind).toBe("attached")
+  expect(outcome(await acquire(homeDirectory, "attach-only"))).toBe("attached to desktop")
 })
 
 it("attaches to a daemon owner and rediscovers its current endpoint after restart", async () => {
@@ -73,21 +90,21 @@ it("attaches to a daemon owner and rediscovers its current endpoint after restar
   await first.start()
   const before = readLocalOwnerRecord(homeDirectory)
   const attached = await acquire(homeDirectory)
-  expect(attached).toMatchObject({ kind: "attached", owner: "daemon" })
+  expect(outcome(attached)).toBe("attached to daemon")
   if (attached.kind !== "attached") throw new Error("Missing attachment")
   expect(attached.closed).toBeInstanceOf(Promise)
   await first.stop()
-  const closedDeadline = OperationDeadline.start(3_000)
+  const closedDeadline = OperationDeadline.start(budgetMs)
   try { await expect(beforeDeadline(attached.closed, closedDeadline)).resolves.toBeUndefined() } finally { closedDeadline.clear() }
-  expect(await acquire(homeDirectory, "attach-only")).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+  expect(outcome(await acquire(homeDirectory, "attach-only"))).toBe("refused owner-unreachable")
   const restarted = await createProductionDaemon({ homeDirectory, environment: defaults.environment })
   handles.push(restarted)
   const endpoint = await restarted.start()
   const after = readLocalOwnerRecord(homeDirectory)
   expect(after).not.toEqual(before)
-  expect(await acquire(homeDirectory, "attach-only")).toMatchObject({
-    kind: "attached", owner: "daemon", endpoint: { url: endpoint.url, token: restarted.authToken },
-  })
+  const rediscovered = await acquire(homeDirectory, "attach-only")
+  expect(outcome(rediscovered)).toBe("attached to daemon")
+  expect(rediscovered).toMatchObject({ endpoint: { url: endpoint.url, token: restarted.authToken } })
 })
 
 it("never creates a Desktop fallback from a stale owner record or an installed service", async () => {
@@ -100,13 +117,13 @@ it("never creates a Desktop fallback from a stale owner record or an installed s
   const lease = claimProfile(homeDirectory)
   writeLocalOwnerRecord(homeDirectory, ready)
   lease.release()
-  expect(await acquire(homeDirectory)).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+  expect(outcome(await acquire(homeDirectory))).toBe("refused owner-unreachable")
   expect(readLocalOwnerRecord(homeDirectory)).toEqual(ready)
   const nextLease = claimProfile(homeDirectory)
   writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
   nextLease.release()
   await writeFile(join(homeDirectory, ".domovoi", "service.json"), "{}", { mode: 0o600 })
-  expect(await acquire(homeDirectory)).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+  expect(outcome(await acquire(homeDirectory))).toBe("refused owner-unreachable")
   expect(readLocalOwnerRecord(homeDirectory)).toEqual({ version: 1, state: "none" })
 })
 
@@ -115,10 +132,10 @@ it("refuses busy startup and invalid records without changing the owner", async 
   const daemon = await createProductionDaemon({ homeDirectory, environment: defaults.environment })
   handles.push(daemon)
   const record = readLocalOwnerRecord(homeDirectory)
-  expect(await acquire(homeDirectory)).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+  expect(outcome(await acquire(homeDirectory))).toBe("refused owner-unreachable")
   expect(readLocalOwnerRecord(homeDirectory)).toEqual(record)
   await writeFile(join(homeDirectory, ".domovoi", "local-owner.json"), "malformed-private-value")
-  expect(await acquire(homeDirectory)).toMatchObject({ kind: "refused", reason: "profile-invalid" })
+  expect(outcome(await acquire(homeDirectory))).toBe("refused profile-invalid")
 })
 
 it("refuses as unreachable when the deadline expires after a good final verification", async () => {
@@ -134,11 +151,12 @@ it("refuses as unreachable when the deadline expires after a good final verifica
   vi.mocked(readLocalOwnerRecord).mockImplementationOnce(actual).mockImplementationOnce((directory) => {
     const record = actual(directory)
     expect(record?.state).toBe("ready")
-    vi.spyOn(performance, "now").mockImplementation(() => realNow() + 10_000)
+    vi.spyOn(performance, "now").mockImplementation(() => realNow() + budgetMs + 1)
     return record
   })
   try {
-    expect(await acquire(homeDirectory, "attach-only")).toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+    expect(outcome(await acquire(homeDirectory, "attach-only")))
+      .toMatch(new RegExp(`^refused owner-unreachable after \\d+ms of its ${budgetMs}ms budget$`))
   } finally {
     vi.mocked(performance.now).mockRestore()
   }
