@@ -95,7 +95,7 @@
       </div>
     </sc-if>
 
-    <div style="height: 44px; flex: 0 0 44px; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
+    <div style="height: 38px; flex: 0 0 38px; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
       <sc-if value="{{ isMac }}" hint-placeholder-val="{{ true }}">
         <div style="display: flex; gap: 8px; padding-right: 4px;">
           <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
@@ -178,7 +178,7 @@
 
       <sc-if value="{{ isSessions }}" hint-placeholder-val="{{ true }}">
         <sc-if value="{{ sidebarOpen }}" hint-placeholder-val="{{ true }}">
-        <div style="width: 288px; flex: 0 0 288px; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border);">
+        <div style="width: 240px; flex: 0 0 240px; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border);">
           <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px 0;">
             <span style="font-size: 10px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SESSIONS</span>
             <span style="flex: 1;"></span>
@@ -515,18 +515,19 @@
         <sc-if value="{{ dockOpen }}" hint-placeholder-val="{{ true }}">
         <div onMouseDown="{{ startResize }}" title="Drag to resize · double-click to reset" onDoubleClick="{{ resetDock }}" style="{{ handleStyle }}"></div>
         <div style="{{ dockStyle }}">
-          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--border);">
-            <sc-for list="{{ dockTabs }}" as="dt" hint-placeholder-count="5">
-              <div onClick="{{ dt.pick }}" style="{{ dt.style }}">
-                <span>{{ dt.label }}</span>
-                <sc-if value="{{ dt.count }}" hint-placeholder-val="{{ false }}">
-                  <span style="{{ dt.badgeStyle }}">{{ dt.count }}</span>
-                </sc-if>
-              </div>
-            </sc-for>
-            <span style="flex: 1;"></span>
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ dockWidthLabel }}</span>
-            <span onClick="{{ toggleDock }}" title="Collapse panel ⌥⌘L" style="width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">››</span>
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow: hidden;">
+            <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none;">
+              <sc-for list="{{ dockTabs }}" as="dt" hint-placeholder-count="5">
+                <div onClick="{{ dt.pick }}" style="{{ dt.style }}">
+                  <span>{{ dt.label }}</span>
+                  <sc-if value="{{ dt.count }}" hint-placeholder-val="{{ false }}">
+                    <span style="{{ dt.badgeStyle }}">{{ dt.count }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+            <span style="flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ dockWidthLabel }}</span>
+            <span onClick="{{ toggleDock }}" title="Collapse panel ⌥⌘L" style="flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">››</span>
           </div>
 
           <sc-if value="{{ dockPlan }}" hint-placeholder-val="{{ false }}">
@@ -549,7 +550,7 @@
                       <span style="{{ pl.markStyle }}">{{ pl.mark }}</span>
                       <div style="flex: 1; min-width: 0;">
                         <div style="font-size: 12.5px; line-height: 1.5; color: {{ pl.titleColor }};">{{ pl.title }}</div>
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; color: var(--muted-foreground); margin-top: 5px; white-space: pre-line;">{{ pl.files }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; color: var(--muted-foreground); margin-top: 5px; white-space: pre-line; overflow-wrap: anywhere;">{{ pl.files }}</div>
                         <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
                           <span style="{{ pl.stateStyle }}">{{ pl.state }}</span>
                           <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ pl.meta }}</span>
@@ -1293,7 +1294,7 @@ class Component extends DCLogic {
     movedTo: "",
     movedVia: "bundle",
     dockOpen: true,
-    dockWidth: 470,
+    dockWidth: 280,
     resizing: false,
     mode: "build",
     auto: false,
@@ -1815,7 +1816,7 @@ class Component extends DCLogic {
         label: t.label, count: t.count || false, pick: D(t.k),
         badgeStyle: "margin-left: 6px; padding: 1px 5px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: " +
           (st.dock === t.k ? "var(--primary)" : "var(--muted)") + "; color: " + (st.dock === t.k ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";",
-        style: "display: flex; align-items: center; padding: 6px 11px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+        style: "display: flex; align-items: center; flex: 0 0 auto; padding: 6px 11px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
           (st.dock === t.k ? "var(--accent)" : "transparent") + "; color: " + (st.dock === t.k ? "var(--foreground)" : "var(--muted-foreground)") + ";"
       })),
       dockOpen: st.dockOpen,
@@ -1825,7 +1826,7 @@ class Component extends DCLogic {
       dockWidthLabel: st.dockWidth + "px",
       handleStyle: "width: 5px; flex: 0 0 5px; cursor: col-resize; background: " + (st.resizing ? "var(--primary)" : "var(--border)") + "; transition: background .12s;",
       startResize: e => this.beginResize(e),
-      resetDock: () => this.setState({ dockWidth: 470 }),
+      resetDock: () => this.setState({ dockWidth: 280 }),
       dockRail: [
         { k: "plan", glyph: "☰", label: "Plan" },
         { k: "preview", glyph: "◫", label: "Preview" },
@@ -2292,7 +2293,7 @@ class Component extends DCLogic {
     const startW = this.state.dockWidth;
     this.setState({ resizing: true });
     const move = ev => {
-      const w = Math.min(820, Math.max(300, startW - (ev.clientX - startX)));
+      const w = Math.min(560, Math.max(240, startW - (ev.clientX - startX)));
       this.setState({ dockWidth: w });
     };
     const up = () => {
