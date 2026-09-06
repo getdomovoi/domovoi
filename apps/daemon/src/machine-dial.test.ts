@@ -1,11 +1,12 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { describe, expect, it, vi } from "vitest"
 
-import type { FleetMachine } from "@getdomovoi/protocol"
+import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import { createMachineDialer } from "./machine-dial.js"
 import { OperationDeadline } from "./operation-deadline.js"
-import { MachineIdentityMismatchError } from "./machine-socket.js"
+import { MachineIdentityMismatchError, MachinePairingRequiredError } from "./machine-socket.js"
+import { resolveFleetClientRoute } from "./fleet-client-route.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
 const credential = "n".repeat(43)
@@ -70,6 +71,14 @@ function dialer(overrides: {
 }
 
 describe("createMachineDialer", () => {
+  it("reports missing machine credentials as pairing, not a client route failure", async () => {
+    const deadline = OperationDeadline.start(1_000)
+    const credentials = asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [], forMachine: () => undefined })
+    try {
+      await expect(resolveFleetClientRoute({ params: { machineId }, machine: () => machine({ protocolVersion }), credentials, deadline }))
+        .resolves.toEqual({ outcome: "refused", reason: "pairing-required" })
+    } finally { deadline.clear() }
+  })
   it("excludes every source-local producer when preparing a route for a remote client", async () => {
     const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
     const dial = createMachineDialer({
@@ -326,7 +335,7 @@ describe("createMachineDialer", () => {
   it("refuses a machine it keeps no credential for", async () => {
     const io = dialer({ forMachine: () => undefined })
 
-    await expect(io.dial(machineId)).rejects.toThrow("That machine has to be paired again")
+    await expect(io.dial(machineId)).rejects.toBeInstanceOf(MachinePairingRequiredError)
     expect(io.opened).toEqual([])
   })
 

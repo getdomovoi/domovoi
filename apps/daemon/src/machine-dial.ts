@@ -81,7 +81,7 @@ export function createMachineDialer(input: {
       const credential = await input.credentials?.forMachine(machineId, deadline)
       deadline.throwIfExpired()
       if (signal?.aborted) throw new Error("The transfer was cancelled")
-      if (!credential) throw new Error("That machine has to be paired again")
+      if (!credential) throw new MachinePairingRequiredError()
 
       // Forget can mask the peer while the keychain is working. Credentials
       // read before that mutation do not authorize using yesterday's row.
