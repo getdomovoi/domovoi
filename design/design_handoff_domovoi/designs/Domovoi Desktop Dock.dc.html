@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: var(--primary); }
+  textarea::placeholder { color: var(--faint); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); }
+  ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%); border-radius: 11px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  @keyframes dvSpin { to { transform: rotate(360deg); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .78);
+    --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --success-foreground: oklch(0.17 0.03 158);
+    --warning: oklch(0.79 0.13 62); --warning-foreground: oklch(0.2 0.04 62);
+    --destructive: oklch(0.63 0.19 25); --destructive-foreground: oklch(0.98 0.01 25);
+    --info: oklch(0.72 0.1 240); --info-foreground: oklch(0.17 0.03 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25);
+    --danger-dim: oklch(0.78 0.06 25); --danger-on: oklch(0.24 0.07 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-md: oklch(0.2 0.01 285 / .1); --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --success-foreground: oklch(0.99 0.01 158);
+    --warning: oklch(0.6 0.13 62); --warning-foreground: oklch(0.99 0.01 62);
+    --destructive: oklch(0.55 0.2 25); --destructive-foreground: oklch(0.99 0.01 25);
+    --info: oklch(0.52 0.14 240); --info-foreground: oklch(0.99 0.01 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25);
+    --danger-dim: oklch(0.54 0.14 25); --danger-on: oklch(0.99 0.01 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+  }
+</style>
+</helmet>
+
+<!--
+  Domovoi Desktop Dock. Catch-up pass over the built dock in
+  packages/ui/src/workspace-shell.tsx and packages/ui/src/session-evidence.tsx.
+  The build has seven dock tabs (Plan, Changes, Preview, Comments, Terminal,
+  History, Session); Domovoi Desktop.dc.html draws five.
+
+  DESIGN ELEMENTS THE BUILD DROPPED, and which are therefore not drawn here:
+    - Pin / Pinned on the preview toolbar. No pin state exists in the build.
+    - "Focus on this design" under the preview canvas. No equivalent control.
+    - The annotation batch footer, "2 open annotations will be sent with your
+      next message." plus its Send to agent button. Comments has no batch
+      concept; replies post one at a time through onReply.
+
+  All user-facing strings below are lifted from the two source files. Session
+  data (paths, commands, diff text, annotation bodies, machine names) is sample
+  content, not UI copy.
+-->
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --popover: var(--card); --input: var(--border); --ring: var(--primary); min-height: 100vh; padding: 40px 44px 72px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; margin-bottom: 34px;">
+    <div>
+      <div style="font-size: 11px; letter-spacing: .16em; color: var(--primary);">DOMOVOI · DESKTOP DOCK</div>
+      <div style="font-size: 30px; font-weight: 600; letter-spacing: -.02em; margin-top: 10px;">The two new tabs and the three panes that grew</div>
+      <div style="font-size: 13.5px; line-height: 1.7; color: var(--muted-foreground); margin-top: 10px; max-width: 760px; text-wrap: pretty;">Drawn from the build, not from the earlier design. Every label, badge and notice here is the string the code renders. Each surface sits at the width it occupies in the app: 470px for a docked pane, 820px where the pane needs the room the build requires.</div>
+    </div>
+    <span style="flex: 1;"></span>
+    <div style="display: flex; flex-direction: column; gap: 7px;">
+      <a href="Domovoi Desktop.dc.html" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">01</span>Desktop app</a>
+      <a href="Domovoi Foundations.dc.html" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">02</span>Foundations</a>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">01 · COMMENTS TAB · NEW</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">workspace-shell.tsx · AnnotationComments</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 470px; height: 900px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); overflow: hidden;">
+          <sc-for list="{{ tabsComments }}" as="t" hint-placeholder-count="7">
+            <div style="{{ t.style }}"><span>{{ t.label }}</span><sc-if value="{{ t.count }}" hint-placeholder-val="{{ false }}"><span style="{{ t.badgeStyle }}">{{ t.count }}</span></sc-if></div>
+          </sc-for>
+          <span style="flex: 1;"></span>
+          <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent);">››</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px;">
+          <sc-if value="{{ commentError }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; gap: 9px; padding: 11px 13px; background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);">
+              <span style="font-size: 11px; color: var(--danger-fg);">⦸</span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 12px; font-weight: 500; color: var(--danger-fg);">Annotation update failed</div>
+                <div style="font-size: 11.5px; line-height: 1.55; color: var(--danger-dim); margin-top: 3px;">The annotation status could not be changed</div>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-for list="{{ comments }}" as="c" hint-placeholder-count="3">
+            <div style="flex: 0 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <div style="display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px 0;">
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; line-height: 1.62; color: var(--foreground); text-wrap: pretty;">{{ c.body }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.6; color: var(--muted-foreground); margin-top: 5px;">{{ c.desc }}</div>
+                </div>
+                <span style="{{ c.statusStyle }}">{{ c.status }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px; padding: 11px 13px;">
+                <div style="padding: 8px 10px; background: var(--code); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.7; color: var(--muted-foreground); overflow-wrap: break-word;">{{ c.anchor }}<sc-if value="{{ c.anchorBadge }}" hint-placeholder-val="{{ true }}"><span style="{{ c.anchorBadgeStyle }}">{{ c.anchorBadge }}</span></sc-if></div>
+                <sc-if value="{{ c.visual }}" hint-placeholder-val="{{ true }}">
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.6; color: var(--faint);">{{ c.visual }}</div>
+                </sc-if>
+                <sc-for list="{{ c.thread }}" as="r" hint-placeholder-count="1">
+                  <div style="padding-left: 9px; border-left: 1px solid var(--border); font-size: 11px; line-height: 1.62; color: var(--muted-foreground);">
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ r.origin }}</div>{{ r.body }}
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 9px; padding: 0 13px 12px;">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                  <span onClick="{{ c.toggleReply }}" style="{{ c.replyStyle }}">{{ c.replyLabel }}</span>
+                  <span onClick="{{ c.setStatus }}" style="{{ c.statusActionStyle }}">{{ c.statusAction }}</span>
+                </div>
+                <sc-if value="{{ c.replying }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; flex-direction: column; gap: 7px;">
+                    <div style="font-size: 11px; font-weight: 500; color: var(--strong);">Reply</div>
+                    <textarea rows="3" value="{{ replyText }}" onChange="{{ onReplyText }}" placeholder="Add context for the next agent round" style="width: 100%; resize: none; padding: 9px 11px; background: var(--background); border: 1px solid var(--input); border-radius: calc(var(--radius) - 3px); font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12px; line-height: 1.6; color: var(--foreground);"></textarea>
+                    <span onClick="{{ c.saveReply }}" style="{{ saveReplyStyle }}">{{ saveReplyLabel }}</span>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Comments, populated. One card per annotation, with the anchor it resolved to and the thread under it. Reply and Resolve are live here.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 470px; height: 400px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); overflow: hidden;">
+            <sc-for list="{{ tabsCommentsEmpty }}" as="t" hint-placeholder-count="7">
+              <div style="{{ t.style }}"><span>{{ t.label }}</span></div>
+            </sc-for>
+            <span style="flex: 1;"></span>
+            <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground);">››</span>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; padding: 24px 40px; text-align: center;">
+            <span style="width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted-foreground);">▭</span>
+            <div style="font-size: 13px; font-weight: 500;">No annotations yet</div>
+            <div style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground);">Comments anchored to plans and previews appear here.</div>
+          </div>
+        </div>
+        <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Comments, empty. No count badge on the tab, because the badge only renders when open annotations exist.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 470px; flex: 0 0 auto; padding: 16px 17px; background: var(--card); border: 1px solid var(--border); border-radius: 12px;">
+          <div style="font-size: 12.5px; font-weight: 500;">Anchor resolution, four states</div>
+          <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px;">The preview bridge reports which layered anchor it actually matched. The badge sits inside the anchor block, and only the unresolved case is destructive.</div>
+          <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 14px;">
+            <sc-for list="{{ anchorStates }}" as="a" hint-placeholder-count="4">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="{{ a.badgeStyle }}">{{ a.label }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ a.key }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size: 11px; line-height: 1.65; color: var(--faint); margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--border);">A card with no entry in the resolutions map shows no badge at all, which is the state before the bridge has answered.</div>
+        </div>
+        <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Badge specimen. Same four labels the build emits, in the order the code tests them.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin: 44px 0 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">02 · SESSION TAB · NEW</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">workspace-shell.tsx · TabsContent value="session"</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 470px; height: 300px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); overflow: hidden;">
+          <sc-for list="{{ tabsSession }}" as="t" hint-placeholder-count="7">
+            <div style="{{ t.style }}"><span>{{ t.label }}</span><sc-if value="{{ t.count }}" hint-placeholder-val="{{ false }}"><span style="{{ t.badgeStyle }}">{{ t.count }}</span></sc-if></div>
+          </sc-for>
+          <span style="flex: 1;"></span>
+          <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground);">››</span>
+        </div>
+        <div style="flex: 1; min-height: 0; padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; color: var(--muted-foreground);">macbook-pro-m3<br />~/src/acme-api</div>
+      </div>
+      <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Session, as built. Machine name and project path, or "No project open" when the workspace has none.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 470px; height: 720px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px dashed var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 9px 12px; background: var(--info-bg); border-bottom: 1px solid var(--info-border);">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .1em; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--info-border); color: var(--info-fg);">PROPOSAL</span>
+          <span style="font-size: 11.5px; line-height: 1.5; color: var(--info-fg); flex: 1;">Not in the build. Every field shown is already on the snapshot.</span>
+        </div>
+        <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); overflow: hidden;">
+          <sc-for list="{{ tabsSessionProposal }}" as="t" hint-placeholder-count="7">
+            <div style="{{ t.style }}"><span>{{ t.label }}</span><sc-if value="{{ t.count }}" hint-placeholder-val="{{ false }}"><span style="{{ t.badgeStyle }}">{{ t.count }}</span></sc-if></div>
+          </sc-for>
+          <span style="flex: 1;"></span>
+          <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground);">››</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+          <sc-for list="{{ proposalGroups }}" as="g" hint-placeholder-count="4">
+            <div style="flex: 0 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border);">
+                <span style="font-size: 11px; font-weight: 500;">{{ g.title }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ g.source }}</span>
+              </div>
+              <sc-for list="{{ g.rows }}" as="r" hint-placeholder-count="3">
+                <div style="display: flex; align-items: baseline; gap: 10px; padding: 7px 12px;">
+                  <span style="font-size: 11px; color: var(--muted-foreground); flex: 0 0 128px;">{{ r.k }}</span>
+                  <span style="{{ r.valStyle }}">{{ r.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Session, proposed. The same tab reading the machine, project and runtime the snapshot already carries. Labels here are new copy, not from the build.</div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin: 44px 0 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">03 · CHANGES PANE · GREW</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">session-evidence.tsx · SessionEvidenceContent</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 470px; height: 1020px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); overflow: hidden;">
+          <sc-for list="{{ tabsChanges }}" as="t" hint-placeholder-count="7">
+            <div style="{{ t.style }}"><span>{{ t.label }}</span><sc-if value="{{ t.count }}" hint-placeholder-val="{{ false }}"><span style="{{ t.badgeStyle }}">{{ t.count }}</span></sc-if></div>
+          </sc-for>
+          <span style="flex: 1;"></span>
+          <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground);">››</span>
+        </div>
+        <div style="flex: 0 0 40px; height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--border);">
+          <div style="min-width: 0;">
+            <div style="font-size: 11px; font-weight: 500;">Session evidence</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">refreshed 2026-09-06T12:52:04Z</div>
+          </div>
+          <span onClick="{{ doRefresh }}" style="{{ refreshStyle }}"><span style="{{ refreshIconStyle }}">↻</span>Refresh</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 16px;">
+
+          <div style="flex: 0 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 12px;">
+              <div style="min-width: 0;">
+                <div style="font-size: 11px; font-weight: 500;">Working tree</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.65; color: var(--faint); margin-top: 2px;">6 changed files · 8f3c1de4</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.65; color: var(--faint);">2 added · 3 modified · 1 deleted</div>
+              </div>
+              <span onClick="{{ toggleAllFiles }}" style="flex: 0 0 auto; padding: 4px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">{{ collapseLabel }}</span>
+            </div>
+            <span style="display: block; height: 1px; background: var(--border);"></span>
+            <sc-for list="{{ files }}" as="f" hint-placeholder-count="6">
+              <div style="border-bottom: 1px solid var(--border);">
+                <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 8px 12px;">
+                  <div style="min-width: 0;">
+                    <div style="display: flex; align-items: center; gap: 7px; min-width: 0;">
+                      <span onClick="{{ f.toggle }}" style="{{ f.caretStyle }}">{{ f.caret }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ f.path }}</span>
+                      <span style="flex: 0 0 auto; height: 16px; display: flex; align-items: center; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--muted-foreground);">{{ f.status }}</span>
+                      <sc-if value="{{ f.binary }}" hint-placeholder-val="{{ false }}">
+                        <span style="flex: 0 0 auto; height: 16px; display: flex; align-items: center; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--muted-foreground);">binary</span>
+                      </sc-if>
+                    </div>
+                    <sc-if value="{{ f.previousPath }}" hint-placeholder-val="{{ false }}">
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ f.previousPath }}</div>
+                    </sc-if>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); margin-top: 4px;">{{ f.stage }}</div>
+                  </div>
+                  <div style="display: flex; align-items: flex-start; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 9px;">
+                    <div style="display: flex; align-items: flex-start; gap: 4px;">
+                      <sc-if value="{{ f.counted }}" hint-placeholder-val="{{ true }}">
+                        <span style="color: var(--success);">{{ f.add }}</span>
+                        <span style="color: var(--destructive);">{{ f.del }}</span>
+                      </sc-if>
+                      <sc-if value="{{ f.uncounted }}" hint-placeholder-val="{{ false }}">
+                        <span style="color: var(--faint);">{{ f.uncounted }}</span>
+                      </sc-if>
+                    </div>
+                    <span onClick="{{ f.revert }}" style="{{ revertBtnStyle }}">↩ Revert file</span>
+                  </div>
+                </div>
+                <sc-if value="{{ f.open }}" hint-placeholder-val="{{ false }}">
+                  <sc-if value="{{ f.diff }}" hint-placeholder-val="{{ true }}">
+                    <div style="max-height: 220px; overflow: auto; border-top: 1px solid var(--border); background: var(--code); padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: break-word; color: var(--muted-foreground);">{{ f.diff }}</div>
+                  </sc-if>
+                  <sc-if value="{{ f.notice }}" hint-placeholder-val="{{ false }}">
+                    <div style="border-top: 1px solid var(--border); padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.7; color: var(--warning);">{{ f.notice }}</div>
+                  </sc-if>
+                </sc-if>
+              </div>
+            </sc-for>
+            <div style="padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.7; color: var(--warning);">Only the first 6 changed files are shown.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px;">
+              <div style="font-size: 11px; font-weight: 500;">Worktree diff</div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="padding: 2px 7px; border-radius: 999px; background: color-mix(in oklab, var(--warning) 16%, transparent); border: 1px solid var(--warn-border); font-size: 9px; color: var(--warn-fg);">Truncated</span>
+                <div style="display: flex; align-items: center; gap: 3px;">
+                  <span onClick="{{ pickUnified }}" style="{{ unifiedStyle }}">Unified</span>
+                  <span onClick="{{ pickSplit }}" style="{{ splitStyle }}">Split</span>
+                </div>
+              </div>
+            </div>
+            <span style="display: block; height: 1px; background: var(--border);"></span>
+            <sc-if value="{{ isUnified }}" hint-placeholder-val="{{ true }}">
+              <div style="max-height: 240px; overflow: auto; background: var(--code); padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: break-word; color: var(--muted-foreground);">{{ unifiedDiff }}</div>
+            </sc-if>
+            <sc-if value="{{ isSplit }}" hint-placeholder-val="{{ false }}">
+              <div style="max-height: 240px; overflow: auto; background: var(--code);">
+                <div style="display: grid; grid-template-columns: 1fr 1fr;">
+                  <sc-for list="{{ splitRows }}" as="s" hint-placeholder-count="10">
+                    <div style="display: contents;">
+                      <div style="{{ s.leftStyle }}">{{ s.left }}</div>
+                      <div style="{{ s.rightStyle }}">{{ s.right }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+            <div style="border-top: 1px solid var(--border); padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.7; color: var(--warning);">Diff output was truncated at the transport bound.</div>
+          </div>
+        </div>
+      </div>
+      <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Changes, as built. Working tree with per-file revert, then the whole worktree diff with the unified and split toggle. Both toggles are live.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 470px; height: 560px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="flex: 0 0 auto; padding: 10px 12px; border-bottom: 1px solid var(--border);">
+            <div style="font-size: 10px; letter-spacing: .12em; color: var(--faint);">SAME PANE, LOWER SECTION</div>
+          </div>
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px;">
+            <div style="flex: 0 0 auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <div style="padding: 9px 12px;">
+                <div style="font-size: 11px; font-weight: 500;">Observed test runs</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); margin-top: 2px;">42 passed · 1 failed · 6 command runs</div>
+              </div>
+              <span style="display: block; height: 1px; background: var(--border);"></span>
+              <sc-for list="{{ testRuns }}" as="r" hint-placeholder-count="3">
+                <div style="padding: 9px 12px; border-bottom: 1px solid var(--border);">
+                  <div style="display: flex; align-items: flex-start; gap: 8px;">
+                    <span style="{{ r.iconStyle }}">{{ r.icon }}</span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.6; color: var(--strong); overflow-wrap: break-word;">{{ r.command }}</div>
+                      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--faint);">
+                        <span>{{ r.createdAt }}</span>
+                        <sc-if value="{{ r.commandTruncated }}" hint-placeholder-val="{{ false }}">
+                          <span style="color: var(--warning);">Command truncated</span>
+                        </sc-if>
+                        <sc-if value="{{ r.outputTruncated }}" hint-placeholder-val="{{ false }}">
+                          <span style="color: var(--warning);">Output truncated</span>
+                        </sc-if>
+                      </div>
+                      <sc-if value="{{ r.output }}" hint-placeholder-val="{{ true }}">
+                        <div style="max-height: 130px; overflow: auto; margin-top: 8px; padding: 8px; background: var(--code); border-radius: calc(var(--radius) - 4px); font-family: 'JetBrains Mono', monospace; font-size: 9px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: break-word; color: var(--muted-foreground);">{{ r.output }}</div>
+                      </sc-if>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+              <div style="padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--warning);">Older observed runs are not shown.</div>
+            </div>
+          </div>
+        </div>
+        <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Observed test runs, the third section of the same pane. Pass and fail counts come from recorded command runs, not from a test framework.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 470px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="flex: 0 0 auto; padding: 10px 12px; border-bottom: 1px solid var(--border);">
+            <div style="font-size: 10px; letter-spacing: .12em; color: var(--faint);">EMPTY AND UNAVAILABLE STATES</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 12px;">
+            <sc-for list="{{ emptyStates }}" as="e" hint-placeholder-count="4">
+              <div style="{{ e.wrapStyle }}">
+                <sc-if value="{{ e.alert }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; gap: 9px; padding: 11px 12px;">
+                    <span style="{{ e.iconStyle }}">⦸</span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 12px; font-weight: 500; color: {{ e.titleColor }};">{{ e.title }}</div>
+                      <div style="font-size: 11.5px; line-height: 1.55; color: {{ e.bodyColor }}; margin-top: 3px;">{{ e.body }}</div>
+                    </div>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ e.empty }}" hint-placeholder-val="{{ true }}">
+                  <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 24px; text-align: center;">
+                    <span style="width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--border); background: var(--card); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--muted-foreground);">{{ e.glyph }}</span>
+                    <div style="font-size: 12.5px; font-weight: 500;">{{ e.title }}</div>
+                    <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">{{ e.body }}</div>
+                  </div>
+                </sc-if>
+              </div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); margin-top: -6px;">{{ e.when }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Everything the pane shows when there is nothing to show, with the condition that produces each.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin: 44px 0 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">04 · PREVIEW TOOLBAR · GREW</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">workspace-shell.tsx · TabsContent value="preview"</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 820px; height: 720px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--border);">
+          <sc-for list="{{ tabsPreview }}" as="t" hint-placeholder-count="7">
+            <div style="{{ t.style }}"><span>{{ t.label }}</span><sc-if value="{{ t.count }}" hint-placeholder-val="{{ false }}"><span style="{{ t.badgeStyle }}">{{ t.count }}</span></sc-if></div>
+          </sc-for>
+          <span style="flex: 1;"></span>
+          <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground);">››</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: auto; padding: 12px;">
+          <div style="min-height: 100%; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 10px 30px var(--shadow-md);">
+            <div style="flex: 0 0 auto; padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; overflow-x: auto;">
+              <sc-for list="{{ variantCards }}" as="v" hint-placeholder-count="3">
+                <div onClick="{{ v.pick }}" style="{{ v.style }}">
+                  <span style="{{ v.thumbStyle }}"></span>
+                  <span style="font-size: 11px; color: var(--foreground);">{{ v.label }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--muted-foreground);">{{ v.meta }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="flex: 0 0 auto; min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--border);">
+              <div>
+                <div style="font-size: 11px; font-weight: 500;">onboarding empty state</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">revision 4 · sandboxed</div>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0;">
+                <span onClick="{{ doPrint }}" style="{{ printStyle }}">⎙ {{ printLabel }}</span>
+                <span onClick="{{ doDownload }}" style="{{ downloadStyle }}">⭳ {{ downloadLabel }}</span>
+                <div style="display: flex; gap: 2px; padding: 2px; background: var(--muted); border-radius: calc(var(--radius) - 3px);">
+                  <sc-for list="{{ deviceWidths }}" as="w" hint-placeholder-count="3">
+                    <span onClick="{{ w.pick }}" style="{{ w.style }}">{{ w.label }}</span>
+                  </sc-for>
+                </div>
+                <span onClick="{{ toggleCompare }}" style="{{ compareStyle }}">Compare</span>
+                <span style="padding: 5px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">Annotate</span>
+                <span style="padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--success) 16%, transparent); border: 1px solid color-mix(in oklab, var(--success) 40%, transparent); font-size: 9.5px; color: var(--success);">Live</span>
+              </div>
+            </div>
+            <div style="flex: 0 0 auto; padding: 4px 12px; border-bottom: 1px solid var(--border); font-size: 9px; color: var(--muted-foreground);">Safe copies remove scripts, forms, and external assets.</div>
+            <sc-if value="{{ safeCopyError }}" hint-placeholder-val="{{ false }}">
+              <div style="margin: 12px; display: flex; gap: 9px; padding: 11px 12px; background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);">
+                <span style="font-size: 11px; color: var(--danger-fg);">⦸</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; font-weight: 500; color: var(--danger-fg);">Safe copy unavailable</div>
+                  <div style="font-size: 11.5px; line-height: 1.55; color: var(--danger-dim); margin-top: 3px;">The daemon could not derive a sanitized copy of this revision</div>
+                </div>
+              </div>
+            </sc-if>
+            <div style="{{ stageGridStyle }}">
+              <sc-for list="{{ stages }}" as="s" hint-placeholder-count="2">
+                <div style="{{ s.frameStyle }}">
+                  <div style="height: 100%; min-height: 320px; background-image: repeating-linear-gradient(135deg, var(--accent) 0px, var(--accent) 7px, var(--card) 7px, var(--card) 14px); display: flex; align-items: center; justify-content: center; padding: 18px;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; letter-spacing: .05em; color: var(--muted-foreground); text-align: center; white-space: pre-line;">{{ s.caption }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="width: 820px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Preview at 820px, wide enough for Compare. Print view and Download safe copy sit before the width control; the sanitiser note is a permanent line under the toolbar.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 470px; height: 720px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--sidebar); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 44px; height: 44px; display: flex; align-items: center; gap: 1px; padding: 0 7px; border-bottom: 1px solid var(--border); overflow: hidden;">
+          <sc-for list="{{ tabsPreviewNarrow }}" as="t" hint-placeholder-count="7">
+            <div style="{{ t.style }}"><span>{{ t.label }}</span><sc-if value="{{ t.count }}" hint-placeholder-val="{{ false }}"><span style="{{ t.badgeStyle }}">{{ t.count }}</span></sc-if></div>
+          </sc-for>
+          <span style="flex: 1;"></span>
+          <span title="Collapse dock" style="width: 22px; height: 22px; flex: 0 0 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground);">››</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: auto; padding: 12px;">
+          <div style="min-height: 100%; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 10px 30px var(--shadow-md);">
+            <div style="flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border);">
+              <div>
+                <div style="font-size: 11px; font-weight: 500;">onboarding empty state</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">revision 4 · sandboxed</div>
+              </div>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; width: 100%;">
+                <span style="padding: 5px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">⎙ Print view</span>
+                <span style="padding: 5px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">⭳ Download safe copy</span>
+                <div style="display: flex; gap: 2px; padding: 2px; background: var(--muted); border-radius: calc(var(--radius) - 3px);">
+                  <span style="font-family: 'JetBrains Mono', monospace; padding: 4px 8px; border-radius: 5px; font-size: 9.5px; background: var(--card); color: var(--foreground);">390</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; padding: 4px 8px; border-radius: 5px; font-size: 9.5px; color: var(--faint);">768</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; padding: 4px 8px; border-radius: 5px; font-size: 9.5px; color: var(--faint);">1440</span>
+                </div>
+                <span style="padding: 5px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--faint); opacity: .45;">Compare</span>
+                <span style="padding: 5px 9px; border: 1px solid var(--primary); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--primary);">Select element</span>
+                <span style="padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--success) 16%, transparent); border: 1px solid color-mix(in oklab, var(--success) 40%, transparent); font-size: 9.5px; color: var(--success);">Live</span>
+              </div>
+            </div>
+            <div style="flex: 0 0 auto; padding: 4px 12px; border-bottom: 1px solid var(--border); font-size: 9px; color: var(--muted-foreground);">Safe copies remove scripts, forms, and external assets.</div>
+            <div style="margin: 10px 12px 0; padding: 9px 11px; border: 1px dashed var(--border); border-radius: calc(var(--radius) - 2px);">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 8.5px; letter-spacing: .1em; color: var(--faint);">SCREEN READER ONLY · role="status"</div>
+              <div style="font-size: 11.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 5px;">Compare is unavailable at this width; showing the selected variant.</div>
+            </div>
+            <div style="flex: 1; min-height: 0; padding: 10px 12px 12px;">
+              <div style="height: 100%; min-height: 320px; max-width: 390px; margin: 0 auto; border: 1px solid var(--border); background-image: repeating-linear-gradient(135deg, var(--accent) 0px, var(--accent) 7px, var(--card) 7px, var(--card) 14px); display: flex; align-items: center; justify-content: center; padding: 18px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; letter-spacing: .05em; color: var(--muted-foreground); text-align: center; white-space: pre-line;">[ variant A ]
+onboarding-empty-state.html
+390 wide · sandbox allow-scripts</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="width: 470px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Under 760px the toolbar wraps to its own row and Compare is disabled. The reason is announced to screen readers only, so it is drawn here as the annotated block it is.</div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin: 44px 0 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">05 · REVERT FILE DIALOG · NEW</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">session-evidence.tsx · RevertFileDialog</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 700px; height: 420px; flex: 0 0 auto; position: relative; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--background); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;">
+        <div style="position: absolute; inset: 0; background: var(--overlay);"></div>
+        <div style="position: relative; width: 460px; padding: 20px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 26px 72px var(--shadow-xl); display: flex; flex-direction: column; gap: 12px;">
+          <div style="font-size: 14px; font-weight: 600; line-height: 1.45; text-wrap: pretty;">Revert this file to the session base commit?</div>
+          <div style="font-size: 12.5px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Domovoi takes a recovery checkpoint before it changes the worktree, so this stays restorable. Uncommitted work in this file is discarded, and a file the worktree is not tracking is removed.</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">apps/api/src/webhooks/idempotency.ts</div>
+          <sc-if value="{{ revertError }}" hint-placeholder-val="{{ false }}">
+            <div style="font-size: 12px; line-height: 1.55; color: var(--destructive);">The file could not be reverted</div>
+          </sc-if>
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
+            <span onClick="{{ toggleRevertPending }}" style="{{ keepStyle }}">Keep the changes</span>
+            <span onClick="{{ toggleRevertError }}" style="{{ confirmStyle }}">{{ confirmLabel }}</span>
+          </div>
+        </div>
+      </div>
+      <div style="width: 700px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Revert file, confirming. Click Keep the changes for the pending state, Revert file for the failure state. Both cancel paths are blocked while pending, as in the build.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 430px; flex: 0 0 auto; padding: 17px 19px; background: var(--card); border: 1px solid var(--border); border-radius: 12px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Where the build and the design disagree</div>
+        <div style="display: flex; flex-direction: column; gap: 11px; margin-top: 13px;">
+          <sc-for list="{{ disagreements }}" as="d" hint-placeholder-count="4">
+            <div style="padding-bottom: 11px; border-bottom: 1px solid var(--border);">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warning);">{{ d.token }}</div>
+              <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 5px;">{{ d.note }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font-size: 11px; line-height: 1.65; color: var(--faint); margin-top: 12px;">This file uses the values from Domovoi Desktop.dc.html, because that is the surface it extends. Nothing here picks a winner.</div>
+      </div>
+      <div style="width: 430px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Four token differences between packages/ui/src/styles.css and the root design files, for you to settle.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1560,&quot;height&quot;:1100},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;},&quot;connected&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  state = {
+    statuses: {},
+    replyingTo: null,
+    replyText: "",
+    commentError: false,
+    diffView: "unified",
+    openFiles: ["apps/api/src/webhooks/idempotency.ts", "docs/assets/webhook-flow.png"],
+    compare: false,
+    artifactPending: "",
+    safeCopyError: false,
+    deviceWidth: 1440,
+    variant: 0,
+    revertPending: false,
+    revertError: false,
+    replyPending: false
+  };
+
+  tabStrip(active) {
+    const st = this.state;
+    return [
+      { k: "plan", label: "Plan" },
+      { k: "changes", label: "Changes" },
+      { k: "preview", label: "Preview" },
+      { k: "comments", label: "Comments", count: 2 },
+      { k: "terminal", label: "Terminal" },
+      { k: "history", label: "History" },
+      { k: "session", label: "Session" }
+    ].map(t => {
+      const on = t.k === active;
+      const count = t.k === "comments" && active !== "commentsEmpty" ? t.count : false;
+      return {
+        label: t.label,
+        count: count || false,
+        badgeStyle: "margin-left: 5px; padding: 0 4px; height: 15px; display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 8px; color: " +
+          (on ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+        style: "display: flex; align-items: center; flex: 0 0 auto; height: 30px; padding: 0 7px; font-size: 10.5px; font-weight: 500; cursor: pointer; border-bottom: 2px solid " +
+          (on ? "var(--primary)" : "transparent") + "; color: " + (on ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      };
+    });
+  }
+
+  outline(extra) {
+    return "flex: 0 0 auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--strong); cursor: pointer;" + (extra || "");
+  }
+
+  renderVals() {
+    const st = this.state;
+    const connected = this.props.connected ?? true;
+
+    const annotations = [
+      {
+        id: "an-1",
+        body: "Run the migration on the WSL box where the staging database lives, not on this machine.",
+        desc: "tablet · variant-a · resolved by desktop",
+        anchor: "\u201cStep 3 · apply 0042_idempotency_keys.sql\u201d",
+        resolution: "text-quote",
+        visual: "visual context \u00b7 812\u00d7248 \u00b7 revision 4",
+        defaultStatus: "open",
+        thread: [{ origin: "desktop", body: "Moved to wsl-ubuntu-24. The worktree came across in the bundle." }]
+      },
+      {
+        id: "an-2",
+        body: "The empty state should say what the agent is waiting for, not just that nothing is here.",
+        desc: "desktop · variant-b",
+        anchor: "section.empty > p:nth-child(2)",
+        resolution: "selector",
+        visual: false,
+        defaultStatus: "open",
+        thread: []
+      },
+      {
+        id: "an-3",
+        body: "This card moved between revisions, so the crop no longer matches what I commented on.",
+        desc: "phone · art-onboarding-empty",
+        anchor: "Visual selection",
+        resolution: "unresolved",
+        visual: "visual context unavailable \u00b7 artifact-unavailable",
+        defaultStatus: "resolved",
+        thread: [{ origin: "web", body: "Re-anchored on revision 4. Reopening so the next round picks it up." }]
+      }
+    ];
+
+    const resLabel = { "selector": "selector anchor", "text-quote": "text anchor", "bounding-box": "visual anchor", "unresolved": "anchor unavailable" };
+    const resStyle = r => "margin-left: 7px; padding: 1px 6px; border-radius: 4px; font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 9px; border: 1px solid " +
+      (r === "unresolved" ? "var(--danger-border)" : "var(--border)") + "; background: " +
+      (r === "unresolved" ? "color-mix(in oklab, var(--destructive) 18%, transparent)" : "transparent") + "; color: " +
+      (r === "unresolved" ? "var(--danger-fg)" : "var(--muted-foreground)") + ";";
+
+    const files = [
+      { path: "apps/api/src/webhooks/idempotency.ts", status: "modified", stage: "staged + unstaged", add: "+96", del: "\u221212",
+        diff: "diff --git a/apps/api/src/webhooks/idempotency.ts b/apps/api/src/webhooks/idempotency.ts\nindex 8f3c1de..b41a907 100644\n@@ -18,7 +18,21 @@ export async function recordDelivery(\n-  const existing = await db.delivery.findFirst({ where: { eventId } })\n-  if (existing) return existing\n+  const key = idempotencyKey(eventId, endpointId)\n+  const claimed = await db.idempotencyKey.create({\n+    data: { key, eventId, endpointId, claimedAt: new Date() },\n+  }).catch(onUniqueViolation)\n+  if (!claimed) return db.delivery.findFirstOrThrow({ where: { key } })\n   return db.delivery.create({ data: { eventId, endpointId, key } })" },
+      { path: "apps/api/src/webhooks/replay.spec.ts", status: "modified", stage: "unstaged", add: "+42", del: "\u22129" },
+      { path: "packages/db/migrations/0042_idempotency_keys.sql", status: "added", stage: "staged", add: "+31", del: "\u22120" },
+      { path: "apps/api/src/webhooks/handler.ts", status: "modified", stage: "staged", add: "+15", del: "\u221216", previousPath: "from apps/api/src/webhooks/index.ts" },
+      { path: "docs/assets/webhook-flow.png", status: "added", stage: "staged", binary: true, uncounted: "binary",
+        notice: "Binary file, so Git reports no diff." },
+      { path: "apps/api/src/webhooks/queue.ts", status: "untracked", stage: "unstaged", uncounted: "not in diff",
+        notice: "The diff output was truncated at the transport bound before this file." }
+    ];
+
+    const unifiedDiff = "diff --git a/apps/api/src/webhooks/idempotency.ts b/apps/api/src/webhooks/idempotency.ts\nindex 8f3c1de..b41a907 100644\n--- a/apps/api/src/webhooks/idempotency.ts\n+++ b/apps/api/src/webhooks/idempotency.ts\n@@ -18,7 +18,21 @@\n   const eventId = event.id\n-  const existing = await db.delivery.findFirst({ where: { eventId } })\n-  if (existing) return existing\n+  const key = idempotencyKey(eventId, endpointId)\n+  const claimed = await db.idempotencyKey.create({\n+    data: { key, eventId, endpointId, claimedAt: new Date() },\n+  }).catch(onUniqueViolation)\n   return db.delivery.create({ data: { eventId, endpointId, key } })";
+
+    const splitSource = [
+      { kind: "meta", left: "diff --git a/apps/api/src/webhooks/idempotency.ts b/apps/api/src/webhooks/idempotency.ts", right: "diff --git a/apps/api/src/webhooks/idempotency.ts b/apps/api/src/webhooks/idempotency.ts" },
+      { kind: "meta", left: "@@ -18,7 +18,21 @@", right: "@@ -18,7 +18,21 @@" },
+      { kind: "context", left: "  const eventId = event.id", right: "  const eventId = event.id" },
+      { kind: "change", left: "  const existing = await db.delivery.findFirst(", right: "  const key = idempotencyKey(eventId, endpointId)" },
+      { kind: "change", left: "  if (existing) return existing", right: "  const claimed = await db.idempotencyKey.create({" },
+      { kind: "change", left: null, right: "    data: { key, eventId, endpointId },"},
+      { kind: "change", left: null, right: "  }).catch(onUniqueViolation)" },
+      { kind: "context", left: "  return db.delivery.create({ data: {", right: "  return db.delivery.create({ data: {" }
+    ];
+    const cell = (kind, value, side, border) => {
+      const base = "margin: 0; padding: 1px 12px; white-space: pre; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.75;" +
+        (border ? " border-left: 1px solid var(--border);" : "");
+      if (kind === "meta") return base + " color: var(--faint);";
+      if (kind === "change" && value !== null) {
+        return base + (side === "left"
+          ? " background: color-mix(in oklab, var(--destructive) 10%, transparent); color: var(--destructive);"
+          : " background: color-mix(in oklab, var(--success) 10%, transparent); color: var(--success);");
+      }
+      return base + " color: var(--muted-foreground);";
+    };
+
+    return {
+      themeClass: (this.props.theme ?? "dark") === "light" ? "dv-light" : "dv-dark",
+
+      tabsComments: this.tabStrip("comments"),
+      tabsCommentsEmpty: this.tabStrip("commentsEmpty"),
+      tabsSession: this.tabStrip("session"),
+      tabsSessionProposal: this.tabStrip("session"),
+      tabsChanges: this.tabStrip("changes"),
+      tabsPreview: this.tabStrip("preview"),
+      tabsPreviewNarrow: this.tabStrip("preview"),
+
+      commentError: st.commentError,
+      replyText: st.replyText,
+      onReplyText: e => this.setState({ replyText: e.target.value }),
+      saveReplyLabel: st.replyPending ? "Saving reply" : "Save reply",
+      saveReplyStyle: "align-self: flex-start; padding: 7px 12px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: " +
+        (st.replyPending ? "default" : "pointer") + "; background: var(--primary); color: var(--primary-foreground); opacity: " +
+        (st.replyText.trim() && !st.replyPending ? "1" : ".45") + ";",
+
+      comments: annotations.map(a => {
+        const status = st.statuses[a.id] || a.defaultStatus;
+        const open = status === "open";
+        const replying = st.replyingTo === a.id;
+        return {
+          body: a.body,
+          desc: a.desc,
+          anchor: a.anchor,
+          anchorBadge: resLabel[a.resolution],
+          anchorBadgeStyle: resStyle(a.resolution),
+          visual: a.visual,
+          thread: a.thread,
+          status: status,
+          statusStyle: "flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; font-size: 9.5px; border: 1px solid " +
+            (open ? "var(--warn-border)" : "color-mix(in oklab, var(--success) 40%, transparent)") + "; background: " +
+            (open ? "color-mix(in oklab, var(--warning) 16%, transparent)" : "color-mix(in oklab, var(--success) 16%, transparent)") +
+            "; color: " + (open ? "var(--warn-fg)" : "var(--success)") + ";",
+          replying: replying,
+          replyLabel: replying ? "Cancel reply" : "Reply",
+          replyStyle: this.outline(replying ? " background: var(--accent);" : ""),
+          statusAction: open ? "Resolve" : "Reopen",
+          statusActionStyle: "flex: 0 0 auto; padding: 5px 9px; border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;",
+          toggleReply: () => this.setState({ replyingTo: replying ? null : a.id, replyText: "", replyPending: false, commentError: false }),
+          saveReply: () => this.setState(s => (s.replyPending
+            ? { replyPending: false, replyingTo: null, replyText: "" }
+            : { replyPending: !!s.replyText.trim() })),
+          setStatus: () => this.setState(s => ({
+            statuses: Object.assign({}, s.statuses, { [a.id]: open ? "resolved" : "open" }),
+            commentError: false
+          }))
+        };
+      }),
+
+      anchorStates: ["selector", "text-quote", "bounding-box", "unresolved"].map(r => ({
+        label: resLabel[r], key: r, badgeStyle: resStyle(r).replace("margin-left: 7px;", "")
+      })),
+
+      proposalGroups: [
+        { title: "Machine", source: "snapshot.machine", rows: [
+          { k: "Name", v: "macbook-pro-m3", mono: true },
+          { k: "Platform", v: "darwin arm64", mono: true },
+          { k: "Daemon version", v: "0.5.0", mono: true },
+          { k: "Connection", v: "local", mono: true }
+        ]},
+        { title: "Project", source: "snapshot.project", rows: [
+          { k: "Path", v: "~/src/acme-api", mono: true },
+          { k: "Branch", v: "main", mono: true }
+        ]},
+        { title: "Runtime", source: "session.runtime", rows: [
+          { k: "Provider and model", v: "claude-code/sonnet-4.6", mono: true },
+          { k: "Reasoning", v: "think: high", mono: true },
+          { k: "Permission mode", v: "build", mono: true },
+          { k: "Automatic execution", v: "off", mono: true }
+        ]},
+        { title: "Worktree", source: "session summary", rows: [
+          { k: "Base commit", v: "8f3c1de4", mono: true },
+          { k: "Ownership generation", v: "3", mono: true },
+          { k: "Provider thread", v: "thr_9c41ab", mono: true }
+        ]}
+      ].map(g => ({
+        title: g.title, source: g.source,
+        rows: g.rows.map(r => ({
+          k: r.k, v: r.v,
+          valStyle: "flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+        }))
+      })),
+
+      doRefresh: () => this.forceUpdate(),
+      refreshStyle: this.outline(connected ? "" : " opacity: .45; cursor: default;") + " display: flex; align-items: center; gap: 6px;",
+      refreshIconStyle: "display: inline-block; font-size: 10px; color: var(--muted-foreground);",
+
+      files: files.map(f => {
+        const open = st.openFiles.indexOf(f.path) >= 0;
+        return {
+          path: f.path, status: f.status, stage: f.stage,
+          binary: !!f.binary,
+          previousPath: f.previousPath || false,
+          counted: !f.uncounted,
+          uncounted: f.uncounted || false,
+          add: f.add || "", del: f.del || "",
+          open: open,
+          diff: open && f.diff ? f.diff : false,
+          notice: open && !f.diff ? (f.notice || "Git reported no diff for this file.") : false,
+          caret: open ? "\u25be" : "\u25b8",
+          caretStyle: "width: 16px; height: 16px; flex: 0 0 16px; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--muted-foreground); cursor: pointer;",
+          toggle: () => this.setState(s => ({
+            openFiles: s.openFiles.indexOf(f.path) >= 0 ? s.openFiles.filter(p => p !== f.path) : s.openFiles.concat([f.path])
+          })),
+          revert: () => this.setState({ revertPending: false, revertError: false })
+        };
+      }),
+      revertBtnStyle: this.outline(connected ? "" : " opacity: .45; cursor: default;"),
+      collapseLabel: st.openFiles.length === files.length ? "Collapse all" : "Expand all",
+      toggleAllFiles: () => this.setState(s => ({
+        openFiles: s.openFiles.length === files.length ? [] : files.map(f => f.path)
+      })),
+
+      isUnified: st.diffView === "unified",
+      isSplit: st.diffView === "split",
+      unifiedDiff: unifiedDiff,
+      pickUnified: () => this.setState({ diffView: "unified" }),
+      pickSplit: () => this.setState({ diffView: "split" }),
+      unifiedStyle: "padding: 4px 9px; border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer; background: " +
+        (st.diffView === "unified" ? "var(--accent)" : "transparent") + "; color: " + (st.diffView === "unified" ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+      splitStyle: "padding: 4px 9px; border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer; background: " +
+        (st.diffView === "split" ? "var(--accent)" : "transparent") + "; color: " + (st.diffView === "split" ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+      splitRows: splitSource.map(r => ({
+        left: r.left === null ? " " : r.left,
+        right: r.right === null ? " " : r.right,
+        leftStyle: cell(r.kind, r.left, "left", false),
+        rightStyle: cell(r.kind, r.right, "right", true)
+      })),
+
+      testRuns: [
+        { status: "failed", command: "pnpm -w vitest run apps/api/src/webhooks", createdAt: "2026-09-06T12:48:11Z", outputTruncated: true,
+          output: "FAIL  apps/api/src/webhooks/replay.spec.ts > rejects a replayed delivery\nAssertionError: expected 409 to be 200\nTests  42 passed | 1 failed (43)\nDuration  6.42s" },
+        { status: "passed", command: "pnpm -w vitest run packages/db", createdAt: "2026-09-06T12:31:52Z",
+          output: "Tests  18 passed (18)\nDuration  2.10s" },
+        { status: "passed", command: "pnpm -w tsc --noEmit --pretty false -p apps/api/tsconfig.json && pnpm -w eslint apps/api/src/webhooks --max-warnings 0", createdAt: "2026-09-06T12:22:04Z", commandTruncated: true }
+      ].map(r => ({
+        command: r.command, createdAt: r.createdAt,
+        commandTruncated: !!r.commandTruncated,
+        outputTruncated: !!r.outputTruncated,
+        output: r.output || false,
+        icon: r.status === "passed" ? "\u2713" : "\u2715",
+        iconStyle: "width: 14px; height: 14px; flex: 0 0 14px; margin-top: 2px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: " +
+          (r.status === "passed" ? "var(--success)" : "var(--destructive)") + ";"
+      })),
+
+      emptyStates: [
+        { empty: true, glyph: "\u00b1", title: "No working changes", body: "Git reports a clean worktree.", when: "workspace.files.length === 0" },
+        { empty: true, glyph: "\u2713", title: "No observed test runs", body: "Completed test commands recorded by this session appear here.", when: "tests.runs.length === 0" },
+        { alert: true, title: "Evidence unavailable", body: "Reconnect to read current Git and tool state.", when: "!connected && !error", tone: "plain" },
+        { alert: true, title: "Evidence unavailable", body: "The daemon closed the connection while reading Git state", when: "error, from the RPC failure", tone: "danger" },
+        { empty: true, glyph: "\u00b1", title: "No session is active", body: "Open a session to inspect its worktree evidence.", when: "sessionId === null" }
+      ].map(e => ({
+        empty: !!e.empty, alert: !!e.alert, glyph: e.glyph || "", title: e.title, body: e.body, when: e.when,
+        titleColor: e.tone === "danger" ? "var(--danger-fg)" : "var(--foreground)",
+        bodyColor: e.tone === "danger" ? "var(--danger-dim)" : "var(--muted-foreground)",
+        iconStyle: "font-size: 11px; color: " + (e.tone === "danger" ? "var(--danger-fg)" : "var(--muted-foreground)") + ";",
+        wrapStyle: "flex: 0 0 auto; border-radius: var(--radius); overflow: hidden; border: 1px solid " +
+          (e.tone === "danger" ? "var(--danger-border)" : "var(--border)") + "; background: " +
+          (e.tone === "danger" ? "var(--danger-bg)" : "var(--card)") + ";"
+      })),
+
+      variantCards: ["variant A", "variant B", "variant C"].map((label, i) => ({
+        label: label,
+        meta: st.variant === i ? "Selected" : "revision " + (4 - i),
+        pick: () => this.setState({ variant: i }),
+        thumbStyle: "width: 100%; height: 34px; border-radius: 4px; background-image: repeating-linear-gradient(135deg, var(--accent) 0px, var(--accent) 5px, var(--card) 5px, var(--card) 10px); border: 1px solid var(--border); display: block;",
+        style: "flex: 0 0 auto; width: 132px; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; padding: 7px; border-radius: calc(var(--radius) - 3px); cursor: pointer; border: 1px solid " +
+          (st.variant === i ? "var(--border)" : "var(--border)") + "; background: " + (st.variant === i ? "var(--accent)" : "transparent") + ";"
+      })),
+
+      printLabel: st.artifactPending === "print" ? "Preparing" : "Print view",
+      downloadLabel: st.artifactPending === "download" ? "Preparing" : "Download safe copy",
+      printStyle: this.outline(!connected || st.artifactPending ? " opacity: .45; cursor: default;" : ""),
+      downloadStyle: this.outline(!connected || st.artifactPending ? " opacity: .45; cursor: default;" : ""),
+      doPrint: () => this.setState({ artifactPending: st.artifactPending === "print" ? "" : "print", safeCopyError: false }),
+      doDownload: () => this.setState({ artifactPending: st.artifactPending === "download" ? "" : "download", safeCopyError: st.artifactPending === "download" }),
+      safeCopyError: st.safeCopyError,
+
+      deviceWidths: [390, 768, 1440].map(w => ({
+        label: String(w),
+        pick: () => this.setState({ deviceWidth: w }),
+        style: "font-family: 'JetBrains Mono', monospace; padding: 4px 8px; border-radius: 5px; font-size: 9.5px; cursor: pointer; background: " +
+          (st.deviceWidth === w ? "var(--card)" : "transparent") + "; color: " + (st.deviceWidth === w ? "var(--foreground)" : "var(--faint)") + ";"
+      })),
+
+      toggleCompare: () => this.setState({ compare: !st.compare }),
+      compareStyle: "flex: 0 0 auto; padding: 5px 9px; border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer; border: 1px solid " +
+        (st.compare ? "var(--primary)" : "var(--border)") + "; background: " + (st.compare ? "var(--accent)" : "transparent") +
+        "; color: " + (st.compare ? "var(--primary)" : "var(--strong)") + ";",
+      stageGridStyle: "flex: 1; min-height: 0; display: grid; gap: 12px; padding: 12px; grid-template-columns: " +
+        (st.compare ? "repeat(2, minmax(0, 1fr))" : "minmax(0, 1fr)") + ";",
+      stages: (st.compare
+        ? [{ n: "A", label: "variant A" }, { n: "B", label: "variant B" }]
+        : [{ n: "A", label: "variant A" }]
+      ).map(s => ({
+        caption: "[ " + s.label + " ]\nonboarding-empty-state.html\n" + st.deviceWidth + " wide \u00b7 sandbox allow-scripts",
+        frameStyle: "min-height: 0; width: 100%; justify-self: center; max-width: " + st.deviceWidth + "px; border: 1px solid var(--border); background: var(--background);"
+      })),
+
+      revertError: st.revertError,
+      confirmLabel: st.revertPending ? "Reverting" : "Revert file",
+      confirmStyle: "padding: 8px 13px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: var(--destructive); color: var(--destructive-foreground); opacity: " +
+        (st.revertPending ? ".55" : "1") + ";",
+      keepStyle: "padding: 8px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; cursor: " +
+        (st.revertPending ? "default" : "pointer") + "; color: var(--strong); opacity: " + (st.revertPending ? ".45" : "1") + ";",
+      toggleRevertPending: () => this.setState({ revertPending: !st.revertPending, revertError: false }),
+      toggleRevertError: () => this.setState({ revertError: !st.revertError, revertPending: false }),
+
+      disagreements: [
+        { token: "--faint, dark", note: "The build ships oklch(0.59 0.01 285). The root design files use oklch(0.53 0.01 285). Every mono metadata line in this file sits on that token." },
+        { token: "--warning, light", note: "The build ships oklch(0.56 0.13 62). The design files use oklch(0.6 0.13 62). It changes how the truncation notices read in light mode." },
+        { token: ":root default theme", note: "In the build :root is light and .dark opts in. The design system says :root carries the dark default. Whichever wins, one of the two documents is wrong." },
+        { token: "--warn-bg-deep, --danger-*, --info-*", note: "The build defines all of them; the design system index lists ramps of five, five and four. Same names, so this is a documentation gap rather than a conflict." }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
