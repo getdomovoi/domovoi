@@ -14,7 +14,6 @@ import {
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { localDaemonBudgetMs } from "../vitest.config.js"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -42,7 +41,17 @@ async function home() {
   homes.push(directory)
   return directory
 }
-const budgetMs = localDaemonBudgetMs(process.platform)
+// The budget every acquisition here gets, matching the sibling TLS discovery
+// suite that waits on the same runner. An expired budget is reported as a
+// refusal, so a fixed 3 second window turned a cold Windows start into
+// "expected 'refused' to be 'owned'". Measured across the 160 CI runs since
+// this file landed, the heaviest test here costs a median of 717 ms on Windows
+// against a 99th percentile of 4064 ms, a worst passing run of 5845 ms, and two
+// failures at 4754 and 6900 ms; Ubuntu never passed 1344 ms and macOS 583 ms.
+// Twenty seconds absorbs a stall twice the largest one measured on these
+// runners in the same window and stays under the 30 second budget a production
+// daemon start gives the same work.
+const budgetMs = process.platform === "win32" ? 20_000 : 5_000
 const defaults = { environment: { DOMOVOI_PORT: "0" }, timeoutMs: budgetMs, mode: "start-or-attach" as const }
 const waited = new WeakMap<LocalDaemonHandle, number>()
 async function acquire(homeDirectory: string, mode = defaults.mode as "start-or-attach" | "attach-only") {
