@@ -10,6 +10,7 @@ import { machineCredentialDigest } from "./machine-credentials.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
 import { waitForDaemon } from "./test-wait-for.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 const budget = process.platform === "win32" ? 20_000 : 10_000
 const machineId = `machine-${"a".repeat(32)}`
@@ -31,8 +32,10 @@ async function fixture(run: (input: { client: MachineCredentialWorker; directory
       // before removing its isolated files.
       await withinServiceDeadline(cleanup, () => rm(join(directory, "block"), { force: true }))
       await client.close(cleanup)
-      await withinServiceDeadline(cleanup, () => rm(directory, { recursive: true, force: true }))
     } finally { cleanup.clear() }
+    // Removal never shares the budget the worker shutdown may have spent, and
+    // it retries a directory the exiting worker still holds.
+    await removeScratchDirectory(directory)
   }
 }
 

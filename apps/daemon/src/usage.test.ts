@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
+import { chmod, mkdtemp, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite"
 import { describe, expect, it } from "vitest"
 
 import { UsageLedger, normalizeProviderUsage, normalizeUsage } from "./usage.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 function clock(start: string) {
   let now = Date.parse(start)
@@ -302,7 +303,7 @@ describe("provider usage telemetry", () => {
       expect(reopened.session("session-1")).not.toHaveProperty("currency")
       reopened.close()
     } finally {
-      await rm(directory, { recursive: true, force: true })
+      await removeScratchDirectory(directory)
     }
   })
 
@@ -317,7 +318,7 @@ describe("provider usage telemetry", () => {
       expect((await stat(path)).mode & 0o777).toBe(0o600)
       reopened.close()
     } finally {
-      await rm(directory, { recursive: true, force: true })
+      await removeScratchDirectory(directory)
     }
   })
 
@@ -357,7 +358,7 @@ describe("provider usage telemetry", () => {
       })
       reopened.close()
     } finally {
-      await rm(directory, { recursive: true, force: true })
+      await removeScratchDirectory(directory)
     }
   })
 
@@ -401,7 +402,7 @@ describe("provider usage telemetry", () => {
       })).toMatchObject({ contextTokens: 32_000, contextWindowTokens: 200_000 })
       ledger.close()
     } finally {
-      await rm(directory, { recursive: true, force: true })
+      await removeScratchDirectory(directory)
     }
   })
 
@@ -556,7 +557,7 @@ describe("provider usage telemetry", () => {
       })
       reopened.close()
     } finally {
-      await rm(directory, { recursive: true, force: true })
+      await removeScratchDirectory(directory)
     }
   })
 
@@ -618,7 +619,7 @@ describe("provider usage telemetry", () => {
       expect(ledger.session("session-legacy")).toMatchObject({ totalTokens: 42 })
       ledger.close()
     } finally {
-      await rm(directory, { recursive: true, force: true })
+      await removeScratchDirectory(directory)
     }
   })
 
