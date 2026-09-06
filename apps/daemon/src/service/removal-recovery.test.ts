@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,11 +9,12 @@ import { localOwnerRecordPath, type ReadyLocalOwner } from "../local-owner-recor
 import { serviceConfigurationPath } from "./configuration.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { readServiceRemovalSnapshot, serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
+import { removeScratchDirectories } from "../test-scratch.js"
 
 const homes: string[] = []
 afterEach(async () => {
   vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs()
-  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })))
+  await removeScratchDirectories(homes)
 })
 function snapshots() {
   const registrationId = randomUUID()

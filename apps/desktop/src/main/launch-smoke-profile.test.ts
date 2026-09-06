@@ -7,7 +7,18 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+// One removal that throws must not abandon the rest, and no root leaves this
+// list before it is gone, so a later hook still has something to remove.
+afterEach(() => {
+  const failures: unknown[] = []
+  for (let index = roots.length - 1; index >= 0; index -= 1) {
+    try {
+      rmSync(roots[index]!, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+      roots.splice(index, 1)
+    } catch (error) { failures.push(error) }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "Scratch removal failed")
+})
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "domovoi-smoke-profile-"))

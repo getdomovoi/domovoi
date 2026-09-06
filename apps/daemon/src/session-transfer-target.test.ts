@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -20,6 +20,7 @@ import {
   preflightSessionTransferTarget,
 } from "./session-transfer-target.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
 const sourceMachineId = `machine-${"a".repeat(32)}`
@@ -29,9 +30,7 @@ const checkpointCommit = "d".repeat(40)
 const cropRef = `crop-${"e".repeat(64)}`
 
 afterEach(async () => {
-  await Promise.all(scratchDirectories.splice(0).map((path) => (
-    rm(path, { recursive: true, force: true })
-  )))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 function targetWorkspace(): WorkspaceSnapshot {
