@@ -231,8 +231,7 @@ Every ledger entry is now merged.
 - [x] Add a searchable audit log with redaction and export
   - `audit.query` and `audit.export` bounded their store reads with `agentTimeoutMs`, so a test
     daemon with a 5 ms agent budget timed a real read out on macOS CI. #250 gives them their own
-    `auditReadTimeoutMs`, default 30 s, through the same deadline validation; open as of
-    2026-09-05.
+    `auditReadTimeoutMs`, default 30 s, through the same deadline validation, and is merged.
 - [x] Add command-level secret redaction before persistence or display
 - [x] Add a global emergency stop that cancels all active tools and providers, not only UI state
 
@@ -316,8 +315,9 @@ The desktop handoff specifies these; `main` does not implement them yet.
 - [x] Cost and token readouts in the app bar and session header from `session.usage`
 - [x] Context occupancy readout beside those totals
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
-    so a client shows the readout only when the provider reported the pair. No adapter populates
-    them and no client reads them yet.
+    so a client shows the readout only when the provider reported the pair. The Codex, Claude, and
+    ACP adapters report the pair, and `SessionUsageFooter` in `packages/ui/src/workspace-shell.tsx`
+    renders it beside the session totals.
 - [x] Add-skill flow with declared-capability review and install scope
   - `skill.installPreview` reads a folder on the execution machine and returns its manifest,
     digests, signature and trust state, files, and per-scope targets; `skill.install` copies it
@@ -357,13 +357,17 @@ The desktop handoff specifies these; `main` does not implement them yet.
     skills than a person chose.
   - Sending no selection preserves the project-default behaviour exactly, and an empty selection is
     a deliberate "no skills this turn" rather than an absent one.
-- [ ] Give the prompt composer a total budget and a documented drop order
-  - `apps/daemon/src/prompt-composer.ts` now assembles skills, annotations, working plan, handoff,
-    and user text in one place, and `apps/daemon/src/prompt-composition.golden.test.ts` pins all
-    sixteen section combinations byte for byte. Each section still truncates against its own limit
-    with no knowledge of the others, so five sections that each pass can still compose a prompt
-    none of them thought was too large. This is a deliberate behaviour change and needs its own
-    tests; do not fold it into a refactor.
+- [x] Give the prompt composer a total budget and a documented drop order
+  - `apps/daemon/src/prompt-composer.ts` assembles skills, annotations, working plan, handoff, and
+    user text in one place, and `apps/daemon/src/prompt-composition.golden.test.ts` pins all
+    sixteen section combinations byte for byte. Since #257 the composer measures the whole rendered
+    prompt against one budget rather than each section against its own limit, and drops one item at
+    a time in the exported `elasticPromptDropOrder`: project-default skills, open annotations, then
+    handoff history, annotations, and artifacts.
+  - Required sections are measured first, so a turn whose user text and explicit selections alone
+    exceed the budget is refused with those sections and their remedies named rather than quietly
+    trimmed. `apps/daemon/src/server-prompt-budget.test.ts` drives a real daemon over a socket and
+    asserts both the reported budget and that refusal.
 - [x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
   280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
   - Sizes live as tokens in `packages/ui/src/styles.css` with a test comparing them against the
@@ -451,8 +455,10 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   `Add device.rename for paired device labels` `MERGED`: label only, 1 to 128 characters shared
   with the pairing label limit, audited like `device.revoke`.
 - [#250](https://github.com/getdomovoi/domovoi/pull/250) `Give audit reads their own deadline`
-  `OPEN`: `audit.query` and `audit.export` read under their own `auditReadTimeoutMs` instead of
+  `MERGED`: `audit.query` and `audit.export` read under their own `auditReadTimeoutMs` instead of
   `agentTimeoutMs`, after a macOS run of #245 timed a real audit read out under a 5 ms agent budget.
+
+Every ledger entry is now merged.
 
 - [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
@@ -463,8 +469,11 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     separate Desktop fallback identity remains. Startup reconciliation refuses to start when the
     stored workspace names a different machine, and on a match it replaces the stored name,
     platform, architecture, and version with this executable's current facts while keeping
-    provider readiness. Close with a production-boundary restart over one real profile that
-    asserts those refreshed facts.
+    provider readiness. `apps/daemon/src/fleet-production.test.ts` restarts a peer over its own
+    real profile through that factory and asserts the source sees the renamed label. Only the
+    platform, architecture, and version refresh is still proven by a directly constructed daemon
+    over a hand-seeded store in `apps/daemon/src/server-machine-admission.test.ts`; close with a
+    production-boundary restart that asserts those three.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
   - Audit item F5: machine claims now grant only a five-minute confirmation capability. The
     source journals and reads back its keychain token before confirmation activates it; a lost
@@ -549,7 +558,8 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     verifies the installed graph, permits only the reviewed `node-pty` native build, and publishes
     a `runtime.json` receipt naming the installed directory. Same-release protocol bytes are bound
     inside the archive; provider SDKs are fetched, not bundled. Download, installation, native
-    build, verification, publication, and cleanup share five minutes.
+    build, verification, and publication share five minutes. Removing an unpublished staging tree
+    afterwards runs under its own fresh 30 seconds, never the exhausted budget.
   - HTTPS downloads add a 30-second byte-progress inactivity allowance within that total.
     Redirects and empty chunks do not renew it; local disk backpressure spends only the total.
     Deterministic and real HTTPS regressions reject silent or late responses. Refusal does not
@@ -566,9 +576,14 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     nothing.
   - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
     external toolchain remain reproducibility limits. The protocol library keeps all three
-    package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
-    a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not
-    performed by bootstrap. No release is published yet, so this path cannot be run against a real
+    package managers. Tests drive the real bootstrap CLI with an isolated changing registry, and
+    `scripts/bootstrap-real-daemon.test.mjs` packs the real archive, installs it, then runs the
+    installed tree on all three CI platforms: version and help, a real `node-pty` and keyring load,
+    a `~/.domovoi` the daemon writes itself in an isolated home, an authenticated `system.hello`,
+    and a withdrawn endpoint after a signalled stop. A clean-machine PATH entry and a supervised
+    service lifecycle stay unproven and are not performed by bootstrap. That test injects the
+    download step and the real-HTTPS test installs a fixture package, so no test yet fetches the
+    real archive over HTTPS. No release is published yet, so this path cannot be run against a real
     release today. See `docs/distribution.md`, and `docs/clean-machine-setup.md` for the operator
     steps that surround it.
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
@@ -582,10 +597,16 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     contends for the port: it attaches to the verified local owner, and it refuses to start a
     fallback daemon at all when a service configuration is present.
   - The Windows logon task still has no crash restart, where the systemd unit has
-    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager only on
-    the Windows runner, where `apps/daemon/src/service/windows-task.native.test.ts` registers,
-    stops, and removes a real scheduled task under a throwaway name. No test invokes a real
-    systemd or launchd.
+    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager on two
+    legs. `apps/daemon/src/service/windows-task.native.test.ts` registers, stops, and removes a
+    real scheduled task under a throwaway name on the Windows runner, and
+    `apps/daemon/src/service/systemd-unit.native.test.ts` installs, reports, and removes a real
+    systemd user unit on the Linux runner, then kills its main process and reads `NRestarts`,
+    `ActiveState`, and a new `MainPID` back off the manager to prove that `Restart=on-failure`
+    restarts a crash, leaves a deliberate stop stopped, and does not restart a clean exit. The
+    Linux job starts the user manager and asserts its private socket, so a runner without one
+    fails rather than skipping the proof. No test invokes a real launchd, so `KeepAlive` on macOS
+    stays unproven.
   - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
     installation, first start, TLS, supervision, pairing, and recovery, and names what remains
     unproven per platform.
@@ -596,27 +617,36 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
     daemon. Unit tests drive them with a fake `wsl.exe`. A corrupt listing returns no partial
     discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt
-    classification and remedy through both CLI commands. A real Windows-to-WSL test now exists:
-    `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
-    by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
-    running WSL 2 distribution, four of them prove that the listing answers or refuses within its
-    deadline and that a distribution that does not exist is refused, and the two that need a
-    running distribution skip. Discovery, open, authentication, repository ownership, Git, and
-    restart against a running distribution remain unverified. No `domovoi` alias exists, and WSL
-    is still neither a transport nor a fleet candidate: nothing but the CLI and `domovoid open`
-    consumes the discovery.
+    classification and remedy through both CLI commands. Real Windows-to-WSL tests exist:
+    `apps/daemon/src/wsl-windows.test.ts` and the transport proofs it includes skip by name off
+    Windows or on a Windows machine without a guest, and the `wsl-native` workflow in
+    `.github/workflows/wsl.yml` runs all of them against a disposable WSL 2 distribution it
+    provisions from a pinned image. `scripts/wsl-ci.mjs` requires at least ten passed proofs and
+    zero skipped, so the job is red rather than green when a proof cannot run. That job covers
+    discovery of a running distribution, absent and stopped classification, path translation
+    through the guest's own `wslpath`, and an authenticated route to a daemon installed inside the
+    guest. Opening a project, Git repository work, and daemon restart through that route remain
+    unverified, as do multiple distributions at once and mirrored networking. No `domovoi` alias
+    exists, and WSL is not a fleet candidate; it became a transport route in the transport item
+    above.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
   - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
     a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
     it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
-    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
-    which CI does not have.
-- [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
+    `wsl-native` job runs the real mount-boundary proof against a guest configured to mount Windows
+    drives under `/domovoi-ci-drives/`, through both path translation and Git-command preparation.
+    Only the refusal is proven there; no Git work has yet succeeded inside a distribution.
+- [x] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
     `credential-store-unavailable` for a keychain that could not be read. The two-daemon test
-    covers revocation health; version mismatch and upgrade-required still have no
-    production-boundary proof.
+    covers revocation health and reconnect after a restart.
+  - `apps/daemon/src/fleet-production-health.test.ts` (#255) grades a restarted peer as
+    `version-mismatch` or `upgrade-required` between two production daemons, refuses the move each
+    way with the matching reason, refuses re-pairing on the wire, and returns the row to healthy on
+    upgrade without a new pairing. The other release is a different `advertisedProtocolVersion` on
+    the same build rather than a second daemon build, so the states are proven, not a real
+    cross-release deployment.
 - [x] Add checkpointed machine transfer with live source and target preflight
 - [x] Transfer worktrees through an incremental Git bundle first, with explicit opt-in to a remote
   ref workflow
@@ -633,8 +663,13 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [ ] Stop transfer chunk directory cleanup failing with `EPERM` on Windows
   - `transfer-transactions.test.ts` "handles concurrent retries of the same chunk" failed once on
     the Windows job of #245 (run 33938587480) with `EPERM: operation not permitted, rmdir` on the
-    chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. A fix is in
-    progress on a branch and is not merged.
+    chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a
+    guard: `apps/daemon/src/transfer-transactions.ts` reserves each chunk path in
+    `activeMemberReceives` before the first await and refuses a second concurrent receive, so a
+    removal never races an open handle. The item stays open because the refusal it models is
+    simulated. The regression mocks `node:fs/promises` to throw the `EPERM`, no real Windows run
+    has exercised it, and the reservation is process-local, so two daemon processes over one
+    journal are still uncovered.
 - [x] Transfer dialog in the client with preflight, method, and what travels, calling
   `session.transfer`
   - `packages/ui/src/transfer-session-dialog.tsx` is wired into the workspace shell and
@@ -678,10 +713,11 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     platform facts, or credential material. The label is 1 to 128 characters, the pairing limit.
     Rename is allowed on revoked rows because the record is kept for audit; rotate stays refused
     there. There is no device change event, so clients update from the returned device.
-- [ ] Give Undo on a rename an expected-label precondition
-  - Undo is one more rename back to the previous label with no precondition, so it can overwrite
-    a concurrent rename by another client. The follow-up adds an expected-label field so a stale
-    undo refuses instead.
+- [x] Give Undo on a rename an expected-label precondition
+  - `device.rename` takes an optional `expectedLabel` (#253), and the daemon renames only the row
+    that still carries it, refusing otherwise with a typed mismatch that returns the row as it
+    stands. Undo always sends the label it opened against, so a rename by another client in the
+    meantime is reported rather than overwritten.
 
 Completion proof. Current evidence first, then what closing actually requires.
 
@@ -691,21 +727,24 @@ Covered today:
   restart, revocation health, and a session move, with no seeded registry;
 - one session controlled across two clients on one machine without divergent state;
 - revocation, rotation, and rename paths exist in the client;
-- transfer safety is tested against constructed remote facts and once against a production peer;
+- transfer safety is tested against constructed remote facts, and against a production peer in the
+  fleet, transport, and version-health production tests;
 - repository bytes never flow through a filesystem sync layer.
 
 Not covered, and the reason this goal is open:
 
 - the two-daemon test injects the OS keyring and provider readiness, so platform keychain
   behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
-- Windows and macOS run component suites, but service managers and WSL remain simulated;
+- macOS runs component suites and launchd is still simulated, and no project or Git work has run
+  over the proven WSL route;
 - no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
-bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus jobs that
-invoke native service managers and a real WSL. A daemon must also remain reachable from a paired
-phone across private-network identity changes without exposing payload plaintext to the relay,
-and a bearer or channel key alone must not be enough to enter.
+bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a job that
+invokes a real launchd and a project opened and worked on over the WSL route; the systemd, Windows
+Task Scheduler, and WSL 2 jobs exist. A daemon must also remain reachable from a paired phone
+across private-network identity changes without exposing payload plaintext to the relay, and a
+bearer or channel key alone must not be enough to enter.
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
@@ -783,8 +822,10 @@ before any public package or application publish.
 - [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
   GitHub Releases from the same immutable commit
   - `.github/workflows/release.yml` does all of this through Changesets and npm trusted
-    publishing, gated on the same checks as CI, with the protocol published before the daemon.
-  - It stays inert until the `RELEASE_PUBLISHING` repository variable is set; the npm
+    publishing, with the protocol published before the daemon. Its verify job runs on Linux only,
+    so it gates on fewer checks than CI: no macOS or Windows leg, no musl smoke, and no dependency
+    audit.
+  - It stays inert until the `RELEASE_PUBLISHING` repository variable reads `enabled`; the npm
     organisation and trusted publishers do not exist yet. See `docs/distribution.md`.
 - [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
   are stable

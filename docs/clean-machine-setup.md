@@ -342,18 +342,21 @@ Read these before relying on this guide for a fleet rollout.
 - Signature verification of release artifacts is not implemented. Checksums are not authenticity.
 - Native compilation and the external toolchain are not frozen by the integrity lock. Neither are
   separately installed provider CLIs.
-- Service installation is proven by configuration round-trip, concurrency, and focused Windows
-  removal tests, not by full native systemd, launchd, or Task Scheduler lifecycle acceptance. A
-  timed-out manager command may already have changed OS state; inspect the manager before retrying.
+- Service installation is proven against a real systemd user manager on Linux CI, including crash
+  restart, and against a real Task Scheduler task on Windows CI. launchd has no native test, so
+  macOS supervision rests on configuration round-trip and concurrency tests alone. A timed-out
+  manager command may already have changed OS state; inspect the manager before retrying.
 - Windows crash restart of the logon task is not configured.
-- The [dedicated WSL job](wsl-ci.md) has passed six real discovery and path-boundary proofs
-  on a hosted Windows runner with one WSL 2 guest, including a non-default Windows-drive
-  mount root and literal shell metacharacters in paths. Authenticated distro daemon access,
-  repository work and daemon restart are not yet proven by that job.
-- WSL distributions are not fleet transport candidates. Only local, LAN, explicitly configured TLS
-  tailnet, and source-local SSH routes are produced today. Relay is not implemented.
-- Fleet health reporting covers revocation. Version mismatch and upgrade-required states have no
-  production proof yet.
+- The [dedicated WSL job](wsl-ci.md) has passed ten real proofs on a hosted Windows runner with one
+  WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root and
+  literal shell metacharacters, and an authenticated route to a daemon installed inside the guest.
+  Opening a project, repository work and daemon restart over that route are not yet proven.
+- A running WSL 2 distribution is a source-local transport route, not a fleet member of its own.
+  Local, LAN, explicitly configured TLS tailnet, source-local SSH, and WSL routes are produced
+  today. Relay is not implemented.
+- Fleet health reporting covers revocation, reconnect, version mismatch, and upgrade-required
+  between two production daemons. The differing release is a changed advertised protocol version on
+  one build, not a second daemon build.
 - A shared or compromised OS account is not a security boundary. It can already read the daemon
   credential.
 
