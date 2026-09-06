@@ -1070,7 +1070,11 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Add macOS signing/notarization and Windows code signing
 <ul>
-<li><code>apps/desktop/electron-builder.yml</code> already carries the hardened runtime, the entitlements file, <code>mac.notarize</code> set to false, and <code>win.signtoolOptions</code>. Enabling either is credentials and a flag rather than a restructure.
+<li>The shared packaging policy enables mandatory Developer ID signing and notarization on macOS, or Azure/PFX signing on Windows, only with complete credentials. Partial or broken configuration fails. No credentials still permits an explicit development build.
+</li>
+<li><code>desktop-signing.yml</code> is a manual, main-only native build behind the exact-commit CI verdict and separate protected platform environments. It verifies signatures and the Mac application ticket before uploading installers, and has no release publishing permission.
+</li>
+<li>This remains open: Apple/Microsoft accounts and credentials, the first native signing runs, clean-machine launch and trust checks are unproven. See <code>docs/desktop-signing.md</code> for exact setup, credential custody, bounded CI waits and evidence limits.
 </li>
 </ul>
 </li>

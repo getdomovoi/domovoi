@@ -881,9 +881,15 @@ before any public package or application publish.
     the dmg, the zip, and the NSIS installer are unproven.
   - Nothing is signed, so this item stays open until the line below closes.
 - [ ] Add macOS signing/notarization and Windows code signing
-  - `apps/desktop/electron-builder.yml` already carries the hardened runtime, the entitlements
-    file, `mac.notarize` set to false, and `win.signtoolOptions`. Enabling either is credentials
-    and a flag rather than a restructure.
+  - The shared packaging policy enables mandatory Developer ID signing and notarization on
+    macOS, or Azure/PFX signing on Windows, only with complete credentials. Partial or broken
+    configuration fails. No credentials still permits an explicit development build.
+  - `desktop-signing.yml` is a manual, main-only native build behind the exact-commit CI verdict
+    and separate protected platform environments. It verifies signatures and the Mac application
+    ticket before uploading installers, and has no release publishing permission.
+  - This remains open: Apple/Microsoft accounts and credentials, the first native signing runs,
+    clean-machine launch and trust checks are unproven. See `docs/desktop-signing.md` for exact
+    setup, credential custody, bounded CI waits and evidence limits.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
