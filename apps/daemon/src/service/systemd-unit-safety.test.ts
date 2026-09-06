@@ -10,7 +10,7 @@ import { removeScratchDirectory } from "../test-scratch.js"
 import { parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type CapturedRun } from "./install.js"
-import { systemdFixtureConfiguration, systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
+import { systemdConfigHome, systemdFixtureConfiguration, systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
 
 const safetyBudget = 10_000
 type Body = Parameters<typeof withThrowawayUnit>[1]
@@ -26,6 +26,17 @@ it("uses host path semantics for a Windows safety fixture home", () => {
   expect(configuration.homeDirectory).toBe(home)
   expect(configuration.credentialPath).toBe(`${home}\\.domovoi\\daemon.token`)
   expect(parseServiceConfiguration(serializeServiceConfiguration(configuration))).toEqual(configuration)
+})
+
+it.each([undefined, ""])("resolves unset config home %j without relative cleanup paths", (configured) => {
+  const home = join(tmpdir(), "native-fixture-home")
+  expect(systemdConfigHome(configured, home)).toBe(join(home, ".config"))
+})
+
+it("preserves a configured systemd config home", () => {
+  const home = join(tmpdir(), "native-fixture-home")
+  const configured = join(home, "custom-config")
+  expect(systemdConfigHome(configured, home)).toBe(configured)
 })
 
 // Run the exact native harness with real private files but no native manager.

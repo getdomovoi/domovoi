@@ -18,6 +18,10 @@ export const supervisionBudget = 90_000
 export const cleanupBudget = 30_000
 const productionUnit = "domovoid.service"
 
+export function systemdConfigHome(configured: string | undefined, home: string): string {
+  return configured || join(home, ".config")
+}
+
 export function systemdFixtureConfiguration(home: string, platform: NodeJS.Platform = process.platform) {
   // Safety tests simulate systemd on every host but keep their real private
   // files on that host. Only the native Linux suite runs a real manager.
