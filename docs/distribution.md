@@ -399,7 +399,9 @@ and writes their version, commit and hashes to `release.json`. No package hook r
 The prerelease identifier determines the npm channel: alpha releases use `alpha`, never `latest`.
 
 `release:verify` checks the manifest, raw and packed plans, SBOM identities, and archive hashes
-again after artifact download in the publish job. `changeset publish --from-pack-dir` publishes
+again after artifact download in the publish job. A read-only preflight rejects known GitHub
+conflicts and mismatched existing npm bytes before the first registry write. Final publication
+checks again; the preflight is not a cross-service transaction. `changeset publish --from-pack-dir` publishes
 those bytes in ordered chunks. Changesets creates package tags. `release:github` creates the
 canonical `v<version>` tag and combined changelog release only after npm reports both exact
 archive integrities and provenance references. It uploads tarballs, SBOMs and `SHA256SUMS` into

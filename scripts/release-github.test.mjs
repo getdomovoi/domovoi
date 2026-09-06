@@ -100,3 +100,31 @@ test("a late registry response cannot create a release after the deadline", asyn
   await assert.rejects(publish(), /deadline/)
   assert.deepEqual(writes, [])
 })
+
+test("canonical preflight is read-only and refuses an already-conflicting tag", async (t) => {
+  const { preflightCanonicalRelease } = await import("./release-github.mjs")
+  assert.equal(typeof preflightCanonicalRelease, "function")
+  const { writes, ports } = fixture(t, { readVersion: async () => undefined })
+  await preflightCanonicalRelease(release, ports)
+  assert.deepEqual(writes, [], "absent packages and an absent release do not authorize a preflight write")
+  const request = ports.request
+  ports.request = (path, ...args) => path.startsWith("/git/ref/")
+    ? { object: { type: "commit", sha: "c".repeat(40) } } : request(path, ...args)
+  await assert.rejects(preflightCanonicalRelease(release, ports), /another commit/)
+  assert.deepEqual(writes, [])
+})
+
+test("preflight refuses conflicting assets and existing npm bytes before another publication", async (t) => {
+  const { preflightCanonicalRelease } = await import("./release-github.mjs")
+  assert.equal(typeof preflightCanonicalRelease, "function")
+  const { writes, ports } = fixture(t)
+  const request = ports.request
+  ports.request = (path, ...args) => path.startsWith("/releases/tags/")
+    ? { id: 12, draft: true, prerelease: true, body: `Source commit: ${release.commit}`, assets: [{ name: "SHA256SUMS", digest: "sha256:wrong" }] }
+    : request(path, ...args)
+  await assert.rejects(preflightCanonicalRelease(release, ports), /asset.*checksum/i)
+  ports.request = request
+  ports.readVersion = async (pkg) => ({ name: pkg.name, version: pkg.version, dist: { integrity: "different" } })
+  await assert.rejects(preflightCanonicalRelease(release, ports), /integrity/)
+  assert.deepEqual(writes, [])
+})

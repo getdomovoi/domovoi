@@ -96,6 +96,9 @@ Removing it disables both. Changing it does not cancel an already-running publis
 
 - Failed CI, missing CI, a skipped required CI job, or an unknown registry response refuses
   publication. Do not weaken the gate to get the first alpha out.
+- Before npm publication, read-only preflight refuses known tag, release, asset and existing
+  registry-byte conflicts. Final publication repeats the checks. Another writer can still
+  interfere between services; the workflow does not claim cross-service atomicity.
 - If protocol published and daemon did not, rerun the failed job from the **same workflow run**.
   It uses the same checked artifact, retained for 30 days. Bootstrap admission permits an
   already-published first version only when its integrity and provenance reference match.

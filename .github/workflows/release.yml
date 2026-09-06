@@ -136,6 +136,11 @@ jobs:
           name: release
           path: release
       - run: pnpm release:verify
+      - name: Refuse known registry or GitHub conflicts before publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 2
+        run: pnpm release:preflight
       - name: Admit trusted publishing or the one-time first alpha
         env:
           RELEASE_PUBLISHING: ${{ vars.RELEASE_PUBLISHING }}

@@ -14,14 +14,8 @@ export function requirePublishedArtifact(pkg, published) {
   }
 }
 
-// Ports receive the caller's one deadline. Tests exercise the actual ordering
-// without credentials, registry writes, git tags, or GitHub releases.
-export async function publishCanonicalRelease(release, { request, readVersion, upload, notes, deadline }) {
+async function inspectCanonicalRelease(release, { request, deadline }) {
   const call = (...args) => deadline.run(() => request(...args))
-  for (const pkg of release.packages) {
-    const published = await deadline.run(() => readVersion(pkg))
-    requirePublishedArtifact(pkg, published)
-  }
   const tagPath = `/git/ref/tags/${encodeURIComponent(release.gitTag)}`
   const reference = await call(tagPath)
   if (reference) {
@@ -46,20 +40,40 @@ export async function publishCanonicalRelease(release, { request, readVersion, u
   if (record && (!record.body?.includes(source) || record.prerelease !== release.prerelease)) {
     throw new Error(`${release.gitTag} already has different release metadata; it will not be replaced`)
   }
+  if (record) for (const file of release.files) {
+    const asset = record.assets?.find((item) => item.name === file.name)
+    if (asset && asset.digest !== `sha256:${file.sha256}`) throw new Error(`Release asset ${file.name} has a different or missing checksum; it will not be overwritten`)
+    if (!asset && !record.draft) throw new Error(`Published release is missing ${file.name}; inspect it before repairing a public release`)
+  }
+  return { reference, record }
+}
+
+// Refuse known conflicts before npm becomes immutable. These observations
+// are not a cross-service lock: publication checks again after npm succeeds.
+export async function preflightCanonicalRelease(release, { request, readVersion, deadline }) {
+  await inspectCanonicalRelease(release, { request, deadline })
+  for (const pkg of release.packages) {
+    const published = await deadline.run(() => readVersion(pkg))
+    if (published !== undefined) requirePublishedArtifact(pkg, published)
+  }
+  return { state: "checked", tag: release.gitTag, commit: release.commit }
+}
+
+// Ports receive the caller's one deadline. Tests exercise the actual ordering
+// without credentials, registry writes, git tags, or GitHub releases.
+export async function publishCanonicalRelease(release, { request, readVersion, upload, notes, deadline }) {
+  const call = (...args) => deadline.run(() => request(...args))
+  for (const pkg of release.packages) requirePublishedArtifact(pkg, await deadline.run(() => readVersion(pkg)))
+  let { reference, record } = await inspectCanonicalRelease(release, { request, deadline })
   if (!reference) await call("/git/refs", "POST", { ref: `refs/tags/${release.gitTag}`, sha: release.commit })
   if (!record) {
     record = await call("/releases", "POST", { tag_name: release.gitTag, target_commitish: release.commit,
-      name: `Domovoi ${release.version}`, body: `${source}\n\n${notes}`, draft: true,
+      name: `Domovoi ${release.version}`, body: `Source commit: ${release.commit}\n\n${notes}`, draft: true,
       prerelease: release.prerelease, make_latest: "false" })
   }
   for (const file of release.files) {
     const existing = record.assets?.find((asset) => asset.name === file.name)
-    if (existing) {
-      if (existing.digest !== `sha256:${file.sha256}`) throw new Error(`Release asset ${file.name} has a different or missing checksum; it will not be overwritten`)
-    } else {
-      if (!record.draft) throw new Error(`Published release is missing ${file.name}; inspect it before repairing a public release`)
-      await deadline.run(() => upload(record.id, file))
-    }
+    if (!existing) await deadline.run(() => upload(record.id, file))
   }
   const complete = await call(`/releases/${record.id}`)
   for (const file of release.files) {
@@ -89,11 +103,14 @@ function changelogEntry(text, version) {
   return lines.slice(start + 1, end).join("\n").trim()
 }
 
-export async function releaseGithub({ root = process.cwd(), env = process.env } = {}) {
+export async function releaseGithub({ root = process.cwd(), env = process.env, operation = "publish" } = {}) {
   if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_REPOSITORY !== "getdomovoi/domovoi" || env.GITHUB_REF !== "refs/heads/main" || !env.GH_TOKEN) {
     throw new Error("GitHub release creation runs only in the approved main release workflow")
   }
-  const deadline = bootstrapDeadline(600_000, "GitHub release exceeded ten minutes; inspect npm, the tag and any draft before retrying")
+  if (!["check", "publish"].includes(operation)) throw new Error("Expected a release check or publish operation")
+  const deadline = operation === "check"
+    ? bootstrapDeadline(60_000, "Release preflight exceeded one minute; no publication was admitted")
+    : bootstrapDeadline(600_000, "GitHub release exceeded ten minutes; inspect npm, the tag and any draft before retrying")
   try {
     const directory = join(root, "release")
     const release = await deadline.run(() => verifyRelease({ root, commit: env.GITHUB_SHA }))
@@ -106,6 +123,7 @@ export async function releaseGithub({ root = process.cwd(), env = process.env } 
     const request = (path, method = "GET", body) => jsonRequest(`https://api.github.com/repos/getdomovoi/domovoi${path}`, deadline,
       { method, headers: { ...headers, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) })
     const readVersion = (pkg) => jsonRequest(`https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(pkg.version)}`, deadline)
+    if (operation === "check") return await preflightCanonicalRelease(release, { request, readVersion, deadline })
     const upload = async (id, file) => {
       const path = join(directory, file.name)
       const metadata = await deadline.run(() => stat(path))
@@ -121,6 +139,10 @@ export async function releaseGithub({ root = process.cwd(), env = process.env } 
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { console.log(JSON.stringify(await releaseGithub(), null, 2)) }
+  try {
+    const operation = process.argv[2]
+    if (!["check", "publish"].includes(operation)) throw new Error("usage: node scripts/release-github.mjs <check|publish>")
+    console.log(JSON.stringify(await releaseGithub({ operation }), null, 2))
+  }
   catch (error) { console.error(error.message); process.exitCode = 1 }
 }
