@@ -6,18 +6,22 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { protocolVersion, workspaceSnapshotSchema } from "@getdomovoi/protocol"
-import { expect, it, vi } from "vitest"
+import { expect, it } from "vitest"
 import { WebSocket } from "ws"
 
 import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
 import { fixtureAddress } from "./test-fixture-address.js"
-import { waitForDaemon } from "./test-wait-for.js"
+import { waitForDaemon, waitForFixtureStartup } from "./test-wait-for.js"
 import { removeScratchDirectory } from "./test-scratch.js"
 
 const budget = process.platform === "win32" ? 40_000 : 20_000
+// The latency the test exists to prove. Sizing this would weaken the claim.
 const probeBudget = process.platform === "win32" ? 5_000 : 1_500
-const cleanupBudget = 10_000
+// A killed child releases its handles slowly on the runner whose tail is twice
+// every other one. Nothing has expired here across those runs; this bounds
+// teardown rather than a claim, and it was the last fixed window left.
+const cleanupBudget = process.platform === "win32" ? 20_000 : 10_000
 const beforeDeadline = <T>(operation: Promise<T>, deadline: OperationDeadline) =>
   withinServiceDeadline(deadline, () => operation)
 
@@ -43,12 +47,14 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
     let stderr = ""
     child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
     child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
-    // This is child startup observation, not the responsiveness assertion.
-    // Keep the short workspace.get probe below unchanged once the owner listens.
-    const { url } = await beforeDeadline(vi.waitFor(() => {
+    // Child startup observation, not the responsiveness assertion. It boots Node
+    // with tsx and starts a real daemon, so it takes the shared spawned fixture
+    // budget, which stays inside the outer deadline above. Keep the short
+    // workspace.get probe below unchanged once the owner listens.
+    const { url } = await beforeDeadline(waitForFixtureStartup("The keyring fixture", () => {
       expect(child!.exitCode, stderr).toBeNull()
       return fixtureAddress(stdout)
-    }, { timeout: 10_000 }), deadline)
+    }), deadline)
     deadline.throwIfExpired()
     socket = new WebSocket(url, { handshakeTimeout: Math.ceil(deadline.remainingMs()) })
     await once(socket, "open", { signal: deadline.signal })

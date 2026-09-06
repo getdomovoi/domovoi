@@ -48,6 +48,20 @@ function refused(reason: LocalDaemonRefusalReason): Extract<LocalDaemonHandle, {
   return { kind: "refused", reason, message: refusalMessages[reason] }
 }
 
+// A step that bounds itself reports its own expiry and carries the deadline as
+// a cause, or inside the aggregate it raises when its cleanup also failed, so
+// an expired clock is only visible through the wrapper. A machine too slow to
+// finish in time is not a damaged profile, and sending its owner to inspect a
+// private key outlives the stall that produced the advice. The depth bound
+// keeps a self-referencing cause from spinning here.
+function expiredDeadline(error: unknown, depth = 0): boolean {
+  if (!(error instanceof Error) || depth > 8) return false
+  if (error instanceof OperationDeadlineExceededError) return true
+  if (error instanceof AggregateError
+    && (error.errors as unknown[]).some((nested) => expiredDeadline(nested, depth + 1))) return true
+  return expiredDeadline(error.cause, depth + 1)
+}
+
 async function attach(
   homeDirectory: string, record: ReadyLocalOwner, environmentToken: string | undefined, deadline: OperationDeadline,
 ): Promise<Extract<LocalDaemonHandle, { kind: "attached" }>> {
@@ -166,7 +180,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
   } catch (error) {
     if (runtime) void runtime.stop().catch(() => {})
     return refused(error instanceof LocalDiscoveryError ? error.reason
-      : error instanceof OperationDeadlineExceededError ? "owner-unreachable" : "profile-invalid")
+      : expiredDeadline(error) ? "owner-unreachable" : "profile-invalid")
   } finally {
     lease?.release()
     deadline.clear()

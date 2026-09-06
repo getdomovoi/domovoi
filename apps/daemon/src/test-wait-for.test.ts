@@ -4,7 +4,9 @@ import { join } from "node:path"
 import ts from "typescript"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { daemonWaitTimeoutMs, waitForDaemon } from "./test-wait-for.js"
+import {
+  daemonWaitTimeoutMs, fixtureStartupTimeoutMs, productionRpcTimeoutMs, waitForDaemon, waitForFixtureStartup,
+} from "./test-wait-for.js"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -32,6 +34,44 @@ describe("daemon assertion waits", () => {
     vi.spyOn(vi, "waitFor").mockRejectedValue(failure)
 
     await expect(waitForDaemon(() => {})).rejects.toBe(failure)
+  })
+
+  it.each([
+    ["win32", 20_000],
+    ["linux", 10_000],
+    ["darwin", 10_000],
+  ] as const)("gives a spawned %s fixture longer to start than an observation", (platform, timeout) => {
+    expect(fixtureStartupTimeoutMs(platform)).toBe(timeout)
+    expect(timeout).toBeGreaterThan(daemonWaitTimeoutMs(platform))
+  })
+
+  it("clears the worst passing Windows run measured in CI by more than twice", () => {
+    expect(fixtureStartupTimeoutMs("win32")).toBeGreaterThan(2 * 8_103)
+  })
+
+  it.each([
+    ["win32", 25_000],
+    ["linux", 10_000],
+    ["darwin", 10_000],
+  ] as const)("gives one production harness call on %s longer than a spawned fixture start", (platform, timeout) => {
+    expect(productionRpcTimeoutMs(platform)).toBe(timeout)
+    expect(timeout).toBeGreaterThanOrEqual(fixtureStartupTimeoutMs(platform))
+  })
+
+  // Every passing Windows run answered inside the fixed ten seconds this budget
+  // replaced, so ten seconds is the ceiling on the worst passing call.
+  it("clears the ceiling on the worst passing Windows call by two and a half times", () => {
+    expect(productionRpcTimeoutMs("win32")).toBeGreaterThanOrEqual(2.5 * 10_000)
+  })
+
+  it("names the budget when a fixture never starts and keeps the assertion as the cause", async () => {
+    const failure = new Error("The daemon fixture has not printed its address yet")
+    vi.spyOn(vi, "waitFor").mockRejectedValue(failure)
+
+    await expect(waitForFixtureStartup("The keyring fixture", () => {})).rejects.toThrow(
+      `The keyring fixture did not start within its ${fixtureStartupTimeoutMs(process.platform)}ms startup budget`,
+    )
+    await expect(waitForFixtureStartup("The keyring fixture", () => {})).rejects.toMatchObject({ cause: failure })
   })
 
   it("requires every direct vi.waitFor in the daemon suite to name a positive timeout", async () => {

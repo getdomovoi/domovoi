@@ -597,11 +597,41 @@ make live manual claim deletion safe.
 ## Loaded fixture checks
 
 The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
-keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
-short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+keyring responsiveness test allows 20 seconds on Windows and ten elsewhere to observe its real
+child daemon starting. That child boots Node with two `--import` hooks, one of them `tsx`, which
+transpiles the daemon source before the fixture listens, so it is the heaviest wait in the file;
+a fixed ten seconds expired on Windows once the runner was loaded. Its teardown wait is scaled the
+same way. The short RPC responsiveness probe is deliberately not scaled, because the latency it
+bounds is what the test proves. The suite-wide observation and test defaults are unchanged.
 Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
-delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
-child stays under its parent's kill deadline. Normal runs inject no delay.
+delay and a 3.5-second child startup delay. Any other number sets the child startup delay in
+milliseconds instead, so a stall can be aimed at whichever bound is being measured. The journal
+delay is cancelled with the test, and the child stays under its parent's kill deadline. Normal runs
+inject no delay.
+
+The pending fleet claim tests take 40 seconds on Windows and 20 elsewhere. A per-file test budget
+must not fall below the platform default in `vitest.config.ts`, which gives Windows 30 seconds
+because that runner releases handles slowly. Each of those three tests builds two production
+daemons over real sockets and SQLite before stopping and restarting one, and a single production
+start or stop is allowed 30 seconds on its own.
+
+One call over the production fleet harness gets 25 seconds on Windows and ten elsewhere. The call
+reaches a real daemon that spawns Git, writes SQLite and dials a second daemon, so it is priced by
+the runner rather than by the code under test, and a fixed ten seconds on every platform expired
+three times in 329 Windows executions of the two tests that move a session, once on `main`. Those
+expiries were slower than the median but not slower than seven runs that passed, so the split was
+where the runner stalled rather than a difference in behaviour. Both of those tests, and the
+quarantine test beside them, now take 40 seconds on Windows so the call budget stays inside the test
+budget with room for the setup ahead of it, and an expiry names the method and the budget it spent
+instead of reporting only that a deadline passed. The daemon still allows a session move ten minutes
+of its own, so this budget bounds the test, not the transfer.
+
+The native Windows task removal test keeps its 60-second lifecycle budget, which no passing CI run
+has come near. It now records the phase it is in, so an expiry names the step that spent the budget
+instead of reporting only that a deadline passed. It also takes the task teardown obligation before
+issuing the registration rather than reading it from the result, because a committed
+`RegisterTaskDefinition` survives the PowerShell process an expired deadline abandons, while a name
+that was never registered stops cleanly as missing.
 
 ## Terminal dependency
 
