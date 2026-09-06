@@ -33,11 +33,11 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
 
 ## Execute in this order
 
-1. **Approve the alpha name and merge the repository automation.** Changesets 3.0.1 produces
-   `0.1.0-alpha.0` from the current minor changesets after `pre enter alpha`. The roadmap still
-   names `alpha.1`; resolve that naming decision before entering pre mode. This automation does
-   not hand-edit versions or skip a prerelease number. Before 1.0, a breaking change uses a
-   minor changeset; an additive compatible change uses patch. State upgrade actions in the note.
+1. **Merge the repository automation.** Changesets 3.0.1 produces `0.1.0-alpha.0` from the
+   current minor changesets after `pre enter alpha`, and the roadmap names that same first
+   alpha. This automation does not hand-edit versions or skip a prerelease number. Before 1.0,
+   a breaking change uses a minor changeset; an additive compatible change uses patch. State
+   upgrade actions in the note.
 2. **Confirm npm ownership.** Sign in to npm, confirm ownership of the `getdomovoi` organization
    or create it if available, and enable two-factor authentication on the publishing account.
    Confirm that account can create public packages under `@getdomovoi`.

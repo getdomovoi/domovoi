@@ -5,6 +5,9 @@ packages:
 allowBuilds:
   '@parcel/watcher': true
   electron: true
+  # electron-builder pulls this for the Squirrel.Windows target. The Windows
+  # target here is NSIS, so its install script never has to run.
+  electron-winstaller: false
   esbuild: true
   node-pty: true
   unrs-resolver: true

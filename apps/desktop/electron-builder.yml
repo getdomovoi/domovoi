@@ -1,0 +1,122 @@
+# Distributable Domovoi Desktop builds.
+#
+# electron-builder rather than Electron Forge: this app is already built by
+# electron-vite, which emits a finished out/ tree and leaves packaging alone,
+# and electron-builder consumes that tree directly. Forge would want to own the
+# bundler through its own Vite plugin, which does not understand electron-vite's
+# layout.
+#
+# Nothing here signs. The next two roadmap items are macOS notarization and
+# Windows code signing, so every hook they need is already named and inert:
+# mac.notarize, the hardened-runtime entitlements files, and win.signtoolOptions.
+# Turning them on is credentials plus a flag, not a restructure.
+#
+# productName lives in package.json, not here, because Electron reads it at
+# runtime for app.getName() and therefore for userData, logs and the single
+# instance lock. One source of truth keeps the packaged profile directory from
+# drifting away from the development one.
+appId: sh.domovoi.desktop
+artifactName: domovoi-desktop-${version}-${arch}.${ext}
+copyright: Copyright (c) Domovoi contributors
+
+directories:
+  buildResources: build
+  output: dist
+
+# electron-vite writes out/. Production dependencies are added by
+# electron-builder itself; the exclusions drop what only the renderer bundle
+# uses, which vite has already inlined into out/renderer.
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+  - "!node_modules/@getdomovoi/ui/**"
+  - "!node_modules/react/**"
+  - "!node_modules/react-dom/**"
+
+# @napi-rs/keyring and node-pty are Node-API modules and load unchanged in
+# Electron, so there is nothing to rebuild and no compiler to require.
+npmRebuild: false
+# The release workflow attaches artifacts. Packaging never uploads.
+publish: null
+
+asar: true
+# A native module has to exist as a real file on disk before dlopen can take
+# it. node-pty and the keyring binding are unpacked whole rather than by
+# extension, because node-pty also ships plain executables next to its .node
+# files: spawn-helper on macOS, OpenConsole.exe and conpty.dll on Windows.
+asarUnpack:
+  - "**/*.node"
+  - "**/node_modules/node-pty/**"
+  - "**/node_modules/@napi-rs/**"
+
+# Deep links. This becomes the Linux desktop-entry MimeType, the macOS
+# CFBundleURLTypes entry, and the NSIS protocol registration.
+protocols:
+  - name: Domovoi
+    schemes:
+      - domovoi
+
+linux:
+  target:
+    - AppImage
+    - deb
+  # The domovoi and domovoid names belong to the CLI and the daemon, which ship
+  # as their own Linux packages. Only Linux needs the rename; macOS and Windows
+  # keep Domovoi, and setting this at the top level would rename the macOS
+  # bundle to domovoi-desktop.app as well.
+  executableName: domovoi-desktop
+  category: Development
+  synopsis: Local-first agent sessions with a daemon that owns the state
+  description: >-
+    Domovoi runs agent sessions against a daemon on the machine that holds the
+    code. The desktop application starts and owns that daemon when no other
+    client already has it.
+  # Debian requires a maintainer contact and electron-builder refuses to build a
+  # deb without one. This address is a Cloudflare Email Routing rule on
+  # domovoi.sh that forwards to the maintainer, so it receives mail but cannot
+  # send from that address.
+  maintainer: Domovoi contributors <maintainers@domovoi.sh>
+  # Electron takes its Linux app_id from desktopName in package.json. Syncing
+  # the desktop entry to the same name is what lets a running window carry the
+  # application icon instead of a generic one.
+  syncDesktopName: true
+
+deb:
+  # Without this the package is named domovoi, which the CLI package will want.
+  packageName: domovoi-desktop
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.developer-tools
+  # Notarization requires the hardened runtime, and the hardened runtime
+  # requires these entitlements before a build is worth submitting.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Signing and notarization are the next roadmap items. Until an Apple
+  # Developer identity exists, a build here is unsigned and adhoc-signed by
+  # electron-builder; flip notarize to true once the credentials are in CI.
+  notarize: false
+
+dmg:
+  writeUpdateInfo: false
+
+win:
+  target:
+    - nsis
+  # Code signing is the roadmap item after notarization. electron-builder reads
+  # the certificate from signtoolOptions or from an Azure Trusted Signing
+  # profile; neither exists yet, so this build is unsigned.
+  signtoolOptions:
+    signingHashAlgorithms:
+      - sha256
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: Domovoi

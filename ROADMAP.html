@@ -714,7 +714,7 @@ td { color: var(--ink2); }
 <ul>
 <li>Audit item F5: machine claims now grant only a five-minute confirmation capability. The source journals and reads back its keychain token before confirmation activates it; a lost confirmation reply is replayable after restart. Pending tokens cannot authenticate or retire previous machine authority, and expired claims never activate. Protocol 0.5 requires updated peers but leaves existing active pairings intact. Production-socket tests cover failed local storage, target restart, expiry, and source recovery after a committed but unanswered confirm.
 </li>
-<li>Audit item F3. <code>domovoid pair</code> and <code>domovoid open</code> spend one 15-second deadline across connect, <code>system.hello</code>, and the call, so a listener that accepts the socket and then says nothing is refused with the address waited on and a remedy rather than holding the terminal. Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's: a connection stalled inside a TLS handshake can outlive the refusal.
+<li>Audit item F3. <code>domovoid pair</code> and <code>domovoid open</code> spend one 15-second deadline across connect, <code>system.hello</code>, and the call, so a listener that accepts the socket and then says nothing is refused with the address waited on and a remedy rather than holding the terminal. Both a complete reply and a refusal drop the one-shot transport, without a new close-handshake wait after the command deadline clears. Real child-process tests require natural exit against a stalled TLS handshake and against a peer that answers RPC but withholds its close reply.
 </li>
 </ul>
 </li>
@@ -1011,13 +1011,15 @@ td { color: var(--ink2); }
 <ul>
 <li>Changesets, the <code>@getdomovoi/*</code> fixed version group, <code>pnpm changeset</code>, and <code>pnpm release:status</code> are in place.
 </li>
-<li>CI runs <code>release:metadata</code> against each PR's base. New source or lockfile changes require a new note, not an accumulated note from another PR. Real Changesets CLI fixture tests cover generated version PRs, whose content-only exemption cannot smuggle source or dependencies.
+<li>CI runs <code>release:metadata</code> against each pull request's base. New source or lockfile changes require a new note, not an accumulated note from another PR. Real Changesets CLI fixture tests cover generated version PRs, whose content-only exemption cannot smuggle source or dependencies.
+</li>
+<li>That step is conditioned on the pull-request event in <code>ci.yml</code>, so it covers changes that arrive through a pull request, not every commit. A commit pushed straight to <code>main</code> skips the step, and a skipped step is not a job failure, so the release gate below still passes for it.
 </li>
 </ul>
 </li>
-<li>[ ] Make <code>0.1.0-alpha.1</code> the first public alpha release
+<li>[ ] Make <code>0.1.0-alpha.0</code> the first public alpha release
 <ul>
-<li>Changesets 3.0.1 generates <code>0.1.0-alpha.0</code> after <code>pre enter alpha</code>; settle the naming discrepancy before entering pre mode. No public version or prerelease state is committed yet.
+<li>Changesets pre-release mode numbers from zero and the workflow never sets a version by hand, so the first tag the tooling produces is the one that ships. <code>docs/distribution.md</code> records the same number. No public version or prerelease state is committed yet.
 </li>
 </ul>
 </li>
@@ -1059,8 +1061,22 @@ td { color: var(--ink2); }
 </ul>
 </li>
 <li>[ ] Build signed desktop installers for macOS, Windows, and Linux
+<ul>
+<li><code>pnpm package:desktop</code> builds the host platform's installers with electron-builder from the same electron-vite output the launch smoke runs, then proves the result with <code>apps/desktop/scripts/package-smoke.mjs</code>.
+</li>
+<li>Linux is built and verified. The AppImage and the deb keep node-pty and the keyring binding outside the asar, the packaged application loads both from the archive on the main thread and in a worker thread, starts the production daemon, and renders its window.
+</li>
+<li>macOS and Windows are configured and unbuilt. Neither target has run on its own platform, so the dmg, the zip, and the NSIS installer are unproven.
+</li>
+<li>Nothing is signed, so this item stays open until the line below closes.
+</li>
+</ul>
 </li>
 <li>[ ] Add macOS signing/notarization and Windows code signing
+<ul>
+<li><code>apps/desktop/electron-builder.yml</code> already carries the hardened runtime, the entitlements file, <code>mac.notarize</code> set to false, and <code>win.signtoolOptions</code>. Enabling either is credentials and a flag rather than a restructure.
+</li>
+</ul>
 </li>
 <li>[ ] Publish SHA-256 checksums and SBOMs for release artifacts
 <ul>

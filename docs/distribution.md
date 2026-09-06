@@ -336,11 +336,12 @@ cannot cover a new PR. Documentation, tests and repository tooling need none. An
 recognized by its contents, not its author or branch name, and cannot add source or dependencies
 under that exemption. `pnpm release:version` consumes notes, writes changelogs and rewrites versions.
 
-Changesets prerelease mode would produce `0.1.0-alpha.0` from the current minor notes. The roadmap
-still requests `alpha.1`; the maintainer must settle that name before entering pre mode. This
-branch changes no package version and commits no prerelease state. For pre-1.0 releases, breaking
-compatibility uses a minor changeset and additive compatible work uses patch. Every note must
-state any required operator migration. See the [first-release checklist](release-setup.md).
+Changesets prerelease mode produces `0.1.0-alpha.0` from the current minor notes, and the roadmap
+names that same first alpha. Nothing sets a version by hand, so the number the tooling generates
+is the one that ships. This branch changes no package version and commits no prerelease state.
+For pre-1.0 releases, breaking compatibility uses a minor changeset and additive compatible work
+uses patch. Every note must state any required operator migration. See the
+[first-release checklist](release-setup.md).
 
 ## Release workflow
 

@@ -484,8 +484,9 @@ Every ledger entry is now merged.
   - Audit item F3. `domovoid pair` and `domovoid open` spend one 15-second deadline across
     connect, `system.hello`, and the call, so a listener that accepts the socket and then says
     nothing is refused with the address waited on and a remedy rather than holding the terminal.
-    Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's:
-    a connection stalled inside a TLS handshake can outlive the refusal.
+    Both a complete reply and a refusal drop the one-shot transport, without a new close-handshake
+    wait after the command deadline clears. Real child-process tests require natural exit against
+    a stalled TLS handshake and against a peer that answers RPC but withholds its close reply.
 - [x] Bound pairing claim admission and keep pre-auth noise out of authenticated audit history
   - Audit item A2, closed by #247. Claims are admitted before code validation: 3 per TCP source
     and 30 per listener within 60 seconds, and reconnects, forwarding headers, new codes, and
@@ -831,12 +832,16 @@ before any public package or application publish.
   publish
   - Changesets, the `@getdomovoi/*` fixed version group, `pnpm changeset`, and `pnpm release:status`
     are in place.
-  - CI runs `release:metadata` against each PR's base. New source or lockfile changes require a
-    new note, not an accumulated note from another PR. Real Changesets CLI fixture tests cover
-    generated version PRs, whose content-only exemption cannot smuggle source or dependencies.
-- [ ] Make `0.1.0-alpha.1` the first public alpha release
-  - Changesets 3.0.1 generates `0.1.0-alpha.0` after `pre enter alpha`; settle the naming
-    discrepancy before entering pre mode. No public version or prerelease state is committed yet.
+  - CI runs `release:metadata` against each pull request's base. New source or lockfile changes
+    require a new note, not an accumulated note from another PR. Real Changesets CLI fixture tests
+    cover generated version PRs, whose content-only exemption cannot smuggle source or dependencies.
+  - That step is conditioned on the pull-request event in `ci.yml`, so it covers changes that
+    arrive through a pull request, not every commit. A commit pushed straight to `main` skips the
+    step, and a skipped step is not a job failure, so the release gate below still passes for it.
+- [ ] Make `0.1.0-alpha.0` the first public alpha release
+  - Changesets pre-release mode numbers from zero and the workflow never sets a version by
+    hand, so the first tag the tooling produces is the one that ships. `docs/distribution.md`
+    records the same number. No public version or prerelease state is committed yet.
 - [x] Keep package, app, daemon, protocol, and CLI versions in lockstep through `0.x`, and treat
   compatibility as one release unit
   - A fixed Changesets group moves every workspace version together.
@@ -881,7 +886,19 @@ before any public package or application publish.
   - `pnpm test:install` packs the protocol package, installs the tarball with each package manager,
     and imports it; a missing package manager fails CI.
 - [ ] Build signed desktop installers for macOS, Windows, and Linux
+  - `pnpm package:desktop` builds the host platform's installers with electron-builder from the
+    same electron-vite output the launch smoke runs, then proves the result with
+    `apps/desktop/scripts/package-smoke.mjs`.
+  - Linux is built and verified. The AppImage and the deb keep node-pty and the keyring binding
+    outside the asar, the packaged application loads both from the archive on the main thread and
+    in a worker thread, starts the production daemon, and renders its window.
+  - macOS and Windows are configured and unbuilt. Neither target has run on its own platform, so
+    the dmg, the zip, and the NSIS installer are unproven.
+  - Nothing is signed, so this item stays open until the line below closes.
 - [ ] Add macOS signing/notarization and Windows code signing
+  - `apps/desktop/electron-builder.yml` already carries the hardened runtime, the entitlements
+    file, `mac.notarize` set to false, and `win.signtoolOptions`. Enabling either is credentials
+    and a flag rather than a restructure.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.
