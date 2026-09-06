@@ -133,9 +133,26 @@ It never replaces the user's Domovoi task. Its private stop marker cleans up eve
 broken delete-only remover. This test is skipped on other operating systems, so a green Linux run
 does not prove native Windows removal.
 
-These are configuration delivery and focused removal checks, not full native systemd, launchd,
-or Task Scheduler lifecycle acceptance. Native manager restart checks and installer rollback
-remain separate audit work. A timed-out manager may already have changed OS state; inspect service
+A native Linux-only test drives systemd itself through the same install, status and removal
+functions the CLI calls. It installs a UUID-named user unit into the per-boot runtime unit
+directory, checks that the manager loaded that exact fragment, enabled it and started the process
+the unit names, then removes it and requires process exit, an absent unit, an absent enable symlink
+and an absent saved configuration. It runs `systemctl` only in the user scope, refuses a command
+naming any other unit, refuses to overwrite a name that already exists, and cleans up whatever the
+assertions did. Its gate is the systemd user manager's private socket, so a machine without a
+running user manager skips it. The Linux CI leg starts that manager and fails when the socket is
+missing, so the test cannot disappear from the run.
+
+There is no launchd equivalent, so a green Linux and Windows run does not prove native macOS
+installation or removal. Writing one first needs a macOS runner where `launchctl bootstrap
+gui/<uid>` and `launchctl print gui/<uid>/<label>` are confirmed to work in the hosted session,
+which nobody has checked; that domain is the one the installer targets, and guessing at it would
+produce a test that passes for the wrong reason.
+
+Beyond those native tests these are configuration delivery and focused removal checks, not full
+native systemd, launchd, or Task Scheduler lifecycle acceptance. Neither native test crashes its
+process, so `Restart=on-failure` and `KeepAlive` supervision remain unproven. Native manager
+restart checks and installer rollback remain separate audit work. A timed-out manager may already have changed OS state; inspect service
 status before retrying. Each file is replaced by a same-directory rename only after a complete
 private staging write. A failed write preserves the last complete file. Expiry or a crash can leave
 a private `.tmp` sibling; it is never read as configuration and may be removed after installation
