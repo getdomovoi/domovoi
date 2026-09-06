@@ -28,8 +28,10 @@ installed WSL 1 distribution is not sufficient. The kernel must identify WSL 2.
 
 The native test process receives the exact required distro name. It must find
 that distro running under WSL 2, rather than selecting some other running guest.
-The report must contain at least ten passed native tests and zero skipped,
-pending, todo or failed tests. Missing virtualization, a corrupt listing, a
+The report must contain the ten discovery/transport tests plus five named
+repository boundary assertions, all passed, and zero skipped, pending, todo or
+failed tests. The guard checks each repository assertion by name and status, not
+just a larger total that unrelated tests could satisfy. Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.
 Success prints `DOMOVOI_WSL_NATIVE_OK`; failure prints
 `DOMOVOI_WSL_NATIVE_FAILED` with the underlying reason. Failed proofs print the
@@ -132,11 +134,46 @@ refusal, no route from a stale file after killing the guest daemon, and refusal
 of a stopped guest without waking it. These claims come from the required
 Windows run, not from Linux's skipped native tests.
 
-It still does **not** open a project or execute Git repository work over that
-route, prove daemon restart, resolve two distribution identities, or cover
+The repository extension is registered in the same required guest, before the
+deliberate kill and stopped-distro tests. It adds the following real operations:
+
+- Execute the built Windows `domovoid wsl list` and `domovoid open` commands, not
+  just their helpers, with both UNC spellings and a repository name containing
+  spaces, dollar signs and command-substitution syntax.
+- Verify the guest workspace records the Linux path and guest machine id while
+  the Windows daemon's project remains unchanged. The Windows CLI deliberately
+  receives the Windows daemon's connection configuration, so reusing it for the
+  guest would fail the proof.
+- Execute the production `distroGitCommand` through real `wsl.exe`, checking
+  repository root, commit, clean status, guest filesystem mapping and ownership.
+  The guest's Git version is printed. Git comes from the pinned Ubuntu image,
+  not a mocked runner or a newly fetched tool.
+- Refuse a valid Windows Git repository reached through the custom automount
+  root, through both the open shim and Git-command preparation, with the
+  Windows-drive remedy and no project mutation on either daemon.
+- Refuse direct Windows-daemon `project.open` calls for both WSL share spellings
+  with the specific share-boundary refusal, not an unrelated Git failure.
+- Stop the real guest daemon gracefully, observe process exit and endpoint
+  removal, restart the same profile, and reauthenticate using the stored pairing.
+  The persisted project, machine id and Git commit must survive. No assumption
+  about a newly chosen ephemeral port being different is needed.
+
+These added assertions require their first hosted run before they count as
+native evidence. Linux registration/typecheck and the report-guard unit tests
+alone do not prove any Windows crossing.
+
+The job still does **not** resolve two distribution identities or cover
 Windows 11 mirrored networking and VPNs. It does not prove the host keychain,
 multi-distro port collision handling or an atomic stop-versus-endpoint-read
 operation. The regular guest CLI retains WSL's distribution environment; the
 saved service launch configuration does not carry those facts today and is not
-covered by this proof. A second distribution is added only when a test needs two. The hosted
-results above cover only the named discovery, filesystem and route boundaries.
+covered by this proof. The restart is a normal foreground CLI restart, not
+crash recovery or supervisor restart. The client open uses the guest's local
+root credential; the fleet route separately uses the paired machine credential.
+This does not add client admission to a machine credential or prove a session
+transfer. A second distribution is added only when a test needs two.
+
+Unit-only cases still include multiple distro arbitration, alternate mount
+spellings and manually bound drive paths beyond the configured automount root,
+and Git repository-selection argument refusals. Do not infer those outcomes
+from the single-guest hosted result.
