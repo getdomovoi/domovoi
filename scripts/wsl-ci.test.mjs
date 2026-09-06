@@ -1,10 +1,13 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { access, mkdtemp, readFile, rm } from "node:fs/promises"
 import { createRequire } from "node:module"
-import { matchesGlob } from "node:path"
+import { tmpdir } from "node:os"
+import { join, matchesGlob } from "node:path"
 import test from "node:test"
 
-import { assertWslReport, runWslCi } from "./wsl-ci.mjs"
+import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
+import { assertWslReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
@@ -59,6 +62,42 @@ test("required native report rejects an empty, skipped or failed run", () => {
     { ...passed, numTodoTests: 1 }, { ...passed, numFailedTests: 1 }, { ...passed, success: false }]) {
     assert.throws(() => assertWslReport(bad), /WSL native proofs must pass.*no skipped/)
   }
+})
+
+test("image download streams the pinned bytes and refuses a digest mismatch", { timeout: 5_000 }, async () => {
+  const deadline = bootstrapDeadline(3_000, "test image deadline")
+  let directory
+  try {
+    directory = await deadline.run(() => mkdtemp(join(tmpdir(), "domovoi-wsl-download-")))
+    const payload = Buffer.from("small archive fixture")
+    const image = { url: "https://example.test/ubuntu.wsl", sha256: createHash("sha256").update(payload).digest("hex") }
+    const download = async function* (url, options) {
+      assert.equal(url, image.url)
+      assert.equal(options.maximumBytes, 1024 * 1024 * 1024)
+      assert.equal(options.inactivityTimeoutMs, 30_000)
+      assert.equal(options.deadline, deadline)
+      yield payload.subarray(0, 5)
+      yield payload.subarray(5)
+    }
+    const valid = join(directory, "valid.wsl")
+    await downloadWslImage(valid, deadline, { image, download })
+    assert.deepEqual(await readFile(valid), payload)
+    await assert.rejects(downloadWslImage(join(directory, "bad.wsl"), deadline, {
+      image: { ...image, sha256: "0".repeat(64) }, download,
+    }), /WSL image sha256 differs/)
+  } finally {
+    deadline.clear()
+    const cleanup = bootstrapDeadline(1_000, "test image cleanup deadline")
+    try { if (directory) await cleanup.run(() => rm(directory, { recursive: true, force: true })) }
+    finally { cleanup.clear() }
+  }
+})
+
+test("a failed image check never reaches installation", async () => {
+  const { calls, effects } = fixture({ downloadImage: async () => { throw new Error("WSL image sha256 differs") } })
+  await assert.rejects(runWslCi({ platform: "win32", effects }), /sha256 differs/)
+  assert.equal(calls.some(({ args }) => args.includes("--install")), false)
+  assert.equal(calls.some(({ args }) => args.includes("--unregister")), false)
 })
 
 test("provisions exactly one distro, requires it in the test process, then removes only it", async () => {
@@ -118,6 +157,29 @@ test("a silent provisioning call expires and cleanup gets its own finite budget"
   assert.equal(aborted.aborted, true)
   assert.equal(calls.at(-1).args[0], "--unregister")
   assert.equal(calls.at(-1).options.signal.aborted, false)
+})
+
+test("expiry during staging creation keeps its promise for cleanup", { timeout: 3_000 }, async () => {
+  let created
+  let late
+  const { effects } = fixture({ createStaging: () => {
+    late = new Promise((resolve) => setTimeout(() => resolve(mkdtemp(join(tmpdir(), "domovoi-wsl-late-"))), 150))
+    return late.then((path) => { created = path; return path })
+  } })
+  try {
+    await assert.rejects(runWslCi({ platform: "win32", effects, budgets: { provision: 50, proofs: 50, cleanup: 1_000 } }), /provision.*deadline/)
+    const observation = bootstrapDeadline(1_000, "late staging observation deadline")
+    try {
+      await observation.run(() => late)
+      await observation.run(() => assert.rejects(access(created), { code: "ENOENT" }))
+    } finally { observation.clear() }
+  } finally {
+    const cleanup = bootstrapDeadline(1_000, "late staging test cleanup deadline")
+    try {
+      if (late) await cleanup.run(() => late)
+      if (created) await cleanup.run(() => rm(created, { recursive: true, force: true }))
+    } finally { cleanup.clear() }
+  }
 })
 
 test("cleanup failure cannot turn a successful proof into success", async () => {
