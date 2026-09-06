@@ -14,9 +14,9 @@ beforeEach(() => { vi.useFakeTimers(); sockets = installFakeWebSocket() })
 afterEach(() => { client?.disconnect(); sockets.uninstall(); vi.useRealTimers() })
 
 describe("client credential admission", () => {
-  function connect(expectedMachine = machineId) {
+  function connect(expectedMachine = machineId, pinDevice = true) {
     client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
-      budgets, authToken: "a".repeat(43), admission: { machineId: expectedMachine, deviceId },
+      budgets, authToken: "a".repeat(43), admission: { machineId: expectedMachine, ...(pinDevice ? { deviceId } : {}) },
     })
     const snapshots = vi.fn()
     client.addEventListener("snapshot", snapshots)
@@ -43,6 +43,24 @@ describe("client credential admission", () => {
     expect(await outcome).toEqual(demoWorkspace)
     expect(snapshots).toHaveBeenCalledTimes(2)
     expect(client.admittedDeviceId).toBe(deviceId)
+  })
+
+  it("discards state before the hello response but preserves state immediately after it", async () => {
+    const { outcome, snapshots } = connect()
+    const socket = sockets.socket(0)
+    const before = { ...demoWorkspace, machine: { ...demoWorkspace.machine, name: "Before hello" } }
+    const after = { ...demoWorkspace, machine: { ...demoWorkspace.machine, name: "After hello" } }
+    socket.open()
+    notify(socket, "workspace.changed", before)
+    respond(socket, "system.hello", demoWorkspace)
+    // Same call stack, before the hello promise callback: ordering is a wire
+    // fact, not something that can be captured in a later microtask.
+    notify(socket, "workspace.changed", after)
+    await vi.advanceTimersByTimeAsync(0)
+    respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "desktop" })
+    await outcome
+    expect(snapshots.mock.calls.map(([event]) => (event as CustomEvent).detail.machine.name))
+      .toEqual([demoWorkspace.machine.name, "After hello"])
   })
 
   it.each([
@@ -84,10 +102,37 @@ describe("client credential admission", () => {
     expect(sockets.sockets).toHaveLength(2)
   })
 
+  it("pins the first discovered device id for subsequent reconnects", async () => {
+    const { outcome, snapshots } = connect(machineId, false)
+    completeHandshake(sockets.socket(0))
+    await vi.advanceTimersByTimeAsync(0)
+    respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop" })
+    await outcome
+    sockets.socket(0).drop()
+    await vi.advanceTimersByTimeAsync(1_500)
+    completeHandshake(sockets.socket(1))
+    await vi.advanceTimersByTimeAsync(0)
+    respond(sockets.socket(1), "device.current", {
+      kind: "client", machineId, deviceId: `device-${"b".repeat(32)}`, client: "desktop",
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(snapshots).toHaveBeenCalledTimes(1)
+    expect(sockets.socket(1).readyState).toBe(sockets.socket(1).CLOSED)
+  })
+
   it("keeps credential rejection typed and does not render remote error text", async () => {
     const { outcome, snapshots } = connect()
     sockets.socket(0).open()
     fail(sockets.socket(0), "system.hello", { code: -32001, message: "secret-from-remote" })
+    expect(await outcome).toMatchObject({ name: "ClientAdmissionError", reason: "client-credential-required" })
+    expect(String(await outcome)).not.toContain("secret-from-remote")
+    expect(snapshots).not.toHaveBeenCalled()
+  })
+
+  it("keeps a policy close terminal even without an RPC error reply", async () => {
+    const { outcome, snapshots } = connect()
+    sockets.socket(0).open()
+    sockets.socket(0).drop(1008, "secret-from-remote")
     expect(await outcome).toMatchObject({ name: "ClientAdmissionError", reason: "client-credential-required" })
     expect(String(await outcome)).not.toContain("secret-from-remote")
     expect(snapshots).not.toHaveBeenCalled()

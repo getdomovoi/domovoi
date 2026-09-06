@@ -121,6 +121,7 @@ export type DomovoiClientBudgets = {
 }
 
 type PendingRequest = {
+  method: RpcMethod
   parse: (value: unknown) => unknown
   resolve: (value: unknown) => void
   reject: (error: Error) => void
@@ -329,6 +330,7 @@ export class DomovoiClient extends EventTarget {
                   const receipt = await this.request("device.current", {}, { deadline })
                   if (!current()) return
                   this.#admittedDeviceId = verifyClientAdmission(this.#admission, this.kind, receipt)
+                  this.#admission = { ...this.#admission, deviceId: this.#admittedDeviceId }
                 }
                 if (deadline.remainingMs() === 0) throw new DomovoiConnectTimeoutError(stage, describeTarget(this.#url), deadline.budgetMs)
                 opening = false
@@ -361,7 +363,8 @@ export class DomovoiClient extends EventTarget {
         socket.addEventListener("close", (event) => {
           if (!current()) return
           this.#socket = undefined
-          const error = new Error("Daemon connection closed")
+          const error = this.#admission && event.code === 1008
+            ? new ClientAdmissionError("client-credential-required") : new Error("Daemon connection closed")
           rejectOpening(error)
           this.#rejectPending(error)
           // A policy close is terminal whatever it says: a revoked device is
@@ -501,6 +504,7 @@ export class DomovoiClient extends EventTarget {
         options.signal?.removeEventListener("abort", onAbort)
       }
       const pending: PendingRequest = {
+        method,
         parse: resultParser,
         resolve: (value) => resolve(value as T),
         reject,
@@ -819,6 +823,10 @@ export class DomovoiClient extends EventTarget {
 
   listFleet(options?: DomovoiRequestOptions): Promise<FleetSnapshot> {
     return this.request("fleet.list", {}, options)
+  }
+
+  fleetClientRoute(params: RpcParams<"fleet.clientRoute">, options?: DomovoiRequestOptions): Promise<RpcResult<"fleet.clientRoute">> {
+    return this.request("fleet.clientRoute", params, options)
   }
 
   // Moving a session is one request that either lands, is refused with a
@@ -1163,7 +1171,15 @@ export class DomovoiClient extends EventTarget {
     }
 
     try {
-      pending.resolve(pending.parse(response.data.result))
+      const result = pending.parse(response.data.result)
+      if (pending.method === "system.hello" && this.#admissionNotifications) {
+        // Capture the snapshot boundary synchronously with the response.
+        // Clearing from its promise callback could discard a newer message
+        // received before that microtask runs, or replay pre-snapshot state.
+        this.#admissionNotifications = []
+        this.#admissionNotificationUnits = 0
+      }
+      pending.resolve(result)
     } catch (cause) {
       pending.reject(new Error("Daemon returned an invalid RPC result", { cause }))
     }
