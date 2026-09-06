@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process"
+import { spawnSync, type SpawnSyncReturns } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { existsSync, realpathSync } from "node:fs"
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, posix } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -17,45 +17,124 @@ import { installService, nodeServiceEffects, removeService, serviceStatus, type 
 const lifecycleBudget = 60_000
 const supervisionBudget = 90_000
 const cleanupBudget = 30_000
+// The scripted-manager tests never wait for launchd, so their budget only has
+// to cover a temporary directory and a few file writes.
+const scriptedBudget = 15_000
 const productionLabel = "sh.domovoi.domovoid"
 const productionAgent = `${productionLabel}.plist`
 const uid = process.getuid?.() ?? -1
-// The per-user GUI domain is the one the installer targets. A launchd domain
-// target is a bare word before the first slash, which no absolute path is, so
-// this recognises a domain argument without also matching the plist path.
+// The per-user GUI domain is the one the installer targets.
 const domain = `gui/${uid}`
-const domainTarget = /^(?:system|user|gui|pid|login|session)(?:\/|$)/
 // launchd throttles a relaunch by its own minimum runtime rather than by a
 // delay the unit declares, so the window that turns "not relaunched yet" into
 // "not relaunched" is sized against the number the manager reports. A manager
 // reporting more than this would make the test outlive its budget, so it
 // refuses instead of quietly waiting longer.
 const maximumThrottleSeconds = 20
-// The gate is the per-user GUI domain itself. A session without one, such as a
-// plain ssh login, cannot reach a launch agent at all and skips. The macOS CI
-// leg asserts this same domain before running the suite, so a runner that lost
-// it fails there rather than skipping silently.
-const domainReachable = process.platform === "darwin" && uid >= 0
-  && spawnSync("launchctl", ["print", domain], { stdio: "ignore" }).status === 0
+// The domain probe runs while this file is being loaded, before any test
+// deadline exists, so it carries its own bound. A launchctl that never answers
+// has to fail the gate rather than hang the run.
+const domainProbeTimeoutMs = 10_000
+
+type DomainProbe = { reachable: boolean; detail: string }
+
+// Only an answered, zero-status probe is a reachable domain. A launchctl that
+// could not be spawned, one killed at the bound above, and a non-zero status
+// are each unreachable, and each keeps its reason, because the gate below
+// reports that reason by name.
+function classifyDomainProbe(probe: Pick<SpawnSyncReturns<string>, "error" | "signal" | "status">): DomainProbe {
+  if (probe.error !== undefined) return { reachable: false, detail: `launchctl could not be run: ${probe.error.message}` }
+  if (probe.signal !== null) return { reachable: false, detail: `launchctl was killed by ${probe.signal} after ${domainProbeTimeoutMs}ms` }
+  if (probe.status !== 0) return { reachable: false, detail: `launchctl print ${domain} exited with ${probe.status}` }
+  return { reachable: true, detail: `${domain} answered` }
+}
+
+function runningInCi(environment: NodeJS.ProcessEnv): boolean {
+  const flag = environment.CI
+  return flag !== undefined && flag !== "" && flag !== "0" && flag.toLowerCase() !== "false"
+}
+
+// CI is fail loud; a developer machine is not. This file is the only native
+// macOS proof there is, and a skipped test reports exactly like a passing one,
+// so an unreachable domain on the macOS CI leg throws with the reason the probe
+// gave. The workflow asserts the same domain beforehand, and this is a second
+// lock on the same door rather than a restatement of it: a probe that fails
+// only here, or that fails between the two steps, must still stop the run. Off
+// CI an absent domain skips, which is the ordinary case for a plain ssh login
+// with no GUI domain to reach, and every leg that is not macOS skips too.
+function domainGate(environment: { platform: string; ci: boolean }, probe: DomainProbe): boolean {
+  if (probe.reachable) return true
+  if (environment.ci && environment.platform === "darwin") {
+    throw new Error(`The macOS CI leg requires a reachable ${domain}, and the launchd test may not skip there: ${probe.detail}`)
+  }
+  return false
+}
+
+const domainReachable = domainGate(
+  { platform: process.platform, ci: runningInCi(process.env) },
+  process.platform === "darwin" && uid >= 0
+    ? classifyDomainProbe(spawnSync("launchctl", ["print", domain], {
+      encoding: "utf8",
+      stdio: "ignore",
+      timeout: domainProbeTimeoutMs,
+      killSignal: "SIGKILL",
+    }))
+    : { reachable: false, detail: `${process.platform} has no per-user launchd domain for uid ${uid}` },
+)
+
+// The throwaway agent's own names. `agentPath` is absent until the throwaway
+// home exists, and while it is absent no bootstrap is a command this test may
+// run at all.
+type FenceScope = { domain: string; label: string; target: string; agentPath?: string }
 
 // Every launchctl this test runs passes through here. It rewrites the daemon's
-// own agent label to the UUID label this test created, refuses any command that
-// is not the service manager, refuses any domain that is not this user's own,
-// and refuses to name the operator's label, so no agent they own is reachable
-// even if the installer's command list changes.
-function userScoped(command: string, args: readonly string[], label: string): string[] {
+// own agent label to the throwaway label, and then requires the whole command
+// line to be one of the shapes this test needs. The fence is an allowlist and
+// not a list of refusals, because the dangerous commands are the ones nobody
+// thought to name: `bootout gui/501` retires every agent the operator has, and
+// `bootstrap gui/501 ~/Library/LaunchAgents/anything.plist` loads a file this
+// test never wrote. Neither is on the list, so neither runs, and that stays
+// true if the installer's command list changes.
+function launchctlFence(command: string, args: readonly string[], scope: FenceScope): string[] {
   if (command !== "launchctl") throw new Error(`This test may only run launchctl, not ${command}`)
-  const scoped = args.map((argument) => (argument === `${domain}/${productionLabel}` ? `${domain}/${label}` : argument))
-  for (const argument of scoped) {
-    if (argument === productionLabel || argument.endsWith(`/${productionLabel}`)) {
-      throw new Error(`This test may not name the agent ${productionLabel}`)
-    }
-    if (!domainTarget.test(argument)) continue
-    if (argument !== domain && argument !== `${domain}/${label}`) {
-      throw new Error(`This test may only address ${domain}, not ${argument}`)
-    }
-  }
+  const scoped = args.map((argument) => (argument === `${scope.domain}/${productionLabel}` ? scope.target : argument))
+  const allowed: readonly (readonly string[])[] = [
+    ["print", scope.target],
+    ["bootout", scope.target],
+    ["kill", "SIGKILL", scope.target],
+    ...(scope.agentPath === undefined ? [] : [["bootstrap", scope.domain, scope.agentPath]]),
+  ]
+  const permitted = allowed.some((shape) => shape.length === scoped.length
+    && shape.every((word, index) => word === scoped[index]))
+  if (!permitted) throw new Error(`This test may not run launchctl ${scoped.join(" ")}`)
   return scoped
+}
+
+// launchd answers with the canonical path. On macOS the temporary directory is
+// reached through a symlink, so a fixture holding `/var/folders/...` is told
+// about `/private/var/folders/...`, and comparing the strings fails on two
+// names for one file. Both sides are resolved instead. A path that cannot be
+// resolved is not the same file as one that can.
+function samePath(left: string, right: string): boolean {
+  try {
+    return realpathSync(left) === realpathSync(right)
+  } catch {
+    return false
+  }
+}
+
+// The preflight answers one of three things, and only absence may lead to a
+// bootstrap. Absence has to be launchd saying so: a non-zero status alone also
+// covers a launchctl that could not be spawned, a malformed domain and a
+// manager that is not answering, and treating any of those as absence is how
+// this test would bootstrap over, and later retire, an agent it does not own.
+type Presence = "present" | "absent" | "unknown"
+
+function presenceOf(probe: CapturedRun, label: string): Presence {
+  if (probe.code === 0) return "present"
+  const answer = `${probe.stdout}\n${probe.stderr ?? ""}`
+  const missing = /(?:could not find|no such) service/i.test(answer) && answer.includes(label)
+  return missing ? "absent" : "unknown"
 }
 
 type ThrowawayAgent = {
@@ -75,9 +154,13 @@ type ThrowawayAgent = {
 // One throwaway agent, one chokepoint, one preflight and one cleanup, shared by
 // every native test in this file. A second copy of this machinery is a second
 // chance to name the operator's own agent, so there is only ever this one.
+// `base` is a parameter so the scripted tests at the end of this file can drive
+// this same preflight and this same cleanup without a real launchd; the native
+// tests take the default.
 async function withThrowawayAgent(
   budgetMs: number,
   body: (throwaway: ThrowawayAgent, deadline: OperationDeadline) => Promise<void>,
+  base: ServiceEffects = nodeServiceEffects(),
 ): Promise<void> {
   // This is the native boundary, not an interception of launchd. The label is a
   // UUID suffix on the production one, so it can never collide with the agent
@@ -87,10 +170,10 @@ async function withThrowawayAgent(
   // operator's own ~/Library/LaunchAgents.
   const label = `${productionLabel}.native-test-${randomUUID()}`
   const target = `${domain}/${label}`
+  const scope: FenceScope = { domain, label, target }
   const deadline = OperationDeadline.start(budgetMs)
-  const base = nodeServiceEffects()
   const launchctl = (args: readonly string[], active: OperationDeadline) =>
-    withinServiceDeadline(active, () => base.capture("launchctl", userScoped("launchctl", args, label), active))
+    withinServiceDeadline(active, () => base.capture("launchctl", launchctlFence("launchctl", args, scope), active))
   // Fields come back one `key = value` per line, indented, with nested blocks
   // that repeat some names. Only the first occurrence of a name is the job's
   // own field, so a nested block cannot shadow it.
@@ -109,10 +192,20 @@ async function withThrowawayAgent(
   let installedHome: string | undefined
   let readyPath: string | undefined
   let pid: number | undefined
+  // The cleanup may ask launchd to retire this label only once two things are
+  // true: launchd said the label was unused, and this test went on to ask
+  // launchd to bootstrap it. Until then nothing of ours is in the domain, and a
+  // removal could only reach an agent somebody else owns.
+  let bootoutArmed = false
   try {
-    const home = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-launchd-")))
+    const created = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-launchd-")))
+    installedHome = created
+    // Resolved once, so every path derived from the home is already the one
+    // launchd reports back rather than a symlinked spelling of it.
+    const home = await withinServiceDeadline(deadline, () => realpath(created))
     installedHome = home
     const agentPath = posix.join(home, "Library", "LaunchAgents", productionAgent)
+    scope.agentPath = agentPath
     const configurationPath = serviceConfigurationPath(home, "darwin")
     const ready = join(posix.dirname(configurationPath), "ready")
     readyPath = ready
@@ -143,14 +236,19 @@ async function withThrowawayAgent(
       write: (path, contents, active) => base.write(scopedPath(path), relabelled(path, contents), active),
       exists: (path, active) => base.exists(scopedPath(path), active),
       remove: (path, active) => base.remove(scopedPath(path), active),
-      run: (command, args, active) => base.run(command, userScoped(command, args, label), active),
-      capture: (command, args, active) => base.capture(command, userScoped(command, args, label), active),
+      run: (command, args, active) => base.run(command, launchctlFence(command, args, scope), active),
+      capture: (command, args, active) => base.capture(command, launchctlFence(command, args, scope), active),
     }
 
     // Refuse rather than overwrite. Nothing is bootstrapped until the manager
-    // and the filesystem both agree this label is unused.
+    // and the filesystem both agree this label is unused, and a manager that
+    // cannot be read is not agreement.
     const before = await launchctl(["print", target], deadline)
-    if (before.code === 0) throw new Error(`${label} already exists in ${domain}`)
+    const presence = presenceOf(before, label)
+    if (presence === "present") throw new Error(`${label} already exists in ${domain}`)
+    if (presence === "unknown") {
+      throw new Error(`launchd did not say whether ${label} exists, so this test creates and removes nothing: ${before.stderr ?? ""}`.trim())
+    }
     if (existsSync(agentPath)) throw new Error(`${label} already has files on disk`)
 
     const script = join(home, "agent.mjs")
@@ -166,14 +264,23 @@ async function withThrowawayAgent(
       effects,
       launchctl,
       printed,
-      install: (active) => withinServiceDeadline(active, () => installService({
-        platform: "darwin",
-        execPath: script,
-        runtime: process.execPath,
-        home,
-        uid,
-        configuration: createServiceConfiguration({}, { homeDirectory: home, platform: "darwin", workingDirectory: home }),
-      }, effects)),
+      install: (active) => withinServiceDeadline(active, () => {
+        // Armed here, immediately before the bootstrap, and never earlier. A
+        // body that fails before this point has put nothing in the domain, and
+        // a cleanup that boots out anyway can only reach somebody else's agent.
+        // A bootstrap that fails after launchd accepted the job still leaves
+        // one to retire, so arming precedes the attempt rather than following
+        // a successful one.
+        bootoutArmed = true
+        return installService({
+          platform: "darwin",
+          execPath: script,
+          runtime: process.execPath,
+          home,
+          uid,
+          configuration: createServiceConfiguration({}, { homeDirectory: home, platform: "darwin", workingDirectory: home }),
+        }, effects)
+      }),
       observed: (observed) => { pid = observed },
     }, deadline)
   } finally {
@@ -188,22 +295,24 @@ async function withThrowawayAgent(
       if (ready !== undefined && existsSync(ready)) {
         await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
       }
-      // Unconditional: an install that failed after launchd accepted the job
-      // still leaves one to retire, and booting out a label that was never
-      // bootstrapped only answers non-zero.
-      await launchctl(["bootout", target], cleanup)
-      const started = pid
-      if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
-        cleanup.throwIfExpired()
-        expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
-      }))
-      // Booting out is asynchronous: the command returns before launchd has
-      // finished retiring the job, so this waits for the domain to stop
-      // answering for the label rather than sampling it once.
-      await withinServiceDeadline(cleanup, () => vi.waitFor(async () => {
-        cleanup.throwIfExpired()
-        expect((await launchctl(["print", target], cleanup)).code).not.toBe(0)
-      }, { timeout: 10_000, interval: 250 }))
+      if (bootoutArmed) {
+        // An install that failed after launchd accepted the job still leaves
+        // one to retire, and booting out a label that was never bootstrapped
+        // only answers non-zero.
+        await launchctl(["bootout", target], cleanup)
+        const started = pid
+        if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
+          cleanup.throwIfExpired()
+          expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+        }))
+        // Booting out is asynchronous: the command returns before launchd has
+        // finished retiring the job, so this waits for the domain to stop
+        // answering for the label rather than sampling it once.
+        await withinServiceDeadline(cleanup, () => vi.waitFor(async () => {
+          cleanup.throwIfExpired()
+          expect((await launchctl(["print", target], cleanup)).code).not.toBe(0)
+        }, { timeout: 10_000, interval: 250 }))
+      }
       const created = installedHome
       if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
     } finally { cleanup.clear() }
@@ -227,9 +336,12 @@ it.runIf(domainReachable)("installs, reports and removes a real launchd user age
 
     // The manager, not the generated string, is the witness: it read this file,
     // registered it in this user's own domain as a launch agent, and is running
-    // the process the agent names.
+    // the process the agent names. The assertion is about the file launchd
+    // named, not about the spelling it used to name it.
     const loaded = await printed(deadline)
-    expect(loaded.get("path")).toBe(agentPath)
+    const reported = loaded.get("path")
+    expect(reported, "launchctl print reported no path for the agent").toBeDefined()
+    expect(samePath(reported ?? "", agentPath), `launchctl reported ${reported}, not ${agentPath}`).toBe(true)
     expect(loaded.get("type")).toBe("LaunchAgent")
     expect(loaded.get("state")).toBe("running")
     expect(loaded.get("domain")).toContain(domain)
@@ -345,3 +457,205 @@ it.runIf(domainReachable)("relaunches a crashed agent and leaves a cleanly exite
     expect(Number(await readFile(ready, "utf8"))).toBe(relaunched)
   })
 }, supervisionBudget + cleanupBudget + 1_000)
+
+// The two tests above run on macOS and nowhere else, but the machinery that
+// keeps them off the operator's own agents is the part that must never be
+// wrong. Everything below drives that machinery on every platform, with a
+// scripted manager standing in for launchd, so a refusal that regresses fails
+// here rather than on somebody's laptop.
+
+// launchd names the service it was asked about, which is what lets the
+// preflight tell absence apart from a manager it could not read at all.
+const notFound = (service: string): CapturedRun => ({
+  code: 113,
+  stdout: "",
+  stderr: `Could not find service "${service}" in domain for ${domain}\n`,
+})
+
+const printedAgent = (label: string, path: string): CapturedRun => ({
+  code: 0,
+  stdout: [`${domain}/${label} = {`, `\tpath = ${path}`, "\tstate = running", "}"].join("\n"),
+  stderr: "",
+})
+
+type ManagerCall = { command: string; args: readonly string[] }
+
+// Only the manager is scripted. Every file these tests drive is really written,
+// into a real throwaway home, so this exercises the preflight and the cleanup
+// as they run for real rather than a paraphrase of them. `print` is answered by
+// call number, and every other command succeeds silently.
+function scriptedManager(print: (call: number, service: string) => CapturedRun | Error): { effects: ServiceEffects; calls: ManagerCall[] } {
+  const base = nodeServiceEffects()
+  const calls: ManagerCall[] = []
+  let asked = 0
+  const answer = (command: string, args: readonly string[]): CapturedRun => {
+    calls.push({ command, args: [...args] })
+    if (args[0] !== "print") return { code: 0, stdout: "", stderr: "" }
+    asked += 1
+    const scripted = print(asked, args[1] ?? "")
+    if (scripted instanceof Error) throw scripted
+    return scripted
+  }
+  return {
+    calls,
+    effects: {
+      ...base,
+      run: async (command, args) => { answer(command, args) },
+      capture: async (command, args) => answer(command, args),
+    },
+  }
+}
+
+const commands = (calls: readonly ManagerCall[]) => calls.map((call) => `${call.command} ${call.args.join(" ")}`)
+const removals = (calls: readonly ManagerCall[]) => commands(calls).filter((command) => /\b(?:bootout|bootstrap|kill)\b/.test(command))
+
+it("runs only the launchctl commands the throwaway agent needs", () => {
+  const label = `${productionLabel}.native-test-${randomUUID()}`
+  const agentPath = `/tmp/domovoi-launchd-scripted/Library/LaunchAgents/${productionAgent}`
+  const scope: FenceScope = { domain, label, target: `${domain}/${label}`, agentPath }
+  const operatorAgent = `/Users/operator/Library/LaunchAgents/${productionAgent}`
+
+  // The installer's own command lines, with the daemon's label rewritten to the
+  // throwaway one. These are the only shapes that may reach a real launchd.
+  expect(launchctlFence("launchctl", ["print", `${domain}/${productionLabel}`], scope)).toEqual(["print", scope.target])
+  expect(launchctlFence("launchctl", ["bootout", `${domain}/${productionLabel}`], scope)).toEqual(["bootout", scope.target])
+  expect(launchctlFence("launchctl", ["bootstrap", domain, agentPath], scope)).toEqual(["bootstrap", domain, agentPath])
+  expect(launchctlFence("launchctl", ["kill", "SIGKILL", scope.target], scope)).toEqual(["kill", "SIGKILL", scope.target])
+
+  // A domain wide mutation names no label at all, so a fence that only checked
+  // labels lets it through, and it retires every agent the operator has.
+  expect(() => launchctlFence("launchctl", ["bootout", domain], scope)).toThrow(`This test may not run launchctl bootout ${domain}`)
+  expect(() => launchctlFence("launchctl", ["kill", "SIGKILL", domain], scope)).toThrow(/may not run launchctl kill/)
+  // A plist outside the throwaway home is a file this test never wrote, whether
+  // it is the operator's own agent or any other.
+  expect(() => launchctlFence("launchctl", ["bootstrap", domain, operatorAgent], scope))
+    .toThrow(`This test may not run launchctl bootstrap ${domain} ${operatorAgent}`)
+  expect(() => launchctlFence("launchctl", ["bootstrap", domain, "/Users/operator/Library/LaunchAgents/other.plist"], scope))
+    .toThrow(/may not run launchctl bootstrap/)
+  // A label the operator owns, named directly rather than through the rewrite.
+  expect(() => launchctlFence("launchctl", ["bootout", `${domain}/${productionLabel}.other`], scope)).toThrow(/may not run launchctl bootout/)
+  expect(() => launchctlFence("launchctl", ["print", productionLabel], scope)).toThrow(/may not run launchctl print/)
+  // Another user's domain, and the system domain.
+  expect(() => launchctlFence("launchctl", ["bootout", `gui/${uid + 1}/${label}`], scope)).toThrow(/may not run launchctl bootout/)
+  expect(() => launchctlFence("launchctl", ["bootout", `system/${label}`], scope)).toThrow(/may not run launchctl bootout/)
+  // An extra argument makes a different command, including one launchctl would
+  // ignore.
+  expect(() => launchctlFence("launchctl", ["bootout", scope.target, operatorAgent], scope)).toThrow(/may not run launchctl bootout/)
+  // Anything that is not the service manager.
+  expect(() => launchctlFence("rm", ["-rf", operatorAgent], scope)).toThrow("This test may only run launchctl, not rm")
+
+  // Before the throwaway home exists there is no legal bootstrap at all.
+  const unopened: FenceScope = { domain, label, target: `${domain}/${label}` }
+  expect(() => launchctlFence("launchctl", ["bootstrap", domain, agentPath], unopened)).toThrow(/may not run launchctl bootstrap/)
+})
+
+it("refuses an agent that already exists, and removes nothing", async () => {
+  const collision = scriptedManager((call, service) => (call === 1
+    ? printedAgent(service, `/Users/operator/Library/LaunchAgents/${productionAgent}`)
+    : notFound(service)))
+  let entered = false
+  await expect(withThrowawayAgent(scriptedBudget, async () => { entered = true }, collision.effects))
+    .rejects.toThrow(new RegExp(`already exists in ${domain}`))
+  expect(entered).toBe(false)
+  // The point of the finding: the preflight refused, so the cleanup has no
+  // agent of its own to retire and must not ask launchd to retire the one it
+  // found. The only command that ran is the probe that found it.
+  expect(removals(collision.calls)).toEqual([])
+  expect(commands(collision.calls)).toHaveLength(1)
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("treats a manager it cannot read as unknown, not as absent", async () => {
+  const answers: readonly (CapturedRun | Error)[] = [
+    new Error("spawn launchctl ENOENT"),
+    { code: 1, stdout: "", stderr: "spawn launchctl ENOENT" },
+    { code: 1, stdout: "", stderr: "Bad request.\n" },
+    { code: 1, stdout: "", stderr: "" },
+    // The right shape of failure, but naming an agent this test did not create.
+    { code: 113, stdout: "", stderr: `Could not find service "${productionLabel}" in domain for ${domain}` },
+  ]
+  for (const answer of answers) {
+    const unreadable = scriptedManager(() => answer)
+    let entered = false
+    await expect(withThrowawayAgent(scriptedBudget, async () => { entered = true }, unreadable.effects))
+      .rejects.toThrow(answer instanceof Error ? /ENOENT/ : /did not say whether/)
+    expect(entered).toBe(false)
+    expect(removals(unreadable.calls)).toEqual([])
+  }
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("arms the removal only once a bootstrap has been attempted", async () => {
+  const withoutBootstrap = scriptedManager((_call, service) => notFound(service))
+  let probed: string | undefined
+  await withThrowawayAgent(scriptedBudget, async (throwaway) => {
+    // A body that reads the agent path and nothing else has put nothing in the
+    // domain. There is nothing to boot out, and nothing that may be.
+    expect(throwaway.agentPath.endsWith(`/Library/LaunchAgents/${productionAgent}`)).toBe(true)
+    probed = throwaway.target
+  }, withoutBootstrap.effects)
+  expect(commands(withoutBootstrap.calls)).toEqual([`launchctl print ${probed}`])
+
+  const withBootstrap = scriptedManager((_call, service) => notFound(service))
+  let bootstrapped: string | undefined
+  let installedAgent: string | undefined
+  await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+    const plan = await throwaway.install(deadline)
+    installedAgent = plan.kind === "file" ? plan.path : undefined
+    bootstrapped = throwaway.target
+  }, withBootstrap.effects)
+  expect(installedAgent).toBeDefined()
+  // A bootstrap was attempted, so the cleanup owes the domain a removal, and it
+  // names the throwaway label rather than the daemon's own.
+  expect(removals(withBootstrap.calls)).toEqual([
+    `launchctl bootstrap ${domain} ${installedAgent}`,
+    `launchctl bootout ${bootstrapped}`,
+  ])
+  expect(commands(withBootstrap.calls).some((command) => command.endsWith(`/${productionLabel}`))).toBe(false)
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("compares the file launchd names, not the spelling it uses", async () => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "domovoi-launchd-path-")))
+  try {
+    const agents = join(home, "Library", "LaunchAgents")
+    await mkdir(agents, { recursive: true })
+    await writeFile(join(agents, productionAgent), "")
+    // `/var` is a symlink to `/private/var` on macOS, which is why launchd
+    // answers a fixture holding one path with the other spelling of it. This
+    // is the assertion that failed on the first hosted run.
+    await symlink(home, join(home, "private"))
+    const reported = join(home, "private", "Library", "LaunchAgents", productionAgent)
+    const expected = join(agents, productionAgent)
+    expect(reported).not.toBe(expected)
+    expect(samePath(reported, expected)).toBe(true)
+    expect(samePath(join(agents, "absent.plist"), expected)).toBe(false)
+    expect(samePath(expected, expected)).toBe(true)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+it("fails the macOS CI leg rather than skipping when the domain is unreachable", () => {
+  const unreachable = classifyDomainProbe({ signal: null, status: 113 })
+  expect(unreachable.reachable).toBe(false)
+  // The ways the bounded probe can fail to answer, each keeping its reason.
+  expect(classifyDomainProbe({ error: new Error("spawn launchctl ENOENT"), signal: null, status: null }).detail).toContain("ENOENT")
+  expect(classifyDomainProbe({ signal: "SIGKILL", status: null }).detail).toContain("SIGKILL")
+  expect(classifyDomainProbe({ signal: null, status: 1 }).detail).toContain("exited with 1")
+  expect(classifyDomainProbe({ signal: null, status: 0 }).reachable).toBe(true)
+
+  // The failure this replaces: a probe that did not answer used to skip both
+  // native tests even on CI, and a skipped macOS leg reports as a passing one.
+  expect(() => domainGate({ platform: "darwin", ci: true }, unreachable)).toThrow(/requires a reachable gui/)
+  expect(domainGate({ platform: "darwin", ci: true }, { reachable: true, detail: "" })).toBe(true)
+  // A developer machine without a GUI login still skips, and so does every leg
+  // that is not macOS.
+  expect(domainGate({ platform: "darwin", ci: false }, unreachable)).toBe(false)
+  expect(domainGate({ platform: "linux", ci: true }, unreachable)).toBe(false)
+  expect(domainGate({ platform: "win32", ci: true }, unreachable)).toBe(false)
+
+  expect(runningInCi({ CI: "true" })).toBe(true)
+  expect(runningInCi({ CI: "1" })).toBe(true)
+  expect(runningInCi({})).toBe(false)
+  expect(runningInCi({ CI: "" })).toBe(false)
+  expect(runningInCi({ CI: "false" })).toBe(false)
+  expect(runningInCi({ CI: "0" })).toBe(false)
+})

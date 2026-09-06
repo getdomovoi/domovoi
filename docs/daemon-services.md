@@ -166,15 +166,27 @@ functions the CLI calls. It bootstraps a throwaway agent into the per-user `gui/
 installer targets, checks that the domain registered that exact file as a launch agent, that it is
 running, and that the process launchd reports is the one that wrote its own PID file, then removes
 it and requires process exit, an absent agent, an absent saved configuration and a domain that no
-longer answers for the label. Its label is the production one with a fresh identifier appended, so
-it cannot collide with the operator's own agent while still being classified by the daemon's own
-missing-service matcher. Bootstrapping names a path rather than a search directory, so every file
-stays inside a throwaway home and nothing is written to the operator's own `Library/LaunchAgents`.
-It runs `launchctl` only, refuses any domain but this user's own, refuses to name the production
-label, refuses to overwrite a label that already exists, and cleans up whatever the assertions did.
-Its gate is that domain, so a session without one, such as a plain ssh login, skips. The macOS CI
-leg asserts the same domain and refuses to run as uid 0, so the test cannot disappear from the run
-and cannot pass against `gui/0` instead.
+longer answers for the label. Paths are compared resolved rather than as strings, because macOS
+reaches a temporary directory through a symlink and launchd answers with the `/private` form of it.
+Its label is the production one with a fresh identifier appended, so it cannot collide with the
+operator's own agent while still being classified by the daemon's own missing-service matcher.
+Bootstrapping names a path rather than a search directory, so every file stays inside a throwaway
+home and nothing is written to the operator's own `Library/LaunchAgents`.
+
+Four properties keep that test off the operator's own agents, and each is pinned by a test that
+drives the same machinery with a scripted manager, on every platform rather than only on macOS.
+It runs `launchctl` and only the command lines it needs: printing, killing and booting out its own
+throwaway label, and a bootstrap that names the one plist inside its own home. Anything else is
+refused by not being on that list, including a domain wide `bootout gui/<uid>`, which retires every
+agent the operator has, and a plist path in their real `Library/LaunchAgents`. It refuses to
+overwrite a label that already exists, and it counts a manager it cannot read as unknown rather
+than as absence. The removal in its cleanup is armed only once launchd has said the label is
+unused, and only immediately before the bootstrap that can leave one behind, so a run that refuses
+at the preflight asks launchd to retire nothing. Its gate is that domain, so a session without one,
+such as a plain ssh login, skips; the probe that reads it is bounded, because it runs before any
+test deadline applies. On CI that gate throws instead of skipping. The macOS leg asserts the same
+domain before the suite and refuses to run as uid 0, and the test file refuses to skip there as
+well, because a skipped macOS leg reports exactly like a passing one.
 
 A second native macOS-only test proves the supervision the agent declares. It reads launchd's own
 relaunch throttle back off the manager, crashes the process through the manager with
