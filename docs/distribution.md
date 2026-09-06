@@ -21,6 +21,11 @@ compilation or the external toolchain.
 | macOS | signed and notarized desktop app | GitHub release artifacts |
 | Linux | AppImage or native bundle plus daemon package | GitHub release artifacts |
 
+Desktop packaging and native signing use a separate, manual workflow. It has no publication
+permission and uses protected platform environments, not the npm environment. See
+[Desktop signing and notarization](desktop-signing.md) for the exact Apple and Windows credential
+requirements, unsigned development behavior, failure policy and native proofs still required.
+
 Package managers wrap the same versioned release artifacts. Formulae and manifests must not build
 from a moving branch or run an unpinned install script. Release automation will publish npm first,
 attach checksummed binaries, then update downstream package manifests.
@@ -294,7 +299,8 @@ Schema conformance alone does not establish inventory completeness or package au
 
 The generator runs on Linux in CI so it cannot rot. The release workflow below packs the same
 tarballs for publishing, refuses to continue if their checksums differ from `SHA256SUMS`, and
-attaches all three kinds of file to the GitHub release of each published package.
+attaches all three kinds of file to one canonical `v<version>` GitHub release, matching the
+bootstrap installer's download URL.
 
 ## Versioning and release metadata
 
@@ -327,32 +333,39 @@ pnpm changeset
 ```
 
 Choose the packages the change affects and the bump it deserves. Because the group is fixed, the
-recorded bump applies to every workspace package. `pnpm release:status` reports which changed
-packages still lack metadata; `pnpm release:version` consumes the accumulated changesets, writes
-changelogs, and rewrites the manifests.
+recorded bump applies to every workspace package. `pnpm release:status` reports the accumulated
+release plan; it is not a per-PR check. CI runs `pnpm release:metadata` against the PR's full base
+commit and requires new metadata for workspace source or dependency-lock changes. An older note
+cannot cover a new PR. Documentation, tests and repository tooling need none. An explicit
+`pnpm changeset --empty` records a reviewed no-release decision. A generated version PR is
+recognized by its contents, not its author or branch name, and cannot add source or dependencies
+under that exemption. `pnpm release:version` consumes notes, writes changelogs and rewrites versions.
 
-The first public alpha is `0.1.0-alpha.0`, because Changesets pre-release mode numbers from zero and the workflow does not set versions by hand. Until the release workflow is enabled,
-`pnpm release:version` is run only deliberately, and no package is published from this repository.
+Changesets prerelease mode produces `0.1.0-alpha.0` from the current minor notes, and the roadmap
+names that same first alpha. Nothing sets a version by hand, so the number the tooling generates
+is the one that ships. This branch changes no package version and commits no prerelease state.
+For pre-1.0 releases, breaking compatibility uses a minor changeset and additive compatible work
+uses patch. Every note must state any required operator migration. See the
+[first-release checklist](release-setup.md).
 
 ## Release workflow
 
 `.github/workflows/release.yml` turns accumulated changesets into a versioned, published release.
-It is inert: every job is gated on the repository variable `RELEASE_PUBLISHING` being `enabled`,
-and that variable does not exist yet. A push to `main` or a manual dispatch before a maintainer
-sets it produces a skipped run and nothing else. The variable, rather than a branch or a secret,
-is the switch because it is visible in repository settings, needs no code change to flip in
-either direction, and cannot be set from a pull request.
+It is inert until a maintainer sets the repository variable `RELEASE_PUBLISHING`.
+`version-only` permits version PRs but no publication; `enabled` admits both. An absent or
+unrecognized value permits neither. The variable is visible in repository settings and cannot
+be set by a pull request. Setting it does not by itself dispatch a run.
 
 Once enabled, every push to `main` runs the workflow, which does one of three things:
 
 1. **Version.** Pending changesets exist, so `changesets/action/version` runs `changeset version`
    and opens or refreshes a pull request titled `chore(release): version packages` that rewrites
-   every manifest to the next version and writes the changelogs. Because the `@getdomovoi/*`
-   group is fixed, the protocol, daemon, shared UI, web, and desktop packages all move together.
-   Merging that pull request is the release decision.
+   every manifest to the next version and writes the changelogs. The protocol, daemon, shared
+   UI, web, desktop and mobile versions move together. Publishing additionally requires
+   `enabled` and admission through the `npm` environment.
 2. **Publish.** No changesets are pending and a workspace version is missing from the registry,
    which is the state of `main` right after the version pull request merges. The workflow
-   publishes and creates one GitHub release per published package.
+   publishes the reviewed archives and creates one canonical `v<version>` GitHub release.
 3. **Nothing.** No changesets are pending and every version is already on the registry.
 
 The mode is chosen by `changesets/action/select-mode` at the end of the `gate` job, and the gate
@@ -384,18 +397,26 @@ workflow stands between a commit and the registry. The gate job is the only thin
 rewrites to the exact release version. A consumer installing the daemon therefore resolves the
 protocol at that exact version, so the protocol has to be on the registry first.
 
-The `pack` job writes the publish plan with `changeset publish-plan`, which orders packages by
-dependency, and then `pnpm release:order` fails the job unless the plan places the protocol in
-an earlier chunk than the daemon. `scripts/publish-order.mjs` reads the same ordered package list
-`scripts/release-artifacts.mjs` uses, so there is one place that says what this repository
-publishes and in which order. The plan is then packed into tarballs, checked against
-`SHA256SUMS`, and handed to the `publish` job as a workflow artifact. `changeset publish
---from-pack-dir` publishes those exact bytes, one plan chunk at a time, and creates the git tags
-and GitHub releases from the commit that built them.
+The `pack` job uses `release:artifacts` as its only packer. The daemon's prepack embeds the
+protocol, so running Changesets' parallel workspace packer too would race that nested build.
+`changeset publish-plan` supplies dependency order. `release:prepare` applies the existing
+`publish-order.mjs` guard, copies the checksum-verified archives into Changesets' artifact layout,
+and writes their version, commit and hashes to `release.json`. No package hook runs in this copy.
+The prerelease identifier determines the npm channel: alpha releases use `alpha`, never `latest`.
+
+`release:verify` checks the manifest, raw and packed plans, SBOM identities, and archive hashes
+again after artifact download in the publish job. A read-only preflight rejects known GitHub
+conflicts and mismatched existing npm bytes before the first registry write. Final publication
+checks again; the preflight is not a cross-service transaction. `changeset publish --from-pack-dir` publishes
+those bytes in ordered chunks. Changesets creates package tags. `release:github` creates the
+canonical `v<version>` tag and combined changelog release only after npm reports both exact
+archive integrities and provenance references. It uploads tarballs, SBOMs and `SHA256SUMS` into
+a draft and verifies their reported hashes before making it public. Existing conflicting tags
+or assets are never overwritten. Alpha releases are prereleases, not GitHub's latest release.
 
 ### Trusted publishing
 
-There is no `NPM_TOKEN` and the workflow does not accept one. The `publish` job requests
+Ordinary publishing has no stored npm token. The `publish` job requests
 `id-token: write`, and pnpm exchanges the GitHub OIDC token for a short-lived npm credential
 scoped to this repository and workflow. npm records the workflow run as the publisher and
 generates a provenance attestation; both packages also declare `publishConfig.provenance`, so a
@@ -404,41 +425,20 @@ the `npm` GitHub environment so that the trusted publisher on npm can be bound t
 environment name and so a maintainer can require a reviewer before the job starts.
 
 The `publish` job installs with `--ignore-scripts` and downloads the packed artifact instead of
-building, so the job that holds the OIDC token runs as little third-party code as possible.
+building. The manual `first_publish` option is the only exception to token-free admission:
+it requires a temporary `NPM_BOOTSTRAP_TOKEN` secret in the protected environment, refuses
+existing versions other than an identical partially published first alpha, and still requires
+provenance. Ordinary runs never receive that secret. See [setup and retry rules](release-setup.md).
 
 ### Enabling the first release
 
-These steps are for a maintainer with owner rights on the GitHub repository and the npm
-organisation. None of them has been done, and whether the `getdomovoi` npm organisation name
-is available has not been checked.
+Follow [First alpha: maintainer setup](release-setup.md) in order. It records the observed
+GitHub/npm blockers, the Actions PR-creation setting, environment protection, version-only mode,
+the one-time hosted bootstrap, and the subsequent switch to OIDC. Do not publish an unattested
+placeholder locally to make the npm settings page appear.
 
-1. Create the `getdomovoi` organisation on npmjs.com and give it a maintainer with two-factor
-   authentication enabled.
-2. Configure a trusted publisher for each of `@getdomovoi/protocol` and `@getdomovoi/daemon`:
-   publisher GitHub Actions, organisation `getdomovoi`, repository `domovoi`, workflow filename
-   `release.yml`, environment name `npm`. If npm requires a package to exist before a trusted
-   publisher can be added, publish the first version of each package from a maintainer machine
-   with a short-lived granular access token, in the order protocol then daemon, and revoke the
-   token afterwards; every later version goes through the workflow. Then set each package's
-   publishing access to the strictest setting that still allows trusted publishing.
-3. In the GitHub repository, under Settings, Actions, General, allow GitHub Actions to create
-   and approve pull requests. The version job cannot open the release pull request without it.
-4. Under Settings, Environments, create `npm`. Add the maintainers as required reviewers if a
-   human approval should stand between a merged version pull request and the registry.
-5. Open a pull request that runs `pnpm changeset pre enter alpha` and commits
-   `.changeset/pre.json`, so the first version pull request produces an alpha rather than
-   `0.1.0`. Leave pre mode with `pnpm changeset pre exit` when the first stable release is due.
-6. Under Settings, Secrets and variables, Actions, Variables, add `RELEASE_PUBLISHING` with the
-   value `enabled`. The next push to `main`, or a manual dispatch of the `release` workflow,
-   opens the version pull request from the pending changesets.
-7. Review and merge the version pull request. The pull request is opened with the workflow's
-   own token, so GitHub does not start `ci` on it. Merging it is a push to `main`, which starts
-   `ci` on the merge commit, and the release workflow's `gate` job waits for that run and
-   refuses to publish unless it passed. Close and reopen the pull request to run `ci` on the
-   branch as well, or configure a GitHub App token for the version job later.
-
-To pause releases, delete the variable or set it to any other value. Runs already in progress
-finish; the concurrency group prevents two releases from overlapping.
+To pause publication, set the variable to `version-only`; remove it to stop version PRs too.
+Runs already in progress are not cancelled. The concurrency group prevents overlapping releases.
 
 ## Immutable workflow references
 

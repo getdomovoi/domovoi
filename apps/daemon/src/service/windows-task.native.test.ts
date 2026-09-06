@@ -5,7 +5,7 @@ import { join } from "node:path"
 
 import { expect, it } from "vitest"
 
-import { OperationDeadline } from "../operation-deadline.js"
+import { OperationDeadline, OperationDeadlineExceededError } from "../operation-deadline.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, removeService, type ServiceCommand } from "./install.js"
@@ -33,13 +33,28 @@ it.runIf(process.platform === "win32")("stops a real scheduled process before re
   let directory: string | undefined
   let created = false
   let pid: number | undefined
+  // One budget covers preparation and the removal this test exists to prove,
+  // and an expired one raises a bare deadline error naming neither. Both CI
+  // expiries so far ended the test within 20 ms of the budget with no task
+  // teardown left to run, so both spent it during preparation, which the error
+  // could not say. Each phase records itself and expiry reports the last one.
+  let phase = "task name preflight"
   try {
     const before = await capture(plan.inspect, deadline)
     expect(before).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
+    phase = "fixture staging"
     directory = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-task-")))
     const scriptPath = join(directory, "task.mjs")
     const readyPath = join(directory, "ready")
     await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/service-task.mjs", import.meta.url), scriptPath))
+    // A committed RegisterTaskDefinition is not undone by killing the
+    // PowerShell an expired deadline abandons, and reading the flag from the
+    // result records nothing when the call never returns, so the teardown
+    // obligation is taken before the call rather than after it. Stopping a name
+    // that was never registered prints domovoi-task:missing and exits 0, so the
+    // cleanup below stays correct whichever way this lands.
+    phase = "task registration"
+    created = true
     const registered = await capture(powershell(`
 $ErrorActionPreference = 'Stop'
 $scheduler = New-Object -ComObject 'Schedule.Service'
@@ -59,10 +74,10 @@ $action.Arguments = ${literal(`"${scriptPath}" "${readyPath}"`)}
 $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $definition.Principal.UserId, $null, 3, $null)
 [Console]::Out.WriteLine('created')
 `), deadline)
-    // Keep a successful creation recorded even if a later assertion fails.
-    created = registered.stdout.trim() === "created"
     expect(registered).toMatchObject({ code: 0, stdout: "created\r\n" })
+    phase = "task start"
     await withinServiceDeadline(deadline, () => effects.run("schtasks", ["/run", "/tn", name], deadline))
+    phase = "fixture liveness"
     await withinServiceDeadline(deadline, () => waitForDaemon(async () => {
       deadline.throwIfExpired()
       pid = Number(await withinServiceDeadline(deadline, () => readFile(readyPath, "utf8")))
@@ -85,6 +100,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(args).toEqual(["/delete", "/tn", "Domovoi daemon", "/f"])
       return { command, args: ["/delete", "/tn", name, "/f"] }
     }
+    phase = "service removal"
     await withinServiceDeadline(deadline, () => removeService({ platform: "win32", home: directory! }, {
       ...effects,
       claimServiceOperation: nodeServiceEffects({ userHomeDirectory: directory! }).claimServiceOperation,
@@ -94,12 +110,17 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
         return effects.run(redirected.command, redirected.args, active)
       },
     }))
+    phase = "stopped process observation"
     await withinServiceDeadline(deadline, () => waitForDaemon(() => {
       deadline.throwIfExpired()
       expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
     }))
+    phase = "removed task inspection"
     expect(await capture(plan.inspect, deadline)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
     created = false
+  } catch (cause) {
+    if (!(cause instanceof OperationDeadlineExceededError)) throw cause
+    throw new Error(`The ${phase} step outlasted the ${lifecycleBudget}ms task lifecycle budget`, { cause })
   } finally {
     deadline.clear()
     const cleanup = OperationDeadline.start(cleanupBudget)

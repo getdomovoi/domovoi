@@ -8,6 +8,20 @@ import { pendingDeviceClaimTtlMs, SqliteDeviceRegistry } from "./device-registry
 import { fleetProductionHarness, persistedRegistry } from "./test-fleet-production.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
+// Vitest's own budget for these tests, which the file previously fixed at 20
+// seconds on every platform. That is below the 30 seconds vitest.config.ts
+// already gives Windows for exactly this reason, and each test here builds two
+// production daemons over real sockets and SQLite before stopping and
+// restarting one, while a single production start or stop is allowed 30
+// seconds on its own. Durations were read by name from the 26 main runs whose
+// Windows job reached this file. The restart test costs a median of 1503 ms
+// there against a 90th percentile of 2744 ms, and its worst passing run reached
+// 18144 ms, 91 percent of the budget it had; it then timed out at 20000 ms on
+// run 34056510094. Ubuntu never passed 2134 ms in that window. Forty seconds
+// clears the worst passing Windows run by more than twice and puts the
+// platform default back underneath as the floor.
+const testBudgetMs = process.platform === "win32" ? 40_000 : 20_000
+
 const { cleanup, machine, connect } = fleetProductionHarness()
 afterEach(async () => { vi.restoreAllMocks(); await cleanup() })
 
@@ -38,7 +52,7 @@ describe("pending claims in the production fleet", () => {
     expect((await claimant.call("device.confirmClaim", { authToken: unkept!, machineId: source.id, protocolVersion })).error?.code)
       .toBe(daemonAuthenticationErrorCode)
     expect(await restarted.root.ok("device.list", {})).toEqual({ devices: [] })
-  }, 20_000)
+  }, testBudgetMs)
 
   it("recovers a committed confirmation with its lost reply after source restart", async () => {
     const source = await machine("source")
@@ -74,7 +88,7 @@ describe("pending claims in the production fleet", () => {
     })
     expect(devices(target.homeDirectory, (registry) => registry.list())).toMatchObject([{ id: committedId }])
     expect(persistedRegistry(source.homeDirectory, (registry) => registry.pendingOperations())).toEqual([])
-  }, 20_000)
+  }, testBudgetMs)
 
   it("a claimed but never stored capability cannot outlive expiry or spend another code", async () => {
     const target = await machine("target")
@@ -92,5 +106,5 @@ describe("pending claims in the production fleet", () => {
     expect(expired.error).toEqual(unknown.error)
     expect(expired.error?.code).toBe(daemonAuthenticationErrorCode)
     expect(deviceClaimResultSchema.parse(await claimant.ok("device.claim", { code: nextCode.code, label: "retry", machineId: sourceId, protocolVersion })).claim.state).toBe("pending")
-  }, 20_000)
+  }, testBudgetMs)
 })

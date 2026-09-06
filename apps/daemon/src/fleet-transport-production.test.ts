@@ -12,6 +12,15 @@ import { withinServiceDeadline } from "./service/deadline.js"
 import { fleetProductionHarness, git, persistedRegistry, remote, sessionAgent } from "./test-fleet-production.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
+// The transfer scenario moves a real session, so this budget must hold one
+// harness call budget plus the setup ahead of it. The sibling forgetting
+// scenario is that setup without the move and has reached 12773 ms on Windows,
+// and the whole transfer scenario has passed at 18354 ms while expiring at
+// 13757 ms on run 34058500581. Forty seconds clears the worst passing run by
+// more than twice and leaves fifteen seconds above the harness call budget, so
+// a call that never answers is reported as that call rather than as the test.
+const testBudgetMs = process.platform === "win32" ? 40_000 : 30_000
+
 const { cleanup, scratch, repository, machine, enroll } = fleetProductionHarness()
 afterEach(cleanup)
 
@@ -111,5 +120,5 @@ describe("production transport producers", () => {
       expect(facts.health).toBe("reconnecting")
       expect(facts.verifiedRoute?.endpoint).toBe(unreachable)
     })
-  }, 30_000)
+  }, testBudgetMs)
 })

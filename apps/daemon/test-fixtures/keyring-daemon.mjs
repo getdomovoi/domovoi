@@ -22,6 +22,9 @@ process.once("SIGTERM", () => {
 })
 // Keep this finite and opt-in. The parent owns a kill deadline; this simulates
 // a child that cannot reach its listening phase promptly on a loaded runner.
-if (process.env.DOMOVOI_TEST_SLOW_FIXTURES === "1") await delay(3_500)
+// "1" keeps the original 3.5 seconds; any other number is that many
+// milliseconds, so a stall can be aimed at whichever bound is being measured.
+const slowFixtures = process.env.DOMOVOI_TEST_SLOW_FIXTURES
+if (slowFixtures) await delay(slowFixtures === "1" ? 3_500 : Number(slowFixtures))
 const address = await daemon.start()
 process.stdout.write(`${JSON.stringify({ url: address.url })}\n`)

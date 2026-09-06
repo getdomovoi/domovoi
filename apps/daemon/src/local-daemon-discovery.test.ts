@@ -15,6 +15,12 @@ import * as ownerRecords from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies } from "./production-daemon.js"
 
+// The same budget the ownership tests next door use, and for the same reason: a
+// fixed 3 second window turned a cold Windows start into a wrong answer, and
+// the slowest of these reached 2391 ms of it. The deliberate 2 second bounds
+// below are the exception, since those prove expiry rather than wait for work.
+const budgetMs = process.platform === "win32" ? 20_000 : 5_000
+
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => {
   vi.restoreAllMocks()
@@ -24,11 +30,11 @@ afterEach(async () => {
 async function peer(options: { proof?: "missing" | "wrong" | "replayed"; response?: "silent" | "identity" | "auth" | "protocol" | "record-changed" } = {}) {
   const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-discovery-peer-"))
   cleanup.push(() => rm(homeDirectory, { recursive: true, force: true }))
-  const deadline = OperationDeadline.start(3_000)
+  const deadline = OperationDeadline.start(budgetMs)
   const server = new WebSocketServer({ port: 0, host: "127.0.0.1" })
   cleanup.push(async () => {
     for (const client of server.clients) client.terminate()
-    const closing = OperationDeadline.start(3_000)
+    const closing = OperationDeadline.start(budgetMs)
     try { await beforeDeadline(new Promise<void>((resolve) => server.close(() => resolve())), closing) } finally { closing.clear() }
   })
   try { await once(server, "listening", { signal: deadline.signal }) } finally { deadline.clear() }
@@ -79,7 +85,7 @@ async function peer(options: { proof?: "missing" | "wrong" | "replayed"; respons
 
 it.each(["missing", "wrong", "replayed"] as const)("never sends a bearer to a listener with a %s proof", async (proof) => {
   const fake = await peer({ proof })
-  const result = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "start-or-attach", timeoutMs: 3_000 })
+  const result = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "start-or-attach", timeoutMs: budgetMs })
   expect(result).toMatchObject({ kind: "refused", reason: "owner-unverified" })
   expect(fake.headers).toHaveLength(1)
   expect(fake.headers[0]).not.toHaveProperty("authorization")
@@ -92,7 +98,7 @@ it.each([
   ["protocol", "owner-incompatible"], ["record-changed", "owner-busy"],
 ] as const)("refuses a proved listener with a %s failure after hello", async (response, reason) => {
   const fake = await peer({ response })
-  const result = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "start-or-attach", timeoutMs: 3_000 })
+  const result = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "start-or-attach", timeoutMs: budgetMs })
   expect(result).toMatchObject({ kind: "refused", reason })
   expect(fake.requests).toEqual([{ jsonrpc: "2.0", id: 1, method: "system.hello", params: {
     client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: fake.owner.authToken,
@@ -101,7 +107,7 @@ it.each([
 
 it("bounds an unanswered hello and closes its socket without changing owner state", async () => {
   const fake = await peer({ response: "silent" })
-  const observation = OperationDeadline.start(3_000)
+  const observation = OperationDeadline.start(budgetMs)
   const result = acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "start-or-attach", timeoutMs: 2_000 })
   try {
     await beforeDeadline(fake.observed, observation)
@@ -115,7 +121,7 @@ it("bounds an unanswered hello and closes its socket without changing owner stat
 
 it("bounds a listener that accepts TCP but never completes the WebSocket upgrade", async () => {
   const fake = await peer()
-  const observation = OperationDeadline.start(3_000)
+  const observation = OperationDeadline.start(budgetMs)
   let accepted: (() => void) | undefined
   const connected = new Promise<void>((resolve) => { accepted = resolve })
   let rawSocket: import("node:stream").Duplex | undefined
@@ -149,16 +155,16 @@ it("classifies clock expiry during final record verification as unreachable, not
   let reads = 0
   vi.spyOn(ownerRecords, "readLocalOwnerRecord").mockImplementation((path) => {
     const record = read(path)
-    if (++reads === 2) clock = 3_001
+    if (++reads === 2) clock = budgetMs + 1
     return record
   })
-  expect(await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: 3_000 }))
+  expect(await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: budgetMs }))
     .toMatchObject({ kind: "refused", reason: "owner-unreachable" })
 })
 
 it.each(["owner-close", "broken-socket", "detach"] as const)("notifies attachment closure without rejecting or reacquiring after %s", async (cause) => {
   const fake = await peer()
-  const attached = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: 3_000 })
+  const attached = await acquireLocalDaemon({ homeDirectory: fake.homeDirectory, environment: {}, mode: "attach-only", timeoutMs: budgetMs })
   if (attached.kind !== "attached") throw new Error("Missing attachment")
   cleanup.push(async () => attached.detach())
   expect(attached.closed).toBeInstanceOf(Promise)
@@ -167,7 +173,7 @@ it.each(["owner-close", "broken-socket", "detach"] as const)("notifies attachmen
   await Promise.resolve()
   expect(settled).toBe(false)
   const record = readLocalOwnerRecord(fake.homeDirectory)
-  const observation = OperationDeadline.start(3_000)
+  const observation = OperationDeadline.start(budgetMs)
   try {
     const socket = fake.connection()!
     const peerClosed = once(socket, "close", { signal: observation.signal })
