@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
+import { fleetMachineDescriptorSchema } from "./fleet.js"
 
 export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
@@ -134,6 +135,29 @@ export const deviceClaimParamsSchema = z.object({
   protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
 }).strict()
 
+// A claim is not a paired device. Only its confirmation capability exists
+// until the source has durably stored the token. It cannot authenticate hello.
+export const pendingDeviceClaimSchema = z.object({
+  state: z.literal("pending"),
+  deviceId: deviceIdSchema,
+  machineId: machineIdSchema,
+  expiresAt: z.string().datetime({ offset: true }),
+}).strict()
+
+export const deviceClaimResultSchema = z.object({
+  claim: pendingDeviceClaimSchema,
+  token: deviceCredentialSchema,
+  machine: fleetMachineDescriptorSchema,
+}).strict()
+
+export const deviceConfirmClaimParamsSchema = z.object({
+  authToken: deviceCredentialSchema,
+  machineId: machineIdSchema,
+  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+}).strict()
+
+export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSchema }).strict()
+
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
   expiresAt: z.string().datetime({ offset: true }),
@@ -148,6 +172,8 @@ export const devicesResultSchema = z.object({
 }).strict()
 
 export type DeviceIssueCodeResult = z.infer<typeof deviceIssueCodeResultSchema>
+export type PendingDeviceClaim = z.infer<typeof pendingDeviceClaimSchema>
+export type DeviceClaimResult = z.infer<typeof deviceClaimResultSchema>
 export type PairedDeviceSummary = z.infer<typeof pairedDeviceSchema>
 export type DeviceCredentialBinding = z.infer<typeof deviceCredentialBindingSchema>
 export type DevicePairResult = z.infer<typeof devicePairResultSchema>

@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 import {
-  daemonAuthenticationErrorCode, devicePairResultSchema,
+  daemonAuthenticationErrorCode, devicePairResultSchema, deviceClaimResultSchema,
   fleetSnapshotSchema, fleetSnapshotOverflowSchema, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, rpcMethods, workspaceSnapshotSchema,
 } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -37,9 +37,10 @@ describe("production fleet assembly", () => {
     const pairedClient = await connect(source.address.url)
     await pairedClient.ok("system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: paired.token })
     const observer = await connect(source.address.url)
-    const machinePair = devicePairResultSchema.parse(await observer.ok("device.claim", {
+    const machinePair = deviceClaimResultSchema.parse(await observer.ok("device.claim", {
       code: machineCode.code, label: "observer", machineId: `machine-${"e".repeat(32)}`, protocolVersion,
     }))
+    await observer.ok("device.confirmClaim", { authToken: machinePair.token, machineId: machinePair.claim.machineId, protocolVersion })
     await observer.ok("system.hello", { client: "machine", clientVersion: "0.0.1", protocolVersion, authToken: machinePair.token })
 
     // Paired client authority is not local root enrollment authority.

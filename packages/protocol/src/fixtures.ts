@@ -23,7 +23,7 @@ export function createEmptyWorkspace(machine: Machine): WorkspaceSnapshot {
 export const demoWorkspace: WorkspaceSnapshot = {
   protocolVersion,
   machine: {
-    id: "machine-local",
+    id: "machine-5c31a542e8960cfc8f00a529353d4944",
     name: "macbook-pro-m3",
     platform: "darwin",
     arch: "arm64",
@@ -34,7 +34,7 @@ export const demoWorkspace: WorkspaceSnapshot = {
   },
   project: {
     id: "project-acme-api",
-    machineId: "machine-local",
+    machineId: "machine-5c31a542e8960cfc8f00a529353d4944",
     name: "acme-api",
     path: "/Users/dev/src/acme-api",
     branch: "main",

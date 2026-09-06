@@ -272,9 +272,17 @@ Every ledger entry is now merged.
 - [x] Gate terminal-based skill installs through the normal permission system
 - [x] Define safe behavior for unsigned skills in Build auto
 - [x] Define the skill inventory contract and comparison model without distributing executables
-- [x] Fetch inventories from every reachable fleet member and compare them
-  - The skills surface dials each paired machine that reports the skills capability and asks for
-    its inventory. Metadata only: no skill file crosses a machine boundary.
+- [ ] Fetch inventories from every reachable fleet member and compare them
+  - The fan-out exists and is unit tested. `collectFleetInventories` in
+    `packages/ui/src/fleet-inventories.ts` selects the paired machines that report the skills
+    capability, dials each one, and reports `unreachable` or `unknown` rather than dropping a
+    machine that does not answer. Metadata only stays the contract: no skill file crosses a
+    machine boundary.
+  - Production never calls it. `packages/ui/src/workspace-shell.tsx` sets a single local source,
+    because asking a fleet member for its inventory is a client dial with a client credential
+    that no remote machine grants until client admission lands, so the comparison covers this
+    machine rather than guessing at the others. Close with client admission, then a comparison
+    across two real daemons.
 
 ### Desktop quality
 
@@ -449,11 +457,26 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 - [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
   - The schemas, `machine.json` identity, and local facts exist, and since #244 the daemon keeps
-    one authenticated socket per remote row with a fifteen-second heartbeat. Desktop uses a
-    different fallback identity and an existing `state.sqlite` can override `machine.json` and
-    current facts. Close with one production daemon factory plus startup reconciliation and
-    restart tests.
+    one authenticated socket per remote row with a fifteen-second heartbeat. One production
+    factory now serves both entry points: Desktop reaches a daemon only through
+    `acquireLocalDaemon`, which builds the same runtime from the same `machine.json`, so no
+    separate Desktop fallback identity remains. Startup reconciliation refuses to start when the
+    stored workspace names a different machine, and on a match it replaces the stored name,
+    platform, architecture, and version with this executable's current facts while keeping
+    provider readiness. Close with a production-boundary restart over one real profile that
+    asserts those refreshed facts.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
+  - Audit item F5: machine claims now grant only a five-minute confirmation capability. The
+    source journals and reads back its keychain token before confirmation activates it; a lost
+    confirmation reply is replayable after restart. Pending tokens cannot authenticate or retire
+    previous machine authority, and expired claims never activate. Protocol 0.5 requires updated
+    peers but leaves existing active pairings intact. Production-socket tests cover failed local
+    storage, target restart, expiry, and source recovery after a committed but unanswered confirm.
+  - Audit item F3. `domovoid pair` and `domovoid open` spend one 15-second deadline across
+    connect, `system.hello`, and the call, so a listener that accepts the socket and then says
+    nothing is refused with the address waited on and a remedy rather than holding the terminal.
+    Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's:
+    a connection stalled inside a TLS handshake can outlive the refusal.
 - [x] Bound pairing claim admission and keep pre-auth noise out of authenticated audit history
   - Audit item A2, closed by #247. Claims are admitted before code validation: 3 per TCP source
     and 30 per listener within 60 seconds, and reconnects, forwarding headers, new codes, and
@@ -464,8 +487,8 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - `packages/ui/src/client.ts` calls `device.revoke` and `device.rotate`, and the Fleet surface
     drives both. This duplicates the checked entry below it under paired-device management.
 - [x] Add a fleet registry and machine selector to the shared protocol and UI
-  - Closed by #244. `fleet.enroll` owns the claim, handshake, and first descriptor on one socket
-    and records the target's own facts; the heartbeat refreshes the row; and the two-daemon
+  - Closed by #244. `fleet.enroll` owns the claim and target facts, then confirms and authenticates
+    on a new socket only after durable local storage; the heartbeat refreshes the row; and the two-daemon
     production test takes enrollment through restart without registry seeding. Each enrollment
     and forget is journaled by credential digest and promoted or rolled back on restart, because
     SQLite and the OS keychain cannot be atomic.
@@ -491,8 +514,10 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     transfer over a configured loopback endpoint, forget masking and configuration removal.
     They do not prove an external tailnet or an SSH process. WSL transport production remains
     open in its own lane; WSL facts and the open shim are not a transport producer. Relay stays
-    deferred under Goal 3. A silent route can still spend the shared attempt deadline before
-    fallback begins.
+    deferred under Goal 3. Client and daemon dialers reserve a share of the remaining overall
+    deadline for each eligible route. Real socket tests prove fallback after silent upgrade and
+    hello, with typed timeout refusals and losing-attempt cancellation. These bounds and their
+    runtime disposal limits are documented in `docs/fleet-routing.md`.
 - [x] Authenticate every connection even inside a tailnet
 - [ ] Keep a daemon reachable while its tailnet or network identity changes through the encrypted
   rendezvous in `docs/encrypted-relay.md`
@@ -511,14 +536,16 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     maintaining their own list.
 - [ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app
   with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
-- [x] Bootstrap `domovoid` through a version-pinned install script that checks the archive against
-  a caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
+- [x] Install a frozen daemon runtime from a version-pinned release archive, checked against a
+  caller-supplied SHA-256 and the `SHA256SUMS` the release publishes; signature verification is
   tracked under signed GitHub Release artifacts
-  - Bootstrap streams and verifies the archive, stages it privately, materialises its embedded
-    integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`, and
-    verifies the installed graph before publishing a runnable receipt. Same-release protocol
-    bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download,
-    installation, native build, verification, publication, and cleanup share five minutes.
+  - `node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` streams
+    and verifies the archive into `<destination>/v<version>`, stages it privately, materialises its
+    embedded integrity lock as `package-lock.json`, runs bundled npm 10.0.0 or newer with `npm ci`,
+    verifies the installed graph, permits only the reviewed `node-pty` native build, and publishes
+    a `runtime.json` receipt naming the installed directory. Same-release protocol bytes are bound
+    inside the archive; provider SDKs are fetched, not bundled. Download, installation, native
+    build, verification, publication, and cleanup share five minutes.
   - HTTPS downloads add a 30-second byte-progress inactivity allowance within that total.
     Redirects and empty chunks do not renew it; local disk backpressure spends only the total.
     Deterministic and real HTTPS regressions reject silent or late responses. Refusal does not
@@ -528,26 +555,50 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     than selecting an unqualified Linux prebuild. Native loading is checked before publication
     and on reuse. Ubuntu CI's pinned Node 22 Alpine smoke installs the real archive, opens a PTY,
     and authenticates against the production daemon; other musl architectures remain unproven.
+  - What lands is an installed runtime tree, not an installed command. The result's `runtimePath`
+    is run as `node <runtimePath>/dist/index.js`. Nothing creates a `domovoid` entry on `PATH`,
+    starts the daemon, configures daemon state, or installs supervision. The separately exported
+    `bootstrapDaemon` download step on its own only publishes a verified archive and installs
+    nothing.
   - Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the
     external toolchain remain reproducibility limits. The protocol library keeps all three
     package managers. Tests drive the real bootstrap CLI with an isolated changing registry;
     a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not
-    performed by bootstrap. See `docs/distribution.md`.
+    performed by bootstrap. No release is published yet, so this path cannot be run against a real
+    release today. See `docs/distribution.md`, and `docs/clean-machine-setup.md` for the operator
+    steps that surround it.
 - [ ] Install and supervise the daemon for the user who asked, through a systemd user unit, a
   launchd agent, and a Windows logon task
   - Unit and task generators plus `service install`, `status`, and `remove` exist, and nothing is
-    written to a system-wide location. Nondefault listener and TLS configuration is lost, Desktop
-    contends for the same port instead of consuming the service, Windows lacks crash restart, and
-    CI never invokes a real manager.
+    written to a system-wide location. Since #256 installation records the validated non-secret
+    settings in `~/.domovoi/service.json` and replays them as the supervised environment: host,
+    port, credential and identity paths, TLS material, advertised and tailnet hosts, SSH
+    forwards, allowed origins, and the remote-transport opt-in. It refuses to retain
+    `DOMOVOI_AUTH_TOKEN` rather than silently changing authority. Since #261 Desktop no longer
+    contends for the port: it attaches to the verified local owner, and it refuses to start a
+    fallback daemon at all when a service configuration is present.
+  - The Windows logon task still has no crash restart, where the systemd unit has
+    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager only on
+    the Windows runner, where `apps/daemon/src/service/windows-task.native.test.ts` registers,
+    stops, and removes a real scheduled task under a throwaway name. No test invokes a real
+    systemd or launchd.
+  - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
+    installation, first start, TLS, supervision, pairing, and recovery, and names what remains
+    unproven per platform.
 - [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
-  - Discovery, endpoint, `domovoid wsl list`, and `domovoid open` exist, and a `wsl.exe` that
-    cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than
-    reported as a missing distribution or daemon. Unit tests drive them with a fake `wsl.exe`.
-    Six tests run the real `wsl.exe` on the Windows CI job, which has no running WSL 2
-    distribution: four prove that the listing answers or refuses within its deadline and that a
-    distribution that does not exist is refused, and the two that need a running distribution
-    skip. Discovery, open, authentication, repository ownership, Git, and restart against a running
-    distribution remain unverified. No `domovoi` alias exists, and WSL is not a fleet candidate.
+  - Since #262 `domovoid wsl list` discovers each distribution and whether a daemon answers there,
+    the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
+    Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
+    denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
+    daemon. Unit tests drive them with a fake `wsl.exe`. A real Windows-to-WSL test now exists:
+    `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
+    by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
+    running WSL 2 distribution, four of them prove that the listing answers or refuses within its
+    deadline and that a distribution that does not exist is refused, and the two that need a
+    running distribution skip. Discovery, open, authentication, repository ownership, Git, and
+    restart against a running distribution remain unverified. No `domovoi` alias exists, and WSL
+    is still neither a transport nor a fleet candidate: nothing but the CLI and `domovoid open`
+    consumes the discovery.
 - [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
   - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
     a placed path reads back as, so a Windows drive is refused wherever the distribution mounts

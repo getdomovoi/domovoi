@@ -50,6 +50,17 @@ and Alpine's native toolchain repositories are required; no host profile or cred
 the container. The smoke has an eight-minute total bound plus ten seconds for named-container
 cleanup. This is Linux x64 musl evidence, not an ARM, WSL, service-supervisor, or every-libc proof.
 
+A further check spends one cold install to prove the result is usable rather than merely present.
+It packs this repository's daemon, feeds that archive through the bootstrap installer into an
+empty directory, and then works only from the installed tree: it runs `domovoid --version` and
+`--help`, imports the same-release protocol together with the `node-pty` and keyring native
+modules, starts the daemon on an ephemeral loopback port under a throwaway home directory,
+completes a `system.hello` handshake with the published endpoint credential using the installed
+`ws` copy, and requires the endpoint file to be withdrawn after a graceful stop. Windows has no
+graceful termination signal, so it asserts the exit alone there. This check needs the public
+registry and the host's native build toolchain, so a production graph that cannot install or load
+fails the suite instead of passing as saved bytes.
+
 ### Verified bootstrap installation
 
 `node scripts/bootstrap-daemon.mjs <version> <baseUrl> <destination> <expectedSha256>` installs an
@@ -91,6 +102,7 @@ After archive verification, installation proceeds in a separate private `.runtim
 
 The JSON result includes `runtimePath`; `node <runtimePath>/dist/index.js` runs the installed
 daemon. Bootstrap does not start it, change PATH, configure daemon state, or install supervision.
+Those operator steps are in [clean-machine setup](clean-machine-setup.md).
 Private runtime staging is owner-only on POSIX; on Windows bootstrap applies a protected ACL
 granting the current user before extraction and installation. Elevated administrators and code
 already running as that user are outside this filesystem boundary.
@@ -287,11 +299,26 @@ attaches all three kinds of file to the GitHub release of each published package
 ## Versioning and release metadata
 
 Every package in this workspace carries the same version and is released as one compatibility
-unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `packages/ui`, `apps/web`, and
-`apps/desktop` ship a matched daemon and client pair, so a version that moves for one of them
-moves for all of them. Changesets enforces that at version time through the `@getdomovoi/*` fixed
+unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `packages/ui`, `apps/web`,
+`apps/desktop`, and `apps/mobile` ship together, so a version that moves for one moves for all.
+Changesets enforces that at version time through the `@getdomovoi/*` fixed
 group in `.changeset/config.json`, and `pnpm release:invariants` fails the build if a manifest
-drifts out of lockstep.
+drifts out of lockstep or the built protocol export advertises another release.
+
+`@getdomovoi/protocol` exports `buildVersion`, compiled directly from its package manifest.
+Daemon machine facts, every daemon and client greeting, and provider initialization use that
+value. Production startup replaces the persisted local machine version with the running build's
+version while preserving machine identity. A peer's version still comes from that peer, never
+from this local build. Expo derives the native app version's numeric major.minor.patch from the
+mobile manifest, as required by [Apple's native version format](https://developer.apple.com/help/glossary/version-number/).
+Greetings retain the complete release version, including any prerelease or build metadata.
+The wire `protocolVersion` remains a separate compatibility contract;
+an application release does not itself change it.
+
+After versioning, rebuild before running release invariants. The check loads the actual protocol
+artifact in a fresh process with a ten-second deadline and refuses a missing or stale build.
+Release-bump tests substitute a different build version at the metadata boundary, including the
+compiled CLI over a real socket, so today's matching literals cannot stand in for this property.
 
 Release metadata travels with the change that needs it:
 

@@ -86,7 +86,13 @@ describe("durable fleet operations", () => {
     expect(stored).toContain("[REDACTED]")
     expect(() => fleet.stageEnrollment({
       ...facts, transports: [{ kind: "tailnet", endpoint: `wss://studio/rpc?token=${unsafe}`, authenticated: true }],
+    }, digest, 1_000)).toThrow("Transport endpoint must be a WebSocket URL without credentials, query")
+    // The route schema rejects query credentials first. Keep exercising the
+    // persistence redactor too, using a secret in an otherwise valid URL path.
+    expect(() => fleet.stageEnrollment({
+      ...facts, transports: [{ kind: "tailnet", endpoint: `wss://studio/rpc/token=${unsafe}`, authenticated: true }],
     }, digest, 1_000)).toThrow("Fleet endpoints cannot contain secrets")
+    expect(JSON.stringify(database.prepare("SELECT * FROM fleet_operations").all())).toBe(stored)
   })
 
   it("makes forget visible while its keychain deletion is unfinished and resumes after restart", () => {

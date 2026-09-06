@@ -35,6 +35,13 @@ design/
   design_handoff_domovoi_brand/  signed brand source
 ```
 
+## Set up a machine
+
+To take a machine that has nothing installed through a daemon runtime, first start, TLS,
+supervision, fleet pairing, and Windows to WSL access, follow
+[clean-machine setup](docs/clean-machine-setup.md). It is written for the operator of that machine
+and names what is still unproven per platform. The rest of this page is repository development.
+
 ## Develop
 
 Requirements: Node.js 22.13.0 or newer and pnpm 11.

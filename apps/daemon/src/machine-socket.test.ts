@@ -2,7 +2,7 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { once } from "node:events"
 
 import { WebSocketServer } from "ws"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   daemonAuthenticationErrorCode,
@@ -26,6 +26,10 @@ import {
 import { OperationDeadline } from "./operation-deadline.js"
 
 const servers: WebSocketServer[] = []
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
 const machineId = `machine-${"a".repeat(32)}`
 const machineWorkspace = createEmptyWorkspace({ ...demoWorkspace.machine, id: machineId })
 
@@ -106,7 +110,7 @@ describe("openMachineSocket", () => {
       method: "system.hello",
       params: {
         client: "machine",
-        clientVersion: "0.0.1",
+        clientVersion: "9.8.7-test",
         protocolVersion,
         authToken: "n".repeat(43),
       },

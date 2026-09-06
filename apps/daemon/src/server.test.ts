@@ -4283,7 +4283,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("pairs an unauthenticated machine that presents the pairing code", async () => {
+  it("stages but does not activate an unauthenticated machine presenting the pairing code", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
@@ -4300,10 +4300,8 @@ describe("DomovoiDaemon", () => {
 
     const token = (claimed.result as { token: string }).token
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(store.devices.verify(token)).toEqual({
-      device: expect.objectContaining({ label: "studio-ipad" }),
-      binding: { kind: "machine", machineId: claimedMachineId },
-    })
+    expect(store.devices.verify(token)).toBeUndefined()
+    expect(store.devices.list()).toEqual([])
     socket.close()
   })
 
@@ -7719,7 +7717,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
-        id: "machine-per-project",
+        id: `machine-${"9".repeat(32)}`,
         name: "per-project-test",
         platform: process.platform,
         arch: process.arch,
@@ -7918,7 +7916,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
-        id: "machine-per-project",
+        id: `machine-${"9".repeat(32)}`,
         name: "per-project-test",
         platform: process.platform,
         arch: process.arch,
@@ -8098,7 +8096,7 @@ describe("DomovoiDaemon", () => {
       })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
-      id: "machine-orchestration",
+      id: `machine-${"8".repeat(32)}`,
       name: "orchestration-test",
       platform: process.platform,
       arch: process.arch,

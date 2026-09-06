@@ -126,10 +126,10 @@ describe("createMachineDialer", () => {
         endpoint: "ws://127.0.0.1:47900/rpc", routeSource: "ssh",
       })
       expect(seen.map(({ endpoint, remaining }) => ({ endpoint, remaining }))).toEqual([
-        { endpoint: "wss://studio.tailnet:47831/rpc", remaining: 100 },
+        { endpoint: "wss://studio.tailnet:47831/rpc", remaining: 50 },
         { endpoint: "ws://127.0.0.1:47900/rpc", remaining: 25 },
       ])
-      expect(seen[0]?.deadline).toBe(seen[1]?.deadline)
+      expect(seen[0]?.deadline).not.toBe(seen[1]?.deadline)
     } finally { deadline.clear() }
   })
 
@@ -254,10 +254,10 @@ describe("createMachineDialer", () => {
     try {
       const result = await dial(machineId, undefined, deadline)
       expect(seen.map(({ endpoint, remaining }) => ({ endpoint, remaining }))).toEqual([
-        { endpoint: "wss://studio.old/rpc", remaining: 100 },
+        { endpoint: "wss://studio.old/rpc", remaining: 50 },
         { endpoint: "wss://studio.tailnet/rpc", remaining: 25 },
       ])
-      expect(seen[0]?.deadline).toBe(seen[1]?.deadline)
+      expect(seen[0]?.deadline).not.toBe(seen[1]?.deadline)
       expect(result.endpoint).toBe("wss://studio.tailnet/rpc")
     } finally { deadline.clear() }
   })
@@ -294,7 +294,10 @@ describe("createMachineDialer", () => {
       open,
     })
     const opening = dial(machineId, undefined, deadline)
-    const refused = expect(opening).rejects.toThrow(/deadline/)
+    const refused = expect(opening).rejects.toMatchObject({
+      name: "MachineDialTimeoutError", stage: "connect-and-hello", target: "wss://studio.tailnet:47831",
+      message: expect.stringContaining("connect and authenticated hello"),
+    })
     // Credential access is async too. Expire the opener after it actually
     // starts, not while the credential phase is still pending.
     await waitForDaemon(() => expect(open).toHaveBeenCalledOnce())
@@ -331,14 +334,13 @@ describe("createMachineDialer", () => {
     })
 
     await expect(io.dial(machineId))
-      .rejects.toThrow("Refusing to authenticate over an unencrypted connection")
+      .rejects.toThrow("Remote transport endpoint requires TLS")
     expect(io.opened).toEqual([])
   })
 
   it("refuses a remote machine that claims a loopback address", async () => {
-    // Nothing ties an advertised endpoint to the transport it claims, so a
-    // machine elsewhere can name a loopback address and be handed a credential
-    // meant for it by whatever is listening here.
+    // The schema now rejects this before the dialer's peer-locality guard.
+    // Both boundaries must refuse without handing a credential to loopback.
     const io = dialer({
       machines: [machine({
         connection: "tailnet",
@@ -349,7 +351,7 @@ describe("createMachineDialer", () => {
     })
 
     await expect(io.dial(machineId))
-      .rejects.toThrow("Refusing to authenticate over an unencrypted connection")
+      .rejects.toThrow("Remote transport endpoint requires TLS")
     expect(io.opened).toEqual([])
   })
 
