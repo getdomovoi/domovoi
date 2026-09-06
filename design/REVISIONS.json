@@ -4,7 +4,7 @@
     "project": "Relay multi-device platform",
     "projectId": "a3b4404e-4d0c-451e-8dd2-203116a76c06"
   },
-  "recordedOn": "2026-09-04",
+  "recordedOn": "2026-09-06",
   "files": {
     "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
       "bytes": 103,
@@ -18,9 +18,21 @@
       "bytes": 27975,
       "sha256": "7c6791815ae0d415594c1358f441336093b6ffb48db193c4d5f0027a6b7fa469"
     },
+    "design/design_handoff_domovoi/designs/Domovoi Desktop Dock.dc.html": {
+      "bytes": 78368,
+      "sha256": "b898f5e481e955bad11247b218a83018ba5784ff398a52b52e415f663f713da4"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Desktop Fleet.dc.html": {
+      "bytes": 80284,
+      "sha256": "91306bd1caa1de9ad2101e9f8886c414b7c1c8233516dd7b7ffc7fda9240f0fb"
+    },
+    "design/design_handoff_domovoi/designs/Domovoi Desktop Session States.dc.html": {
+      "bytes": 80816,
+      "sha256": "0afc41c8597751e6fd9970ae961aa9a310491f0368d4cdf370c8827ba0007ef2"
+    },
     "design/design_handoff_domovoi/designs/Domovoi Desktop.dc.html": {
-      "bytes": 179610,
-      "sha256": "e5e9e075f1e068602e2abaae8b851158f2cf384a5253bc87cbf853e1d6699ae3"
+      "bytes": 185420,
+      "sha256": "bd5f82bddd8951d4563b48ce0fb3210954d8e984790f5ae1dd500fee2f24eccc"
     },
     "design/design_handoff_domovoi/designs/Domovoi Foundations.dc.html": {
       "bytes": 39197,
