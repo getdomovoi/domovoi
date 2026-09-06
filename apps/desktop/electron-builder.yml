@@ -6,10 +6,9 @@
 # bundler through its own Vite plugin, which does not understand electron-vite's
 # layout.
 #
-# Nothing here signs. The next two roadmap items are macOS notarization and
-# Windows code signing, so every hook they need is already named and inert:
-# mac.notarize, the hardened-runtime entitlements files, and win.signtoolOptions.
-# Turning them on is credentials plus a flag, not a restructure.
+# Package commands load electron-builder.cjs, which extends this layout with
+# the credential policy and mandatory signature verification. Do not invoke
+# this layout alone for a release. See docs/desktop-signing.md.
 #
 # productName lives in package.json, not here, because Electron reads it at
 # runtime for app.getName() and therefore for userData, logs and the single
@@ -97,9 +96,8 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Signing and notarization are the next roadmap items. Until an Apple
-  # Developer identity exists, a build here is unsigned and adhoc-signed by
-  # electron-builder; flip notarize to true once the credentials are in CI.
+  # Inert layout default. The policy enables both signing and notarization
+  # together or deliberately chooses an ad-hoc development build.
   notarize: false
 
 dmg:
@@ -108,9 +106,8 @@ dmg:
 win:
   target:
     - nsis
-  # Code signing is the roadmap item after notarization. electron-builder reads
-  # the certificate from signtoolOptions or from an Azure Trusted Signing
-  # profile; neither exists yet, so this build is unsigned.
+  # The policy chooses this signer or Azure, never both. No credentials or
+  # passwords are placed in the configuration or the effective-config artifact.
   signtoolOptions:
     signingHashAlgorithms:
       - sha256
