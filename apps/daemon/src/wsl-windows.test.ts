@@ -9,6 +9,7 @@ import type { WslDistribution } from "./wsl-distributions.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { distroGitCommand } from "./wsl-git.js"
 import { listWslDistributions } from "./wsl-list.js"
+import { nativeWslTransportProofs } from "./wsl-native-transport-proof.js"
 import { distributionPath } from "./wsl-path.js"
 import { runWslText, WslError } from "./wsl-run.js"
 
@@ -163,3 +164,5 @@ describe.skipIf(requiredDistribution === undefined && skipReason !== undefined)(
     }, 60_000)
   },
 )
+
+nativeWslTransportProofs(requiredDistribution)
