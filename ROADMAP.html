@@ -708,6 +708,8 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add device pairing, revocation, and credential rotation to the daemon and protocol
 <ul>
+<li>Audit item F5: machine claims now grant only a five-minute confirmation capability. The source journals and reads back its keychain token before confirmation activates it; a lost confirmation reply is replayable after restart. Pending tokens cannot authenticate or retire previous machine authority, and expired claims never activate. Protocol 0.5 requires updated peers but leaves existing active pairings intact. Production-socket tests cover failed local storage, target restart, expiry, and source recovery after a committed but unanswered confirm.
+</li>
 <li>Audit item F3. <code>domovoid pair</code> and <code>domovoid open</code> spend one 15-second deadline across connect, <code>system.hello</code>, and the call, so a listener that accepts the socket and then says nothing is refused with the address waited on and a remedy rather than holding the terminal. Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's: a connection stalled inside a TLS handshake can outlive the refusal.
 </li>
 </ul>
@@ -726,7 +728,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add a fleet registry and machine selector to the shared protocol and UI
 <ul>
-<li>Closed by #244. <code>fleet.enroll</code> owns the claim, handshake, and first descriptor on one socket and records the target's own facts; the heartbeat refreshes the row; and the two-daemon production test takes enrollment through restart without registry seeding. Each enrollment and forget is journaled by credential digest and promoted or rolled back on restart, because SQLite and the OS keychain cannot be atomic.
+<li>Closed by #244. <code>fleet.enroll</code> owns the claim and target facts, then confirms and authenticates on a new socket only after durable local storage; the heartbeat refreshes the row; and the two-daemon production test takes enrollment through restart without registry seeding. Each enrollment and forget is journaled by credential digest and promoted or rolled back on restart, because SQLite and the OS keychain cannot be atomic.
 </li>
 </ul>
 </li>

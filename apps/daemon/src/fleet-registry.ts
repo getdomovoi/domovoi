@@ -20,6 +20,7 @@ import {
   type FleetMachine,
   type FleetSnapshot,
   type FleetQuarantinedEntry,
+  type PendingDeviceClaim,
 } from "@getdomovoi/protocol"
 
 import { SqliteAuditLog } from "./audit-log.js"
@@ -90,7 +91,7 @@ export interface FleetRegistry {
   lookupMachine(machineId: string, selfId: string, nowMs: number): FleetMachine | undefined
   enrolled(): EnrolledFleetMachine[]
   pendingOperations(): FleetOperation[]
-  stageEnrollment(facts: FleetMachineFacts, credentialDigest: string, nowMs: number): FleetEnrollmentOperation
+  stageEnrollment(facts: FleetMachineFacts, credentialDigest: string, nowMs: number, claim?: PendingDeviceClaim): FleetEnrollmentOperation
   completeEnrollment(operationId: string, credentialDigest: string): boolean
   abortEnrollment(operationId: string): boolean
   stageForget(machineId: string, credentialDigest: string | null, nowMs: number): FleetForgetOperation
@@ -243,10 +244,11 @@ export class SqliteFleetRegistry implements FleetRegistry {
     return rows.map((row) => fleetOperationSchema.parse(JSON.parse(row.payload)))
   }
 
-  stageEnrollment(facts: FleetMachineFacts, credentialDigest: string, nowMs: number): FleetEnrollmentOperation {
+  stageEnrollment(facts: FleetMachineFacts, credentialDigest: string, nowMs: number, claim?: PendingDeviceClaim): FleetEnrollmentOperation {
     const pending = fleetEnrollmentOperationSchema.parse({
       version: 1, id: randomUUID(), machineId: facts.id, kind: "enroll",
       startedAt: new Date(nowMs).toISOString(), credentialDigest, facts: durableFacts(facts),
+      ...(claim ? { claim } : {}),
     })
     this.#stage(pending)
     return pending
