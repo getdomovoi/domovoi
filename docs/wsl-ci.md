@@ -63,7 +63,10 @@ not its daemon, protocol, SQLite registry, discovery, heartbeat or socket path.
 
 The Windows fixture holds a foreground `wsl.exe` child attached to the guest
 CLI, observes its exit and retains at most 64 KiB of output. Its lifetime is
-bounded to three minutes, with a separate 60-second startup deadline. The first
+bounded by the job's proof-phase allowance (four minutes), passed explicitly to
+the fixture rather than maintained as a shorter independent timer. The outer
+phase deadline still bounds all launches together. Startup has its own
+60-second deadline. The first
 expanded hosted runs exposed a detached `nohup` launch that returned without
 publishing an endpoint or any daemon log. Keeping the invocation attached made
 startup observable and let all ten proofs run. This is not a proof of detached
@@ -106,6 +109,14 @@ seconds. It used the same image and WSL/kernel
 versions above. This replaces the unmeasured guest-runtime estimate, not the
 3-to-6-minute cold-run planning allowance or the hard deadlines. No extra
 distribution or normal CI matrix leg is added.
+
+The [repository-boundary run](https://github.com/getdomovoi/domovoi/actions/runs/34011937724/job/101429169562)
+tested commit `28698e3` and completed in **3 minutes 37 seconds**, with all
+fifteen native proofs passed and zero skipped. Provisioning took 40.5 seconds,
+guest runtime preparation 20.7 seconds, proofs 30.7 seconds and cleanup 0.3
+seconds, on the same runner image and guest kernel. The five repository proofs
+added about 20 seconds to the measured proof phase versus the ten-test run;
+total job duration also varies with tool setup, dependencies and build time.
 
 Every Domovoi invocation prints measured provisioning, proof and cleanup seconds
 and adds them to the Actions summary after success. Actions records the other
@@ -158,9 +169,9 @@ deliberate kill and stopped-distro tests. It adds the following real operations:
   The persisted project, machine id and Git commit must survive. No assumption
   about a newly chosen ephemeral port being different is needed.
 
-These added assertions require their first hosted run before they count as
-native evidence. Linux registration/typecheck and the report-guard unit tests
-alone do not prove any Windows crossing.
+All of these assertions passed in the repository-boundary hosted run above,
+against the same single root-user Ubuntu guest. Linux registration/typecheck
+and the report-guard unit tests alone do not prove any Windows crossing.
 
 The job still does **not** resolve two distribution identities or cover
 Windows 11 mirrored networking and VPNs. It does not prove the host keychain,
