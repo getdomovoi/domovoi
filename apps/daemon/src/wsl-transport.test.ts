@@ -1,10 +1,11 @@
 import { createServer, type Socket } from "node:net"
+import { setTimeout as delay } from "node:timers/promises"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { createMachineDialer } from "./machine-dial.js"
 import { MachinePairingRequiredError, openMachineSocket, readMachineDescriptor } from "./machine-socket.js"
-import { OperationDeadline } from "./operation-deadline.js"
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { fleetProductionHarness } from "./test-fleet-production.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import * as endpoints from "./wsl-endpoint.js"
@@ -72,26 +73,39 @@ describe("WSL route admission over real daemon sockets", () => {
 
   it("bounds a real listener that accepts TCP but never speaks and closes its socket", async () => {
     const sockets = new Set<Socket>()
-    const server = createServer((socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)) })
+    let accepted = 0
+    const server = createServer((socket) => {
+      accepted += 1
+      sockets.add(socket)
+      socket.resume()
+      socket.on("close", () => sockets.delete(socket))
+    })
     const deadline = OperationDeadline.start(2_000)
     const stop = () => { for (const socket of sockets) socket.destroy(); server.close() }
     deadline.signal.addEventListener("abort", stop, { once: true })
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject); server.listen(0, "127.0.0.1", resolve)
-      })
+      await beforeDeadline(new Promise<void>((resolve, reject) => {
+        server.once("error", reject)
+        server.listen(0, "127.0.0.1", () => {
+          if (deadline.remainingMs() === 0) stop()
+          resolve()
+        })
+      }), deadline)
       const address = server.address()
       if (!address || typeof address === "string") throw new Error("Listener did not bind")
       vi.spyOn(distributions, "listWslDistributions").mockResolvedValue([
         { name: "Ubuntu", version: 2, state: "Running", default: true },
       ])
       vi.spyOn(endpoints, "readDistroEndpoint").mockResolvedValue({ host: "127.0.0.1", port: address.port, token: "r".repeat(43) })
-      const attempt = deadline.limit(150)
+      const attempt = deadline.limit(500)
       try {
         await expect(openWslTransport({ distribution: "Ubuntu", expectedMachineId: `machine-${"b".repeat(32)}`,
           credential: "p".repeat(43), deadline: attempt, open: (input) => openMachineSocket({ ...input, callTimeoutMs: 1_000 }) }))
           .rejects.toMatchObject({ name: "WslTransportError", reason: "timed-out" })
       } finally { attempt.clear() }
+      expect(accepted).toBe(1)
+      while (sockets.size > 0) await delay(20, undefined, { signal: deadline.signal })
+      expect(sockets.size).toBe(0)
     } finally { stop(); deadline.clear() }
   })
 
