@@ -118,6 +118,13 @@ seconds, on the same runner image and guest kernel. The five repository proofs
 added about 20 seconds to the measured proof phase versus the ten-test run;
 total job duration also varies with tool setup, dependencies and build time.
 
+The [repeat after the fixture-budget review](https://github.com/getdomovoi/domovoi/actions/runs/34012561772/job/101430766711)
+tested `5a0a5f5`: **15 passed, zero skipped, 2 minutes 36 seconds total**.
+Provisioning took 32.5 seconds, the guest runtime 16.3 seconds, proofs 22.9
+seconds and cleanup 0.6 seconds. Successful proof output is now retained too;
+the real guest reported Git 2.43.0. The image and kernel were unchanged. These
+two successful runs establish the named boundaries, not a duration guarantee.
+
 Every Domovoi invocation prints measured provisioning, proof and cleanup seconds
 and adds them to the Actions summary after success. Actions records the other
 step durations. Unrelated PRs incur no WSL runner minutes.
