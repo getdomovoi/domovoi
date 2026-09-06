@@ -32,7 +32,20 @@ The report must contain at least six passed native tests and zero skipped,
 pending, todo or failed tests. Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.
 Success prints `DOMOVOI_WSL_NATIVE_OK`; failure prints
-`DOMOVOI_WSL_NATIVE_FAILED` with the underlying reason.
+`DOMOVOI_WSL_NATIVE_FAILED` with the underlying reason. Failed proofs print the
+JSON report before cleanup removes it, including when Vitest exits nonzero.
+Both console output streams are retained too. Reading failure diagnostics has
+its own five-second bound; an unavailable report does not replace the original
+failure.
+
+Literal guest commands use `--exec`, not just `--`. The latter ends WSL's option
+parsing but still uses the default Linux shell. The first hosted proof exposed
+that production path translation let this shell consume UNC backslashes and
+expand dollar signs. Path translation, endpoint reads and Git-command
+preparation now bypass that shell. The native path proof checks real guest
+filenames containing spaces, variable syntax and command-substitution syntax
+through both `wsl$` and `wsl.localhost` UNC forms. This does not add a transport
+producer.
 
 Cleanup runs after success and failure, with its own deadline. It terminates and
 unregisters only this invocation's UUID distro and deletes only its staging
@@ -47,14 +60,18 @@ on destruction of the ephemeral runner VM for final cleanup.
 - Protocol build: 2-minute step cap.
 - WSL download, install, configuration and boot: 5-minute total deadline.
 - Native proofs: 3-minute total deadline.
+- Failed-proof report diagnostics: a separate 5-second deadline.
 - Cleanup: 1-minute total deadline, shared by its commands.
 - Entire job: 15-minute hard cap, including checkout and tool setup.
 
-Estimate **3 to 6 minutes for the separate job**, depending on cold dependency
-and image downloads. This is a planning estimate, not a measured Domovoi run.
-An upstream Ubuntu 24.04 WSL 2 job on our exact image completed installation,
-first boot and the running-version assertion in
-[45 seconds with a cached image](https://github.com/Vampire/setup-wsl/actions/runs/33942520673/job/101281075218).
+The [first successful Domovoi hosted run](https://github.com/getdomovoi/domovoi/actions/runs/34005827393/job/101412694701)
+completed in **1 minute 39 seconds**, with six native proofs passed and zero
+skipped: 34.8 seconds provisioning, 2.5 seconds proofs and 0.3 seconds cleanup.
+It used WSL 2.7.12.0 on image `win25-vs2026` version `20260824.214.3`, with guest
+kernel `6.18.33.2-microsoft-standard-WSL2`. This is an observed run, not a future
+duration guarantee. Keep **3 to 6 minutes** as the planning allowance for cold
+dependency and image downloads.
+
 Every Domovoi invocation prints measured provisioning, proof and cleanup seconds
 and adds them to the Actions summary after success. Actions records the other
 step durations. Unrelated PRs incur no WSL runner minutes.
@@ -68,7 +85,7 @@ Windows host whose hardware or parent hypervisor exposes virtualization.
 
 ## What the job proves
 
-Once it passes on Windows, the job proves real WSL 2 startup, production
+The successful Windows run proves real WSL 2 startup, production
 distribution discovery and absent-endpoint handling, missing-distro refusals,
 round-tripping a Linux path through the guest's `wslpath`, and refusing Windows
 drive paths in both path translation and Git-command preparation with a
@@ -81,5 +98,5 @@ RPC, execute Git repository work inside that daemon, or prove daemon shutdown
 and restart. It does not produce or dial a WSL fleet transport, resolve two
 distribution identities, or cover Windows 11 mirrored networking and VPNs.
 Those are subsequent tests and implementation work. A second distribution is
-added only when a test needs two. Merely adding this workflow closes none of
-those outcome gaps; the first successful native run is still required evidence.
+added only when a test needs two. The hosted result above is evidence for
+discovery and filesystem boundaries, not for those remaining outcome gaps.
