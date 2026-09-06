@@ -1015,7 +1015,11 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Make <code>0.1.0-alpha.1</code> the first public alpha release
+<li>[ ] Make <code>0.1.0-alpha.0</code> the first public alpha release
+<ul>
+<li>Changesets pre-release mode numbers from zero and the workflow never sets a version by hand, so the first tag the tooling produces is the one that ships. <code>docs/distribution.md</code> records the same number.
+</li>
+</ul>
 </li>
 <li>[x] Keep package, app, daemon, protocol, and CLI versions in lockstep through <code>0.x</code>, and treat compatibility as one release unit
 <ul>
