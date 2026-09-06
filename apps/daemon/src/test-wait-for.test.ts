@@ -5,7 +5,7 @@ import ts from "typescript"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
-  daemonWaitTimeoutMs, fixtureStartupTimeoutMs, waitForDaemon, waitForFixtureStartup,
+  daemonWaitTimeoutMs, fixtureStartupTimeoutMs, productionRpcTimeoutMs, waitForDaemon, waitForFixtureStartup,
 } from "./test-wait-for.js"
 
 afterEach(() => vi.restoreAllMocks())
@@ -47,6 +47,21 @@ describe("daemon assertion waits", () => {
 
   it("clears the worst passing Windows run measured in CI by more than twice", () => {
     expect(fixtureStartupTimeoutMs("win32")).toBeGreaterThan(2 * 8_103)
+  })
+
+  it.each([
+    ["win32", 25_000],
+    ["linux", 10_000],
+    ["darwin", 10_000],
+  ] as const)("gives one production harness call on %s longer than a spawned fixture start", (platform, timeout) => {
+    expect(productionRpcTimeoutMs(platform)).toBe(timeout)
+    expect(timeout).toBeGreaterThanOrEqual(fixtureStartupTimeoutMs(platform))
+  })
+
+  // Every passing Windows run answered inside the fixed ten seconds this budget
+  // replaced, so ten seconds is the ceiling on the worst passing call.
+  it("clears the ceiling on the worst passing Windows call by two and a half times", () => {
+    expect(productionRpcTimeoutMs("win32")).toBeGreaterThanOrEqual(2.5 * 10_000)
   })
 
   it("names the budget when a fixture never starts and keeps the assertion as the cause", async () => {

@@ -20,8 +20,15 @@ import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies, type ProductionDaemonHandle } from "./production-daemon.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { productionRpcTimeoutMs } from "./test-wait-for.js"
 
 const exec = promisify(execFile)
+
+// What one call over this harness gets before the test gives up on it. Sized
+// for the runner rather than for the daemon, which allows a session move ten
+// minutes of its own; see test-wait-for.ts for the measurements. Every caller
+// keeps a test budget above this so the expiry names the method that spent it.
+const rpcTimeoutMs = productionRpcTimeoutMs(process.platform)
 
 export const git = (cwd: string, args: string[]) => exec("git", args, { cwd, timeout: 10_000 })
 
@@ -108,7 +115,12 @@ export function fleetProductionHarness() {
       return new Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }>((resolve, reject) => {
         const cleanup = () => { clearTimeout(timer); socket.off("message", receive); socket.off("close", closed) }
         const closed = () => { cleanup(); reject(new Error(`Socket closed during ${method}`)) }
-        const timer = setTimeout(() => { cleanup(); reject(new Error(`RPC test deadline: ${method}`)) }, 10_000)
+        // The daemon keeps working on an abandoned call, so name the budget
+        // that was spent rather than reporting only that a deadline passed.
+        const timer = setTimeout(() => {
+          cleanup()
+          reject(new Error(`RPC test deadline: ${method} did not answer within its ${rpcTimeoutMs}ms budget`))
+        }, rpcTimeoutMs)
         const receive = (bytes: WebSocket.RawData) => {
           const response = JSON.parse(bytes.toString()) as { id?: number; result?: unknown; error?: { code: number; message: string } }
           if (response.id === id) { cleanup(); resolve(response) }

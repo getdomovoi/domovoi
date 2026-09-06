@@ -36,3 +36,24 @@ export function waitForFixtureStartup<T>(fixture: string, assertion: () => T | P
     throw new Error(`${fixture} did not start within its ${timeout}ms startup budget`, { cause })
   })
 }
+
+// One call over the production fleet harness socket is a third class again. It
+// reaches a real daemon that spawns Git, writes SQLite and dials a second
+// daemon, so a single call carries whatever the runner charges for process
+// creation that minute rather than the latency of the code under test. Measured
+// across the 198 Windows jobs of the last 200 CI runs, the two tests that move
+// a session cost, end to end, a median of 5705 ms and 4297 ms, a 95th
+// percentile of 11122 ms and 8022 ms, and a worst passing run of 18354 ms and
+// 13993 ms, while Ubuntu never passed 3253 ms and 2721 ms and never expired.
+// Every passing run answered inside the fixed ten seconds it had, so ten
+// seconds is the ceiling on the worst passing call. That same ten seconds
+// expired three times in the window, on main at 11568 ms, on
+// feat/add-skill-flow at 12951 ms and on this branch at 13757 ms, each of them
+// "RPC test deadline: session.transfer", and seven runs slower than all three
+// passed, so the split was where the runner's stall landed rather than any
+// difference in behaviour. Twenty-five seconds clears that ceiling by two and a
+// half, and every caller keeps a test budget above it, so a call that never
+// answers is still bounded and still named.
+export function productionRpcTimeoutMs(platform: NodeJS.Platform): number {
+  return platform === "win32" ? 25_000 : 10_000
+}

@@ -615,6 +615,17 @@ because that runner releases handles slowly. Each of those three tests builds tw
 daemons over real sockets and SQLite before stopping and restarting one, and a single production
 start or stop is allowed 30 seconds on its own.
 
+One call over the production fleet harness gets 25 seconds on Windows and ten elsewhere. The call
+reaches a real daemon that spawns Git, writes SQLite and dials a second daemon, so it is priced by
+the runner rather than by the code under test, and a fixed ten seconds on every platform expired
+three times in 329 Windows executions of the two tests that move a session, once on `main`. Those
+expiries were slower than the median but not slower than seven runs that passed, so the split was
+where the runner stalled rather than a difference in behaviour. Both of those tests, and the
+quarantine test beside them, now take 40 seconds on Windows so the call budget stays inside the test
+budget with room for the setup ahead of it, and an expiry names the method and the budget it spent
+instead of reporting only that a deadline passed. The daemon still allows a session move ten minutes
+of its own, so this budget bounds the test, not the transfer.
+
 The native Windows task removal test keeps its 60-second lifecycle budget, which no passing CI run
 has come near. It now records the phase it is in, so an expiry names the step that spent the budget
 instead of reporting only that a deadline passed. It also takes the task teardown obligation before

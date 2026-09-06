@@ -10,6 +10,15 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { machineCredentialDigest } from "./machine-credentials.js"
 import { fleetProductionHarness, git, persistedRegistry, remote, sessionAgent } from "./test-fleet-production.js"
 
+// The eligibility scenarios move a real session, so this budget must hold one
+// harness call budget plus the setup ahead of it. The heaviest of the three has
+// passed at 13993 ms on Windows and expired twice against a fixed ten second
+// call budget, on main at 11568 ms and on feat/add-skill-flow at 12951 ms.
+// Forty seconds clears the worst passing run by more than twice and leaves
+// fifteen seconds above the harness call budget, so a call that never answers
+// is reported as that call rather than as the test.
+const testBudgetMs = process.platform === "win32" ? 40_000 : 30_000
+
 const { cleanup, scratch, repository, connect, machine, enroll } = fleetProductionHarness()
 afterEach(cleanup)
 
@@ -158,5 +167,5 @@ describe("production fleet assembly", () => {
     expect(sourceAfter.sessions[0]?.state).toBe("transferred")
     expect(await readFile(join(session.workspacePath!, "work.txt"), "utf8")).toBe("uncommitted work travels\n")
     expect((await source.root.call("session.send", { sessionId: session.id, prompt: "must not run", client: "cli" })).error).toBeDefined()
-  }, 30_000)
+  }, testBudgetMs)
 })
