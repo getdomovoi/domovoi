@@ -55,3 +55,27 @@ test("publishing stays opt-in behind the exact-commit CI verdict", async () => {
   assert.ok(verdict >= 0 && mode > verdict)
   assert.equal(release.concurrency["cancel-in-progress"], false)
 })
+
+test("version PRs can run while all publishing remains disabled", async () => {
+  const release = await workflow("release")
+  assert.match(release.jobs.gate.if, /vars.RELEASE_PUBLISHING == 'version-only'/)
+  assert.match(release.jobs.pack.if, /vars.RELEASE_PUBLISHING == 'enabled'/)
+})
+
+test("initial publishing is an explicit manual choice, admitted before credential use", async () => {
+  const release = await workflow("release")
+  assert.equal(release.on.workflow_dispatch.inputs.first_publish.type, "boolean")
+  assert.equal(release.on.workflow_dispatch.inputs.first_publish.default, false)
+  const steps = release.jobs.publish.steps
+  const admission = steps.findIndex((step) => step.run === "pnpm release:admit")
+  const publishing = steps.findIndex((step) => step.uses?.startsWith("changesets/action/publish@"))
+  assert.ok(admission >= 0 && admission < publishing)
+  assert.match(steps[admission].env.NPM_BOOTSTRAP_TOKEN, /workflow_dispatch.*first_publish.*secrets.NPM_BOOTSTRAP_TOKEN/)
+  assert.match(steps[publishing].env.NODE_AUTH_TOKEN, /workflow_dispatch.*first_publish.*secrets.NPM_BOOTSTRAP_TOKEN/)
+  assert.equal(steps[publishing].env.npm_config_provenance, "true")
+  const setup = steps.findIndex((step) => step.with?.["registry-url"])
+  assert.ok(setup > admission && setup < publishing)
+  assert.match(steps[setup].if, /workflow_dispatch.*first_publish/)
+  assert.equal(steps[setup].with["registry-url"], "https://registry.npmjs.org")
+  assert.equal(release.jobs.publish["timeout-minutes"], 25)
+})

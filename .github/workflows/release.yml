@@ -1,13 +1,19 @@
 name: release
 
 # Versions and publishes @getdomovoi/protocol and @getdomovoi/daemon with Changesets and
-# npm trusted publishing. Nothing runs until a maintainer sets the repository variable
-# RELEASE_PUBLISHING to "enabled". The human steps are in docs/distribution.md.
+# npm trusted publishing. RELEASE_PUBLISHING="version-only" permits version PRs;
+# "enabled" also permits publishing. An absent variable permits neither.
+# The one-time manual bootstrap and human steps are in docs/release-setup.md.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      first_publish:
+        description: One-time first alpha using the protected environment's temporary npm token
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -25,7 +31,7 @@ jobs:
     if: >-
       github.repository == 'getdomovoi/domovoi'
       && github.ref == 'refs/heads/main'
-      && vars.RELEASE_PUBLISHING == 'enabled'
+      && (vars.RELEASE_PUBLISHING == 'version-only' || vars.RELEASE_PUBLISHING == 'enabled')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -56,6 +62,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.mode == 'version'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -78,8 +85,9 @@ jobs:
 
   pack:
     needs: gate
-    if: needs.gate.outputs.mode == 'publish'
+    if: needs.gate.outputs.mode == 'publish' && vars.RELEASE_PUBLISHING == 'enabled'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -107,6 +115,7 @@ jobs:
   publish:
     needs: pack
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment: npm
     permissions:
       contents: write
@@ -127,10 +136,24 @@ jobs:
           name: release
           path: release
       - run: pnpm release:verify
+      - name: Admit trusted publishing or the one-time first alpha
+        env:
+          RELEASE_PUBLISHING: ${{ vars.RELEASE_PUBLISHING }}
+          FIRST_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && 'true' || 'false' }}
+          NPM_BOOTSTRAP_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
+        timeout-minutes: 2
+        run: pnpm release:admit
+      - name: Configure token auth only for the admitted first publication
+        if: github.event_name == 'workflow_dispatch' && inputs.first_publish
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
       - id: publish
         uses: changesets/action/publish@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         env:
           npm_config_provenance: "true"
+          NODE_AUTH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
         with:
           script: pnpm changeset publish --from-pack-dir release/pack
           create-github-releases: false
