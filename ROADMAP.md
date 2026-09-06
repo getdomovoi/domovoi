@@ -582,35 +582,52 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     contends for the port: it attaches to the verified local owner, and it refuses to start a
     fallback daemon at all when a service configuration is present.
   - The Windows logon task still has no crash restart, where the systemd unit has
-    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager only on
-    the Windows runner, where `apps/daemon/src/service/windows-task.native.test.ts` registers,
-    stops, and removes a real scheduled task under a throwaway name. No test invokes a real
-    systemd or launchd.
+    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI now reaches a real manager on
+    all three legs. `apps/daemon/src/service/windows-task.native.test.ts` registers, stops, and
+    removes a real scheduled task under a throwaway name. `systemd-unit.native.test.ts` installs,
+    reports and removes a real user unit under a throwaway name, then crashes its process through
+    the manager and requires exactly one restart, with a deliberate stop and a clean exit both
+    required to stay stopped; the Ubuntu leg starts the user manager and asserts its socket so the
+    test cannot skip silently.
+  - `launchd-agent.native.test.ts` is the macOS counterpart and is written but unexecuted, because
+    it was authored on Linux. It bootstraps a throwaway agent into the per-user domain the
+    installer targets, crashes it through the manager, and requires launchd's own run count to
+    increment, with a clean exit required to stay exited past launchd's throttle. The hosted-runner
+    question it depended on is settled from evidence: `actions/runner-images` gives every macOS
+    image GUI auto-login, and a green `macos-14` job published a `launchctl print` dump with a live
+    audit session id, `state = running` and a real `pid`. The macOS leg asserts that same domain, so
+    the first CI run either proves the assertions or fails by name. Until it runs, `KeepAlive`
+    supervision stays unproven. See `docs/daemon-services.md`.
   - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
     installation, first start, TLS, supervision, pairing, and recovery, and names what remains
     unproven per platform.
-- [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
+- [x] Implement WSL discovery and a `domovoid open` Windows interop shim
   - Since #262 `domovoid wsl list` discovers each distribution and whether a daemon answers there,
     the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
     Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
     denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
     daemon. Unit tests drive them with a fake `wsl.exe`. A corrupt listing returns no partial
     discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt
-    classification and remedy through both CLI commands. A real Windows-to-WSL test now exists:
-    `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
-    by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
-    running WSL 2 distribution, four of them prove that the listing answers or refuses within its
-    deadline and that a distribution that does not exist is refused, and the two that need a
-    running distribution skip. Discovery, open, authentication, repository ownership, Git, and
-    restart against a running distribution remain unverified. No `domovoi` alias exists, and WSL
-    is still neither a transport nor a fleet candidate: nothing but the CLI and `domovoid open`
-    consumes the discovery.
-- [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
+    classification and remedy through both CLI commands. The separate path-filtered and nightly
+    Windows job provisions one pinned Ubuntu WSL 2 guest and requires every native proof with
+    zero skips. Hosted run 34011937724 passed all 15: real CLI discovery and open through both
+    UNC spellings, guest project ownership and Git, authenticated fleet routing, graceful daemon
+    restart with the project and pairing preserved, and stale/stopped endpoint refusal.
+    `docs/wsl-ci.md` records the run, timings and limits. Normal non-WSL runs still skip these
+    native tests explicitly. WSL routes are source-local candidates produced only after the
+    guest answers with the enrolled identity. No `domovoi` alias, service-launch WSL facts,
+    multi-distro arbitration, mirrored-network or VPN proof is claimed.
+- [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
   - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
     a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
     it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
-    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
-    which CI does not have.
+    dedicated native job now proves the custom automount case at `/domovoi-ci-drives/`, including
+    refusing a valid Windows Git repository through the real Windows open shim and Git-command
+    preparation without changing either daemon's project. It also proves the Windows daemon
+    refuses both WSL share spellings with the boundary-specific remedy, while the guest owns
+    the native project and executes Git. Hand-mounted drive paths and repository-selecting Git
+    arguments remain unit-tested, not native-tested. This does not prove a session transfer or
+    non-root guest permissions.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
@@ -698,12 +715,14 @@ Not covered, and the reason this goal is open:
 
 - the two-daemon test injects the OS keyring and provider readiness, so platform keychain
   behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
-- Windows and macOS run component suites, but service managers and WSL remain simulated;
+- native service managers are driven for real on the Linux and Windows legs, and a real WSL 2 guest
+  is provisioned by its own job, but the macOS launchd test has never run and Windows has no crash
+  restart to test at all;
 - no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
-bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus jobs that
-invoke native service managers and a real WSL. A daemon must also remain reachable from a paired
+bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a green
+macOS leg that actually ran the launchd test. A daemon must also remain reachable from a paired
 phone across private-network identity changes without exposing payload plaintext to the relay,
 and a bearer or channel key alone must not be enough to enter.
 

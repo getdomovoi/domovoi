@@ -67,9 +67,9 @@ export function evaluateDependencyLicenses(graph, policy) {
 export async function collectDependencyLicenses(root = repositoryRoot, packages = publishablePackages, { deadline: parent } = {}) {
   const deadline = bootstrapDeadline(30_000, "Dependency license inventory exceeded 30000 ms", parent)
   try {
-    const { command } = pnpmInvocation()
+    const { command, args } = pnpmInvocation()
     const filters = packages.flatMap((name) => ["--filter", name])
-    const { stdout: output } = await deadline.run(() => promisify(execFile)(command, [...filters, "licenses", "list", "--json", "--prod"], {
+    const { stdout: output } = await deadline.run(() => promisify(execFile)(command, [...args, ...filters, "licenses", "list", "--json", "--prod"], {
       cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, signal: deadline.signal, killSignal: "SIGKILL",
     }))
 

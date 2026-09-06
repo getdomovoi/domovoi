@@ -232,7 +232,7 @@ export async function withThrowawayUnit(
     await requireAbsence(deadline)
 
     const script = join(home, "unit.mjs")
-    await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/systemd-unit.mjs", import.meta.url), script))
+    await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/service-process.mjs", import.meta.url), script))
     await withinServiceDeadline(deadline, () => mkdir(join(runtimeDirectory, "systemd", "user"), { recursive: true }))
 
     await body({
