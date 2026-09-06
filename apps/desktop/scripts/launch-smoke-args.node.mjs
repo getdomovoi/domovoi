@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { sep } from "node:path"
 import test from "node:test"
 
 import {
@@ -8,6 +9,20 @@ import {
   packagedAppCandidates,
   packagedAsarPath,
 } from "./launch-smoke-args.mjs"
+
+// Both path builders name a target platform's output directories, but the
+// paths themselves are opened and spawned on the machine doing the packaging,
+// so the separator belongs to that host and never to the target. Comparing
+// against a posix literal fails on Windows for a reason that says nothing
+// about packaging. What the two functions owe their caller is the directory
+// and file names, in order, in a path the host can open, so the comparison is
+// made separator agnostic and the host separator is asserted on its own.
+const foreignSeparator = sep === "\\" ? "/" : "\\"
+
+function hostPath(value) {
+  assert.ok(!value.includes(foreignSeparator), `${value} does not use the ${JSON.stringify(sep)} separator of its host`)
+  return value.split(sep).join("/")
+}
 
 test("disables the Chromium sandbox only on Linux CI", () => {
   assert.deepEqual(
@@ -36,17 +51,18 @@ test("omits the application directory for a packaged build, which carries its ow
   )
 })
 
+const packagedOptions = { distDirectory: "/dist", productName: "Domovoi", executableName: "domovoi-desktop" }
+
 test("names every directory electron-builder writes an unpacked application to", () => {
-  const options = { distDirectory: "/dist", productName: "Domovoi", executableName: "domovoi-desktop" }
-  assert.deepEqual(packagedAppCandidates({ platform: "linux", ...options }), [
+  assert.deepEqual(packagedAppCandidates({ platform: "linux", ...packagedOptions }).map(hostPath), [
     "/dist/linux-unpacked/domovoi-desktop",
     "/dist/linux-arm64-unpacked/domovoi-desktop",
   ])
-  assert.deepEqual(packagedAppCandidates({ platform: "win32", ...options }), [
+  assert.deepEqual(packagedAppCandidates({ platform: "win32", ...packagedOptions }).map(hostPath), [
     "/dist/win-unpacked/Domovoi.exe",
     "/dist/win-arm64-unpacked/Domovoi.exe",
   ])
-  assert.deepEqual(packagedAppCandidates({ platform: "darwin", ...options }), [
+  assert.deepEqual(packagedAppCandidates({ platform: "darwin", ...packagedOptions }).map(hostPath), [
     "/dist/mac/Domovoi.app/Contents/MacOS/Domovoi",
     "/dist/mac-arm64/Domovoi.app/Contents/MacOS/Domovoi",
     "/dist/mac-universal/Domovoi.app/Contents/MacOS/Domovoi",
@@ -54,18 +70,16 @@ test("names every directory electron-builder writes an unpacked application to",
 })
 
 test("finds the archive beside the packaged executable on every platform", () => {
-  assert.equal(
-    packagedAsarPath({ platform: "linux", executablePath: "/dist/linux-unpacked/domovoi-desktop" }),
-    "/dist/linux-unpacked/resources/app.asar",
-  )
-  assert.equal(
-    packagedAsarPath({ platform: "win32", executablePath: "/dist/win-unpacked/Domovoi.exe" }),
-    "/dist/win-unpacked/resources/app.asar",
-  )
-  assert.equal(
-    packagedAsarPath({ platform: "darwin", executablePath: "/dist/mac/Domovoi.app/Contents/MacOS/Domovoi" }),
-    "/dist/mac/Domovoi.app/Contents/Resources/app.asar",
-  )
+  // Fed from the candidate rather than from a literal, which is how the
+  // package smoke reaches the archive and keeps the two in step.
+  for (const [platform, archive] of [
+    ["linux", "/dist/linux-unpacked/resources/app.asar"],
+    ["win32", "/dist/win-unpacked/resources/app.asar"],
+    ["darwin", "/dist/mac/Domovoi.app/Contents/Resources/app.asar"],
+  ]) {
+    const [executablePath] = packagedAppCandidates({ platform, ...packagedOptions })
+    assert.equal(hostPath(packagedAsarPath({ platform, executablePath })), archive, platform)
+  }
 })
 
 test("gives Windows a longer launch budget, where Electron starts slowest on CI", () => {
