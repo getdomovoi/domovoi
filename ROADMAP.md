@@ -590,7 +590,9 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
     Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
     denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
-    daemon. Unit tests drive them with a fake `wsl.exe`. A real Windows-to-WSL test now exists:
+    daemon. Unit tests drive them with a fake `wsl.exe`. A corrupt listing returns no partial
+    discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt
+    classification and remedy through both CLI commands. A real Windows-to-WSL test now exists:
     `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
     by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
     running WSL 2 distribution, four of them prove that the listing answers or refuses within its

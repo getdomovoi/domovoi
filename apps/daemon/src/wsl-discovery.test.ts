@@ -101,6 +101,20 @@ describe("discoverWslMachines", () => {
     expect(input.endpoint).not.toHaveBeenCalled()
   })
 
+  it("does not inspect endpoints from a partially corrupt listing", async () => {
+    const input = discovery({
+      distributions: vi.fn(() => listWslDistributions({
+        platform: "win32",
+        run: async () => Buffer.from(
+          "  NAME  STATE  VERSION\r\n  debian Running 2\r\n  Ubuntu Running broken\r\n",
+          "utf16le",
+        ),
+      })),
+    })
+    await expect(discoverWslMachines(input)).rejects.toMatchObject({ kind: "corrupt" })
+    expect(input.endpoint).not.toHaveBeenCalled()
+  })
+
   it("asks the running distributions together rather than one deadline after another", async () => {
     let release!: () => void
     const held = new Promise<undefined>((resolve) => {
