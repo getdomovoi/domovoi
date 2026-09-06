@@ -16,4 +16,4 @@ $actualPublisher = $signature.SignerCertificate.GetNameInfo(
 if (-not [string]::Equals($actualPublisher, $Publisher, [System.StringComparison]::Ordinal)) {
   throw "Authenticode publisher does not match DOMOVOI_WIN_PUBLISHER_NAME for ${Artifact}"
 }
-Write-Output "DOMOVOI_AUTHENTICODE_OK ${Artifact}"
+Write-Output 'DOMOVOI_AUTHENTICODE_OK'

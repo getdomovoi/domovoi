@@ -16,7 +16,9 @@ function verifier(run = execute, now = () => performance.now()) {
   }
 }
 
-async function verifyMacApplication(path, teamId, run, now) {
+const printEvidence = (line) => process.stdout.write(line)
+
+async function verifyMacApplication(path, teamId, run, now, report = printEvidence) {
   const check = verifier(run, now)
   await check("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", path])
   const identity = await check("/usr/bin/codesign", ["--display", "--verbose=4", path])
@@ -27,15 +29,20 @@ async function verifyMacApplication(path, teamId, run, now) {
   // The built-in v26 notarizer staples before afterSign. Validate that fact,
   // rather than trusting the configuration or a log saying submission started.
   await check("/usr/bin/xcrun", ["stapler", "validate", "-v", path])
+  report(`DOMOVOI_MAC_SIGNATURE_OK ${teamId} ${path}\n`)
 }
 
-async function verifyWindowsFiles(paths, publisher, run, now) {
+async function verifyWindowsFiles(paths, publisher, run, now, report = printEvidence) {
   const check = verifier(run, now)
   for (const path of paths) {
-    await check("powershell.exe", [
+    const result = await check("powershell.exe", [
       "-NoProfile", "-NonInteractive", "-File", join(__dirname, "verify-authenticode.ps1"),
       "-Artifact", path, "-Publisher", publisher,
     ])
+    if (!result.stdout.split(/\r?\n/u).includes("DOMOVOI_AUTHENTICODE_OK")) {
+      throw new Error(`Authenticode verifier returned no proof marker for ${path}`)
+    }
+    report(`DOMOVOI_AUTHENTICODE_OK ${path}\n`)
   }
 }
 

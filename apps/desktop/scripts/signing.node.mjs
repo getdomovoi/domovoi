@@ -216,7 +216,7 @@ test("macOS checks nested signatures, Developer ID team and the stapled ticket i
     calls.push(args)
     clock += 1000
     return { stdout: "", stderr: "Authority=Developer ID Application: Fixture\nTeamIdentifier=ABCDE12345\n" }
-  }, () => clock)
+  }, () => clock, () => {})
   assert.deepEqual(calls.map(([command, args]) => [command, ...args.slice(0, 2)]), [
     ["/usr/bin/codesign", "--verify", "--deep"],
     ["/usr/bin/codesign", "--display", "--verbose=4"],
@@ -248,6 +248,23 @@ test("Windows verification uses literal script arguments and propagates native f
     assert.equal(options.shell, undefined)
     throw refusal
   }), (error) => error === refusal)
+})
+
+test("a zero-exit Windows verifier without its proof marker is not success", async () => {
+  await assert.rejects(verifyWindowsFiles(["one.exe"], "Fixture", async () => ({ stdout: "", stderr: "" })), /no proof marker/u)
+})
+
+test("successful native verifications emit their evidence only after all checks", async () => {
+  const lines = []
+  const report = (line) => lines.push(line)
+  await verifyWindowsFiles(["one.exe"], "Fixture", async () => ({ stdout: "DOMOVOI_AUTHENTICODE_OK\r\n", stderr: "" }), undefined, report)
+  await verifyMacApplication("/fixture/Domovoi.app", apple.APPLE_TEAM_ID, async () => ({
+    stdout: "", stderr: "Authority=Developer ID Application: Fixture\nTeamIdentifier=ABCDE12345\n",
+  }), undefined, report)
+  assert.deepEqual(lines, [
+    "DOMOVOI_AUTHENTICODE_OK one.exe\n",
+    "DOMOVOI_MAC_SIGNATURE_OK ABCDE12345 /fixture/Domovoi.app\n",
+  ])
 })
 
 test("the native signing workflow is manual, protected, bounded and cannot publish", async () => {

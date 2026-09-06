@@ -165,11 +165,16 @@ SmartScreen reputation. [Microsoft's code-signing options](https://learn.microso
 Linux tests exercise the real v26 configuration loader/schema, missing credential refusals,
 hook accounting, verification command order, wrong team, signer failure, shared deadlines and
 workflow admission. Native tool results in those tests are injected. They are not signatures.
-No Apple or Microsoft signing request was sent, and neither native packaging target has been
-built by this branch. The workflow itself has not run. The roadmap item therefore stays open.
+The actual unsigned Linux packaging path produced AppImage and deb files; its packaged-app smoke
+loaded the PTY and keyring from the archive, exercised the worker, started the production daemon
+and printed `DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK`. That proves development packaging survived this
+configuration change, not signing on another OS. No Apple or Microsoft signing request was sent,
+and neither native signing target has been built by this branch. The workflow itself has not run.
+The roadmap item therefore stays open.
 
-For macOS, retain a real successful log showing Developer ID Application verification for the
-right team and `stapler validate` success, then download the archive onto a clean Mac. Verify
+For macOS, retain a real successful `DOMOVOI_MAC_SIGNATURE_OK` log line. It follows Developer ID
+Application verification for the right team and `stapler validate` success. Download the archive
+onto a clean Mac. Verify
 the extracted app with `codesign --verify --deep --strict`, `xcrun stapler validate` and
 `spctl --assess --type execute --verbose`. Open the DMG/ZIP distribution through Finder so
 quarantine and Gatekeeper are exercised. Confirm the native PTY, keyring worker, bundled agent
