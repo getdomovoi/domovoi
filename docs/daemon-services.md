@@ -143,16 +143,47 @@ assertions did. Its gate is the systemd user manager's private socket, so a mach
 running user manager skips it. The Linux CI leg starts that manager and fails when the socket is
 missing, so the test cannot disappear from the run.
 
+A second native Linux-only test proves the restart supervision that unit declares. It reads
+`Restart` and `RestartSec` back from the manager's parse of the installed unit rather than from the
+generated string, kills the unit's main process through the manager with `SIGKILL`, which systemd
+does not count as one of the four clean-exit signals, and then requires the manager's own restart
+count to reach one alongside a new live main process that wrote the fixture's PID file. Under
+`Restart=on-failure` that count moves only for a failure, so it is at once the restart and the
+manager's classification of the crash. Two negatives run in the same unit. A deliberate
+`systemctl stop` must stay inactive and dead past the restart delay the manager reports, because a
+supervisor that fights an operator's stop is its own defect. A main process that exits zero,
+asked for through the fixture's private stop path, must also stay exited with the restart count
+still at zero; that is the half the `on-failure` directive itself decides. Setting the unit to
+`Restart=no` fails the crash half, and `Restart=always` fails the clean-exit half, so the pair pins
+the directive from both sides. The test shares the throwaway unit name, the runtime unit path, the
+`systemctl` chokepoint, the refusing preflight and the always-run cleanup with the lifecycle test
+rather than carrying a second copy of them.
+
 There is no launchd equivalent, so a green Linux and Windows run does not prove native macOS
 installation or removal. Writing one first needs a macOS runner where `launchctl bootstrap
 gui/<uid>` and `launchctl print gui/<uid>/<label>` are confirmed to work in the hosted session,
 which nobody has checked; that domain is the one the installer targets, and guessing at it would
 produce a test that passes for the wrong reason.
 
+The launchd agent's `KeepAlive` with `SuccessfulExit` false is the same shape of policy as
+`Restart=on-failure`: relaunch after a failed exit, leave a clean one alone. A macOS restart test
+needs three things beyond that runner, and none of them is confirmed here. It needs a way to crash
+the agent's process through the manager rather than by a raw PID that could have been reused, for
+which `launchctl kill SIGKILL gui/<uid>/<label>` is the apparent counterpart of `systemctl kill`.
+It needs a manager-reported witness that a relaunch happened, meaning a field of
+`launchctl print gui/<uid>/<label>` that names the current PID together with a run count or exit
+record; systemd's `NRestarts` has no confirmed launchd equivalent, and a changed PID on its own
+does not say who started the replacement. It needs the relaunch delay launchd actually applies, so
+the wait proving no relaunch happened can be sized past it the way the systemd test sizes its
+window against the reported `RestartSec`. Until someone reads those three off a real macOS
+session, `KeepAlive` supervision stays unproven and no test here should claim otherwise.
+
 Beyond those native tests these are configuration delivery and focused removal checks, not full
-native systemd, launchd, or Task Scheduler lifecycle acceptance. Neither native test crashes its
-process, so `Restart=on-failure` and `KeepAlive` supervision remain unproven. Native manager
-restart checks and installer rollback remain separate audit work. A timed-out manager may already have changed OS state; inspect service
+native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision is proven on
+systemd alone. `KeepAlive` is unproven for the reasons above, and the Windows logon task is created
+with no restart setting at all, so nothing on that platform claims to relaunch a crashed daemon
+before the next logon and there is no policy there for a test to hold to. Installer rollback
+remains separate audit work. A timed-out manager may already have changed OS state; inspect service
 status before retrying. Each file is replaced by a same-directory rename only after a complete
 private staging write. A failed write preserves the last complete file. Expiry or a crash can leave
 a private `.tmp` sibling; it is never read as configuration and may be removed after installation
