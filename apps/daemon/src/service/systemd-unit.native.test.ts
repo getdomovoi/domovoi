@@ -10,14 +10,14 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { removeService, serviceStatus } from "./install.js"
-import { cleanupBudget, lifecycleBudget, supervisionBudget, systemdManagerAvailable, withThrowawayUnit } from "./systemd-unit.test-support.js"
+import { cleanupBudget, lifecycleBudget, supervisionBudget, systemdManagerAvailable, systemdProofRequired, withThrowawayUnit } from "./systemd-unit.test-support.js"
 
 const host = {
   runtimeDirectory: process.env.XDG_RUNTIME_DIR ?? "",
   configHome: process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
 }
 const managerRunning = systemdManagerAvailable({
-  platform: process.platform, runtimeDirectory: host.runtimeDirectory, required: process.env.CI === "true",
+  platform: process.platform, runtimeDirectory: host.runtimeDirectory, required: systemdProofRequired(process.env.CI),
 })
 // The native supervision assertions read RestartSec back from the manager.
 const restartDelay = "5s"

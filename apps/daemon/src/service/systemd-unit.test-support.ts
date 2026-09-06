@@ -27,6 +27,10 @@ function entryAt(path: string) {
   }
 }
 
+export function systemdProofRequired(ci: string | undefined): boolean {
+  return !["", "0", "false"].includes((ci ?? "").trim().toLowerCase())
+}
+
 export function systemdManagerAvailable(options: {
   platform: NodeJS.Platform
   runtimeDirectory: string

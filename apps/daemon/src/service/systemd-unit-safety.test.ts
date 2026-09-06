@@ -8,7 +8,7 @@ import { expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type CapturedRun } from "./install.js"
-import { systemdManagerAvailable, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
+import { systemdManagerAvailable, systemdProofRequired, userScoped, withThrowawayUnit } from "./systemd-unit.test-support.js"
 
 const safetyBudget = 10_000
 type Body = Parameters<typeof withThrowawayUnit>[1]
@@ -221,6 +221,14 @@ it.each([
 
 it("fails rather than silently skipping a required Linux proof when its manager disappears", () => {
   expect(() => systemdManagerAvailable({ platform: "linux", runtimeDirectory: "/missing", required: true, exists: () => false })).toThrow(/systemd.*required/i)
+})
+
+it.each(["true", "1", "TRUE", " True ", "yes"])("refuses a missing manager when CI=%s", (ci) => {
+  expect(() => systemdManagerAvailable({ platform: "linux", runtimeDirectory: "/missing", required: systemdProofRequired(ci), exists: () => false })).toThrow(/systemd.*required/i)
+})
+
+it.each([undefined, "", "0", "false", " FALSE "])("keeps explicit non-CI value %s optional", (ci) => {
+  expect(systemdProofRequired(ci)).toBe(false)
 })
 
 it("keeps non-Linux and optional local native proofs gated", () => {
