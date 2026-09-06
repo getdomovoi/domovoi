@@ -95,7 +95,7 @@
       </div>
     </sc-if>
 
-    <div style="height: 44px; flex: 0 0 44px; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
+    <div style="height: 38px; flex: 0 0 38px; display: flex; align-items: center; gap: 12px; padding: 0 12px; background: var(--sidebar); border-bottom: 1px solid var(--border);">
       <sc-if value="{{ isMac }}" hint-placeholder-val="{{ true }}">
         <div style="display: flex; gap: 8px; padding-right: 4px;">
           <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
@@ -178,7 +178,7 @@
 
       <sc-if value="{{ isSessions }}" hint-placeholder-val="{{ true }}">
         <sc-if value="{{ sidebarOpen }}" hint-placeholder-val="{{ true }}">
-        <div style="width: 288px; flex: 0 0 288px; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border);">
+        <div style="width: 240px; flex: 0 0 240px; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border);">
           <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px 0;">
             <span style="font-size: 10px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SESSIONS</span>
             <span style="flex: 1;"></span>
@@ -515,18 +515,19 @@
         <sc-if value="{{ dockOpen }}" hint-placeholder-val="{{ true }}">
         <div onMouseDown="{{ startResize }}" title="Drag to resize · double-click to reset" onDoubleClick="{{ resetDock }}" style="{{ handleStyle }}"></div>
         <div style="{{ dockStyle }}">
-          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--border);">
-            <sc-for list="{{ dockTabs }}" as="dt" hint-placeholder-count="5">
-              <div onClick="{{ dt.pick }}" style="{{ dt.style }}">
-                <span>{{ dt.label }}</span>
-                <sc-if value="{{ dt.count }}" hint-placeholder-val="{{ false }}">
-                  <span style="{{ dt.badgeStyle }}">{{ dt.count }}</span>
-                </sc-if>
-              </div>
-            </sc-for>
-            <span style="flex: 1;"></span>
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ dockWidthLabel }}</span>
-            <span onClick="{{ toggleDock }}" title="Collapse panel ⌥⌘L" style="width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">››</span>
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow: hidden;">
+            <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none;">
+              <sc-for list="{{ dockTabs }}" as="dt" hint-placeholder-count="5">
+                <div onClick="{{ dt.pick }}" style="{{ dt.style }}">
+                  <span>{{ dt.label }}</span>
+                  <sc-if value="{{ dt.count }}" hint-placeholder-val="{{ false }}">
+                    <span style="{{ dt.badgeStyle }}">{{ dt.count }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+            <span style="flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ dockWidthLabel }}</span>
+            <span onClick="{{ toggleDock }}" title="Collapse panel ⌥⌘L" style="flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">››</span>
           </div>
 
           <sc-if value="{{ dockPlan }}" hint-placeholder-val="{{ false }}">
@@ -549,7 +550,7 @@
                       <span style="{{ pl.markStyle }}">{{ pl.mark }}</span>
                       <div style="flex: 1; min-width: 0;">
                         <div style="font-size: 12.5px; line-height: 1.5; color: {{ pl.titleColor }};">{{ pl.title }}</div>
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; color: var(--muted-foreground); margin-top: 5px; white-space: pre-line;">{{ pl.files }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.7; color: var(--muted-foreground); margin-top: 5px; white-space: pre-line; overflow-wrap: anywhere;">{{ pl.files }}</div>
                         <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
                           <span style="{{ pl.stateStyle }}">{{ pl.state }}</span>
                           <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">{{ pl.meta }}</span>
@@ -663,21 +664,28 @@
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--success);">+184</span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--destructive);">−37</span>
                 <span style="flex: 1;"></span>
+                <span onClick="{{ toggleAll }}" style="padding: 5px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">{{ collapseLabel }}</span>
                 <span style="padding: 5px 10px; background: var(--accent); border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Checkpoint</span>
               </div>
-              <div style="flex: 0 0 auto; border-bottom: 1px solid var(--border);">
+              <div style="flex: 1; min-height: 0; overflow-y: auto;">
                 <sc-for list="{{ changedFiles }}" as="f" hint-placeholder-count="5">
-                  <div onClick="{{ f.pick }}" style="{{ f.rowStyle }}">
-                    <span style="{{ f.badgeStyle }}">{{ f.badge }}</span>
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ f.nameColor }}; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;">{{ f.path }}</span>
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--success);">{{ f.add }}</span>
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--destructive);">{{ f.del }}</span>
+                  <div>
+                    <div onClick="{{ f.toggle }}" style="{{ f.rowStyle }}">
+                      <span style="{{ f.caretStyle }}">{{ f.caret }}</span>
+                      <span style="{{ f.badgeStyle }}">{{ f.badge }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ f.nameColor }}; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;">{{ f.path }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--success);">{{ f.add }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--destructive);">{{ f.del }}</span>
+                    </div>
+                    <sc-if value="{{ f.open }}" hint-placeholder-val="{{ true }}">
+                      <div style="{{ f.hunkStyle }}">{{ f.hunk }}</div>
+                      <div style="{{ f.bodyStyle }}">
+                        <sc-for list="{{ f.lines }}" as="dl" hint-placeholder-count="8">
+                          <div style="{{ dl.style }}"><span style="display: inline-block; width: 38px; color: var(--faint); user-select: none;">{{ dl.n }}</span>{{ dl.text }}</div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
                   </div>
-                </sc-for>
-              </div>
-              <div style="flex: 1; min-height: 0; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.75; background: var(--background);">
-                <sc-for list="{{ diffLines }}" as="dl" hint-placeholder-count="12">
-                  <div style="{{ dl.style }}"><span style="display: inline-block; width: 38px; color: var(--faint); user-select: none;">{{ dl.n }}</span>{{ dl.text }}</div>
                 </sc-for>
               </div>
               <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border);">
@@ -690,19 +698,19 @@
 
           <sc-if value="{{ dockTerminal }}" hint-placeholder-val="{{ false }}">
             <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--code);">
-              <div style="flex: 0 0 auto; padding: 9px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+              <div style="flex: 0 0 auto; padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--sidebar); display: flex; align-items: center; gap: 8px;">
                 <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--success);"></span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">pty · macbook-pro-m3 · zsh · ~/src/acme-api</span>
                 <span style="flex: 1;"></span>
                 <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">agent-owned</span>
               </div>
-              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8;">
+              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.85;">
                 <sc-for list="{{ termLines }}" as="tl" hint-placeholder-count="14">
-                  <div style="color: {{ tl.color }}; white-space: pre-wrap;">{{ tl.text }}</div>
+                  <div style="{{ tl.rowStyle }}"><span style="color: var(--primary); user-select: none;">{{ tl.prompt }}</span>{{ tl.text }}</div>
                 </sc-for>
-                <div style="color: var(--primary);">❯ <span style="animation: dvBlink 1.1s step-end infinite;">▍</span></div>
+                <div style="padding: 1px 10px 1px 12px; margin: 6px -12px 0; border-left: 2px solid var(--primary); background: color-mix(in oklab, var(--primary) 8%, transparent); color: var(--foreground);"><span style="color: var(--primary);">❯</span> <span style="animation: dvBlink 1.1s step-end infinite; color: var(--primary);">▍</span></div>
               </div>
-              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-top: 1px solid var(--border);">
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-top: 1px solid var(--border); background: var(--sidebar);">
                 <span style="padding: 5px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: var(--accent); color: var(--accent-foreground);">Take over</span>
                 <span style="padding: 5px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 10.5px; cursor: pointer;" style-hover="background: color-mix(in oklab, var(--destructive) 18%, transparent); color: var(--destructive);">Interrupt ⌃C</span>
                 <span style="flex: 1;"></span>
@@ -1267,6 +1275,7 @@
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1040},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;macos&quot;,&quot;options&quot;:[&quot;macos&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Platform&quot;}}">
 class Component extends DCLogic {
   state = {
+    openFiles: [0],
     view: "sessions",
     dock: "plan",
     doc: 0,
@@ -1285,7 +1294,7 @@ class Component extends DCLogic {
     movedTo: "",
     movedVia: "bundle",
     dockOpen: true,
-    dockWidth: 470,
+    dockWidth: 280,
     resizing: false,
     mode: "build",
     auto: false,
@@ -1415,45 +1424,78 @@ class Component extends DCLogic {
     });
 
     const files = [
-      { path: "src/webhooks/handler.ts", badge: "M", add: "+62", del: "−14" },
-      { path: "src/webhooks/replay.ts", badge: "A", add: "+71", del: "−0" },
-      { path: "prisma/migrations/20260825_replay/migration.sql", badge: "A", add: "+18", del: "−0" },
-      { path: "src/webhooks/replay.spec.ts", badge: "M", add: "+21", del: "−19" },
-      { path: "src/lib/stripe.ts", badge: "M", add: "+12", del: "−4" }
+      { path: "src/webhooks/handler.ts", badge: "M", add: "+62", del: "−14", hunk: "@@ -41,3 +41,9 @@ handleWebhook", lines: [
+        { n: "41", text: "export async function handleWebhook(evt: StripeEvent) {", k: "ctx" },
+        { n: "42", text: "-  await processEvent(evt)", k: "del" },
+        { n: "42", text: "+  const seen = await replay.claim(evt.id)", k: "add" },
+        { n: "43", text: "+  if (!seen.fresh) {", k: "add" },
+        { n: "44", text: "+    log.info('replay.skip', { id: evt.id })", k: "add" },
+        { n: "45", text: "+    return { ok: true, deduped: true }", k: "add" },
+        { n: "46", text: "+  }", k: "add" },
+        { n: "47", text: "+  await processEvent(evt)", k: "add" },
+        { n: "48", text: "+  await replay.commit(evt.id)", k: "add" },
+        { n: "49", text: "}", k: "ctx" },
+        { n: "50", text: "", k: "ctx" },
+        { n: "51", text: "// TODO(domovoi): backfill table before enabling in prod", k: "ctx" }
+      ] },
+      { path: "src/webhooks/replay.ts", badge: "A", add: "+71", del: "−0", hunk: "@@ -0,0 +1,71 @@ new file", lines: [
+        { n: "1", text: "+import { db } from '../lib/db'", k: "add" },
+        { n: "2", text: "+", k: "add" },
+        { n: "3", text: "+export async function claim(eventId: string) {", k: "add" },
+        { n: "4", text: "+  const row = await db.idempotencyKey.upsert({", k: "add" },
+        { n: "5", text: "+    where: { eventId },", k: "add" },
+        { n: "6", text: "+    create: { eventId, state: 'claimed' },", k: "add" },
+        { n: "7", text: "+    update: {}", k: "add" },
+        { n: "8", text: "+  })", k: "add" },
+        { n: "9", text: "+  return { fresh: row.state === 'claimed' }", k: "add" },
+        { n: "10", text: "+}", k: "add" }
+      ] },
+      { path: "prisma/migrations/20260825_replay/migration.sql", badge: "A", add: "+18", del: "−0", hunk: "@@ -0,0 +1,18 @@ new file", lines: [
+        { n: "1", text: "+CREATE TABLE \"idempotency_keys\" (", k: "add" },
+        { n: "2", text: "+  \"event_id\"   TEXT PRIMARY KEY,", k: "add" },
+        { n: "3", text: "+  \"state\"      TEXT NOT NULL,", k: "add" },
+        { n: "4", text: "+  \"claimed_at\" TIMESTAMPTZ NOT NULL DEFAULT now()", k: "add" },
+        { n: "5", text: "+);", k: "add" },
+        { n: "6", text: "+", k: "add" },
+        { n: "7", text: "+CREATE INDEX \"idempotency_keys_state_idx\"", k: "add" },
+        { n: "8", text: "+  ON \"idempotency_keys\" (\"state\", \"claimed_at\");", k: "add" }
+      ] },
+      { path: "src/webhooks/replay.spec.ts", badge: "M", add: "+21", del: "−19", hunk: "@@ -12,6 +12,8 @@ describe('replay')", lines: [
+        { n: "12", text: "  it('retries the same event twice', async () => {", k: "ctx" },
+        { n: "13", text: "-    await handleWebhook(evt)", k: "del" },
+        { n: "14", text: "-    expect(handler).toHaveBeenCalledOnce()", k: "del" },
+        { n: "13", text: "+    const a = await handleWebhook(evt)", k: "add" },
+        { n: "14", text: "+    const b = await handleWebhook(evt)", k: "add" },
+        { n: "15", text: "+    expect(b.deduped).toBe(true)", k: "add" },
+        { n: "16", text: "  })", k: "ctx" }
+      ] },
+      { path: "src/lib/stripe.ts", badge: "M", add: "+12", del: "−4", hunk: "@@ -8,4 +8,6 @@ client", lines: [
+        { n: "8", text: "export const stripe = new Stripe(key, {", k: "ctx" },
+        { n: "9", text: "-  maxNetworkRetries: 0", k: "del" },
+        { n: "9", text: "+  maxNetworkRetries: 2,", k: "add" },
+        { n: "10", text: "+  timeout: 20_000", k: "add" },
+        { n: "11", text: "})", k: "ctx" }
+      ] }
     ];
 
-    const diff = [
-      { n: "41", text: "export async function handleWebhook(evt: StripeEvent) {", k: "ctx" },
-      { n: "42", text: "-  await processEvent(evt)", k: "del" },
-      { n: "42", text: "+  const seen = await replay.claim(evt.id)", k: "add" },
-      { n: "43", text: "+  if (!seen.fresh) {", k: "add" },
-      { n: "44", text: "+    log.info('replay.skip', { id: evt.id })", k: "add" },
-      { n: "45", text: "+    return { ok: true, deduped: true }", k: "add" },
-      { n: "46", text: "+  }", k: "add" },
-      { n: "47", text: "+  await processEvent(evt)", k: "add" },
-      { n: "48", text: "+  await replay.commit(evt.id)", k: "add" },
-      { n: "49", text: "}", k: "ctx" },
-      { n: "50", text: "", k: "ctx" },
-      { n: "51", text: "// TODO(domovoi): backfill table before enabling in prod", k: "ctx" }
-    ];
 
     const term = [
-      { text: "❯ pnpm vitest run webhooks", c: "var(--primary)" },
-      { text: " RUN  v2.1.4 /home/dl/src/acme-api", c: "var(--muted-foreground)" },
-      { text: " ✓ webhooks/handler.spec.ts (14)", c: "var(--success)" },
-      { text: " ✓ webhooks/idempotency.spec.ts (9)", c: "var(--success)" },
-      { text: " ✓ webhooks/claim.spec.ts (18)", c: "var(--success)" },
-      { text: " ✗ webhooks/replay.spec.ts (1)", c: "var(--destructive)" },
-      { text: "   → retries the same event twice", c: "var(--destructive)" },
-      { text: "     expected 2 handler invocations, received 1", c: "var(--muted-foreground)" },
-      { text: "", c: "var(--muted-foreground)" },
-      { text: " Test Files  3 passed | 1 failed (4)", c: "var(--strong)" },
-      { text: "      Tests  42 passed | 1 failed (43)", c: "var(--strong)" },
-      { text: "   Duration  6.42s", c: "var(--muted-foreground)" },
-      { text: "", c: "var(--muted-foreground)" },
-      { text: "❯ git -C .domovoi/wt-billing-idem status --short", c: "var(--primary)" },
-      { text: " M src/webhooks/handler.ts", c: "var(--muted-foreground)" },
-      { text: "?? src/webhooks/replay.ts", c: "var(--muted-foreground)" }
+      { text: "pnpm vitest run webhooks", k: "cmd" },
+      { text: "RUN  v2.1.4 /home/dl/src/acme-api", k: "dim" },
+      { text: "✓ webhooks/handler.spec.ts (14)", k: "pass" },
+      { text: "✓ webhooks/idempotency.spec.ts (9)", k: "pass" },
+      { text: "✓ webhooks/claim.spec.ts (18)", k: "pass" },
+      { text: "✗ webhooks/replay.spec.ts (1)", k: "fail" },
+      { text: "  → retries the same event twice", k: "fail" },
+      { text: "    expected 2 handler invocations, received 1", k: "faildim" },
+      { text: "", k: "gap" },
+      { text: "Test Files  3 passed | 1 failed (4)", k: "sum" },
+      { text: "     Tests  42 passed | 1 failed (43)", k: "sum" },
+      { text: "  Duration  6.42s", k: "sumdim" },
+      { text: "", k: "gap" },
+      { text: "git -C .domovoi/wt-billing-idem status --short", k: "cmd" },
+      { text: " M src/webhooks/handler.ts", k: "dim" },
+      { text: "?? src/webhooks/replay.ts", k: "dim" }
     ];
 
     const annotationsRaw = [
@@ -1774,7 +1816,7 @@ class Component extends DCLogic {
         label: t.label, count: t.count || false, pick: D(t.k),
         badgeStyle: "margin-left: 6px; padding: 1px 5px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: " +
           (st.dock === t.k ? "var(--primary)" : "var(--muted)") + "; color: " + (st.dock === t.k ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";",
-        style: "display: flex; align-items: center; padding: 6px 11px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
+        style: "display: flex; align-items: center; flex: 0 0 auto; padding: 6px 11px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; cursor: pointer; background: " +
           (st.dock === t.k ? "var(--accent)" : "transparent") + "; color: " + (st.dock === t.k ? "var(--foreground)" : "var(--muted-foreground)") + ";"
       })),
       dockOpen: st.dockOpen,
@@ -1784,7 +1826,7 @@ class Component extends DCLogic {
       dockWidthLabel: st.dockWidth + "px",
       handleStyle: "width: 5px; flex: 0 0 5px; cursor: col-resize; background: " + (st.resizing ? "var(--primary)" : "var(--border)") + "; transition: background .12s;",
       startResize: e => this.beginResize(e),
-      resetDock: () => this.setState({ dockWidth: 470 }),
+      resetDock: () => this.setState({ dockWidth: 280 }),
       dockRail: [
         { k: "plan", glyph: "☰", label: "Plan" },
         { k: "preview", glyph: "◫", label: "Preview" },
@@ -1849,22 +1891,51 @@ class Component extends DCLogic {
         };
       }),
 
-      changedFiles: files.map((f, i) => ({
-        path: f.path, badge: f.badge, add: f.add, del: f.del,
-        nameColor: i === st.fileIdx ? "var(--foreground)" : "var(--muted-foreground)",
-        badgeStyle: "width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; background: " +
-          (f.badge === "A" ? "color-mix(in oklab, var(--success) 18%, transparent)" : "color-mix(in oklab, var(--info) 18%, transparent)") + "; color: " + (f.badge === "A" ? "var(--success)" : "var(--info)") + ";",
-        rowStyle: "display: flex; align-items: center; gap: 9px; padding: 7px 12px; cursor: pointer; background: " +
-          (i === st.fileIdx ? "var(--accent)" : "transparent") + ";",
-        pick: () => this.setState({ fileIdx: i })
+      changedFiles: files.map((f, i) => {
+        const open = (st.openFiles || []).indexOf(i) >= 0;
+        return {
+          path: f.path, badge: f.badge, add: f.add, del: f.del, hunk: f.hunk,
+          open: open,
+          caret: open ? "▾" : "▸",
+          nameColor: open ? "var(--foreground)" : "var(--muted-foreground)",
+          caretStyle: "width: 11px; flex: 0 0 11px; font-size: 8.5px; color: var(--faint); user-select: none;",
+          badgeStyle: "width: 15px; height: 15px; flex: 0 0 15px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; background: " +
+            (f.badge === "A" ? "color-mix(in oklab, var(--success) 18%, transparent)" : "color-mix(in oklab, var(--info) 18%, transparent)") + "; color: " + (f.badge === "A" ? "var(--success)" : "var(--info)") + ";",
+          rowStyle: "display: flex; align-items: center; gap: 9px; padding: 7px 12px; cursor: pointer; background: " +
+            (open ? "var(--accent)" : "transparent") + "; border-bottom: 1px solid " + (open ? "var(--border)" : "transparent") + ";",
+          hunkStyle: "padding: 5px 12px; background: var(--code); border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);",
+          bodyStyle: "background: var(--background); border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.75; padding: 4px 0;",
+          lines: f.lines.map(d => ({
+            n: d.n, text: d.text,
+            style: "padding: 0 12px; white-space: pre-wrap; color: " +
+              (d.k === "add" ? "var(--success)" : d.k === "del" ? "var(--destructive)" : "var(--muted-foreground)") +
+              "; background: " + (d.k === "add" ? "color-mix(in oklab, var(--success) 9%, transparent)" : d.k === "del" ? "color-mix(in oklab, var(--destructive) 9%, transparent)" : "transparent") + ";"
+          })),
+          toggle: () => this.setState(s => {
+            const cur = s.openFiles || [];
+            return { openFiles: cur.indexOf(i) >= 0 ? cur.filter(x => x !== i) : cur.concat([i]) };
+          })
+        };
+      }),
+      allOpen: (st.openFiles || []).length === files.length,
+      collapseLabel: (st.openFiles || []).length === files.length ? "Collapse all" : "Expand all",
+      toggleAll: () => this.setState(s => ({
+        openFiles: (s.openFiles || []).length === files.length ? [] : files.map((_, i) => i)
       })),
-      diffLines: diff.map(d => ({
-        n: d.n, text: d.text,
-        style: "padding: 0 12px; white-space: pre-wrap; color: " +
-          (d.k === "add" ? "var(--success)" : d.k === "del" ? "var(--destructive)" : "var(--muted-foreground)") +
-          "; background: " + (d.k === "add" ? "color-mix(in oklab, var(--success) 9%, transparent)" : d.k === "del" ? "color-mix(in oklab, var(--destructive) 9%, transparent)" : "transparent") + ";"
-      })),
-      termLines: term.map(t => ({ text: t.text, color: t.c })),
+      termLines: term.map(t => {
+        const base = "white-space: pre-wrap; padding: 1px 10px 1px 12px; margin: 0 -12px; border-left: 2px solid transparent; ";
+        if (t.k === "cmd") return { text: t.text, prompt: "❯ ", rowStyle: base +
+          "color: var(--foreground); font-weight: 500; margin-top: 6px; border-left-color: var(--primary); background: color-mix(in oklab, var(--primary) 8%, transparent);" };
+        if (t.k === "pass") return { text: t.text, prompt: "", rowStyle: base + "color: var(--success);" };
+        if (t.k === "fail") return { text: t.text, prompt: "", rowStyle: base +
+          "color: var(--danger-fg); border-left-color: color-mix(in oklab, var(--destructive) 55%, transparent); background: color-mix(in oklab, var(--destructive) 10%, transparent);" };
+        if (t.k === "faildim") return { text: t.text, prompt: "", rowStyle: base +
+          "color: var(--danger-dim); border-left-color: color-mix(in oklab, var(--destructive) 55%, transparent); background: color-mix(in oklab, var(--destructive) 10%, transparent);" };
+        if (t.k === "sum") return { text: t.text, prompt: "", rowStyle: base + "color: var(--strong);" };
+        if (t.k === "sumdim") return { text: t.text, prompt: "", rowStyle: base + "color: var(--muted-foreground);" };
+        if (t.k === "gap") return { text: "", prompt: "", rowStyle: "height: 7px;" };
+        return { text: t.text, prompt: "", rowStyle: base + "color: var(--muted-foreground);" };
+      }),
 
       timeline: [
         { title: "Approval requested, prisma migrate deploy", meta: "hard gate · awaiting you", time: "12:52", dotColor: "var(--warning)" },
@@ -2222,7 +2293,7 @@ class Component extends DCLogic {
     const startW = this.state.dockWidth;
     this.setState({ resizing: true });
     const move = ev => {
-      const w = Math.min(820, Math.max(300, startW - (ev.clientX - startX)));
+      const w = Math.min(560, Math.max(240, startW - (ev.clientX - startX)));
       this.setState({ dockWidth: w });
     };
     const up = () => {
